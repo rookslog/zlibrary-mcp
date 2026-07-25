@@ -59,6 +59,20 @@ dev = [
     "pytest-benchmark>=5.2.3",
 ]
 
+# Development and test dependencies (PEP 735 dependency groups)
+[dependency-groups]
+dev = [
+    "pytest>=9.0.3",  # PYSEC-2026-1845
+    "pytest-asyncio>=1.2.0",
+    "pytest-mock>=3.15.0",
+    "pytest-benchmark>=5.2.3",
+    "ruff>=0.14.14",
+    "jsonschema>=4.26.0",
+    "pytest-cov>=7.0.0",
+    "pip-audit>=2.7.0",
+    "pip>=26.1.2",  # PYSEC-2026-196, PYSEC-2026-2875, PYSEC-2026-2876 (pulled in by pip-audit)
+]
+
 [project.urls]
 Homepage = "https://github.com/rookslog/zlibrary-mcp"
 Repository = "https://github.com/rookslog/zlibrary-mcp.git"
@@ -84,19 +98,6 @@ build-backend = "setuptools.build_meta"
 # ['lib', 'zlibrary', 'node_modules'] and refused to build — breaking
 # `uv sync` for every npm-installed user.
 package = false
-# Development dependencies (alternative syntax)
-dev-dependencies = [
-    "pytest>=9.0.3",  # PYSEC-2026-1845
-    "pytest-asyncio>=1.2.0",
-    "pytest-mock>=3.15.0",
-    "pytest-benchmark>=5.2.3",
-    "ruff>=0.14.14",
-    "jsonschema>=4.26.0",
-    "pytest-cov>=7.0.0",
-    "pip-audit>=2.7.0",
-    "pip>=26.1.2",  # PYSEC-2026-196, PYSEC-2026-2875, PYSEC-2026-2876 (pulled in by pip-audit)
-]
-
 # Constraints to fix security vulnerabilities in transitive deps.
 # Floors are raised to the lowest version pip-audit reports as fixed; keep them
 # as `>=` so Dependabot/`uv lock --upgrade` can move forward without edits here.

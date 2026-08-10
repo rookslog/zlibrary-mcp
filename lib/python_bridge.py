@@ -656,6 +656,70 @@ async def process_document(
 
 
 # --- download_book function needs to be async ---
+SOURCE_ALIASES = {"libgen", "annas", "annas_archive"}
+
+
+async def _download_url_to_file(url: str, output_dir: str, md5: str) -> str:
+    """Stream a resolved source URL to disk and return the raw path.
+
+    The source-agnostic half of acquisition: everything downstream of this
+    (unified filename, RAG processing, the bundle contract) already works on
+    any source, so this is the only piece that had to exist for LibGen and
+    Anna's results to become downloadable.
+
+    Guards against the two ways these CDNs fail without erroring: an HTML
+    error/interstitial page served with HTTP 200, and a truncated body.
+    """
+    import httpx
+
+    Path(output_dir).mkdir(parents=True, exist_ok=True)
+    raw_path = Path(output_dir) / f"{md5}.download"
+
+    async with httpx.AsyncClient(timeout=180, follow_redirects=True) as client:
+        async with client.stream("GET", url) as response:
+            response.raise_for_status()
+
+            content_type = response.headers.get("content-type", "")
+            if "text/html" in content_type:
+                raise ValueError(
+                    f"Source served HTML rather than a file for {md5} — the "
+                    f"download key has most likely expired. Re-resolve and retry."
+                )
+
+            written = 0
+            with open(raw_path, "wb") as handle:
+                async for chunk in response.aiter_bytes(65536):
+                    handle.write(chunk)
+                    written += len(chunk)
+
+    if written == 0:
+        raw_path.unlink(missing_ok=True)
+        raise ValueError(f"Source returned an empty body for {md5}")
+
+    logger.info(f"Downloaded {written} bytes from source to {raw_path}")
+    return str(raw_path)
+
+
+async def _fetch_from_source(book_details: dict, output_dir: str) -> str:
+    """Resolve and fetch a non-Z-Library book. Returns the raw file path."""
+    md5 = (book_details.get("md5") or "").strip()
+    source = (book_details.get("source") or "auto").lower()
+    if not md5:
+        raise ValueError(
+            "Missing 'md5' in bookDetails. Source downloads are addressed by "
+            "md5 — pass a result from search_multi_source."
+        )
+
+    router = await get_source_router()
+    selection = (
+        "libgen" if source == "libgen" else "annas" if "annas" in source else "auto"
+    )
+    result = await router.get_download_url(md5, source=selection)
+    logger.info(f"Resolved {source} download for {md5} via {result.source}")
+
+    return await _download_url_to_file(result.url, output_dir, md5)
+
+
 async def download_book(
     book_details: dict,
     output_dir: str,
@@ -676,15 +740,20 @@ async def download_book(
     Returns:
         dict with 'file_path' and optional 'processed_file_path'
     """
-    eapi = await get_eapi_client()
+    # Route by source. A result from search_multi_source carries md5 + source
+    # and has no Z-Library id/hash, so it takes the source path — which also
+    # means a LibGen download needs no Z-Library credentials at all.
+    from_source = (book_details.get("source") or "").lower() in SOURCE_ALIASES
 
-    # Normalize book details to ensure 'book_hash' field
-    book_details = normalize_book_details(book_details)
+    if not from_source:
+        eapi = await get_eapi_client()
+        # Normalize book details to ensure 'book_hash' field
+        book_details = normalize_book_details(book_details)
 
     book_id = book_details.get("id")
     book_hash = book_details.get("hash") or book_details.get("book_hash", "")
 
-    if not book_id:
+    if not book_id and not from_source:
         logger.error(
             f"Critical: 'id' not found in book_details: {list(book_details.keys())}"
         )
@@ -692,7 +761,7 @@ async def download_book(
             "Missing 'id' key in bookDetails object. Cannot download without book ID."
         )
 
-    if not book_hash:
+    if not book_hash and not from_source:
         logger.warning(
             f"No hash found in book_details for book ID {book_id}. Download may fail."
         )
@@ -703,12 +772,18 @@ async def download_book(
     process_result = None
 
     try:
-        # Step 1: Download the book using EAPIClient.
-        original_download_path_str = await eapi.download_file(
-            book_id=int(book_id),
-            book_hash=book_hash,
-            output_dir=output_dir,
-        )
+        # Step 1: Fetch the file. Z-Library goes through the EAPI client;
+        # every other source resolves a URL through the router and streams it.
+        if from_source:
+            original_download_path_str = await _fetch_from_source(
+                book_details, output_dir
+            )
+        else:
+            original_download_path_str = await eapi.download_file(
+                book_id=int(book_id),
+                book_hash=book_hash,
+                output_dir=output_dir,
+            )
 
         if (
             not original_download_path_str
@@ -764,7 +839,8 @@ async def download_book(
         return result
 
     except Exception as e:
-        logger.exception(f"Error in download_book for book ID {book_details.get('id')}")
+        identifier = book_details.get("id") or book_details.get("md5") or "unknown"
+        logger.exception(f"Error in download_book for {identifier}")
         raise e
 
 

@@ -295,7 +295,7 @@ If you encounter issues:
 git checkout v1.9.9  # Last v1.x version
 
 # Option 2: Report issue
-# GitHub: https://github.com/loganrooks/zlibrary-mcp/issues
+# GitHub: https://github.com/rookslog/zlibrary-mcp/issues
 ```
 
 ---
@@ -338,7 +338,7 @@ rm -rf ~/.cache/zlibrary-mcp/
 - [UV Migration Plan](UV_MIGRATION_PLAN.md)
 - [Architecture Analysis](ARCHITECTURE_ANALYSIS.md)
 
-**Issues**: https://github.com/loganrooks/zlibrary-mcp/issues
+**Issues**: https://github.com/rookslog/zlibrary-mcp/issues
 
 ---
 

@@ -4,7 +4,7 @@
 
 > **Contributing?** This file is the maintainer's internal issue ledger (history,
 > evidence, resolutions). For anything you want to report or pick up, use
-> [GitHub Issues](https://github.com/loganrooks/zlibrary-mcp/issues) — issues
+> [GitHub Issues](https://github.com/rookslog/zlibrary-mcp/issues) — issues
 > labeled `good first issue` and `help wanted` are curated entry points.
 
 ## Executive Summary

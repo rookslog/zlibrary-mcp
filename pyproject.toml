@@ -10,7 +10,7 @@ description = "Z-Library MCP server for AI assistants"
 readme = "README.md"
 requires-python = ">=3.10"
 authors = [
-    { name = "loganrooks" }
+    { name = "rookslog" }
 ]
 keywords = ["mcp", "zlibrary", "ai", "books", "library"]
 license = { text = "MIT" }
@@ -60,9 +60,9 @@ dev = [
 ]
 
 [project.urls]
-Homepage = "https://github.com/loganrooks/zlibrary-mcp"
-Repository = "https://github.com/loganrooks/zlibrary-mcp.git"
-Issues = "https://github.com/loganrooks/zlibrary-mcp/issues"
+Homepage = "https://github.com/rookslog/zlibrary-mcp"
+Repository = "https://github.com/rookslog/zlibrary-mcp.git"
+Issues = "https://github.com/rookslog/zlibrary-mcp/issues"
 
 [build-system]
 requires = ["setuptools>=83.0.0", "wheel"]

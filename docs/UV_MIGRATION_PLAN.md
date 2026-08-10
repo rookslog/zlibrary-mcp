@@ -136,7 +136,7 @@ description = "Z-Library MCP server for AI assistants"
 readme = "README.md"
 requires-python = ">=3.9"
 authors = [
-    { name = "loganrooks", email = "loganrooks@users.noreply.github.com" }
+    { name = "rookslog", email = "rookslog@users.noreply.github.com" }
 ]
 keywords = ["mcp", "zlibrary", "ai", "roocode", "cline"]
 license = { text = "MIT" }
@@ -364,7 +364,7 @@ fi
 
 2. **Clone and setup**:
    ```bash
-   git clone https://github.com/loganrooks/zlibrary-mcp.git
+   git clone https://github.com/rookslog/zlibrary-mcp.git
    cd zlibrary-mcp
    ```
 

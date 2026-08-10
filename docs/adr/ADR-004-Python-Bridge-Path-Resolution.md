@@ -242,7 +242,7 @@ Tested on:
 
 ---
 
-**Author**: Claude Code (with loganrooks)
+**Author**: Claude Code (with rookslog)
 **Date**: 2025-10-12
 **Supersedes**: None
 **Superseded by**: None (current)

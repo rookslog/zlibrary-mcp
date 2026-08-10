@@ -604,7 +604,7 @@ gh workflow run ci.yml
 gh workflow view
 
 # Repository operations
-gh repo clone loganrooks/zlibrary-mcp
+gh repo clone rookslog/zlibrary-mcp
 gh repo view --web  # Open in browser
 ```
 

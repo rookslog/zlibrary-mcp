@@ -315,11 +315,12 @@ source is privileged").
 - BUG-X/FIX comments cleaned from production code
 - Debug print statements converted to proper logging
 
-[Unreleased]: https://github.com/loganrooks/zlibrary-mcp/compare/v1.3.2...HEAD
-[1.3.2]: https://github.com/loganrooks/zlibrary-mcp/compare/v1.3.1...v1.3.2
-[1.3.1]: https://github.com/loganrooks/zlibrary-mcp/compare/v1.3.0...v1.3.1
-[1.3.0]: https://github.com/loganrooks/zlibrary-mcp/compare/v1.2.1...v1.3.0
-[1.2.1]: https://github.com/loganrooks/zlibrary-mcp/compare/v1.2.0...v1.2.1
-[1.2.0]: https://github.com/loganrooks/zlibrary-mcp/compare/v1.1...v1.2.0
-[1.1.0]: https://github.com/loganrooks/zlibrary-mcp/compare/v1.0...v1.1
-[1.0.0]: https://github.com/loganrooks/zlibrary-mcp/releases/tag/v1.0
+[Unreleased]: https://github.com/rookslog/zlibrary-mcp/compare/v1.4.0...HEAD
+[1.4.0]: https://github.com/rookslog/zlibrary-mcp/compare/v1.3.2...v1.4.0
+[1.3.2]: https://github.com/rookslog/zlibrary-mcp/compare/v1.3.1...v1.3.2
+[1.3.1]: https://github.com/rookslog/zlibrary-mcp/compare/v1.3.0...v1.3.1
+[1.3.0]: https://github.com/rookslog/zlibrary-mcp/compare/v1.2.1...v1.3.0
+[1.2.1]: https://github.com/rookslog/zlibrary-mcp/compare/v1.2.0...v1.2.1
+[1.2.0]: https://github.com/rookslog/zlibrary-mcp/compare/v1.1...v1.2.0
+[1.1.0]: https://github.com/rookslog/zlibrary-mcp/compare/v1.0...v1.1
+[1.0.0]: https://github.com/rookslog/zlibrary-mcp/releases/tag/v1.0

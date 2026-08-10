@@ -89,7 +89,7 @@
 ### 1. Clone Repository
 
 ```bash
-git clone https://github.com/loganrooks/zlibrary-mcp.git
+git clone https://github.com/rookslog/zlibrary-mcp.git
 cd zlibrary-mcp
 ```
 

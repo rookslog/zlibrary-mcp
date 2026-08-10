@@ -7,13 +7,68 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.4.0] - 2026-08-10
+
+Z-Library is no longer the only source that can deliver a file. LibGen search
+results are now downloadable, so hitting the Z-Library daily limit has a
+fallback — a step toward VISION.md invariant 4 ("sources are adapters; no
+source is privileged").
+
+### Added
+
+- **LibGen downloads.** `download_book_to_file` accepts a `search_multi_source`
+  result and fetches it. Downloads resolve through `ads.php`, which is
+  addressable directly from the md5, and walk mirrors `li → vg → la`.
+  Failover is driven by *bytes actually served*, not by key resolution: a
+  mirror can hand out a valid key while the CDN node behind it is dead, so
+  each candidate is verified with a ranged request that rejects an expired-key
+  bounce to `/ads.php`, an HTML error page served as HTTP 200, and a truncated
+  body. **LibGen downloads require no Z-Library credentials.**
+- `libgen:download` probe in `npm run doctor` and the scheduled upstream check,
+  exercising resolve-and-fetch rather than reachability. The previous probe
+  stayed green while downloads were broken.
+
+### Fixed
+
+- **Security: `annas-archive.is` removed from `ANNAS_TRUSTED_HOSTS`.** That
+  list authorizes attaching `ANNAS_SECRET_KEY`, which the fast-download API
+  passes as a URL query parameter. The host is not Anna's Archive:
+  `/dyn/api/fast_download.json` returns 404 there versus 401 on the genuine
+  `.gl`, and it serves a secret-key "recovery" form. Anyone who set
+  `ANNAS_BASE_URL` to it would have disclosed their key.
+- `LibgenAdapter.get_download_url` no longer raises for every input. It looked
+  books up via `search_title(md5)`, but LibGen's title index holds no md5
+  strings, so it had never worked against the live service — the unit suite
+  mocked `LibgenSearch` and stayed green.
+- `SourceRouter` honours an explicit `source="annas"` without an API key.
+  Anna's search carries no credentials; only downloads need the key. Adapter
+  construction was gated on the key, so an explicit request silently returned
+  LibGen results.
+- Audit gate: `cryptography` floor raised to 50.0.0 and `nltk` to 3.10.0,
+  clearing four advisories that were failing CI on every PR.
+
 ### Changed
 
+- CI runs without Git LFS. The repository exceeded its LFS budget, which failed
+  `actions/checkout` outright and blocked every merge, plus releases. Existing
+  unhydrated-pointer guards skip the affected tests with an actionable reason,
+  surfaced via `pytest -rs`. **Five real-PDF tests no longer run in CI** — a
+  known coverage gap tracked in #85. Local runs are unaffected.
+- LibGen search results no longer carry a `.onion` `download_url`. The only URL
+  search can offer needs Tor, and a clearnet key expires in under 2.5 hours, so
+  callers resolve on demand.
 - README Docker instructions now lead with the published GHCR image (verified
   end-to-end: SSE handshake and `initialize` against the released container);
   building from source via compose is the secondary path.
 - Removed GSD-era `.claude/commands/` (referencing the deleted `ROADMAP.md`
   workflow) and the empty `.claude/settings.json`.
+
+### Known limitations
+
+- Keyless Anna's Archive downloads are **not supported and will not be**. The
+  `/slow_download/` route is gated by a DDoS-Guard browser challenge that the
+  project states is there to stop bots and scrapers. Anna's keyless *search*
+  works normally; keyed `fast_download` remains the supported download path.
 
 ## [1.3.2] - 2026-07-24
 

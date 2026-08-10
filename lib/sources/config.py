@@ -13,19 +13,30 @@ from dataclasses import dataclass
 
 # Hosts operated by the Anna's Archive project, per the mirror list the live
 # site itself advertises (verified 2026-07-24: .gl/.pk/.gd serve real search
-# results; .is is the domain the project's Telegram channel names as official).
+# results). These three are also the domains Wikipedia's infobox lists as
+# active (checked 2026-08-10).
+#
+# annas-archive.is was REMOVED 2026-08-10: it is not Anna's Archive. The
+# discriminator is the endpoint this allowlist exists to authorize —
+# /dyn/api/fast_download.json returns 401 on the genuine .gl (endpoint present,
+# key rejected) and 404 on .is (endpoint absent). It also serves /books/{id}
+# URLs instead of /md5/, runs a Google Analytics property, and hosts a
+# secret-key "recovery" form. Its former justification here ("the domain the
+# project's Telegram channel names as official") was unverifiable. Do not
+# re-add it without reproducing the 401 on that endpoint.
 #
 # The former default annas-archive.li lapsed in March 2026 and is now PARKED
 # by a domain squatter (Trellian/Above.com traffic-monetization page), and
-# annas-archive.org/.se are NXDOMAIN. Parked or unknown hosts must NEVER
-# receive ANNAS_SECRET_KEY — the adapter refuses to attach the key to any
-# host not listed here (see AnnasArchiveAdapter.get_download_url).
+# annas-archive.org/.se are NXDOMAIN. Parked, impersonating, or unknown hosts
+# must NEVER receive ANNAS_SECRET_KEY — the fast-download API passes the key as
+# a URL query parameter, so listing a host here discloses the key to whoever
+# controls it. The adapter refuses to attach the key to any host not listed
+# here (see AnnasArchiveAdapter.get_download_url).
 ANNAS_TRUSTED_HOSTS = frozenset(
     {
         "annas-archive.gl",
         "annas-archive.pk",
         "annas-archive.gd",
-        "annas-archive.is",
     }
 )
 

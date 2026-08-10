@@ -428,6 +428,20 @@ class TestSecretKeyHostAllowlist:
 
         assert "annas-archive.li" not in ANNAS_TRUSTED_HOSTS
 
+    def test_impostor_host_is_not_allowlisted(self):
+        """annas-archive.is impersonates the project — never trust it.
+
+        Removed 2026-08-10. The discriminator is the endpoint this allowlist
+        exists to authorize: /dyn/api/fast_download.json returns 401 on the
+        genuine .gl (present, key rejected) and 404 on .is (absent). It also
+        serves /books/{id} rather than /md5/ URLs, runs a Google Analytics
+        property, and hosts a secret-key "recovery" form. Do not re-add it
+        without reproducing the 401 on that endpoint.
+        """
+        from lib.sources.config import ANNAS_TRUSTED_HOSTS
+
+        assert "annas-archive.is" not in ANNAS_TRUSTED_HOSTS
+
     @pytest.mark.asyncio
     async def test_key_not_sent_to_unknown_host(self):
         """get_download_url must refuse before any request leaves the process."""

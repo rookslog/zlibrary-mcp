@@ -19,12 +19,15 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import html
 import json
 import os
+import re
 import sys
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Optional
+from urllib.parse import parse_qs, urljoin, urlsplit
 
 import httpx
 
@@ -52,6 +55,34 @@ ANNAS_BASE_URL = _source_config.annas_base_url
 # lib/sources/libgen.py and libgen_api_enhanced) — mirror that construction so
 # the probe checks the host the runtime actually contacts.
 LIBGEN_BASE_URL = f"https://libgen.{_source_config.libgen_mirror}"
+
+# Mirror suffixes the download probe walks, configured mirror first. `li`, `vg`
+# and `la` were the three resolving suffixes on 2026-08-10 (issue #80); `rs`,
+# `gs`, `is` and `st` had no DNS. Per-mirror results are meaningful because
+# mirrors hand off to *different* CDN nodes that fail independently — on
+# 2026-08-10 `li` -> cdn4.booksdl.lc failed TLS while `vg`/`la` -> cdn3 served
+# real bytes.
+LIBGEN_MIRROR_CANDIDATES: tuple[str, ...] = tuple(
+    dict.fromkeys([_source_config.libgen_mirror, "li", "vg", "la"])
+)
+
+# A small, stable PDF used to exercise the download path end to end. Verified
+# to resolve on li/vg/la on 2026-08-10.
+LIBGEN_PROBE_MD5 = "73b76499ab3f33cd09d0cdbefc75ff54"
+# Only the first 2 KiB is fetched — enough for the magic bytes, small enough
+# that the probe is not a download.
+LIBGEN_PROBE_RANGE_BYTES = 2048
+# Minimum spacing between requests the download probe issues, in seconds.
+LIBGEN_PROBE_DELAY_SECONDS = 2.0
+
+# `ads.php` renders exactly one anchor whose href carries the CDN `key`:
+#   <a href="get.php?md5=...&key=GST1V9KIA7FWM2JQ"><h2>GET</h2></a>
+# Anchor *text* is not matched: it is markup (<h2>GET</h2>) and cosmetic, while
+# the key-bearing href is the thing the download actually needs.
+_LIBGEN_GET_HREF_RE = re.compile(
+    r"""<a\b[^>]*\bhref=["']([^"']*\bget\.php\?[^"']*\bkey=[^"']*)["']""",
+    re.IGNORECASE,
+)
 
 # Markers of domain-parking/traffic-monetization pages. A lapsed mirror that a
 # squatter re-registered (e.g. annas-archive.li -> Trellian/Above.com in
@@ -262,18 +293,188 @@ async def probe_libgen(client: httpx.AsyncClient) -> ProbeResult:
         )
 
 
+def _extract_libgen_key(
+    page_url: str, body: str
+) -> tuple[Optional[str], Optional[str]]:
+    """Pull the CDN key out of an `ads.php` page.
+
+    Returns `(get_url, key)`, or `(None, None)` when the page carries no
+    key-bearing GET anchor — which is the DOM-drift signal.
+    """
+    match = _LIBGEN_GET_HREF_RE.search(body)
+    if not match:
+        return None, None
+    href = html.unescape(match.group(1))
+    get_url = urljoin(page_url, href)
+    key_values = parse_qs(urlsplit(get_url).query).get("key") or []
+    key = key_values[0] if key_values and key_values[0] else None
+    if not key:
+        return None, None
+    return get_url, key
+
+
+def _libgen_block_detail(mirror: str, resp: httpx.Response) -> Optional[str]:
+    """Classify a network-level refusal from a LibGen mirror.
+
+    Distinct from `_block_detail`, which is worded for the Z-Library DiamWall
+    wall and names ZLIB_DOMAIN. A refusal is not drift: the resolve-and-fetch
+    contract may be intact for clients the wall lets through.
+    """
+    if resp.status_code not in (403, 429, *WALLED_STATUS_CODES):
+        return None
+    return (
+        f"libgen.{mirror} refused this network's clients (HTTP "
+        f"{resp.status_code}) — from a datacenter/CI address this is expected "
+        "IP blocking, not upstream drift"
+    )
+
+
+async def _probe_libgen_download_mirror(
+    client: httpx.AsyncClient, mirror: str
+) -> tuple[bool, str, bool]:
+    """Exercise the full resolve-and-fetch path against one mirror.
+
+    Returns `(ok, detail, blocked)`. Three hops can each fail independently
+    (issue #80): the `ads.php` DOM scrape for the key, the key's TTL (< 2.5h,
+    and an expired key silently 307s back to `/ads.php` rather than erroring),
+    and the liveness of whichever `cdn*.booksdl.*` node the mirror hands off to.
+    """
+    base = f"https://libgen.{mirror}"
+    ads_url = f"{base}/ads.php"
+    try:
+        resp = await client.get(ads_url, params={"md5": LIBGEN_PROBE_MD5})
+        blocked = _libgen_block_detail(mirror, resp)
+        if blocked:
+            return False, blocked, True
+        resp.raise_for_status()
+        get_url, key = _extract_libgen_key(str(resp.url), resp.text)
+        if not get_url or not key:
+            return (
+                False,
+                f"{mirror}: ads.php returned HTTP {resp.status_code} with no "
+                "key-bearing GET link (DOM drift — the resolver scrapes this "
+                "anchor for the CDN key)",
+                False,
+            )
+    except Exception as exc:  # noqa: BLE001 - any failure is a reportable signal
+        return False, f"{mirror}: ads.php {type(exc).__name__}: {exc}", False
+
+    # Rate limit: never hammer a mirror, even across the two hops.
+    await asyncio.sleep(LIBGEN_PROBE_DELAY_SECONDS)
+
+    try:
+        # get.php 307s to a CDN host, so redirects must be followed. Only the
+        # first 2 KiB is requested — enough to see the magic bytes.
+        resp = await client.get(
+            get_url,
+            headers={"Range": f"bytes=0-{LIBGEN_PROBE_RANGE_BYTES - 1}"},
+        )
+    except Exception as exc:  # noqa: BLE001
+        # A dead CDN node lands here (cdn4.booksdl.lc failed TLS on
+        # 2026-08-10). That is a real capability failure, not a block.
+        return False, f"{mirror}: get.php {type(exc).__name__}: {exc}", False
+
+    blocked = _libgen_block_detail(mirror, resp)
+    if blocked:
+        return False, blocked, True
+
+    final_url = str(resp.url)
+    hops = [str(r.headers.get("location", "")) for r in resp.history]
+    if "/ads.php" in urlsplit(final_url).path or any("/ads.php" in h for h in hops):
+        return (
+            False,
+            f"{mirror}: key {key} bounced back to /ads.php — expired or "
+            "rejected key (this returns HTTP 200 HTML, not an error, so it "
+            "must be detected by the redirect target)",
+            False,
+        )
+
+    cdn_host = urlsplit(final_url).netloc or f"libgen.{mirror}"
+    if resp.status_code not in (200, 206):
+        return (
+            False,
+            f"{mirror}: get.php -> {cdn_host} returned HTTP {resp.status_code}",
+            False,
+        )
+
+    content_type = (resp.headers.get("content-type") or "").lower()
+    if "html" in content_type:
+        return (
+            False,
+            f"{mirror}: get.php -> {cdn_host} served a page, not a file "
+            f"(HTTP {resp.status_code}, content-type {content_type or 'unset'})",
+            False,
+        )
+
+    body = resp.content
+    if not body.startswith(b"%PDF"):
+        return (
+            False,
+            f"{mirror}: get.php -> {cdn_host} returned HTTP {resp.status_code} "
+            f"but the bytes are not a PDF (first 8: {body[:8]!r})",
+            False,
+        )
+
+    return (
+        True,
+        f"{mirror}: ads.php key -> {cdn_host} HTTP {resp.status_code}, "
+        f"{len(body)} bytes of PDF (content-type {content_type or 'unset'})",
+        False,
+    )
+
+
+async def probe_libgen_download(client: httpx.AsyncClient) -> ProbeResult:
+    """Check that LibGen can actually deliver bytes, not merely answer a search.
+
+    `probe_libgen` only asserts that search returns HTTP 200. That stayed green
+    on 2026-08-10 while every download through the default mirror failed at the
+    CDN hop — the reachability-vs-capability gap of issue #81. This probe walks
+    the mirrors in order and reports the first that hands over real PDF bytes.
+    """
+    attempts: list[str] = []
+    blocked_count = 0
+    for index, mirror in enumerate(LIBGEN_MIRROR_CANDIDATES):
+        if index:
+            await asyncio.sleep(LIBGEN_PROBE_DELAY_SECONDS)
+        ok, detail, blocked = await _probe_libgen_download_mirror(client, mirror)
+        if ok:
+            skipped = len(LIBGEN_MIRROR_CANDIDATES) - index - 1
+            suffix = f"; {skipped} further mirror(s) not tried" if skipped else ""
+            return ProbeResult(
+                name="libgen:download",
+                ok=True,
+                detail=detail + suffix,
+                required=False,
+            )
+        blocked_count += 1 if blocked else 0
+        attempts.append(detail)
+
+    return ProbeResult(
+        name="libgen:download",
+        ok=False,
+        detail="no mirror delivered a file — " + " | ".join(attempts),
+        required=False,
+        # Only a wholly blocked walk is a network-level refusal; if any mirror
+        # answered and still could not deliver, that is a real capability
+        # failure and must not be filed under BLOCK.
+        blocked=blocked_count == len(LIBGEN_MIRROR_CANDIDATES),
+        extra={"mirrors_tried": list(LIBGEN_MIRROR_CANDIDATES)},
+    )
+
+
 async def run_probes() -> list[ProbeResult]:
     async with httpx.AsyncClient(
         timeout=TIMEOUT,
         follow_redirects=True,
         headers={"User-Agent": "zlibrary-mcp-upstream-check"},
     ) as client:
-        zlib_results, annas, libgen = await asyncio.gather(
+        zlib_results, annas, libgen, libgen_download = await asyncio.gather(
             probe_zlibrary_eapi(client),
             probe_annas(client),
             probe_libgen(client),
+            probe_libgen_download(client),
         )
-    return [*zlib_results, annas, libgen]
+    return [*zlib_results, annas, libgen, libgen_download]
 
 
 def actionable_failures(results: list[ProbeResult]) -> list[ProbeResult]:

@@ -5,6 +5,7 @@ scheduled job. What is tested is the reporting contract the CI workflow depends
 on: which failures are actionable, and the exact `$GITHUB_OUTPUT` encoding.
 """
 
+import asyncio
 import importlib.util
 import os
 import sys
@@ -178,6 +179,287 @@ def test_github_output_carries_zlib_blocked_flag(check_upstream, tmp_path, monke
     written = out.read_text(encoding="utf-8")
     assert "failed=false\n" in written
     assert "zlib_blocked=true\n" in written
+
+
+ADS_PAGE = (
+    '<html><body><table><tr><td><a href="get.php?md5={md5}&amp;key=GST1V9KIA7FWM2JQ">'
+    "<h2>GET</h2></a></td></tr></table></body></html>"
+)
+
+
+@pytest.fixture
+def libgen_download(check_upstream, monkeypatch):
+    """Drive probe_libgen_download over a MockTransport — no network, no sleeps.
+
+    Returns a callable taking a `handler(httpx.Request) -> httpx.Response` and
+    running the probe against it.
+    """
+    # The probe spaces its real requests >= 2s apart; that spacing is not what
+    # these tests are about, so it is zeroed rather than waited out.
+    monkeypatch.setattr(check_upstream, "LIBGEN_PROBE_DELAY_SECONDS", 0)
+
+    def run(handler, mirrors=("li", "vg")):
+        monkeypatch.setattr(check_upstream, "LIBGEN_MIRROR_CANDIDATES", tuple(mirrors))
+
+        async def _go():
+            async with httpx.AsyncClient(
+                transport=httpx.MockTransport(handler), follow_redirects=True
+            ) as client:
+                return await check_upstream.probe_libgen_download(client)
+
+        return asyncio.run(_go())
+
+    return run
+
+
+def _pdf_response(request):
+    return httpx.Response(
+        206,
+        headers={"content-type": "application/pdf"},
+        content=b"%PDF-1.6\n" + b"x" * 128,
+        request=request,
+    )
+
+
+def test_libgen_download_probe_reports_first_working_mirror(
+    check_upstream, libgen_download
+):
+    """The happy path: ads.php yields a key, get.php redirects to a CDN node,
+    and the CDN hands back real PDF bytes."""
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/ads.php":
+            return httpx.Response(
+                200,
+                headers={"content-type": "text/html"},
+                text=ADS_PAGE.format(md5=check_upstream.LIBGEN_PROBE_MD5),
+            )
+        if request.url.host == "libgen.li" and request.url.path == "/get.php":
+            return httpx.Response(
+                307, headers={"location": "https://cdn3.booksdl.lc/get.php?x=1"}
+            )
+        return _pdf_response(request)
+
+    result = libgen_download(handler)
+    assert result.ok is True
+    assert result.symbol == "OK"
+    assert result.required is False
+    # The detail must name both the mirror and the CDN node it reached — the
+    # two hops that fail independently.
+    assert "li:" in result.detail
+    assert "cdn3.booksdl.lc" in result.detail
+    assert "PDF" in result.detail
+
+
+def test_libgen_download_probe_requests_only_a_small_range(
+    check_upstream, libgen_download
+):
+    """The probe must not download a whole book to prove downloads work."""
+    seen = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/ads.php":
+            return httpx.Response(
+                200, text=ADS_PAGE.format(md5=check_upstream.LIBGEN_PROBE_MD5)
+            )
+        seen["range"] = request.headers.get("Range")
+        return _pdf_response(request)
+
+    assert libgen_download(handler).ok is True
+    assert seen["range"] == f"bytes=0-{check_upstream.LIBGEN_PROBE_RANGE_BYTES - 1}"
+
+
+def test_libgen_download_probe_detects_expired_key_bounce(
+    check_upstream, libgen_download
+):
+    """An expired key does not error — get.php 307s back to the /ads.php
+    interstitial and serves HTTP 200 HTML. Only the redirect target tells you."""
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/get.php":
+            return httpx.Response(
+                307,
+                headers={
+                    "location": f"https://{request.url.host}/ads.php"
+                    f"?md5={check_upstream.LIBGEN_PROBE_MD5}&key=STALE"
+                },
+            )
+        return httpx.Response(
+            200,
+            headers={"content-type": "text/html"},
+            text=ADS_PAGE.format(md5=check_upstream.LIBGEN_PROBE_MD5),
+        )
+
+    result = libgen_download(handler)
+    assert result.ok is False
+    assert result.symbol == "WARN"
+    assert "/ads.php" in result.detail
+    assert "expired" in result.detail
+    # Both mirrors bounced, and neither was a network-level refusal.
+    assert result.blocked is False
+    assert result.detail.count("bounced back") == 2
+
+
+def test_libgen_download_probe_rejects_html_served_as_the_file(
+    check_upstream, libgen_download
+):
+    """HTTP 200 plus a page body is the reachability-vs-capability trap: the
+    request 'succeeded' and delivered no file."""
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/ads.php":
+            return httpx.Response(
+                200, text=ADS_PAGE.format(md5=check_upstream.LIBGEN_PROBE_MD5)
+            )
+        return httpx.Response(
+            200,
+            headers={"content-type": "text/html; charset=UTF-8"},
+            text="<html><body>Download limit reached</body></html>",
+            request=request,
+        )
+
+    result = libgen_download(handler)
+    assert result.ok is False
+    assert "served a page, not a file" in result.detail
+
+
+def test_libgen_download_probe_rejects_non_pdf_bytes(check_upstream, libgen_download):
+    """A non-HTML content-type is not enough; the magic bytes must be checked."""
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/ads.php":
+            return httpx.Response(
+                200, text=ADS_PAGE.format(md5=check_upstream.LIBGEN_PROBE_MD5)
+            )
+        return httpx.Response(
+            206,
+            headers={"content-type": "application/octet-stream"},
+            content=b"\x00\x00not-a-pdf",
+            request=request,
+        )
+
+    result = libgen_download(handler)
+    assert result.ok is False
+    assert "not a PDF" in result.detail
+
+
+def test_libgen_download_probe_falls_over_to_a_healthy_mirror(
+    check_upstream, libgen_download
+):
+    """Mirrors hand off to different CDN nodes that fail independently, so a
+    dead node on the default mirror must not condemn the whole source."""
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/ads.php":
+            return httpx.Response(
+                200, text=ADS_PAGE.format(md5=check_upstream.LIBGEN_PROBE_MD5)
+            )
+        if request.url.host == "libgen.li":
+            raise httpx.ConnectError("wrong version number", request=request)
+        return _pdf_response(request)
+
+    result = libgen_download(handler)
+    assert result.ok is True
+    assert result.detail.startswith("vg:")
+
+
+def test_libgen_download_probe_reports_every_mirror_when_all_fail(
+    check_upstream, libgen_download
+):
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/ads.php":
+            return httpx.Response(
+                200, text=ADS_PAGE.format(md5=check_upstream.LIBGEN_PROBE_MD5)
+            )
+        raise httpx.ConnectError("wrong version number", request=request)
+
+    result = libgen_download(handler, mirrors=("li", "vg", "la"))
+    assert result.ok is False
+    assert result.detail.startswith("no mirror delivered a file")
+    for mirror in ("li:", "vg:", "la:"):
+        assert mirror in result.detail
+    assert result.extra["mirrors_tried"] == ["li", "vg", "la"]
+
+
+def test_libgen_download_probe_reports_dom_drift_when_key_is_gone(
+    check_upstream, libgen_download
+):
+    """No key-bearing GET anchor means the ads.php scrape has drifted — a
+    different failure from a dead CDN, and the report must say so."""
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200, text="<html><body><a href='/foo'>GET</a></body></html>"
+        )
+
+    result = libgen_download(handler)
+    assert result.ok is False
+    assert "DOM drift" in result.detail
+
+
+def test_libgen_download_probe_classifies_a_wall_as_blocked(
+    check_upstream, libgen_download
+):
+    """An IP-level refusal from every mirror is not drift and must not read as
+    a capability failure."""
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(403, text="Forbidden")
+
+    result = libgen_download(handler)
+    assert result.ok is False
+    assert result.blocked is True
+    assert result.symbol == "BLOCK"
+
+
+def test_libgen_download_probe_is_not_blocked_when_a_mirror_answered(
+    check_upstream, libgen_download
+):
+    """A mix of a wall and a real failure is a real failure: something answered
+    and could not deliver."""
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.host == "libgen.li":
+            return httpx.Response(403, text="Forbidden")
+        if request.url.path == "/ads.php":
+            return httpx.Response(
+                200, text=ADS_PAGE.format(md5=check_upstream.LIBGEN_PROBE_MD5)
+            )
+        raise httpx.ConnectError("wrong version number", request=request)
+
+    result = libgen_download(handler)
+    assert result.ok is False
+    assert result.blocked is False
+    assert result.symbol == "WARN"
+
+
+def test_libgen_key_extraction_takes_the_key_bearing_anchor(check_upstream):
+    get_url, key = check_upstream._extract_libgen_key(
+        "https://libgen.vg/ads.php?md5=abc",
+        ADS_PAGE.format(md5="abc"),
+    )
+    assert get_url == "https://libgen.vg/get.php?md5=abc&key=GST1V9KIA7FWM2JQ"
+    assert key == "GST1V9KIA7FWM2JQ"
+
+
+def test_libgen_key_extraction_returns_nothing_without_a_key(check_upstream):
+    assert check_upstream._extract_libgen_key(
+        "https://libgen.vg/ads.php?md5=abc",
+        '<html><a href="get.php?md5=abc">GET</a></html>',
+    ) == (None, None)
+
+
+def test_libgen_download_probe_targets_the_configured_mirror_first(check_upstream):
+    """Failover is only informative if the mirror the runtime actually uses is
+    the one reported first."""
+    from lib.sources.config import get_source_config
+
+    assert (
+        check_upstream.LIBGEN_MIRROR_CANDIDATES[0] == get_source_config().libgen_mirror
+    )
+    assert len(set(check_upstream.LIBGEN_MIRROR_CANDIDATES)) == len(
+        check_upstream.LIBGEN_MIRROR_CANDIDATES
+    )
 
 
 def test_annas_parking_page_is_reported_as_parked(check_upstream):

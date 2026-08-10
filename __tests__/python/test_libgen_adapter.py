@@ -6,6 +6,7 @@ LibgenSearch calls in asyncio.to_thread().
 """
 
 from unittest.mock import MagicMock, patch
+import httpx
 import pytest
 
 from lib.sources.config import SourceConfig
@@ -61,9 +62,10 @@ class TestLibgenAdapterSearch:
             assert results[0].title == "Python Programming"
             assert results[0].author == "John Doe"
             assert results[0].source == SourceType.LIBGEN
-            assert (
-                results[0].download_url == "https://example.com/download/abc123def456"
-            )
+            # Search deliberately carries no download URL: the only one it could
+            # offer is a .onion needing Tor, and a clearnet key expires in under
+            # 2.5h. Callers resolve on demand via get_download_url.
+            assert results[0].download_url == ""
 
     @pytest.mark.asyncio
     async def test_search_empty_returns_empty_list(self, config):
@@ -130,8 +132,23 @@ class TestLibgenAdapterSearch:
             assert results[0].source == SourceType.LIBGEN
 
 
+MD5 = "abc123def456"
+ADS_PAGE_WITH_KEY = (
+    "<html><body><table><tr><td>"
+    f'<a href="/get.php?md5={MD5}&key=TESTKEY123">GET</a>'
+    "</td></tr></table></body></html>"
+)
+ADS_PAGE_NO_KEY = "<html><body><p>No download links here</p></body></html>"
+PDF_BYTES = b"%PDF-1.6" + b"\x00" * 2040
+
+
 class TestLibgenAdapterDownload:
-    """Tests for LibgenAdapter.get_download_url() method."""
+    """Tests for LibgenAdapter.get_download_url().
+
+    The adapter resolves downloads over HTTP against ads.php rather than
+    through LibgenSearch, so these mock httpx transport — mocking LibgenSearch
+    would leave the requests hitting the live service.
+    """
 
     @pytest.fixture
     def config(self):
@@ -143,67 +160,136 @@ class TestLibgenAdapterDownload:
         )
 
     @pytest.fixture
-    def mock_book(self):
-        """Create a mock book result from LibgenSearch."""
-        book = MagicMock()
-        book.md5 = "abc123def456"
-        book.title = "Python Programming"
-        book.tor_download_link = "https://example.com/download/abc123def456"
-        return book
-
-    @pytest.mark.asyncio
-    async def test_get_download_url_returns_result(self, config, mock_book):
-        """get_download_url should return DownloadResult with URL."""
+    def adapter(self, config):
+        """Adapter with rate limiting neutralised so tests do not sleep."""
         from lib.sources.libgen import LibgenAdapter
 
-        adapter = LibgenAdapter(config)
+        instance = LibgenAdapter(config)
+        instance.MIN_REQUEST_INTERVAL = 0
+        return instance
 
-        with patch("lib.sources.libgen.LibgenSearch") as mock_search_class:
-            mock_instance = MagicMock()
-            mock_instance.search_title.return_value = [mock_book]
-            mock_search_class.return_value = mock_instance
+    @staticmethod
+    def _patched_client(handler):
+        """Patch httpx.AsyncClient so the adapter's own client uses `handler`."""
+        real_client = httpx.AsyncClient
 
-            result = await adapter.get_download_url("abc123def456")
+        def factory(*args, **kwargs):
+            kwargs["transport"] = httpx.MockTransport(handler)
+            return real_client(*args, **kwargs)
 
-            assert result.url == "https://example.com/download/abc123def456"
-            assert result.source == SourceType.LIBGEN
-            assert result.quota_info is None  # LibGen has no quota
-
-    @pytest.mark.asyncio
-    async def test_get_download_url_not_found_raises(self, config):
-        """get_download_url should raise when book not found."""
-        from lib.sources.libgen import LibgenAdapter
-
-        adapter = LibgenAdapter(config)
-
-        with patch("lib.sources.libgen.LibgenSearch") as mock_search_class:
-            mock_instance = MagicMock()
-            mock_instance.search_title.return_value = []
-            mock_search_class.return_value = mock_instance
-
-            with pytest.raises(ValueError, match="not found"):
-                await adapter.get_download_url("nonexistent123")
+        return patch("lib.sources.libgen.httpx.AsyncClient", factory)
 
     @pytest.mark.asyncio
-    async def test_get_download_url_uses_mirrors_fallback(self, config):
-        """get_download_url should fall back to mirrors if tor_download_link empty."""
-        from lib.sources.libgen import LibgenAdapter
+    async def test_resolves_key_from_ads_page(self, adapter):
+        """A GET anchor's key becomes the get.php download URL."""
 
-        adapter = LibgenAdapter(config)
+        def handler(request):
+            if "ads.php" in request.url.path:
+                return httpx.Response(200, text=ADS_PAGE_WITH_KEY)
+            return httpx.Response(
+                206,
+                content=PDF_BYTES,
+                headers={"content-type": "application/octet-stream"},
+            )
 
-        book = MagicMock()
-        book.md5 = "abc123def456"
-        book.tor_download_link = ""
-        book.mirrors = {"mirror1": "https://mirror1.com/download"}
+        with self._patched_client(handler):
+            result = await adapter.get_download_url(MD5)
 
-        with patch("lib.sources.libgen.LibgenSearch") as mock_search_class:
-            mock_instance = MagicMock()
-            mock_instance.search_title.return_value = [book]
-            mock_search_class.return_value = mock_instance
+        assert result.url == f"https://libgen.li/get.php?md5={MD5}&key=TESTKEY123"
+        assert result.source == SourceType.LIBGEN
+        assert result.quota_info is None  # LibGen has no quota
 
-            result = await adapter.get_download_url("abc123def456")
+    @pytest.mark.asyncio
+    async def test_falls_over_when_a_mirror_errors(self, adapter):
+        """A mirror that fails at the network level is skipped, not fatal."""
+        seen = []
 
-            assert result.url == "https://mirror1.com/download"
+        def handler(request):
+            host = request.url.host
+            seen.append(host)
+            if host == "libgen.li":
+                raise httpx.ConnectError("TLS failure", request=request)
+            if "ads.php" in request.url.path:
+                return httpx.Response(200, text=ADS_PAGE_WITH_KEY)
+            return httpx.Response(
+                206,
+                content=PDF_BYTES,
+                headers={"content-type": "application/octet-stream"},
+            )
+
+        with self._patched_client(handler):
+            result = await adapter.get_download_url(MD5)
+
+        assert result.url.startswith("https://libgen.vg/")
+        assert "libgen.li" in seen
+
+    @pytest.mark.asyncio
+    async def test_falls_over_when_mirror_resolves_but_cdn_is_dead(self, adapter):
+        """Resolving a key is not evidence the CDN behind it can serve.
+
+        Regression guard for the 2026-08-10 measurement: libgen.li handed out
+        a valid key while its CDN node failed TLS.
+        """
+
+        def handler(request):
+            if "ads.php" in request.url.path:
+                return httpx.Response(200, text=ADS_PAGE_WITH_KEY)
+            if request.url.host == "libgen.li":
+                return httpx.Response(
+                    200,
+                    text="<html>error</html>",
+                    headers={"content-type": "text/html"},
+                )
+            return httpx.Response(
+                206,
+                content=PDF_BYTES,
+                headers={"content-type": "application/octet-stream"},
+            )
+
+        with self._patched_client(handler):
+            result = await adapter.get_download_url(MD5)
+
+        assert result.url.startswith("https://libgen.vg/")
+
+    @pytest.mark.asyncio
+    async def test_expired_key_bounce_is_treated_as_failure(self, adapter):
+        """An expired key 307s back to ads.php rather than erroring."""
+
+        def handler(request):
+            if "ads.php" in request.url.path:
+                return httpx.Response(200, text=ADS_PAGE_WITH_KEY)
+            if request.url.host == "libgen.li":
+                return httpx.Response(
+                    307, headers={"location": f"https://libgen.li/ads.php?md5={MD5}"}
+                )
+            return httpx.Response(
+                206,
+                content=PDF_BYTES,
+                headers={"content-type": "application/octet-stream"},
+            )
+
+        with self._patched_client(handler):
+            result = await adapter.get_download_url(MD5)
+
+        assert result.url.startswith("https://libgen.vg/")
+
+    @pytest.mark.asyncio
+    async def test_raises_when_no_mirror_yields_a_key(self, adapter):
+        """DOM drift on every mirror surfaces as an error naming the attempts."""
+
+        def handler(request):
+            return httpx.Response(200, text=ADS_PAGE_NO_KEY)
+
+        with self._patched_client(handler):
+            with pytest.raises(ValueError, match="No LibGen mirror"):
+                await adapter.get_download_url(MD5)
+
+    @pytest.mark.asyncio
+    async def test_tries_configured_mirror_first_without_duplicates(self, adapter):
+        """Mirror order starts at the configured one and repeats none."""
+        adapter.mirror = "vg"
+
+        assert adapter._mirror_candidates() == ["vg", "li", "la"]
 
 
 class TestLibgenAdapterRateLimiting:

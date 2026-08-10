@@ -573,8 +573,13 @@ function wrapResult(result: any, toolName: string) {
 // ============================================================================
 
 /**
- * Validate required environment variables before server startup.
- * Exits with a clear, actionable error if credentials are missing.
+ * Check Z-Library credentials before server startup.
+ *
+ * Missing credentials are a warning, not a fatal error: since v1.4.0 the
+ * LibGen source needs none, so `search_multi_source` and downloads of its
+ * results work on a bare install. Exiting here would make a working,
+ * unlimited source unreachable because an unrelated one was unconfigured.
+ * Z-Library tools still fail with their own clear error when invoked.
  */
 function validateCredentials(): void {
   const email = process.env.ZLIBRARY_EMAIL;
@@ -585,19 +590,15 @@ function validateCredentials(): void {
     if (!email) missing.push('ZLIBRARY_EMAIL');
     if (!password) missing.push('ZLIBRARY_PASSWORD');
 
-    console.error(
-      `\nError: Missing required environment variable(s): ${missing.join(', ')}\n\n` +
-        `Z-Library credentials are required for the MCP server to function.\n\n` +
-        `To fix this, set the following in your MCP client configuration:\n` +
-        `  "env": {\n` +
-        `    "ZLIBRARY_EMAIL": "your-email@example.com",\n` +
-        `    "ZLIBRARY_PASSWORD": "your-password"\n` +
-        `  }\n\n` +
-        `For Claude Desktop, add this to your claude_desktop_config.json.\n` +
-        `For other MCP clients, consult your client's documentation.\n` +
-        `See README.md for detailed setup instructions.\n`,
+    logger.warn(
+      `Missing environment variable(s): ${missing.join(', ')} — ` +
+        `Z-Library tools (search_books, full_text_search, get_download_limits, ` +
+        `download history) will fail when called. LibGen is unaffected: use ` +
+        `search_multi_source with source="libgen" and pass results to ` +
+        `download_book_to_file. To enable Z-Library, set "env": ` +
+        `{"ZLIBRARY_EMAIL": "...", "ZLIBRARY_PASSWORD": "..."} in your MCP ` +
+        `client configuration. See README.md.`,
     );
-    process.exit(1);
   }
 }
 

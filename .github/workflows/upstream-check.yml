@@ -58,7 +58,12 @@ jobs:
     steps:
       - uses: actions/checkout@v7
         with:
-          lfs: true
+          # lfs: false — the repo exceeded its Git LFS budget, which fails
+          # actions/checkout outright. Unhydrated-pointer guards in
+          # __tests__/python/conftest.py skip the affected tests with a clear
+          # reason (surfaced by pytest -rs). Restore to true if the budget
+          # is ever restored. See #85.
+          lfs: false
       - uses: ./.github/actions/setup
       - name: Run integration-marked tests against live Z-Library
         id: live

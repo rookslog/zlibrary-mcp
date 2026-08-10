@@ -1,6 +1,13 @@
 # API Reference
 
-This is the API reference for the **zlibrary-mcp** MCP (Model Context Protocol) server. Tools are invoked via MCP protocol -- not HTTP REST. All tools require valid Z-Library credentials (`ZLIBRARY_EMAIL` and `ZLIBRARY_PASSWORD`) configured in the MCP client's environment.
+This is the API reference for the **zlibrary-mcp** MCP (Model Context Protocol) server. Tools are invoked via MCP protocol -- not HTTP REST.
+
+**Credentials.** Most tools read from Z-Library and need `ZLIBRARY_EMAIL` and `ZLIBRARY_PASSWORD` in the MCP client environment. Two tools do not:
+
+- `search_multi_source` reads from Library Genesis and Anna's Archive.
+- `download_book_to_file` needs no credentials when you pass it a Library Genesis result.
+
+The server starts without credentials. The Z-Library tools then fail when you call them, and the other tools continue to work.
 
 All tools return MCP content arrays in the format:
 
@@ -239,7 +246,11 @@ Each entry contains standard book metadata fields.
 
 ### search_multi_source
 
-**Description:** Search for books across Anna's Archive and LibGen. An alternative to Z-Library's EAPI. Use `source=auto` to prefer Anna's Archive with LibGen fallback, or force a specific source.
+**Description:** Search for books in Library Genesis or Anna's Archive. This tool is an alternative to the Z-Library search tools. It needs no Z-Library account.
+
+Results from this tool can be downloaded. Pass a result to `download_book_to_file` as `bookDetails`.
+
+**Note:** Anna's Archive results contain the MD5 hash and the record URL only, unless you set `ANNAS_SECRET_KEY`. Library Genesis results contain full metadata and can be downloaded without a key.
 
 **Parameters:**
 
@@ -249,7 +260,9 @@ Each entry contains standard book metadata fields.
 | source | enum | No | `"auto"` | Source selection: `"auto"` (Anna's Archive if key available, else LibGen), `"annas"` (force Anna's Archive), or `"libgen"` (force LibGen) |
 | count | integer | No | `10` | Maximum number of results to return |
 
-**Returns:** JSON array of book objects with source-specific fields: `md5`, `title`, `author`, `year`, `extension`, `size`, `source`, `download_url`.
+**Returns:** JSON array of book objects with the fields `md5`, `title`, `author`, `year`, `extension`, `size`, and `source`.
+
+**Note:** `download_url` is empty for Library Genesis results. The server resolves a download link only when you request the file, because a Library Genesis link expires in less than 2.5 hours.
 
 **Example Usage:**
 
@@ -266,9 +279,10 @@ Each entry contains standard book metadata fields.
 
 **Error Cases:**
 - Invalid or missing `query` parameter
-- Anna's Archive API key not configured (when `source="annas"`)
 - Both sources unavailable (network errors, rate limiting)
 - Invalid `source` value (must be `"auto"`, `"annas"`, or `"libgen"`)
+
+**Note:** `source="annas"` works without an API key. Anna's Archive needs a key for downloads only.
 
 ---
 
@@ -383,13 +397,15 @@ Each entry contains standard book metadata fields.
 
 ### download_book_to_file
 
-**Description:** Download a book to a local file. Pass the full `bookDetails` object from `search_books` results. Optionally process the document for RAG after download. When processing is enabled, the response stays additive: `processed_file_path` remains the body-text anchor and sibling bundle paths are returned when available.
+**Description:** Download a book to a local file. Pass the full `bookDetails` object from a search result.
+
+This tool accepts results from `search_books` (Z-Library) and from `search_multi_source` (Library Genesis or Anna's Archive). The server reads the `source` field to select the download path. A Library Genesis download needs no Z-Library account. Optionally process the document for RAG after download. When processing is enabled, the response stays additive: `processed_file_path` remains the body-text anchor and sibling bundle paths are returned when available.
 
 **Parameters:**
 
 | Parameter | Type | Required | Default | Description |
 |-----------|------|----------|---------|-------------|
-| bookDetails | object | Yes | -- | The full book details object obtained from `search_books` |
+| bookDetails | object | Yes | -- | The full book object from `search_books` or `search_multi_source` |
 | outputDir | string | No | `"./downloads"` | Directory to save the file to |
 | process_for_rag | boolean | No | -- | Whether to process the document content for RAG after download |
 | processed_output_format | string | No | -- | Desired output format for RAG processing (e.g., `"text"`, `"markdown"`) |

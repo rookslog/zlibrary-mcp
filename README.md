@@ -1,10 +1,10 @@
 # Z-Library MCP Server
 
-[![CI](https://github.com/loganrooks/zlibrary-mcp/actions/workflows/ci.yml/badge.svg)](https://github.com/loganrooks/zlibrary-mcp/actions/workflows/ci.yml)
+[![CI](https://github.com/rookslog/zlibrary-mcp/actions/workflows/ci.yml/badge.svg)](https://github.com/rookslog/zlibrary-mcp/actions/workflows/ci.yml)
 [![npm version](https://img.shields.io/npm/v/zlibrary-mcp)](https://www.npmjs.com/package/zlibrary-mcp)
-[![License: MIT](https://img.shields.io/github/license/loganrooks/zlibrary-mcp)](https://github.com/loganrooks/zlibrary-mcp/blob/master/LICENSE)
+[![License: MIT](https://img.shields.io/github/license/rookslog/zlibrary-mcp)](https://github.com/rookslog/zlibrary-mcp/blob/master/LICENSE)
 
-A Model Context Protocol (MCP) server that gives AI assistants -- Claude Code, Claude Desktop, RooCode, Cline -- the ability to search Z-Library, download books, and extract document content for Retrieval-Augmented Generation (RAG) workflows. Built with a Node.js/TypeScript MCP frontend and a Python bridge backend for document processing.
+A Model Context Protocol (MCP) server that gives AI assistants -- Claude Code, Claude Desktop, RooCode, Cline -- the ability to search for books, download them, and extract document content for Retrieval-Augmented Generation (RAG) workflows. The server reads from Z-Library and Library Genesis. It uses a Node.js/TypeScript MCP frontend and a Python bridge backend for document processing.
 
 For what this project is — and deliberately isn't — see [VISION.md](VISION.md).
 
@@ -18,7 +18,22 @@ npm install -g zlibrary-mcp
 cd "$(npm root -g)/zlibrary-mcp" && bash setup-uv.sh   # one-time Python environment setup
 ```
 
-Then add to your MCP client config (Claude Code `.mcp.json`, Claude Desktop `claude_desktop_config.json`):
+Then add the server to your MCP client config (Claude Code `.mcp.json`, Claude Desktop `claude_desktop_config.json`):
+
+```json
+{
+  "mcpServers": {
+    "zlibrary": {
+      "command": "zlibrary-mcp"
+    }
+  }
+}
+```
+
+This configuration gives you Library Genesis search and downloads. Library Genesis needs
+no account and applies no daily limit.
+
+To also use the Z-Library tools, add your credentials:
 
 ```json
 {
@@ -33,6 +48,9 @@ Then add to your MCP client config (Claude Code `.mcp.json`, Claude Desktop `cla
   }
 }
 ```
+
+The server starts without credentials. It writes a warning to stderr and names the tools
+that will fail. See [Sources](#sources) for what each source provides.
 
 Developing or contributing? Install [from source](#option-b-from-source-for-development) instead.
 
@@ -53,18 +71,24 @@ flowchart LR
         C[python_bridge.py]
         D[lib/rag/ modules]
     end
-    subgraph "External"
+    subgraph "Sources"
         E[Z-Library EAPI]
+        F[Library Genesis]
+        G[Anna's Archive]
     end
     A -->|stdio| B
     A -->|SSE/HTTP| SG -->|stdio| B
     B -->|PythonShell| C
     C --> D
     C -->|httpx| E
+    C -->|SourceRouter| F
+    C -->|SourceRouter| G
 ```
 
 - **Node.js/TypeScript MCP Server**: 13 tools registered via McpServer `server.tool()` API (MCP SDK 1.25+)
 - **Python Bridge**: Z-Library EAPI client (httpx) + document processing (lib/rag/ modules)
+- **Source Router**: routes Library Genesis and Anna's Archive requests, with mirror
+  failover on downloads (`lib/sources/`). Z-Library keeps its own path until #40 lands.
 - **EAPI Transport**: JSON API endpoints at `/eapi/` bypass Cloudflare browser challenges
 - **UV-Based Python Environment**: Project-local `.venv/` with `uv.lock` for reproducible builds
 - **Vendored Z-Library Fork**: Custom EAPI client for search and file downloads
@@ -81,7 +105,7 @@ flowchart LR
 | `search_by_term` | Conceptual navigation via terms |
 | `search_by_author` | Advanced author search |
 | `search_advanced` | Fuzzy match detection with separate exact/fuzzy results |
-| `search_multi_source` | Parallel search across multiple sources |
+| `search_multi_source` | Search Library Genesis or Anna's Archive (see [Sources](#sources)) |
 | `get_recent_books` | Recently added books |
 
 ### Metadata Tools (1)
@@ -112,6 +136,81 @@ flowchart LR
 
 For complete parameter documentation, types, and examples, see [API Reference](docs/api.md).
 
+## Sources
+
+The server reads from three sources. Each source has different requirements and different
+capabilities.
+
+| Source | Account | Daily limit | Search | Download |
+|--------|---------|-------------|--------|----------|
+| Library Genesis | No | None | Yes | Yes |
+| Z-Library | Yes | Approximately 10 books | Yes | Yes |
+| Anna's Archive | API key for downloads | Set by membership | Yes | Only with an API key |
+
+### Library Genesis
+
+Library Genesis needs no account and applies no daily limit. Use it when you reach the
+Z-Library limit, or when you do not want an account.
+
+To find a book, call `search_multi_source` with `source: "libgen"`. To download it, pass a
+result to `download_book_to_file`.
+
+```jsonc
+// 1. Search
+{ "query": "Phenomenology of Spirit", "source": "libgen", "count": 5 }
+
+// 2. Download a result. Pass the book object from step 1 as bookDetails.
+{ "bookDetails": { "md5": "...", "source": "libgen", "title": "...", "extension": "pdf" },
+  "process_for_rag": true }
+```
+
+The server resolves a download link at the moment you request the file. It tries the
+mirrors `libgen.li`, `libgen.vg`, and `libgen.la` in order. Each mirror sends the file
+from a different content delivery network (CDN) node, and these nodes fail independently.
+Therefore the server does not accept a mirror until that mirror sends file data. This
+behavior routes around a failed CDN node.
+
+Library Genesis download links expire in less than 2.5 hours. The server does not cache
+them. An expired link returns the intermediate web page instead of an error, so the server
+treats that response as a failure.
+
+### Z-Library
+
+Z-Library needs an account. Set `ZLIBRARY_EMAIL` and `ZLIBRARY_PASSWORD` in your MCP client
+config. Without these variables, the Z-Library tools fail when you call them. The other
+tools continue to work.
+
+Z-Library applies a daily download limit of approximately 10 books. Call
+`get_download_limits` to check your remaining quota.
+
+### Anna's Archive
+
+Anna's Archive search needs no account. Call `search_multi_source` with
+`source: "annas"`.
+
+**Note:** keyless search returns the MD5 hash and the record URL only. It does not return
+the title, the author, or the file format.
+
+Anna's Archive downloads need a membership API key in `ANNAS_SECRET_KEY`. Without a key,
+the server cannot download from Anna's Archive. Anna's Archive protects its free download
+route with a browser verification challenge, and this server does not defeat that
+protection. Open the record URL in a web browser to download a file without a key.
+
+**Warning:** the fast-download API sends `ANNAS_SECRET_KEY` as a URL parameter. Therefore
+the server sends the key only to hosts in `ANNAS_TRUSTED_HOSTS` in `lib/sources/config.py`.
+Anna's Archive domains lapse, and other operators re-register them. Do not add a host to
+that list until you confirm the host is genuine.
+
+### Check source health
+
+```bash
+npm run doctor
+```
+
+This command tests each source and reports the result. The Library Genesis test resolves a
+download link and reads the first 2 KB of a file. Therefore it detects a broken download
+path, not only a reachable web page.
+
 ## Installation
 
 ### Option A: npm (recommended)
@@ -135,7 +234,7 @@ fork, `pyproject.toml`, `uv.lock`), so no clone is needed. Since v1.3.0 the
 release workflow verifies the tag against `package.json` and publishes with
 provenance, so the registry version tracks GitHub releases; if
 `npm view zlibrary-mcp version` ever trails the
-[latest release](https://github.com/loganrooks/zlibrary-mcp/releases), that is a
+[latest release](https://github.com/rookslog/zlibrary-mcp/releases), that is a
 release-pipeline bug worth filing.
 
 ### Option B: From Source (for development)
@@ -147,7 +246,7 @@ release-pipeline bug worth filing.
 curl -LsSf https://astral.sh/uv/install.sh | sh
 
 # 2. Clone and build
-git clone https://github.com/loganrooks/zlibrary-mcp.git
+git clone https://github.com/rookslog/zlibrary-mcp.git
 cd zlibrary-mcp
 git lfs pull         # Hydrates LFS-tracked test PDFs (don't run `git lfs install`;
                      # it conflicts with the repo's Husky-managed hooks)
@@ -198,15 +297,15 @@ RooCode / Cline (`mcp_settings.json`):
 
 **Prerequisites:** Docker
 
-Versioned images are published to GHCR on every release (`latest`, `1.3`,
-`1.3.2`, …) — no clone or build needed:
+Versioned images are published to GHCR on every release (`latest`, `1.4`,
+`1.4.0`, …) — no clone or build needed:
 
 ```bash
 docker run -d --name zlibrary-mcp -p 8000:8000 \
   -e ZLIBRARY_EMAIL="your-email@example.com" \
   -e ZLIBRARY_PASSWORD="your-password" \
   -v "$PWD/downloads:/app/downloads" \
-  ghcr.io/loganrooks/zlibrary-mcp:latest
+  ghcr.io/rookslog/zlibrary-mcp:latest
 ```
 
 The image wraps the stdio server in
@@ -225,7 +324,7 @@ curl -s -N --max-time 3 http://localhost:8000/sse | head -2
 **Building from source instead** (adds a `/health` endpoint via compose):
 
 ```bash
-git clone https://github.com/loganrooks/zlibrary-mcp.git && cd zlibrary-mcp
+git clone https://github.com/rookslog/zlibrary-mcp.git && cd zlibrary-mcp
 cp docker/env.example docker/.env   # then edit in your credentials
 docker compose -f docker/docker-compose.yaml up -d
 curl http://localhost:8000/health

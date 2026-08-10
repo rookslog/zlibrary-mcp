@@ -290,11 +290,30 @@ The live plan is
 — the current health assessment and forward roadmap covering open PR/issue
 disposition, CI and release state, coverage gaps, and multi-source expansion.
 
-v1.3.0 was released 2026-07-24: the GitHub release, GHCR image, and npm package are
-all live. npm publishing authenticates via OIDC trusted publishing (no `NPM_TOKEN`
-secret; the trusted publisher is bound to `publish.yml`). v1.3 (RAG Pipeline Refinement) has
-Phase 19 complete; Phases 20-21 are pending, with acceptance criteria preserved in
+**v1.4.0 was released 2026-08-10** — npm, GHCR, and the git tag are all live. LibGen
+is now a real download source: `download_book_to_file` accepts a `search_multi_source`
+result, resolves a link through `ads.php`, and fails over across the mirrors
+`li → vg → la`. Failover is driven by bytes actually served, not by key resolution,
+because a mirror can return a valid key while its CDN node is dead. **LibGen needs no
+Z-Library account and has no daily limit**, so the ~10/day Z-Library ceiling finally
+has a fallback.
+
+Keyless Anna's Archive downloads are ruled out, not deferred: the free route sits
+behind a DDoS-Guard browser challenge the project operates deliberately. Anna's
+keyless *search* still works. See the v1.4 map (issue #75) for the full disposition.
+
+npm publishing authenticates via OIDC trusted publishing (no `NPM_TOKEN` secret; the
+trusted publisher is bound to `publish.yml`). Note the account rename
+`loganrooks` → `rookslog`: provenance validation cross-checks `package.json`
+`repository.url` against the OIDC claim, so both the trusted publisher binding and
+that URL must name the current owner.
+
+v1.3 (RAG Pipeline Refinement) has Phase 19 complete; Phases 20-21 are pending, with
+acceptance criteria preserved in
 [claudedocs/architecture/phase-20-21-review-2026-07-24.md](claudedocs/architecture/phase-20-21-review-2026-07-24.md).
+
+**Known gap:** CI runs with `lfs: false` because the repository exceeded its Git LFS
+budget, so five real-PDF tests do not run in CI (issue #85). Local runs are unaffected.
 
 Branching Strategy: See `.claude/VERSION_CONTROL.md` for feature branch conventions and workflow.
 

@@ -24,6 +24,11 @@ source is privileged").
   each candidate is verified with a ranged request that rejects an expired-key
   bounce to `/ads.php`, an HTML error page served as HTTP 200, and a truncated
   body. **LibGen downloads require no Z-Library credentials.**
+- The server now starts without `ZLIBRARY_EMAIL`/`ZLIBRARY_PASSWORD`. Missing
+  credentials are a stderr warning rather than a fatal exit, so a LibGen-only
+  install works out of the box; Z-Library tools still error clearly when
+  called. Previously the process exited 1 at startup, which would have made
+  the new unlimited source unreachable on a bare install.
 - `libgen:download` probe in `npm run doctor` and the scheduled upstream check,
   exercising resolve-and-fetch rather than reachability. The previous probe
   stayed green while downloads were broken.

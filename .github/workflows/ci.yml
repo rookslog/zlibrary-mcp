@@ -177,7 +177,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
-      - uses: docker/setup-buildx-action@v3
+      - uses: docker/setup-buildx-action@v4
       - name: Build Docker image
         run: docker build -t zlibrary-mcp:ci -f docker/Dockerfile .
       - name: Verify image contents

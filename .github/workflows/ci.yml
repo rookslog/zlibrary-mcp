@@ -18,7 +18,12 @@ jobs:
     steps:
       - uses: actions/checkout@v7
         with:
-          lfs: true
+          # lfs: false — the repo exceeded its Git LFS budget, which fails
+          # actions/checkout outright. Unhydrated-pointer guards in
+          # __tests__/python/conftest.py skip the affected tests with a clear
+          # reason (surfaced by pytest -rs). Restore to true if the budget
+          # is ever restored. See #85.
+          lfs: false
       - uses: actions/setup-node@v4
         with:
           node-version: '22'
@@ -27,7 +32,7 @@ jobs:
       - run: uv sync
       - run: npm run build
       - run: node --experimental-vm-modules node_modules/jest/bin/jest.js
-      - run: uv run pytest -m "not slow and not integration and not performance" --benchmark-disable
+      - run: uv run pytest -m "not slow and not integration and not performance" --benchmark-disable -rs
 
   test-full:
     if: >
@@ -37,7 +42,12 @@ jobs:
     steps:
       - uses: actions/checkout@v7
         with:
-          lfs: true
+          # lfs: false — the repo exceeded its Git LFS budget, which fails
+          # actions/checkout outright. Unhydrated-pointer guards in
+          # __tests__/python/conftest.py skip the affected tests with a clear
+          # reason (surfaced by pytest -rs). Restore to true if the budget
+          # is ever restored. See #85.
+          lfs: false
       - uses: actions/setup-node@v4
         with:
           node-version: '22'
@@ -46,7 +56,7 @@ jobs:
       - run: uv sync
       - run: npm run build
       - run: node --experimental-vm-modules node_modules/jest/bin/jest.js
-      - run: uv run pytest
+      - run: uv run pytest -rs
 
   audit:
     runs-on: ubuntu-latest

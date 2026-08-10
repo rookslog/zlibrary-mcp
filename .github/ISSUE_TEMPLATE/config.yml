@@ -1,17 +1,17 @@
 blank_issues_enabled: true
 contact_links:
   - name: Server disconnects immediately on startup
-    url: https://github.com/loganrooks/zlibrary-mcp/blob/master/docs/TROUBLESHOOTING.md
+    url: https://github.com/rookslog/zlibrary-mcp/blob/master/docs/TROUBLESHOOTING.md
     about: >
       Usually a setup problem rather than a bug — missing credentials, a
       Python environment that was never created with `uv sync`, or a stale build.
       The troubleshooting guide walks through each in order.
   - name: Upstream source is down
-    url: https://github.com/loganrooks/zlibrary-mcp/issues?q=is%3Aissue+label%3Aupstream-drift
+    url: https://github.com/rookslog/zlibrary-mcp/issues?q=is%3Aissue+label%3Aupstream-drift
     about: >
       Z-Library, Anna's Archive, and LibGen rotate domains without notice. A
       scheduled job tracks their availability and files here. Run
       `npm run doctor` to confirm before opening a new issue.
   - name: Security vulnerability
-    url: https://github.com/loganrooks/zlibrary-mcp/security/advisories/new
+    url: https://github.com/rookslog/zlibrary-mcp/security/advisories/new
     about: Report privately rather than in a public issue.

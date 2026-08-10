@@ -43,7 +43,7 @@
     "roocode",
     "cline"
   ],
-  "author": "loganrooks",
+  "author": "rookslog",
   "license": "MIT",
   "files": [
     "dist/",
@@ -64,12 +64,12 @@
   },
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/loganrooks/zlibrary-mcp.git"
+    "url": "git+https://github.com/rookslog/zlibrary-mcp.git"
   },
   "bugs": {
-    "url": "https://github.com/loganrooks/zlibrary-mcp/issues"
+    "url": "https://github.com/rookslog/zlibrary-mcp/issues"
   },
-  "homepage": "https://github.com/loganrooks/zlibrary-mcp#readme",
+  "homepage": "https://github.com/rookslog/zlibrary-mcp#readme",
   "engines": {
     "node": ">=22"
   },

@@ -191,7 +191,9 @@ class AnnasArchiveAdapter(SourceAdapter):
             UnifiedBookResult with whatever fields the card exposed
         """
         card = link.parent
-        extra: Dict[str, str] = {"url": f"{self.base_url}/md5/{md5}"}
+        # Values are not uniformly str: also_available_on is a list. The dict is
+        # spread into the JSON tool response, where both serialise fine.
+        extra: Dict[str, object] = {"url": f"{self.base_url}/md5/{md5}"}
 
         # Author and publisher carry semantic icon markers, which survive the
         # generated-class churn that would break a class-name selector.
@@ -204,7 +206,11 @@ class AnnasArchiveAdapter(SourceAdapter):
             publisher_icon = card.select_one('a span[class*="mdi--company"]')
             if publisher_icon is not None and publisher_icon.parent is not None:
                 publisher = publisher_icon.parent.get_text(strip=True)
-                if publisher:
+                # The company-marked line is usually "<publisher>, <year>", but
+                # on records with no publisher it degrades to a bare year. A
+                # year is not a publisher, and exporting one puts junk in a
+                # field callers will display.
+                if publisher and not _YEAR_RE.match(publisher):
                     extra["publisher"] = publisher
 
         meta: Dict[str, str] = {}

@@ -697,3 +697,18 @@ class TestAnnasMetadataExtraction:
         assert parsed["extension"] == "pdf"
         assert parsed["year"] == "2008"
         assert "size" not in parsed
+
+    def test_bare_year_is_not_exported_as_publisher(self, results):
+        """The company-marked line degrades to a bare year on some records.
+
+        A year is not a publisher, and exporting one puts junk into a field
+        callers will render. Fixture record 7f9bce5f… is such a record.
+        """
+        for r in results:
+            publisher = r.extra.get("publisher")
+            if publisher is not None:
+                assert not publisher.isdigit(), f"{r.md5}: bare year as publisher"
+
+        joos = next(r for r in results if r.md5.startswith("7f9bce5f"))
+        assert "publisher" not in joos.extra
+        assert joos.author == "Joos."  # author itself is still extracted

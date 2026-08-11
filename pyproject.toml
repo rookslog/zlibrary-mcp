@@ -32,7 +32,7 @@ dependencies = [
     # NLP for footnote detection
     "nltk>=3.8.1", # Sentence boundary detection
     "ocrmypdf>=16.13.0",
-    "opencv-python-headless>=4.12.0.88",
+    "opencv-python-headless>=5.0.0.93",
     "python-dotenv>=1.2.1",
     "libgen-api-enhanced>=1.3",
 ]

@@ -21,7 +21,13 @@ from .base import SourceAdapter
 from .config import ANNAS_TRUSTED_HOSTS, SourceConfig
 from .errors import ProviderResponseError, ProviderUnreachableError
 from .models import DownloadResult, QuotaInfo, SourceType, UnifiedBookResult
-from .net import build_timeout, classify_httpx_error, probe_host
+from .net import (
+    bounded_await,
+    build_timeout,
+    classify_httpx_error,
+    port_of,
+    probe_host,
+)
 
 PROVIDER = "annas"
 
@@ -131,6 +137,11 @@ class AnnasArchiveAdapter(SourceAdapter):
         self.base_url = config.annas_base_url.rstrip("/")
         self.secret_key = config.annas_secret_key
         self.host = (urlsplit(self.base_url).hostname or "").lower()
+        # The probe must target what the request targets. A base URL may name
+        # a non-default port (a local mirror, a test double), and probing 443
+        # regardless would report a reachable host as dead.
+        self.port = port_of(self.base_url)
+        self.scheme = urlsplit(self.base_url).scheme or "https"
         self._client: Optional[httpx.AsyncClient] = None
 
     async def _get_client(self) -> httpx.AsyncClient:
@@ -159,7 +170,9 @@ class AnnasArchiveAdapter(SourceAdapter):
         await probe_host(
             PROVIDER,
             self.host,
+            port=self.port,
             timeout=self.config.preflight_timeout,
+            scheme=self.scheme,
         )
 
     def _as_source_error(self, exc: BaseException) -> Exception:
@@ -179,6 +192,18 @@ class AnnasArchiveAdapter(SourceAdapter):
         if reason in ("http_error", "protocol_error"):
             return ProviderResponseError(PROVIDER, self.host, detail, reason=reason)
         return ProviderUnreachableError(PROVIDER, self.host, detail, reason=reason)
+
+    async def _fetch(self, client, url: str, params: Optional[Dict] = None):
+        """GET a URL and raise on an error status, as one awaitable.
+
+        Exists so the status check sits *inside* the wall-clock budget rather
+        than after it.
+        """
+        response = (
+            await client.get(url, params=params) if params else await client.get(url)
+        )
+        response.raise_for_status()
+        return response
 
     async def search(self, query: str, **kwargs) -> List[UnifiedBookResult]:
         """Search Anna's Archive for books.
@@ -202,8 +227,16 @@ class AnnasArchiveAdapter(SourceAdapter):
         client = await self._get_client()
         url = f"{self.base_url}/search?q={quote(query)}"
         try:
-            response = await client.get(url)
-            response.raise_for_status()
+            # httpx bounds each phase separately and restarts its read deadline
+            # on every chunk, so a host that trickles bytes never trips it. The
+            # outer budget is what actually enforces config.total_timeout.
+            response = await bounded_await(
+                self._fetch(client, url),
+                self.config.total_timeout,
+                provider=PROVIDER,
+                host=self.host,
+                operation="search",
+            )
         except Exception as exc:
             raise self._as_source_error(exc) from exc
 
@@ -346,8 +379,13 @@ class AnnasArchiveAdapter(SourceAdapter):
         }
 
         try:
-            response = await client.get(url, params=params)
-            response.raise_for_status()
+            response = await bounded_await(
+                self._fetch(client, url, params=params),
+                self.config.total_timeout,
+                provider=PROVIDER,
+                host=self.host,
+                operation="download resolution",
+            )
             data = response.json()
         except Exception as exc:
             raise self._as_source_error(exc) from exc

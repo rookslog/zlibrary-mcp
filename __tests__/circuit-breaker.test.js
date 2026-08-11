@@ -266,4 +266,60 @@ describe('Circuit Breaker', () => {
       expect(breaker.getState()).toBe('CLOSED');
     });
   });
+
+  describe('Failure classification (isFailure)', () => {
+    /**
+     * Not every rejection is evidence the dependency is unhealthy. A caller
+     * that cancels its own request has learned nothing about the far side, and
+     * counting those lets a user's own impatience open a shared breaker and
+     * fail every unrelated call for the whole timeout window.
+     */
+    const cancelled = () => Object.assign(new Error('aborted by the caller'), {
+      context: { reason: 'aborted' },
+    });
+
+    test('counts every rejection by default', async () => {
+      const breaker = new CircuitBreaker({ threshold: 2 });
+      const failing = () => Promise.reject(cancelled());
+
+      await expect(breaker.execute(failing)).rejects.toThrow();
+      await expect(breaker.execute(failing)).rejects.toThrow();
+
+      expect(breaker.getState()).toBe('OPEN');
+    });
+
+    test('excluded rejections never open the circuit', async () => {
+      const breaker = new CircuitBreaker({
+        threshold: 2,
+        isFailure: (error) => error?.context?.reason !== 'aborted',
+      });
+      const failing = () => Promise.reject(cancelled());
+
+      for (let i = 0; i < 10; i += 1) {
+        await expect(breaker.execute(failing)).rejects.toThrow('aborted by the caller');
+      }
+
+      expect(breaker.getState()).toBe('CLOSED');
+      expect(breaker.getFailureCount()).toBe(0);
+    });
+
+    test('the error still propagates to the caller', async () => {
+      const breaker = new CircuitBreaker({ isFailure: () => false });
+      await expect(breaker.execute(() => Promise.reject(cancelled())))
+        .rejects.toThrow('aborted by the caller');
+    });
+
+    test('a real failure alongside cancellations still counts', async () => {
+      const breaker = new CircuitBreaker({
+        threshold: 2,
+        isFailure: (error) => error?.context?.reason !== 'aborted',
+      });
+
+      await expect(breaker.execute(() => Promise.reject(cancelled()))).rejects.toThrow();
+      await expect(breaker.execute(() => Promise.reject(new Error('host down')))).rejects.toThrow();
+      expect(breaker.getState()).toBe('CLOSED');
+      await expect(breaker.execute(() => Promise.reject(new Error('host down')))).rejects.toThrow();
+      expect(breaker.getState()).toBe('OPEN');
+    });
+  });
 });

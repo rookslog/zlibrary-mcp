@@ -23,7 +23,16 @@ three different mechanisms:
    separates "DNS has no address for this name" from "the name resolves but
    the host drops our packets". Those need different fixes (update the mirror
    list vs. try another mirror), so they get different reason codes rather
-   than one generic failure.
+   than one generic failure. It probes the port and scheme the real request
+   will use, and skips itself entirely when a proxy is configured — a probe
+   that vetoes a request the real client could have completed is worse than
+   no probe at all.
+
+4. **Operations that outlive their phases** — an `httpx.Timeout` bounds each
+   phase separately, and its read deadline restarts on every chunk received,
+   so a host that trickles bytes never trips it. `bounded_await` puts one
+   wall-clock deadline over a whole async operation, which is what actually
+   enforces `config.total_timeout`. `build_timeout` alone never did.
 """
 
 import asyncio
@@ -32,6 +41,7 @@ import logging
 import socket
 import ssl
 import threading
+import urllib.request
 from typing import Any, Callable, Dict, Optional, Tuple
 from urllib.parse import urlsplit
 
@@ -51,6 +61,60 @@ _probe_cache: Dict[Tuple[str, int], Optional[ProviderUnreachableError]] = {}
 def host_of(url: str) -> str:
     """Extract the hostname from a URL, or '' if it has none."""
     return (urlsplit(url).hostname or "").lower()
+
+
+def port_of(url: str) -> int:
+    """The TCP port a URL addresses, explicit or implied by its scheme.
+
+    The preflight opens a socket to this port, so it has to be the port the
+    real request will use. Defaulting to 443 regardless made a base URL like
+    `http://localhost:8080` probe `localhost:443` and report a reachable host
+    as dead.
+
+    Args:
+        url: Absolute URL
+
+    Returns:
+        The explicit port if the URL carries one, else 80 for http and 443
+        for anything else (https and unknown schemes alike).
+    """
+    parts = urlsplit(url)
+    if parts.port:
+        return parts.port
+    return 80 if parts.scheme == "http" else 443
+
+
+def proxy_in_use(url: str) -> bool:
+    """Whether an outbound proxy would carry a request to this URL.
+
+    httpx and requests both honour HTTP_PROXY / HTTPS_PROXY / ALL_PROXY by
+    default (`trust_env` is True), but a raw socket does not. On a network
+    where direct egress is blocked and a proxy is mandatory — corporate LANs,
+    many container runtimes — the real request succeeds through the proxy
+    while a direct probe cannot connect at all. Preflighting there would
+    report every provider unreachable and stop the working request from ever
+    being made, which is strictly worse than having no preflight.
+
+    Args:
+        url: Absolute URL the request will be sent to
+
+    Returns:
+        True if a proxy applies to this URL and the preflight must be skipped
+    """
+    parts = urlsplit(url)
+    host = parts.hostname or ""
+    try:
+        # getproxies() reads the *_PROXY environment (plus system config on
+        # macOS/Windows); proxy_bypass() applies NO_PROXY, so a host excluded
+        # from the proxy is still probed directly, which is correct.
+        proxies = urllib.request.getproxies()
+        if not proxies:
+            return False
+        if host and urllib.request.proxy_bypass(host):
+            return False
+    except Exception:  # noqa: BLE001 - never let proxy detection break a search
+        return False
+    return parts.scheme in proxies or "all" in proxies
 
 
 def build_timeout(config) -> httpx.Timeout:
@@ -175,6 +239,7 @@ async def probe_host(
     port: int = 443,
     timeout: float = 5.0,
     use_cache: bool = True,
+    scheme: str = "https",
 ) -> None:
     """Check that a host resolves and accepts a TCP connection.
 
@@ -187,16 +252,30 @@ async def probe_host(
     libgen.is resolved to 193.218.118.42 but dropped every SYN) and they call
     for different remedies.
 
+    Skipped entirely when a proxy applies: the probe is an optimisation, and an
+    optimisation that vetoes a request the real client could have completed is
+    worse than no optimisation at all.
+
     Args:
         provider: Provider name for error attribution
         host: Hostname to probe
         port: TCP port (default 443)
         timeout: Budget in seconds for EACH of the DNS and connect phases
         use_cache: Reuse a verdict already reached for this (host, port)
+        scheme: URL scheme the real request will use, for proxy detection
 
     Raises:
         ProviderUnreachableError: If DNS or the TCP connect fails or times out
     """
+    if proxy_in_use(f"{scheme}://{host}:{port}"):
+        logger.debug(
+            "%s: skipping preflight for %s — an outbound proxy is configured "
+            "and the direct probe would not reflect the real request path",
+            provider,
+            host,
+        )
+        return
+
     key = (host, port)
     if use_cache and key in _probe_cache:
         cached = _probe_cache[key]
@@ -342,6 +421,54 @@ async def run_bounded(
             provider,
             operation,
             timeout,
+        )
+        raise ProviderTimeoutError(
+            provider,
+            host,
+            f"{operation} exceeded {timeout:g}s",
+            reason="search_timeout",
+        ) from None
+
+
+async def bounded_await(
+    awaitable,
+    timeout: float,
+    *,
+    provider: str,
+    host: str = "",
+    operation: str = "request",
+):
+    """Await a coroutine under a wall-clock budget.
+
+    The async counterpart to `run_bounded`. `httpx.Timeout` bounds each phase
+    of a request separately, and its read deadline restarts every time another
+    chunk arrives — so a host that trickles bytes indefinitely never trips it
+    and the operation runs past `total_timeout` unbounded. That is what this
+    closes: one deadline over the whole operation, however many phases or
+    redirects it spans.
+
+    Unlike `run_bounded` this needs no thread. The work is already async, so
+    `asyncio.wait_for` cancels it properly and no socket is left held.
+
+    Args:
+        awaitable: Coroutine to run
+        timeout: Wall-clock budget in seconds
+        provider: Provider name for error attribution
+        host: Hostname for error attribution
+        operation: Short label for the error message
+
+    Returns:
+        Whatever the coroutine returns
+
+    Raises:
+        ProviderTimeoutError: If the budget elapses first
+        Exception: Whatever the coroutine raised
+    """
+    try:
+        return await asyncio.wait_for(awaitable, timeout)
+    except asyncio.TimeoutError:
+        logger.warning(
+            "%s %s exceeded its %.0fs total budget", provider, operation, timeout
         )
         raise ProviderTimeoutError(
             provider,

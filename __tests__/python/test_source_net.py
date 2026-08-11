@@ -267,3 +267,103 @@ class TestRunBounded:
         release.set()
         # Give the straggler a turn to deliver into a cancelled future.
         await asyncio.sleep(0.2)
+
+
+class TestPortDerivation:
+    """`port_of` — the probe must target what the request targets."""
+
+    @pytest.mark.parametrize(
+        "url, expected",
+        [
+            ("https://annas-archive.gl", 443),
+            ("http://localhost:8080", 8080),
+            ("http://example.com", 80),
+            ("https://example.com:8443/path", 8443),
+            ("ftp://example.com", 443),
+        ],
+    )
+    def test_derives_port_from_url(self, url, expected):
+        assert net.port_of(url) == expected
+
+
+class TestProxyDetection:
+    """A direct probe must not veto a request the proxy could have carried."""
+
+    @pytest.fixture(autouse=True)
+    def _clear_proxy_env(self, monkeypatch):
+        for var in (
+            "HTTP_PROXY",
+            "HTTPS_PROXY",
+            "ALL_PROXY",
+            "NO_PROXY",
+            "http_proxy",
+            "https_proxy",
+            "all_proxy",
+            "no_proxy",
+        ):
+            monkeypatch.delenv(var, raising=False)
+
+    def test_no_proxy_configured(self):
+        assert net.proxy_in_use("https://annas-archive.gl") is False
+
+    def test_https_proxy_applies_to_https(self, monkeypatch):
+        monkeypatch.setenv("https_proxy", "http://proxy.example:3128")
+        assert net.proxy_in_use("https://annas-archive.gl") is True
+
+    def test_http_proxy_does_not_apply_to_https(self, monkeypatch):
+        monkeypatch.setenv("http_proxy", "http://proxy.example:3128")
+        assert net.proxy_in_use("https://annas-archive.gl") is False
+
+    def test_no_proxy_exclusion_is_respected(self, monkeypatch):
+        # An excluded host really is reached directly, so it SHOULD be probed.
+        monkeypatch.setenv("https_proxy", "http://proxy.example:3128")
+        monkeypatch.setenv("no_proxy", "annas-archive.gl")
+        assert net.proxy_in_use("https://annas-archive.gl") is False
+
+    @pytest.mark.real_preflight
+    @pytest.mark.asyncio
+    async def test_probe_is_skipped_entirely_behind_a_proxy(self, monkeypatch):
+        """The whole point: no socket is opened, so nothing can be vetoed."""
+        monkeypatch.setenv("https_proxy", "http://proxy.example:3128")
+        net.reset_probe_cache()
+
+        def _explode(*args, **kwargs):  # pragma: no cover - must not run
+            raise AssertionError("preflight opened a socket behind a proxy")
+
+        monkeypatch.setattr(socket, "getaddrinfo", _explode)
+        monkeypatch.setattr(asyncio, "open_connection", _explode)
+
+        await net.probe_host("annas", "annas-archive.gl", port=443)
+
+
+@pytest.mark.asyncio
+class TestBoundedAwait:
+    """`bounded_await` — one deadline over a whole async operation."""
+
+    async def test_returns_the_value_when_it_finishes_in_time(self):
+        async def quick():
+            return "done"
+
+        assert await net.bounded_await(quick(), 5.0, provider="annas") == "done"
+
+    async def test_raises_at_the_deadline(self):
+        async def trickle():
+            # Stands in for a host that keeps the read deadline alive by
+            # sending a byte at a time: never idle, never finished.
+            await asyncio.sleep(30)
+
+        start = time.monotonic()
+        with pytest.raises(ProviderTimeoutError) as excinfo:
+            await net.bounded_await(
+                trickle(), 0.2, provider="annas", host="annas-archive.gl"
+            )
+        assert time.monotonic() - start < 5
+        assert excinfo.value.reason == "search_timeout"
+        assert excinfo.value.provider == "annas"
+
+    async def test_propagates_the_original_exception(self):
+        async def boom():
+            raise ValueError("upstream")
+
+        with pytest.raises(ValueError, match="upstream"):
+            await net.bounded_await(boom(), 5.0, provider="annas")

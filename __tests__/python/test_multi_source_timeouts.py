@@ -14,7 +14,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import httpx
 import pytest
 
-from lib.sources import net
+from lib.sources import annas, net
 from lib.sources.annas import AnnasArchiveAdapter
 from lib.sources.config import SourceConfig, get_source_config
 from lib.sources.errors import (
@@ -376,3 +376,91 @@ class TestRouterSourceSelection:
                 mock.return_value = adapter
 
             assert await router.search("zzzz no such book", source="auto") == []
+
+
+class TestPreflightTargetsTheRealEndpoint:
+    """The probe must address the port and scheme the request will use.
+
+    The autouse `_no_preflight_probes` stub in conftest replaces `probe_host`
+    wholesale, which is why the wrong-port bug survived the first round of
+    tests. These record the arguments instead of suppressing the call.
+    """
+
+    @staticmethod
+    def _recording_probe(calls):
+        async def _probe(
+            provider, host, port=443, timeout=5.0, use_cache=True, scheme="https"
+        ):
+            calls.append(
+                {"host": host, "port": port, "scheme": scheme, "provider": provider}
+            )
+
+        return _probe
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        "base_url, expected_host, expected_port, expected_scheme",
+        [
+            ("https://annas-archive.gl", "annas-archive.gl", 443, "https"),
+            ("http://localhost:8080", "localhost", 8080, "http"),
+            ("https://mirror.example:8443", "mirror.example", 8443, "https"),
+            ("http://example.com", "example.com", 80, "http"),
+        ],
+    )
+    async def test_annas_probes_the_configured_port(
+        self, monkeypatch, base_url, expected_host, expected_port, expected_scheme
+    ):
+        calls = []
+        monkeypatch.setattr(annas, "probe_host", self._recording_probe(calls))
+
+        config = SourceConfig(annas_base_url=base_url, preflight_enabled=True)
+        adapter = annas.AnnasArchiveAdapter(config)
+        await adapter._preflight()
+
+        assert calls == [
+            {
+                "host": expected_host,
+                "port": expected_port,
+                "scheme": expected_scheme,
+                "provider": "annas",
+            }
+        ]
+
+
+@pytest.mark.asyncio
+class TestPartialFailureIsNotAnEmptyResult:
+    """An unreachable provider must never be reported as 'no matches'."""
+
+    async def test_empty_plus_failure_raises_rather_than_returning_empty(self):
+        config = SourceConfig(fallback_enabled=True)
+        router = SourceRouter(config)
+
+        healthy = AsyncMock()
+        healthy.search = AsyncMock(return_value=[])
+        broken = AsyncMock()
+        broken.search = AsyncMock(
+            side_effect=ProviderUnreachableError(
+                "annas", "annas-archive.gl", reason="dns_failure"
+            )
+        )
+        router._libgen = healthy
+        router._annas = broken
+
+        with pytest.raises(AllSourcesFailedError) as excinfo:
+            await router.search("obscure title", source="auto")
+
+        # The caller must be able to see WHICH provider went unsearched.
+        reasons = {f.reason for f in excinfo.value.failures}
+        assert reasons == {"dns_failure"}
+        assert any(f.provider == "annas" for f in excinfo.value.failures)
+
+    async def test_all_providers_answering_empty_is_still_an_empty_result(self):
+        config = SourceConfig(fallback_enabled=True)
+        router = SourceRouter(config)
+
+        for name in ("_libgen", "_annas"):
+            adapter = AsyncMock()
+            adapter.search = AsyncMock(return_value=[])
+            setattr(router, name, adapter)
+
+        assert await router.search("nothing matches", source="auto") == []

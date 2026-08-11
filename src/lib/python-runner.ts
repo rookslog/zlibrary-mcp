@@ -29,16 +29,20 @@ import { BridgeTimeoutError } from './errors.js';
 /**
  * Read a positive-integer millisecond budget from the environment.
  *
- * `parseInt('abc')` is NaN, and `setTimeout(fn, NaN)` fires on the next tick —
- * so a typo in the env var would not loosen the budget, it would kill every
- * bridge call instantly. Nonsense falls back to the default, matching
- * `_positive_float` on the Python side (lib/sources/config.py).
+ * A malformed value must not shorten the budget: `setTimeout(fn, NaN)` fires on
+ * the next tick, so a typo would kill every bridge call instantly rather than
+ * loosen anything. `parseInt` is not enough of a guard on its own — it stops at
+ * the first character it cannot use, so `'1.5'` and `'1e6'` both yield 1 (a 1ms
+ * deadline) and `'240000abc'` yields 240000. The whole string must therefore be
+ * a plain positive integer, or we fall back to the default. Mirrors
+ * `_positive_float` on the Python side (lib/sources/config.py), which is
+ * already safe here because it parses a float.
  */
 function positiveIntEnv(name: string, fallback: number): number {
-  const raw = process.env[name];
-  if (!raw) return fallback;
-  const value = parseInt(raw, 10);
-  return Number.isFinite(value) && value > 0 ? value : fallback;
+  const raw = process.env[name]?.trim();
+  if (!raw || !/^\d+$/.test(raw)) return fallback;
+  const value = Number(raw);
+  return Number.isSafeInteger(value) && value > 0 ? value : fallback;
 }
 
 /** Wall-clock budget for one bridge call. */

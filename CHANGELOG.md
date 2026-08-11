@@ -34,7 +34,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **A DNS + TCP pre-flight probe** before each provider request, so a dead host
   costs one bounded probe instead of a full request budget. Cached per
   (host, port) for the life of the call, so LibGen's three-mirror walk probes
-  each host once. Disable with `BOOK_SOURCE_PREFLIGHT=false`.
+  each host once. It targets the port and scheme the real request will use, and
+  **skips itself entirely when `HTTP_PROXY`/`HTTPS_PROXY` applies** (honouring
+  `NO_PROXY`) — a direct socket cannot represent a proxied request, and a probe
+  that vetoes a request the real client could have completed is worse than no
+  probe. Disable with `BOOK_SOURCE_PREFLIGHT=false`.
+- `BOOK_SOURCE_TOTAL_TIMEOUT` is now genuinely enforced for Anna's, not just
+  LibGen. `httpx.Timeout` bounds each phase separately and restarts its read
+  deadline on every chunk, so a host trickling bytes never tripped it; a
+  wall-clock deadline now covers the whole operation.
 - **LibGen search now walks all three mirrors** (`li → vg → la`), matching what
   `download_book_to_file` already did.
 - Timeout configuration: `BOOK_SOURCE_CONNECT_TIMEOUT`,
@@ -104,6 +112,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - An empty result from `search_multi_source` now means every provider answered
   and none matched. Previously a network failure with fallback disabled also
   returned an empty list, making an outage indistinguishable from no results.
+  This holds for partial walks too: one provider answering empty while another
+  is unreachable raises, rather than reporting "no matches" about a provider
+  that was never successfully searched.
+- Client cancellations no longer count toward the Python bridge circuit
+  breaker. Five aborted searches would otherwise open the shared breaker and
+  fail every unrelated tool for `CIRCUIT_BREAKER_TIMEOUT` — turning a user's
+  own impatience into an outage. `CircuitBreaker` gained an `isFailure` option
+  for this.
 
 ## [1.4.0] - 2026-08-10
 

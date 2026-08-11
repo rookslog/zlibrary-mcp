@@ -27,7 +27,12 @@ const pythonBridgeCircuitBreaker = new CircuitBreaker({
   timeout: parseInt(process.env.CIRCUIT_BREAKER_TIMEOUT || '60000'),
   onStateChange: (oldState, newState) => {
     logger.info(`Python bridge circuit breaker: ${oldState} -> ${newState}`);
-  }
+  },
+  // A client that cancels its own request has told us nothing about the
+  // bridge's health. Counting cancellations would mean five aborted searches
+  // open the breaker and fail every unrelated tool for the timeout window —
+  // turning a user's own impatience into an outage.
+  isFailure: (error) => error?.context?.reason !== 'aborted',
 });
 
 /** Reason codes meaning the provider's host never answered at all. */

@@ -290,10 +290,24 @@ describe('python-runner budget configuration', () => {
     expect(mod.DEFAULT_BRIDGE_TIMEOUT_MS).toBe(90000);
   });
 
-  // parseInt('abc') is NaN and setTimeout(fn, NaN) fires on the next tick, so
-  // a typo here would kill every bridge call instantly rather than loosen the
-  // budget. Falling back to the default is the only safe reading.
-  test.each([['abc'], ['0'], ['-1'], [''], ['   ']])(
+  // A malformed value must never SHORTEN the budget. parseInt is not enough of
+  // a guard on its own: it stops at the first character it cannot use, so
+  // '1.5' and '1e6' both yield 1 — a 1ms deadline that kills every bridge call
+  // instantly — and '240000abc' silently yields 240000. Falling back to the
+  // default is the only safe reading of any of these.
+  test.each([
+    ['abc'],
+    ['0'],
+    ['-1'],
+    [''],
+    ['   '],
+    ['1.5'],
+    ['1e6'],
+    ['240000abc'],
+    ['0x10'],
+    ['+240000'],
+    ['Infinity'],
+  ])(
     'falls back to the default for the nonsense value %p',
     async (raw) => {
       const mod = await importWith({

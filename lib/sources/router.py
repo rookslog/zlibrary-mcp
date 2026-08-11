@@ -141,11 +141,15 @@ class SourceRouter:
         Returns:
             List of UnifiedBookResult with source field indicating origin.
             An empty list means every attempted provider answered and none had
-            a match — never that a provider was unreachable.
+            a match — never that a provider was unreachable, and never that
+            only some of them answered.
 
         Raises:
-            AllSourcesFailedError: If every candidate provider failed. For an
-                explicit source that is a one-element set naming just that
+            AllSourcesFailedError: If any candidate provider failed without a
+                later one producing results. That includes the partial case —
+                one provider answering empty while another is unreachable — so
+                a missing provider is never silently reported as "no matches".
+                For an explicit source the failure set names just that
                 provider, so the caller still learns which one broke and why.
         """
         candidates = self._search_candidates(source)
@@ -176,9 +180,12 @@ class SourceRouter:
                 return results
             logger.info(f"{name} returned no results")
 
-        # At least one provider was reachable and simply had no match. That is
-        # a legitimate empty result, not an outage, so it must not raise.
-        if answered:
+        # An empty list is only honest when EVERY attempted provider answered.
+        # A partial walk — LibGen returns no matches, then Anna's fails DNS —
+        # would otherwise be reported as "no such book", when the truth is that
+        # the provider most likely to have it was never successfully searched.
+        # `answered` alone is not the test; the absence of failures is.
+        if answered and not failures:
             return []
 
         raise AllSourcesFailedError(f"search for {query!r}", failures)

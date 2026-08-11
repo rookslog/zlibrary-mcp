@@ -207,10 +207,12 @@ class AnnasArchiveAdapter(SourceAdapter):
             if publisher_icon is not None and publisher_icon.parent is not None:
                 publisher = publisher_icon.parent.get_text(strip=True)
                 # The company-marked line is usually "<publisher>, <year>", but
-                # on records with no publisher it degrades to a bare year. A
-                # year is not a publisher, and exporting one puts junk in a
-                # field callers will display.
-                if publisher and not _YEAR_RE.match(publisher):
+                # on records with no publisher it degrades to a bare number —
+                # commonly a year, sometimes a sentinel like 0. No publisher is
+                # purely numeric, so reject the whole class rather than only the
+                # years _YEAR_RE happens to cover: gating on the year parser let
+                # values outside 1000-2099 through as publishers.
+                if publisher and not publisher.isdigit():
                     extra["publisher"] = publisher
 
         meta: Dict[str, str] = {}

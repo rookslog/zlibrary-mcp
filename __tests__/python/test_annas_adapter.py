@@ -563,11 +563,10 @@ class TestAnnasMetadataExtraction:
             mock_client = AsyncMock()
             mock_client.get.return_value = mock_response
             mock_get_client.return_value = mock_client
-            return (
-                asyncio.get_event_loop_policy()
-                .new_event_loop()
-                .run_until_complete(adapter.search("hegel"))
-            )
+            # asyncio.run creates AND closes its loop. The earlier
+            # new_event_loop() here leaked one per fixture use, which trips
+            # suites that promote ResourceWarning to an error.
+            return asyncio.run(adapter.search("hegel"))
 
     def test_fixture_reproduces_the_two_anchor_markup(self):
         """Guard the guard.
@@ -712,3 +711,51 @@ class TestAnnasMetadataExtraction:
         joos = next(r for r in results if r.md5.startswith("7f9bce5f"))
         assert "publisher" not in joos.extra
         assert joos.author == "Joos."  # author itself is still extracted
+
+    @pytest.mark.parametrize("value", ["1996", "0", "999", "20250"])
+    def test_all_numeric_publishers_are_rejected(self, value):
+        """No publisher is purely numeric, so reject the whole class.
+
+        Gating on the metadata-year parser (1000-2099) let values outside that
+        range through — a sentinel like "0" or a three-digit date would still be
+        exported, contradicting the invariant the sibling test asserts.
+        """
+        from bs4 import BeautifulSoup
+
+        from lib.sources.annas import AnnasArchiveAdapter
+        from lib.sources.config import SourceConfig
+
+        html = (
+            "<div><div>"
+            '<a href="/md5/abc">A Title</a>'
+            f'<a href="/search?q=x"><span class="icon-[mdi--company]"></span>{value}</a>'
+            "</div><div>English [en] · PDF · 1.0MB</div></div>"
+        )
+        soup = BeautifulSoup(html, "html.parser")
+        link = soup.select_one("a[href^='/md5/']")
+
+        adapter = AnnasArchiveAdapter(SourceConfig())
+        result = adapter._build_result(link, "abc", "A Title")
+
+        assert "publisher" not in result.extra, f"{value!r} exported as publisher"
+
+    def test_real_publisher_still_survives(self):
+        """The guard must not throw out actual publishers."""
+        from bs4 import BeautifulSoup
+
+        from lib.sources.annas import AnnasArchiveAdapter
+        from lib.sources.config import SourceConfig
+
+        html = (
+            "<div><div>"
+            '<a href="/md5/abc">A Title</a>'
+            '<a href="/search?q=x"><span class="icon-[mdi--company]"></span>'
+            "Oxford University Press, 1977</a>"
+            "</div><div>English [en] · PDF · 1.0MB</div></div>"
+        )
+        link = BeautifulSoup(html, "html.parser").select_one("a[href^='/md5/']")
+        result = AnnasArchiveAdapter(SourceConfig())._build_result(
+            link, "abc", "A Title"
+        )
+
+        assert result.extra["publisher"] == "Oxford University Press, 1977"

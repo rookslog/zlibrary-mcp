@@ -188,9 +188,13 @@ Z-Library applies a daily download limit of approximately 10 books. Call
 Anna's Archive search needs no account. Call `search_multi_source` with
 `source: "annas"`.
 
-Search without a key returns the title, the author, the year, the file format, and the
-file size. It also returns `also_available_on`, which lists the other sources that hold
+Search without a key returns the title. It also returns the author, the year, the file
+format, the file size, and `also_available_on`, which lists the other sources that hold
 the same file.
+
+**Note:** all fields except the title are optional. Anna's Archive does not supply the
+same data for every record. An absent author, year, format or size is an empty string.
+An absent `also_available_on` field is not present in the result.
 
 **Note:** `also_available_on` is a hint, not a guarantee. Anna's Archive reports it, and
 the file can leave the other source later. Use it to prefer a source that has no daily

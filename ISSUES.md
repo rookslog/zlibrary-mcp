@@ -9,12 +9,18 @@
 
 ## Executive Summary
 
-**Last Updated**: 2026-07-24
-**Status**: v1.3 active (Phase 19 complete). All CI jobs green after the audit-gate
-fix below. 1,114 tests passing (165 Jest, 949 Python fast suite).
+**Last Updated**: 2026-08-11
+**Status**: v1.4.0 shipped 2026-08-10 (LibGen is a real download source). Current
+release is **v1.5 — Anna's Archive is a real source**, map issue #95.
 
-Full context for the 2026-07-24 findings, including PR/issue disposition and the
-forward roadmap: [claudedocs/architecture/repo-health-and-roadmap-2026-07-24.md](claudedocs/architecture/repo-health-and-roadmap-2026-07-24.md).
+**What is being worked on lives in GitHub milestones, not in this file or any other
+document.** See [docs/RELEASE_PROCESS.md](docs/RELEASE_PROCESS.md) for the scheme and
+for the 2026-08-11 tracker audit that motivated it. This ledger records *resolved*
+issues and their evidence; it is history, not a plan.
+
+Evidence for the 2026-07-24 findings below:
+[claudedocs/architecture/repo-health-and-roadmap-2026-07-24.md](claudedocs/architecture/repo-health-and-roadmap-2026-07-24.md)
+— historical, and superseded for anything forward-looking.
 
 ---
 

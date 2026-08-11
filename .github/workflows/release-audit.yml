@@ -1,0 +1,68 @@
+name: Release Record Audit
+
+# The release record drifts silently. Nothing breaks when a milestone keeps a
+# version number for a scope that never shipped, when a tag goes out without a
+# GitHub Release, or when closed issues carry no milestone — the code works, CI
+# is green, and the tracker quietly stops describing reality. That is exactly
+# what happened to v1.4 (see docs/RELEASE_PROCESS.md), and v1.2.0 had gone four
+# months with no Release before this job existed.
+#
+# So this runs on a schedule rather than as a PR gate. A contributor cannot fix
+# "tag v1.2.0 has no Release" from their branch, and blocking their PR on it
+# would be noise. The release itself is gated separately, inside publish.yml,
+# which refuses to ship a version with no CHANGELOG section.
+#
+# A failing scheduled job nobody reads is the same disease, so failure files a
+# single tracking issue and updates it rather than accumulating duplicates.
+
+on:
+  schedule:
+    - cron: '23 7 * * 1' # Mondays, 07:23 UTC
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  issues: write
+
+jobs:
+  audit:
+    name: Release record consistency
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          lfs: false
+          fetch-depth: 0 # the audit reads tags and counts commits since the last one
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - name: Audit
+        id: audit
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -o pipefail
+          node scripts/release-audit.mjs 2>&1 | tee audit.txt
+        continue-on-error: true
+
+      - name: File or update the tracking issue
+        if: steps.audit.outcome == 'failure'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          TITLE="Release record is inconsistent"
+          BODY=$'The scheduled release-record audit is failing.\n\n```\n'"$(cat audit.txt)"$'\n```\n\nRules and rationale: [docs/RELEASE_PROCESS.md](../blob/master/docs/RELEASE_PROCESS.md)\nRun locally with `npm run audit:release`.\n\n_Updated by '"${GITHUB_WORKFLOW}"' run ${GITHUB_RUN_ID}._'
+          EXISTING=$(gh issue list --state open --search "$TITLE in:title" --json number,title \
+            --jq "[.[] | select(.title == \"$TITLE\")] | .[0].number // empty")
+          if [ -n "$EXISTING" ]; then
+            gh issue comment "$EXISTING" --body "$BODY"
+            echo "updated #$EXISTING"
+          else
+            gh issue create --title "$TITLE" --body "$BODY"
+          fi
+
+      - name: Fail the run if the audit failed
+        if: steps.audit.outcome == 'failure'
+        run: exit 1

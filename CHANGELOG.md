@@ -7,6 +7,47 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- `npm run audit:release` ([scripts/release-audit.mjs](scripts/release-audit.mjs)) and a
+  weekly `Release Record Audit` workflow, checking that the release record agrees with
+  itself: every tag has a GitHub Release and a CHANGELOG section, every release milestone
+  names its map issue, no tagged version has open issues on its milestone, and no closed
+  issue is missing a milestone. Also wired into `npm run doctor`. Rules and the incident
+  that motivated them: [docs/RELEASE_PROCESS.md](docs/RELEASE_PROCESS.md).
+- `publish.yml` now creates the GitHub Release on a tag push, with notes extracted from
+  that version's CHANGELOG section, and fails the release if the section is absent.
+  Previously a tag published to npm and GHCR while the Releases page silently fell
+  behind — v1.4.0 shipped that way, and v1.2.0 had gone four months unnoticed (#108).
+
+### Fixed
+
+- `SourceRouter` honours an explicit `source="annas"` and Anna's search extracts full
+  metadata — authors, publisher, year, language, format, size, and upstream provenance —
+  parsed by pattern rather than position, since year is absent from roughly 9% of
+  records (#74, #78).
+- Anna's search results now report which other sources hold the file. Those markers mean
+  *retrievable*, which makes Anna's a cross-source index rather than only a fourth
+  source.
+- The scheduled upstream contract check no longer fails spuriously (#71).
+
+### Changed
+
+- `CONTEXT.md` added as the terminology glossary, splitting the overloaded term
+  "keyless" into *keyed fast_download*, *operator-cookie slow_download*, and
+  *machine-solved challenge*. The ambiguity had caused approved work to be recorded as
+  cancelled. "Keyless" is now a banned term; prefer "key-free" (#98).
+- **Anna's Archive has exactly one supported download route: keyed `fast_download`.**
+  The operator-cookie route is dead rather than deferred — DDoS-Guard binds the challenge
+  cookie to the issuing IP inside `__ddg9_`, so a transplanted cookie is rejected
+  byte-for-byte identically to no cookie at all (#84). Guardrails for that route (#97)
+  are moot rather than deferred.
+- Removed the vestigial `ts-jest` dev dependency, which was configured in
+  `jest.config.js` but transformed nothing (#93).
+- Dependency bumps: `@modelcontextprotocol/sdk` 1.25.3 → 1.30.0, `opencv-python-headless`
+  4.13 → 5.0, `libgen-api-enhanced` 1.2.4 → 1.3, `cffi` 2.0.0 → 2.1.1, `yarl` 1.22.0 →
+  1.24.5, `pytest-benchmark` 5.1.0 → 5.2.3, plus dev-tooling and CI action updates.
+
 ## [1.4.0] - 2026-08-10
 
 Z-Library is no longer the only source that can deliver a file. LibGen search

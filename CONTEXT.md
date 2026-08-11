@@ -60,9 +60,15 @@ supplies the resulting `__ddg*` cookies, which the server then attaches to plain
 requests. Requires no API key and no browser inside the server. Intended to be
 rate-limited to personal-use scale.
 
-**Not implemented.** `AnnasArchiveAdapter.get_download_url` calls only the keyed
-`fast_download` endpoint and raises without `ANNAS_SECRET_KEY`. The term is defined here
-because the route is designed and approved (#84, #97), not because it exists.
+**Not viable — dead, not deferred** (resolved 2026-08-11, #84). DDoS-Guard binds the
+challenge cookie to the client that earned it: the issuing IP is stored inside `__ddg9_`,
+so a transplanted cookie is rejected byte-for-byte identically to no cookie at all
+(403, 902 bytes, with and without). `AnnasArchiveAdapter.get_download_url` calls only the
+keyed `fast_download` endpoint and raises without `ANNAS_SECRET_KEY`. **Anna's therefore
+has exactly one supported download route: keyed `fast_download`.** The term is retained
+here because the distinction it names is still needed to read #75, #84 and #97 — not
+because the route is planned. Guardrails for it (#97) are moot rather than deferred; if a
+sanctioned rate-limited route ever appears, reopen those rather than restarting.
 _Avoid_: Keyless download (ambiguous — say this instead)
 
 **Machine-solved challenge**:

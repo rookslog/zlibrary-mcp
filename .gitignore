@@ -87,6 +87,11 @@ logs/
 # Serena MCP memories (session-specific, not checked in)
 .serena/
 
+# Agent worktrees. Claude Code creates isolated worktrees here; they are live
+# checkouts of other branches, so leaving them untracked made `git status`
+# permanently dirty and hid real uncommitted work.
+.claude/worktrees/
+
 # Test output files
 test_strikethrough_findings.json
 test_specific_pages_findings.json

@@ -357,9 +357,79 @@ class TestRouterLifecycle:
         assert libgen is not None
         assert router._libgen is not None
 
-    def test_no_annas_adapter_without_key(self, config_without_annas):
-        """Should not create Anna's adapter without API key."""
+    def test_annas_adapter_is_built_without_key(self, config_without_annas):
+        """Anna's adapter is built with or without a key (#74).
+
+        This previously asserted the adapter was None without a key. That
+        encoded the bug: Anna's search is credential-free HTML scraping, so
+        gating construction on the key made an explicit source="annas" fall
+        through to LibGen silently. The key belongs on get_download_url, which
+        enforces it itself.
+        """
         router = SourceRouter(config_without_annas)
 
         annas = router._get_annas()
-        assert annas is None
+        assert annas is not None
+        assert router._annas is annas  # and is cached
+
+    @pytest.mark.asyncio
+    async def test_explicit_annas_is_not_silently_swapped_for_libgen(
+        self, config_without_annas
+    ):
+        """An explicit source="annas" must query Anna's, not LibGen (#74).
+
+        The user-visible bug: search_multi_source(source="annas") returned
+        LibGen results with nothing indicating the requested source was never
+        contacted.
+        """
+        router = SourceRouter(config_without_annas)
+
+        annas_hit = False
+
+        async def fake_annas_search(query, **kwargs):
+            nonlocal annas_hit
+            annas_hit = True
+            return [
+                UnifiedBookResult(
+                    md5="deadbeef", title="From Anna's", source=SourceType.ANNAS_ARCHIVE
+                )
+            ]
+
+        async def fail_libgen_search(query, **kwargs):
+            raise AssertionError("LibGen was queried for an explicit source='annas'")
+
+        router._get_annas().search = fake_annas_search
+        router._get_libgen().search = fail_libgen_search
+
+        results = await router.search("hegel", source="annas")
+
+        assert annas_hit
+        assert len(results) == 1
+        assert results[0].source == SourceType.ANNAS_ARCHIVE
+
+    @pytest.mark.asyncio
+    async def test_auto_still_prefers_libgen_without_key(self, config_without_annas):
+        """'auto' stays LibGen-first without a key — deliberately unchanged.
+
+        Fixing the explicit-source gate must not quietly reroute 'auto'. LibGen
+        returns a resolvable download link; an Anna's result without a key still
+        needs a route the caller may not have.
+        """
+        router = SourceRouter(config_without_annas)
+
+        async def fake_libgen_search(query, **kwargs):
+            return [
+                UnifiedBookResult(
+                    md5="cafe", title="From LibGen", source=SourceType.LIBGEN
+                )
+            ]
+
+        async def fail_annas_search(query, **kwargs):
+            raise AssertionError("Anna's was queried for source='auto' with no key")
+
+        router._get_libgen().search = fake_libgen_search
+        router._get_annas().search = fail_annas_search
+
+        results = await router.search("hegel", source="auto")
+
+        assert results[0].source == SourceType.LIBGEN

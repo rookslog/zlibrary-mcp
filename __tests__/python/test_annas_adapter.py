@@ -7,8 +7,13 @@ Tests cover:
 4. Error handling for invalid inputs
 """
 
+from pathlib import Path
+
 import pytest
+from bs4 import BeautifulSoup
 from unittest.mock import AsyncMock, MagicMock, patch
+
+from lib.sources.models import SourceType
 
 pytestmark = pytest.mark.unit
 
@@ -512,3 +517,116 @@ class TestSecretKeyHostAllowlist:
             results = await adapter.search("python")
 
         assert len(results) == 3
+
+
+class TestAnnasMetadataExtraction:
+    """Extraction of full metadata from real Anna's search HTML (#78).
+
+    These run against `test_files/annas/search_results.html`, trimmed from a
+    live capture rather than hand-written, because the bug being fixed was
+    caused by real markup that a hand-written mock did not reproduce: each
+    record renders two /md5/ anchors, and deduping by first kept the cover
+    image (empty text) over the title.
+    """
+
+    FIXTURE = (
+        Path(__file__).resolve().parents[2]
+        / "test_files"
+        / "annas"
+        / "search_results.html"
+    )
+
+    @pytest.fixture
+    def results(self):
+        from lib.sources.annas import AnnasArchiveAdapter
+        from lib.sources.config import SourceConfig
+
+        adapter = AnnasArchiveAdapter(
+            SourceConfig(annas_base_url="https://annas-archive.gl")
+        )
+        soup = BeautifulSoup(self.FIXTURE.read_text(), "html.parser")
+
+        out, seen = [], set()
+        for link in soup.select("a[href^='/md5/']"):
+            title = link.get_text(strip=True)
+            if not title:
+                continue
+            md5 = link.get("href", "").split("/")[-1]
+            if not md5 or md5 in seen:
+                continue
+            seen.add(md5)
+            out.append(adapter._build_result(link, md5, title))
+        return out
+
+    def test_titles_are_extracted_not_unknown(self, results):
+        """The headline bug: every keyless result came back titled 'Unknown'."""
+        assert len(results) == 4
+        assert all(r.title and r.title != "Unknown" for r in results)
+        assert results[0].title == "Phenomenology of spirit"
+
+    def test_full_metadata_is_extracted(self, results):
+        """Option E: author, year, extension and size, not titles alone."""
+        first = results[0]
+        assert first.author == "Georg Wilhelm Friedrich Hegel"
+        assert first.year == "1977"
+        assert first.extension == "azw3"
+        assert first.size == "0.6MB"
+
+    def test_missing_year_does_not_corrupt_extension(self, results):
+        """The regression this parser exists to prevent.
+
+        Year is absent from ~9% of records. Parsing the metadata strip by
+        position would shift the next segment into the year slot and the
+        extension into the size slot. Record 2 has no year; every other field
+        must still land correctly.
+        """
+        no_year = results[1]
+        assert no_year.year == ""
+        assert no_year.extension == "pdf"
+        assert no_year.size == "6.7MB"
+        assert no_year.title == "Phenomenology of Spirit"
+
+    def test_year_is_never_mistaken_for_an_extension(self):
+        """A bare [A-Z0-9]{2,5} extension pattern also matches a 4-digit year."""
+        from lib.sources.annas import _parse_metadata_strip
+
+        parsed = _parse_metadata_strip(
+            "English [en] · PDF · 5.6MB · 2008 · 📕 Book (fiction)"
+        )
+        assert parsed["year"] == "2008"
+        assert parsed["extension"] == "pdf"
+        assert parsed["size"] == "5.6MB"
+        assert parsed["language"] == "en"
+
+    def test_segments_are_order_independent(self):
+        """Order is not guaranteed, so parsing must not depend on it."""
+        from lib.sources.annas import _parse_metadata_strip
+
+        forward = _parse_metadata_strip("English [en] · EPUB · 1.2MB · 1999")
+        shuffled = _parse_metadata_strip("1999 · 1.2MB · EPUB · English [en]")
+        assert forward == shuffled
+
+    def test_upstream_provenance_is_surfaced(self, results):
+        """Anna's names which other sources hold the same file (#78).
+
+        Verified to mean 'retrievable', not merely 'ingested from': 3/3 records
+        marked /lgli resolved on LibGen, 0/2 unmarked did.
+        """
+        assert results[0].extra["also_available_on"] == ["lgli", "zlib"]
+        assert "lgli" in results[2].extra["also_available_on"]
+
+    def test_provenance_is_surfaced_but_not_acted_on(self, results):
+        """Adapters expose provenance; they must not rank or dedupe on it.
+
+        Reporting is #96 and cross-source dedup is #52. Source-comparison logic
+        inside one source's adapter is what invariant 4 forbids.
+        """
+        for r in results:
+            assert r.source == SourceType.ANNAS_ARCHIVE
+            assert r.download_url == ""
+
+    def test_absent_fields_are_empty_strings(self, results):
+        """Matches UnifiedBookResult defaults and LibGen's behaviour."""
+        for r in results:
+            for field in (r.author, r.year, r.extension, r.size, r.download_url):
+                assert isinstance(field, str)

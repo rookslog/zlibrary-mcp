@@ -7,6 +7,7 @@ Tests cover:
 4. Error handling for invalid inputs
 """
 
+import asyncio
 from pathlib import Path
 
 import pytest
@@ -538,25 +539,55 @@ class TestAnnasMetadataExtraction:
 
     @pytest.fixture
     def results(self):
+        """Drive the real AnnasArchiveAdapter.search() against the fixture.
+
+        Deliberately NOT a reimplementation of search()'s filtering loop. An
+        earlier version of this fixture called _build_result directly, which
+        meant reverting the dedupe fix left these tests green — the headline
+        regression was not pinned at all. The whole point is that search() is
+        the thing under test.
+        """
         from lib.sources.annas import AnnasArchiveAdapter
         from lib.sources.config import SourceConfig
 
         adapter = AnnasArchiveAdapter(
             SourceConfig(annas_base_url="https://annas-archive.gl")
         )
-        soup = BeautifulSoup(self.FIXTURE.read_text(), "html.parser")
 
-        out, seen = [], set()
-        for link in soup.select("a[href^='/md5/']"):
-            title = link.get_text(strip=True)
-            if not title:
-                continue
-            md5 = link.get("href", "").split("/")[-1]
-            if not md5 or md5 in seen:
-                continue
-            seen.add(md5)
-            out.append(adapter._build_result(link, md5, title))
-        return out
+        mock_response = MagicMock()
+        mock_response.text = self.FIXTURE.read_text()
+        mock_response.status_code = 200
+        mock_response.raise_for_status = MagicMock()
+
+        with patch.object(adapter, "_get_client") as mock_get_client:
+            mock_client = AsyncMock()
+            mock_client.get.return_value = mock_response
+            mock_get_client.return_value = mock_client
+            return (
+                asyncio.get_event_loop_policy()
+                .new_event_loop()
+                .run_until_complete(adapter.search("hegel"))
+            )
+
+    def test_fixture_reproduces_the_two_anchor_markup(self):
+        """Guard the guard.
+
+        These tests are only meaningful if the fixture contains the cover +
+        title anchor PAIR that caused the bug. A fixture holding just the title
+        anchor passes against the broken implementation too, so assert the
+        precondition rather than trusting it.
+        """
+        soup = BeautifulSoup(self.FIXTURE.read_text(), "html.parser")
+        groups = {}
+        for anchor in soup.select("a[href^='/md5/']"):
+            groups.setdefault(anchor.get("href", "").split("/")[-1], []).append(anchor)
+
+        assert len(groups) == 4
+        for md5, anchors in groups.items():
+            assert len(anchors) == 2, f"{md5} must render cover + title"
+            texts = sorted(len(a.get_text(strip=True)) for a in anchors)
+            assert texts[0] == 0, f"{md5} must have an empty-text cover anchor"
+            assert texts[1] > 0, f"{md5} must have a text-bearing title anchor"
 
     def test_titles_are_extracted_not_unknown(self, results):
         """The headline bug: every keyless result came back titled 'Unknown'."""
@@ -630,3 +661,39 @@ class TestAnnasMetadataExtraction:
         for r in results:
             for field in (r.author, r.year, r.extension, r.size, r.download_url):
                 assert isinstance(field, str)
+
+    def test_pre_1500_years_are_preserved(self):
+        """Incunabula and early-modern imprints carry dates before 1500.
+
+        A 15xx-and-later floor silently dropped a year that was present
+        upstream. This is a scholarly-text tool; those dates are real.
+        """
+        from lib.sources.annas import _parse_metadata_strip
+
+        parsed = _parse_metadata_strip("Latin [la] · PDF · 12.0MB · 1492 · 📘 Book")
+        assert parsed["year"] == "1492"
+        assert parsed["extension"] == "pdf"
+
+    def test_strip_without_size_is_still_parsed(self):
+        """Every segment is optional — including the one used to find the strip.
+
+        Recognising the strip by its size segment discarded the entire strip for
+        records that omit size, losing language, extension, year and content
+        type that were all present.
+        """
+        from bs4 import BeautifulSoup
+
+        from lib.sources.annas import _find_metadata_strip, _parse_metadata_strip
+
+        card = BeautifulSoup(
+            "<div><div>English [en] · PDF · 2008 · 📕 Book (fiction)</div></div>",
+            "html.parser",
+        )
+        strip = _find_metadata_strip(card)
+        assert strip is not None, "strip must be found without a size segment"
+
+        parsed = _parse_metadata_strip(strip)
+        assert parsed["language"] == "en"
+        assert parsed["extension"] == "pdf"
+        assert parsed["year"] == "2008"
+        assert "size" not in parsed

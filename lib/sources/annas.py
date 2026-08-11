@@ -28,7 +28,13 @@ from .models import DownloadResult, QuotaInfo, SourceType, UnifiedBookResult
 # therefore matched by pattern, never by index: positional parsing silently
 # shifts year into extension on the records that omit it.
 _SIZE_RE = re.compile(r"^\d+(?:\.\d+)?\s*[KMGT]B$", re.IGNORECASE)
-_YEAR_RE = re.compile(r"^(?:1[5-9]\d{2}|20\d{2})$")
+# Any plausible four-digit year, deliberately including pre-1500 ones. This is a
+# scholarly-text tool: incunabula and early-modern imprints carry dates like
+# 1492, and a 15xx-and-later floor silently dropped a year that was present
+# upstream. Widening is safe because size carries a unit suffix, content type
+# carries parentheses, and extension must start with a letter — so no other
+# segment can be mistaken for a bare four-digit number.
+_YEAR_RE = re.compile(r"^(?:1[0-9]\d{2}|20\d{2})$")
 # Extension must START with a letter. A bare "[A-Z0-9]{2,5}" also matches a
 # four-digit year, which is exactly the corruption this parser exists to avoid.
 _EXT_RE = re.compile(r"^[A-Z][A-Z0-9]{1,6}$")
@@ -70,12 +76,19 @@ def _find_metadata_strip(card: Tag) -> Optional[str]:
 
     Identified by content rather than by class name: Anna's uses generated
     Tailwind classes that change between deploys, whereas a "·"-separated run
-    containing a file size is a stable shape.
+    of recognisable segments is a stable shape.
+
+    Recognition must not hinge on any single segment. Requiring a size segment
+    discarded the whole strip for records that omit it — losing the language,
+    extension, year and content type that were present — which contradicted the
+    parser's own every-segment-is-optional contract.
     """
     for text in card.find_all(string=lambda t: t and "·" in t):
         candidate = text.strip()
-        if any(_SIZE_RE.match(part.strip()) for part in candidate.split("·")):
-            return candidate
+        for part in candidate.split("·"):
+            seg = part.replace("\U0001f680", "").strip()
+            if _SIZE_RE.match(seg) or _EXT_RE.match(seg) or _LANG_RE.search(seg):
+                return candidate
     return None
 
 

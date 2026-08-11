@@ -2,13 +2,13 @@
 
 ## Supported versions
 
-Only the latest release line receives fixes. Check [releases](https://github.com/loganrooks/zlibrary-mcp/releases)
+Only the latest release line receives fixes. Check [releases](https://github.com/rookslog/zlibrary-mcp/releases)
 for the current version.
 
 ## Reporting a vulnerability
 
 Report privately through
-[GitHub Security Advisories](https://github.com/loganrooks/zlibrary-mcp/security/advisories/new)
+[GitHub Security Advisories](https://github.com/rookslog/zlibrary-mcp/security/advisories/new)
 rather than opening a public issue. Include reproduction steps and the version
 you tested. Expect an initial response within a week.
 

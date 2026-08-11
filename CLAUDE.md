@@ -304,7 +304,7 @@ keyless *search* still works. See the v1.4 map (issue #75) for the full disposit
 
 npm publishing authenticates via OIDC trusted publishing (no `NPM_TOKEN` secret; the
 trusted publisher is bound to `publish.yml`). Note the account rename
-`loganrooks` → `rookslog`: provenance validation cross-checks `package.json`
+`rookslog` → `rookslog`: provenance validation cross-checks `package.json`
 `repository.url` against the OIDC claim, so both the trusted publisher binding and
 that URL must name the current owner.
 

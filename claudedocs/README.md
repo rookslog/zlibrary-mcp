@@ -11,7 +11,7 @@ is a point-in-time record (see the documentation-guidelines table in
   — the live health assessment and forward roadmap (the "current plan" document)
 - [architecture/phase-20-21-review-2026-07-24.md](architecture/phase-20-21-review-2026-07-24.md)
   — acceptance criteria for the pending RAG quality-scoring work
-  (referenced by issue [#39](https://github.com/loganrooks/zlibrary-mcp/issues/39))
+  (referenced by issue [#39](https://github.com/rookslog/zlibrary-mcp/issues/39))
 - [milestone-history.md](milestone-history.md) — condensed record of all
   development milestones from v1.0 through v1.3
 - [session-notes/2025-10-28-footnote-continuation-state-machine.md](session-notes/2025-10-28-footnote-continuation-state-machine.md)

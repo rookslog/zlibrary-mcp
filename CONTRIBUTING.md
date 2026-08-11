@@ -18,7 +18,7 @@ Thank you for your interest in contributing! This guide covers everything you ne
 ### Clone and Setup
 
 ```bash
-git clone https://github.com/loganrooks/zlibrary-mcp.git
+git clone https://github.com/rookslog/zlibrary-mcp.git
 cd zlibrary-mcp
 
 # Hydrate LFS-tracked test fixtures (no `git lfs install` needed -- see Prerequisites)
@@ -251,7 +251,7 @@ For detailed patterns, see the project's internal documentation in `.claude/PATT
 
 ## Reporting Issues
 
-Use [GitHub Issues](https://github.com/loganrooks/zlibrary-mcp/issues) to report bugs or request features.
+Use [GitHub Issues](https://github.com/rookslog/zlibrary-mcp/issues) to report bugs or request features.
 
 Include:
 - Node.js version (`node --version`)

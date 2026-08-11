@@ -214,7 +214,7 @@ uv run pytest -m "not slow and not integration and not performance"  # fast Pyth
 ## Getting Help
 
 1. Run `npm run doctor` and `npm run validate` and capture the output.
-2. Check existing issues: https://github.com/loganrooks/zlibrary-mcp/issues
+2. Check existing issues: https://github.com/rookslog/zlibrary-mcp/issues
 3. Open a bug report — the issue template asks for the doctor output and your
    OS/client; scrub any credentials from pasted stderr logs first.
 

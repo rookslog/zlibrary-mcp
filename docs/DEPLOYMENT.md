@@ -59,7 +59,7 @@ npm link zlibrary-mcp
 
 #### 3. **Clone and Build**
 ```bash
-git clone https://github.com/loganrooks/zlibrary-mcp.git
+git clone https://github.com/rookslog/zlibrary-mcp.git
 cd zlibrary-mcp
 npm install
 npm run build

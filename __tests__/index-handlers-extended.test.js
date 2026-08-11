@@ -62,10 +62,13 @@ describe('Tool Handlers - Extended Coverage', () => {
       const validatedArgs = toolRegistry.process_document_for_rag.schema.parse(args);
       const response = await handler(validatedArgs);
 
-      expect(mockProcessDoc).toHaveBeenCalledWith({
-        filePath: '/input/doc.epub',
-        outputFormat: 'markdown',
-      });
+      expect(mockProcessDoc).toHaveBeenCalledWith(
+        {
+          filePath: '/input/doc.epub',
+          outputFormat: 'markdown',
+        },
+        { signal: undefined },
+      );
       expect(response).toEqual({
         processed_file_path: '/output/doc.txt',
         metadata_file_path: '/output/doc.metadata.json',
@@ -102,7 +105,7 @@ describe('Tool Handlers - Extended Coverage', () => {
       const validatedArgs = toolRegistry.get_book_metadata.schema.parse(args);
       const response = await handler(validatedArgs);
 
-      expect(mockGetMeta).toHaveBeenCalledWith('123', 'abc', ['terms']);
+      expect(mockGetMeta).toHaveBeenCalledWith('123', 'abc', ['terms'], { signal: undefined });
       expect(response).toEqual({
         title: 'Test Book', author: 'Author', terms: ['philosophy'],
       });
@@ -131,14 +134,17 @@ describe('Tool Handlers - Extended Coverage', () => {
       const validatedArgs = toolRegistry.search_by_term.schema.parse(args);
       const response = await handler(validatedArgs);
 
-      expect(mockSearchTerm).toHaveBeenCalledWith({
-        term: 'phenomenology',
-        yearFrom: 1900,
-        yearTo: 2020,
-        languages: ['english'],
-        extensions: ['pdf'],
-        limit: 15,
-      });
+      expect(mockSearchTerm).toHaveBeenCalledWith(
+        {
+          term: 'phenomenology',
+          yearFrom: 1900,
+          yearTo: 2020,
+          languages: ['english'],
+          extensions: ['pdf'],
+          limit: 15,
+        },
+        { signal: undefined },
+      );
       expect(response).toEqual([{ title: 'Phenomenology Book' }]);
     });
 
@@ -165,15 +171,18 @@ describe('Tool Handlers - Extended Coverage', () => {
       const validatedArgs = toolRegistry.search_by_author.schema.parse(args);
       const response = await handler(validatedArgs);
 
-      expect(mockSearchAuthor).toHaveBeenCalledWith({
-        author: 'Hegel',
-        exact: true,
-        yearFrom: 1800,
-        yearTo: 1900,
-        languages: ['german'],
-        extensions: ['epub'],
-        limit: 10,
-      });
+      expect(mockSearchAuthor).toHaveBeenCalledWith(
+        {
+          author: 'Hegel',
+          exact: true,
+          yearFrom: 1800,
+          yearTo: 1900,
+          languages: ['german'],
+          extensions: ['epub'],
+          limit: 10,
+        },
+        { signal: undefined },
+      );
       expect(response).toEqual([{ title: 'Hegel Book' }]);
     });
 
@@ -200,12 +209,15 @@ describe('Tool Handlers - Extended Coverage', () => {
       const validatedArgs = toolRegistry.fetch_booklist.schema.parse(args);
       const response = await handler(validatedArgs);
 
-      expect(mockFetchList).toHaveBeenCalledWith({
-        booklistId: 'bl1',
-        booklistHash: 'hash1',
-        topic: 'philosophy',
-        page: 2,
-      });
+      expect(mockFetchList).toHaveBeenCalledWith(
+        {
+          booklistId: 'bl1',
+          booklistHash: 'hash1',
+          topic: 'philosophy',
+          page: 2,
+        },
+        { signal: undefined },
+      );
       expect(response).toEqual({ books: [{ title: 'Listed Book' }], total: 1 });
     });
 
@@ -235,13 +247,16 @@ describe('Tool Handlers - Extended Coverage', () => {
       const validatedArgs = toolRegistry.search_advanced.schema.parse(args);
       const response = await handler(validatedArgs);
 
-      expect(mockAdvanced).toHaveBeenCalledWith({
-        query: 'being and time',
-        exact: true,
-        yearFrom: 1927,
-        yearTo: 1927,
-        count: 5,
-      });
+      expect(mockAdvanced).toHaveBeenCalledWith(
+        {
+          query: 'being and time',
+          exact: true,
+          yearFrom: 1927,
+          yearTo: 1927,
+          count: 5,
+        },
+        { signal: undefined },
+      );
       expect(response).toEqual({
         exact_matches: [{ title: 'Exact' }],
         fuzzy_matches: [{ title: 'Fuzzy' }],
@@ -271,11 +286,16 @@ describe('Tool Handlers - Extended Coverage', () => {
       const validatedArgs = toolRegistry.search_multi_source.schema.parse(args);
       const response = await handler(validatedArgs);
 
-      expect(mockMulti).toHaveBeenCalledWith({
-        query: 'philosophy',
-        source: 'libgen',
-        count: 20,
-      });
+      // Second argument carries the MCP request's abort signal, so a
+      // cancelled call can kill the bridge subprocess rather than orphan it.
+      expect(mockMulti).toHaveBeenCalledWith(
+        {
+          query: 'philosophy',
+          source: 'libgen',
+          count: 20,
+        },
+        { signal: undefined },
+      );
       expect(response).toEqual([{ title: 'Multi Book', source: 'libgen' }]);
     });
 
@@ -435,5 +455,45 @@ describe('Tool Handlers - Extended Coverage', () => {
 
       expect(response).toEqual({ error: { message: 'Failed to search multi-source' } });
     });
+  });
+
+  /**
+   * Cancellation has to reach the subprocess, not just the promise. Wiring it
+   * on one tool and not the rest is how a cancelled download went on running
+   * for its full budget with nobody waiting for the result, so this asserts
+   * the signal arrives for every tool that spawns the bridge.
+   */
+  describe('client cancellation reaches every bridge-backed tool', () => {
+    const CASES = [
+      ['search_books', 'searchBooks', { query: 'x' }, 1],
+      ['full_text_search', 'fullTextSearch', { query: 'x' }, 1],
+      ['get_download_history', 'getDownloadHistory', {}, 1],
+      ['get_download_limits', 'getDownloadLimits', {}, 0],
+      ['download_book_to_file', 'downloadBookToFile', { bookDetails: { id: '1' } }, 1],
+      ['process_document_for_rag', 'processDocumentForRag', { file_path: '/a.epub' }, 1],
+      ['get_book_metadata', 'getBookMetadata', { bookId: '1', bookHash: 'h' }, 3],
+      ['search_by_term', 'searchByTerm', { term: 't' }, 1],
+      ['search_by_author', 'searchByAuthor', { author: 'a' }, 1],
+      ['fetch_booklist', 'fetchBooklist', { booklistId: '1', booklistHash: 'h', topic: 't' }, 1],
+      ['search_advanced', 'searchAdvanced', { query: 'x' }, 1],
+      ['search_multi_source', 'searchMultiSource', { query: 'x' }, 1],
+    ];
+
+    test.each(CASES)(
+      '%s forwards the abort signal to the API layer',
+      async (toolName, apiName, rawArgs, optionsIndex) => {
+        const spy = jest.fn().mockResolvedValue({});
+        const { toolRegistry } = await setupWithMocks({ [apiName]: spy });
+
+        const entry = toolRegistry[toolName];
+        const validated = entry.schema ? entry.schema.parse(rawArgs) : rawArgs;
+        const controller = new AbortController();
+
+        await entry.handler(validated, { signal: controller.signal });
+
+        expect(spy).toHaveBeenCalled();
+        expect(spy.mock.calls[0][optionsIndex]).toEqual({ signal: controller.signal });
+      },
+    );
   });
 });

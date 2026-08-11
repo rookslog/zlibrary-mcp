@@ -16,12 +16,27 @@ from bs4 import BeautifulSoup
 
 from .base import SourceAdapter
 from .config import SourceConfig
+from .errors import (
+    AllSourcesFailedError,
+    ProviderResponseError,
+    ProviderUnreachableError,
+    SourceError,
+)
 from .models import DownloadResult, SourceType, UnifiedBookResult
+from .net import (
+    build_timeout,
+    classify_httpx_error,
+    classify_requests_error,
+    probe_host,
+    run_bounded,
+)
 
 # CRITICAL: Import is libgen_api_enhanced, NOT libgen_api
 from libgen_api_enhanced import LibgenSearch
 
 logger = logging.getLogger("zlibrary.sources")
+
+PROVIDER = "libgen"
 
 # Mirrors tried in order when resolving a download. Different mirrors hand off
 # to different CDN nodes (cdn3/cdn4/... .booksdl.lc) and those nodes fail
@@ -29,6 +44,11 @@ logger = logging.getLogger("zlibrary.sources")
 # served real bytes. Failing over between mirrors therefore also routes around
 # a dead CDN node, which is why this list exists rather than a single default.
 FALLBACK_MIRRORS = ("li", "vg", "la")
+
+
+def mirror_host(mirror: str) -> str:
+    """Hostname for a mirror suffix, matching what LibgenSearch builds."""
+    return f"libgen.{mirror}"
 
 
 class LibgenAdapter(SourceAdapter):
@@ -64,10 +84,20 @@ class LibgenAdapter(SourceAdapter):
         self._last_request = time.time()
 
     async def search(self, query: str, **kwargs) -> List[UnifiedBookResult]:
-        """Search for books matching query.
+        """Search for books matching query, failing over between mirrors.
 
-        Uses libgen-api-enhanced LibgenSearch.search_title() wrapped in
-        asyncio.to_thread() to avoid blocking the event loop.
+        Two hazards are handled here that the previous implementation was not
+        bounded against:
+
+        - `libgen_api_enhanced` issues `requests.get(...)` with **no timeout**
+          (search_request.py:177), so a mirror that drops SYNs blocks forever.
+          It runs under `run_bounded` on a daemon thread: the await is capped
+          at `config.total_timeout` and an abandoned call cannot outlive the
+          process. Under `asyncio.to_thread` it did exactly that — three
+          orphaned bridge processes, the oldest 9h10m old, on 2026-08-11.
+        - Search used only the configured mirror while `get_download_url`
+          already walked `_mirror_candidates()`. It now walks the same list, so
+          one dead mirror no longer means no results.
 
         Args:
             query: Search string (title, author, ISBN, etc.)
@@ -75,18 +105,46 @@ class LibgenAdapter(SourceAdapter):
 
         Returns:
             List of UnifiedBookResult with source=LIBGEN
+
+        Raises:
+            AllSourcesFailedError: If no mirror could complete the search
         """
-        await self._rate_limit()
+        failures = []
 
-        def _search_sync():
-            s = LibgenSearch(mirror=self.mirror)
-            return s.search_title(query)
+        for mirror in self._mirror_candidates():
+            host = mirror_host(mirror)
+            try:
+                await self._preflight(mirror)
+            except ProviderUnreachableError as exc:
+                logger.warning("LibGen mirror %s unreachable: %s", mirror, exc)
+                failures.append(exc)
+                continue
 
-        results = await asyncio.to_thread(_search_sync)
+            await self._rate_limit()
 
-        if not results:
-            return []
+            def _search_sync(mirror=mirror):
+                return LibgenSearch(mirror=mirror).search_title(query)
 
+            try:
+                results = await run_bounded(
+                    _search_sync,
+                    self.config.total_timeout,
+                    provider=PROVIDER,
+                    host=host,
+                    operation="search",
+                )
+            except Exception as exc:
+                failure = self._as_source_error(exc, host)
+                logger.warning("LibGen search failed on %s: %s", mirror, failure)
+                failures.append(failure)
+                continue
+
+            return self._to_unified(results or [])
+
+        raise AllSourcesFailedError(f"LibGen search for {query!r}", failures)
+
+    def _to_unified(self, results) -> List[UnifiedBookResult]:
+        """Convert libgen-api-enhanced books into UnifiedBookResult."""
         return [
             UnifiedBookResult(
                 md5=getattr(book, "md5", "") or "",
@@ -114,6 +172,53 @@ class LibgenAdapter(SourceAdapter):
     def _mirror_candidates(self) -> List[str]:
         """Mirrors to try, configured one first, without duplicates."""
         return [self.mirror] + [m for m in FALLBACK_MIRRORS if m != self.mirror]
+
+    async def _preflight(self, mirror: str) -> None:
+        """Fail fast if a mirror is not reachable.
+
+        This matters more for LibGen than for Anna's: once the third-party
+        search call starts it cannot be interrupted, only abandoned. Probing
+        first means an unroutable mirror (libgen.is resolves to
+        193.218.118.42 but drops every SYN, measured 2026-08-11) costs one
+        bounded probe and never enters that call.
+
+        Args:
+            mirror: Mirror suffix, e.g. 'li'
+
+        Raises:
+            ProviderUnreachableError: If the mirror does not resolve or connect
+        """
+        if not self.config.preflight_enabled:
+            return
+        await probe_host(
+            PROVIDER,
+            mirror_host(mirror),
+            timeout=self.config.preflight_timeout,
+        )
+
+    def _as_source_error(self, exc: BaseException, host: str) -> Exception:
+        """Convert a failure into a provider-attributed error.
+
+        Handles both httpx exceptions (our own `get_download_url` requests) and
+        the `requests`-based exceptions that surface from the LibGen library.
+
+        Args:
+            exc: Exception raised while talking to a mirror
+            host: Mirror hostname for attribution
+
+        Returns:
+            An already-attributed error unchanged, otherwise a
+            ProviderResponseError or ProviderUnreachableError.
+        """
+        if isinstance(exc, SourceError):
+            return exc
+        if isinstance(exc, httpx.HTTPError):
+            reason, detail = classify_httpx_error(exc)
+        else:
+            reason, detail = classify_requests_error(exc)
+        if reason in ("http_error", "protocol_error"):
+            return ProviderResponseError(PROVIDER, host, detail, reason=reason)
+        return ProviderUnreachableError(PROVIDER, host, detail, reason=reason)
 
     async def _resolve_key(
         self, client: httpx.AsyncClient, mirror: str, md5: str
@@ -197,14 +302,26 @@ class LibgenAdapter(SourceAdapter):
         """
         attempts = []
 
-        async with httpx.AsyncClient(timeout=30, follow_redirects=True) as client:
+        async with httpx.AsyncClient(
+            timeout=build_timeout(self.config), follow_redirects=True
+        ) as client:
             for mirror in self._mirror_candidates():
+                try:
+                    await self._preflight(mirror)
+                except ProviderUnreachableError as exc:
+                    attempts.append(f"{mirror}: {exc.reason}")
+                    logger.warning(f"LibGen mirror {mirror} unreachable: {exc}")
+                    continue
+
                 await self._rate_limit()
                 try:
                     key = await self._resolve_key(client, mirror, md5)
                 except Exception as exc:  # network, TLS, HTTP error
-                    attempts.append(f"{mirror}: {type(exc).__name__}")
-                    logger.warning(f"LibGen mirror {mirror} failed for {md5}: {exc}")
+                    failure = self._as_source_error(exc, mirror_host(mirror))
+                    attempts.append(f"{mirror}: {failure.reason}")
+                    logger.warning(
+                        f"LibGen mirror {mirror} failed for {md5}: {failure}"
+                    )
                     continue
 
                 if not key:

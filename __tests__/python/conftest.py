@@ -50,3 +50,31 @@ def _clear_pymupdf_cache():
         _clear_textpage_cache()
     except ImportError:
         pass
+
+
+@pytest.fixture(autouse=True)
+def _no_preflight_probes(request, monkeypatch):
+    """Keep the multi-source pre-flight probe off the network in unit tests.
+
+    The source adapters probe DNS and TCP before searching, so a test that
+    mocks only the HTTP client would otherwise make a real connection to
+    whatever hostname its fixture config names — slow, flaky, and dependent on
+    the machine's egress. Tests that mean to exercise the probe itself opt back
+    in with `@pytest.mark.real_preflight`.
+    """
+    if request.node.get_closest_marker("real_preflight"):
+        return
+    try:
+        from lib.sources import net
+    except ImportError:
+        return
+
+    async def _skip(*_args, **_kwargs):
+        return None
+
+    monkeypatch.setattr(net, "probe_host", _skip)
+    for module_name in ("lib.sources.annas", "lib.sources.libgen"):
+        module = sys.modules.get(module_name)
+        if module is not None and hasattr(module, "probe_host"):
+            monkeypatch.setattr(module, "probe_host", _skip)
+    net.reset_probe_cache()

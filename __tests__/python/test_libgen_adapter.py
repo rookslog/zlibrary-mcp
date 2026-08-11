@@ -84,8 +84,14 @@ class TestLibgenAdapterSearch:
             assert results == []
 
     @pytest.mark.asyncio
-    async def test_search_uses_asyncio_to_thread(self, config, mock_book):
-        """Search should wrap sync call in asyncio.to_thread()."""
+    async def test_search_runs_under_a_wall_clock_budget(self, config, mock_book):
+        """Search must go through run_bounded, not asyncio.to_thread.
+
+        libgen_api_enhanced calls requests.get with no timeout, and
+        asyncio.to_thread's workers are joined at interpreter exit — together
+        that kept whole bridge processes alive for hours after their MCP call
+        was gone. The blocking call has to run somewhere it can be abandoned.
+        """
         from lib.sources.libgen import LibgenAdapter
 
         adapter = LibgenAdapter(config)
@@ -95,17 +101,39 @@ class TestLibgenAdapterSearch:
             mock_instance.search_title.return_value = [mock_book]
             mock_search_class.return_value = mock_instance
 
-            with patch("lib.sources.libgen.asyncio.to_thread") as mock_to_thread:
-                # Make to_thread actually call the function
-                async def call_func(func, *args, **kwargs):
-                    return func(*args, **kwargs)
+            with patch("lib.sources.libgen.run_bounded") as mock_run_bounded:
 
-                mock_to_thread.side_effect = call_func
+                async def call_func(func, timeout, **kwargs):
+                    call_func.timeout = timeout
+                    return func()
+
+                mock_run_bounded.side_effect = call_func
 
                 await adapter.search("python")
 
-                # Verify to_thread was called
-                mock_to_thread.assert_called_once()
+                mock_run_bounded.assert_called_once()
+                assert call_func.timeout == config.total_timeout
+
+    @pytest.mark.asyncio
+    async def test_search_does_not_use_asyncio_to_thread(self, config, mock_book):
+        """asyncio.to_thread must not reappear in the search path.
+
+        Regression guard for the orphaned-process bug: to_thread's pool threads
+        are non-daemon, so an abandoned request keeps the interpreter alive.
+        """
+        from lib.sources.libgen import LibgenAdapter
+
+        adapter = LibgenAdapter(config)
+
+        with patch("lib.sources.libgen.LibgenSearch") as mock_search_class:
+            mock_instance = MagicMock()
+            mock_instance.search_title.return_value = [mock_book]
+            mock_search_class.return_value = mock_instance
+
+            with patch("asyncio.to_thread") as mock_to_thread:
+                await adapter.search("python")
+
+            mock_to_thread.assert_not_called()
 
     @pytest.mark.asyncio
     async def test_search_handles_missing_attributes(self, config):

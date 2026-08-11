@@ -6,10 +6,33 @@ Environment variables:
     LIBGEN_MIRROR: LibGen mirror to use (default: li)
     BOOK_SOURCE_DEFAULT: Default source selection (auto|annas|libgen)
     BOOK_SOURCE_FALLBACK_ENABLED: Enable fallback to other source (default: true)
+    BOOK_SOURCE_CONNECT_TIMEOUT: TCP/TLS connect budget, seconds (default: 10)
+    BOOK_SOURCE_READ_TIMEOUT: Response-read budget, seconds (default: 30)
+    BOOK_SOURCE_TOTAL_TIMEOUT: Per-provider wall-clock budget, seconds (default: 45)
+    BOOK_SOURCE_PREFLIGHT: Probe host reachability before searching (default: true)
+    BOOK_SOURCE_PREFLIGHT_TIMEOUT: Budget per probe phase, seconds (default: 5)
 """
 
 import os
 from dataclasses import dataclass
+
+# Timeout defaults. Every outbound call in this package is bounded by these;
+# nothing here may fall back to "no timeout". The per-provider TOTAL budget
+# exists because a per-request timeout does not bound a call that walks several
+# mirrors, and because the LibGen library's own request cannot be interrupted
+# once started (see lib/sources/net.run_bounded).
+#
+# These compose. The preflight budget is per PHASE and there are two (DNS, then
+# TCP), so one provider attempt costs at worst 2*preflight + total = 55s. LibGen
+# walks up to three mirrors and an `auto` search adds Anna's on top, giving a
+# worst case of 4 x 55s = 220s. PYTHON_BRIDGE_TIMEOUT on the Node side (240s)
+# has to stay above that — a subprocess kill that fires first would preempt a
+# legitimate slow walk rather than catch a hang. Raising any value here without
+# raising that one narrows a margin that is already only 20s.
+DEFAULT_CONNECT_TIMEOUT = 10.0
+DEFAULT_READ_TIMEOUT = 30.0
+DEFAULT_TOTAL_TIMEOUT = 45.0
+DEFAULT_PREFLIGHT_TIMEOUT = 5.0
 
 # Hosts operated by the Anna's Archive project, per the mirror list the live
 # site itself advertises (verified 2026-07-24: .gl/.pk/.gd serve real search
@@ -58,6 +81,11 @@ class SourceConfig:
         libgen_mirror: LibGen mirror suffix (e.g., 'li', 'rs')
         default_source: Which source to try first ('auto', 'annas', 'libgen')
         fallback_enabled: Whether to try other source if primary fails
+        connect_timeout: Seconds allowed for TCP/TLS connect
+        read_timeout: Seconds allowed to read a response
+        total_timeout: Seconds allowed for a whole provider operation
+        preflight_enabled: Probe host reachability before the real request
+        preflight_timeout: Seconds allowed for each probe phase
     """
 
     annas_secret_key: str = ""
@@ -65,11 +93,33 @@ class SourceConfig:
     libgen_mirror: str = DEFAULT_LIBGEN_MIRROR
     default_source: str = "auto"  # 'auto' | 'annas' | 'libgen'
     fallback_enabled: bool = True
+    connect_timeout: float = DEFAULT_CONNECT_TIMEOUT
+    read_timeout: float = DEFAULT_READ_TIMEOUT
+    total_timeout: float = DEFAULT_TOTAL_TIMEOUT
+    preflight_enabled: bool = True
+    preflight_timeout: float = DEFAULT_PREFLIGHT_TIMEOUT
 
     @property
     def has_annas_key(self) -> bool:
         """Check if Anna's Archive API key is configured."""
         return bool(self.annas_secret_key)
+
+
+def _positive_float(name: str, default: float) -> float:
+    """Read a positive float from the environment, falling back on nonsense.
+
+    A malformed or non-positive timeout must not disable the timeout — that is
+    the failure this module exists to prevent — so it falls back to the default
+    rather than to None.
+    """
+    raw = os.environ.get(name)
+    if not raw:
+        return default
+    try:
+        value = float(raw)
+    except ValueError:
+        return default
+    return value if value > 0 else default
 
 
 def get_source_config() -> SourceConfig:
@@ -85,4 +135,16 @@ def get_source_config() -> SourceConfig:
         default_source=os.environ.get("BOOK_SOURCE_DEFAULT", "auto"),
         fallback_enabled=os.environ.get("BOOK_SOURCE_FALLBACK_ENABLED", "true").lower()
         == "true",
+        connect_timeout=_positive_float(
+            "BOOK_SOURCE_CONNECT_TIMEOUT", DEFAULT_CONNECT_TIMEOUT
+        ),
+        read_timeout=_positive_float("BOOK_SOURCE_READ_TIMEOUT", DEFAULT_READ_TIMEOUT),
+        total_timeout=_positive_float(
+            "BOOK_SOURCE_TOTAL_TIMEOUT", DEFAULT_TOTAL_TIMEOUT
+        ),
+        preflight_enabled=os.environ.get("BOOK_SOURCE_PREFLIGHT", "true").lower()
+        == "true",
+        preflight_timeout=_positive_float(
+            "BOOK_SOURCE_PREFLIGHT_TIMEOUT", DEFAULT_PREFLIGHT_TIMEOUT
+        ),
     )

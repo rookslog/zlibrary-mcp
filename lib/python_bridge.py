@@ -23,6 +23,7 @@ from lib import enhanced_metadata
 # Import multi-source router
 from lib.sources.router import SourceRouter
 from lib.sources.config import get_source_config
+from lib.sources.errors import AllSourcesFailedError, SourceError
 
 # Add zlibrary source directory to path for EAPI imports
 zlibrary_src_path = os.path.join(os.path.dirname(__file__), "..", "zlibrary", "src")
@@ -607,13 +608,47 @@ async def get_download_history(count=10):
 
 
 async def get_download_limits():
-    """Get user's download limits via EAPI profile."""
+    """Get user's download limits via EAPI profile.
+
+    /eapi/user/profile reports `downloads_limit` (the daily cap) and
+    `downloads_today` (how many are spent). It has never carried
+    `downloads_today_limit` or `downloads_today_left`, the names this function
+    used to read, so both values fell through to the "unknown" default and the
+    tool could not answer the one question callers ask it — whether there is
+    quota left to spend. Verified against a live profile response 2026-08-11.
+
+    `downloads_remaining` is derived, not reported; it is clamped at zero
+    because the server counts a download the moment it is issued and can report
+    `downloads_today` above the cap.
+
+    Returns:
+        dict with daily_limit, daily_remaining (both int, or "unknown" if the
+        response shape changes again), plus downloads_today and is_premium.
+    """
     eapi = await get_eapi_client()
     profile = await eapi.get_profile()
     user = profile.get("user", profile)
+
+    limit = user.get("downloads_limit")
+    used = user.get("downloads_today")
+
+    remaining = "unknown"
+    if isinstance(limit, int) and isinstance(used, int):
+        remaining = max(0, limit - used)
+    elif isinstance(limit, int):
+        remaining = limit
+
+    if limit is None:
+        logger.warning(
+            "EAPI profile has no 'downloads_limit' field; response keys: %s",
+            sorted(user.keys()),
+        )
+
     return {
-        "daily_limit": user.get("downloads_today_limit", "unknown"),
-        "daily_remaining": user.get("downloads_today_left", "unknown"),
+        "daily_limit": limit if limit is not None else "unknown",
+        "daily_remaining": remaining,
+        "downloads_today": used if used is not None else "unknown",
+        "is_premium": bool(user.get("isPremium", 0)),
     }
 
 
@@ -1172,6 +1207,11 @@ async def main():
             "type": type(e).__name__,
             "traceback": traceback.format_exc(),
         }
+        # Provider failures carry which source failed and why (DNS vs connect
+        # timeout vs HTTP error). Pass that through as structured data so the
+        # MCP caller can act on it instead of pattern-matching prose.
+        if isinstance(e, (SourceError, AllSourcesFailedError)):
+            error_info["details"] = e.to_dict()
         print(json.dumps(error_info), file=sys.stderr)
         sys.exit(1)
     finally:

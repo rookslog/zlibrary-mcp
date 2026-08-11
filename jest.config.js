@@ -43,16 +43,22 @@ export default {
   coverageDirectory: 'coverage',
   coverageReporters: ['text', 'lcov', 'json-summary'],
   collectCoverageFrom: ['dist/**/*.js', '!dist/**/*.test.js', '!dist/**/*.d.ts'],
-  // Ratcheted to just under the actual measurement (85.08 / 79.59 / 77.89 / 87.37
-  // at 165 tests) so the gate catches a real regression. The previous floors were
-  // set against a 93-test suite and had drifted ~20 points below reality, which
-  // meant coverage could halve without CI noticing. Raise these when coverage
-  // rises; never lower them to make a change pass.
+  // Ratcheted to just under the actual measurement so the gate catches a real
+  // regression. The floors were once set against a 93-test suite and had
+  // drifted ~20 points below reality, which meant coverage could halve without
+  // CI noticing. Raise these when coverage rises; never lower them to make a
+  // change pass.
+  //
+  // Measured 85.89 / 79.68 / 79.67 / 87.61 at 206 tests. Branches and functions
+  // are ratcheted to that; statements and lines are deliberately left lower,
+  // because six venv-manager tests pass only where a .venv exists and their
+  // absence costs ~0.5 points on those two metrics — a floor that assumes them
+  // would fail on a checkout that has not run `uv sync` yet.
   coverageThreshold: {
     global: {
       statements: 84,
-      branches: 78,
-      functions: 76,
+      branches: 79,
+      functions: 79,
       lines: 86,
     },
   },

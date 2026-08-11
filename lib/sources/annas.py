@@ -19,7 +19,11 @@ from bs4.element import Tag
 
 from .base import SourceAdapter
 from .config import ANNAS_TRUSTED_HOSTS, SourceConfig
+from .errors import ProviderResponseError, ProviderUnreachableError
 from .models import DownloadResult, QuotaInfo, SourceType, UnifiedBookResult
+from .net import build_timeout, classify_httpx_error, probe_host
+
+PROVIDER = "annas"
 
 # Each Anna's result renders a metadata strip of "·"-separated segments, e.g.
 #   English [en] · PDF · 5.6MB · 2008 · 📕 Book (fiction) · 🚀/lgli/nexusstc/zlib
@@ -126,17 +130,55 @@ class AnnasArchiveAdapter(SourceAdapter):
         self.config = config
         self.base_url = config.annas_base_url.rstrip("/")
         self.secret_key = config.annas_secret_key
+        self.host = (urlsplit(self.base_url).hostname or "").lower()
         self._client: Optional[httpx.AsyncClient] = None
 
     async def _get_client(self) -> httpx.AsyncClient:
         """Get or create HTTP client.
 
         Returns:
-            Configured httpx.AsyncClient instance
+            Configured httpx.AsyncClient instance, with connect and read
+            budgets taken from config rather than a hard-coded constant.
         """
         if self._client is None:
-            self._client = httpx.AsyncClient(timeout=30, follow_redirects=True)
+            self._client = httpx.AsyncClient(
+                timeout=build_timeout(self.config), follow_redirects=True
+            )
         return self._client
+
+    async def _preflight(self) -> None:
+        """Fail fast if the configured Anna's host is not reachable.
+
+        Anna's domains lapse (annas-archive.org and .se are NXDOMAIN as of
+        2026-08-11), so "this domain no longer exists" is a routine outcome and
+        deserves a one-probe answer naming the host, not a full request budget
+        spent on a name that cannot resolve.
+        """
+        if not self.config.preflight_enabled or not self.host:
+            return
+        await probe_host(
+            PROVIDER,
+            self.host,
+            timeout=self.config.preflight_timeout,
+        )
+
+    def _as_source_error(self, exc: BaseException) -> Exception:
+        """Convert a transport failure into a provider-attributed error.
+
+        Args:
+            exc: Exception raised by an httpx call
+
+        Returns:
+            The original exception if it is already attributed, otherwise a
+            ProviderUnreachableError (transport) or ProviderResponseError
+            (the host answered but the answer was unusable).
+        """
+        if isinstance(exc, (ProviderUnreachableError, ProviderResponseError)):
+            return exc
+        reason, detail = classify_httpx_error(exc)
+        if reason in ("http_error", "protocol_error"):
+            return ProviderResponseError(PROVIDER, self.host, detail, reason=reason)
+        return ProviderUnreachableError(PROVIDER, self.host, detail, reason=reason)
 
     async def search(self, query: str, **kwargs) -> List[UnifiedBookResult]:
         """Search Anna's Archive for books.
@@ -150,11 +192,20 @@ class AnnasArchiveAdapter(SourceAdapter):
 
         Returns:
             List of UnifiedBookResult with source=ANNAS_ARCHIVE
+
+        Raises:
+            ProviderUnreachableError: If the host does not resolve or connect
+            ProviderResponseError: If it answers with an HTTP or protocol error
         """
+        await self._preflight()
+
         client = await self._get_client()
         url = f"{self.base_url}/search?q={quote(query)}"
-        response = await client.get(url)
-        response.raise_for_status()
+        try:
+            response = await client.get(url)
+            response.raise_for_status()
+        except Exception as exc:
+            raise self._as_source_error(exc) from exc
 
         soup = BeautifulSoup(response.text, "html.parser")
         results = []
@@ -284,6 +335,8 @@ class AnnasArchiveAdapter(SourceAdapter):
                 f"has moved to a new domain you have verified yourself."
             )
 
+        await self._preflight()
+
         client = await self._get_client()
         url = f"{self.base_url}/dyn/api/fast_download.json"
         params = {
@@ -292,9 +345,12 @@ class AnnasArchiveAdapter(SourceAdapter):
             "domain_index": 1,  # CRITICAL: Use 1, not 0 (SSL errors on 0)
         }
 
-        response = await client.get(url, params=params)
-        response.raise_for_status()
-        data = response.json()
+        try:
+            response = await client.get(url, params=params)
+            response.raise_for_status()
+            data = response.json()
+        except Exception as exc:
+            raise self._as_source_error(exc) from exc
 
         # Check for API error
         if data.get("error"):

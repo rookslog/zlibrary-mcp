@@ -84,8 +84,22 @@ def mock_eapi_client():
     mock_client.get_downloaded = AsyncMock(
         return_value={"books": MOCK_EAPI_SEARCH_RESPONSE["books"]}
     )
+    # Field names copied from a live /eapi/user/profile response (2026-08-11).
+    # The previous fixture invented `downloads_today_limit` /
+    # `downloads_today_left` to match the code, so the test passed while the
+    # real tool returned {"daily_limit": "unknown", "daily_remaining":
+    # "unknown"} against the actual API. A fixture must mirror the service, not
+    # the caller's assumption about it.
     mock_client.get_profile = AsyncMock(
-        return_value={"user": {"downloads_today_limit": 10, "downloads_today_left": 7}}
+        return_value={
+            "success": 1,
+            "user": {
+                "id": 1,
+                "downloads_today": 3,
+                "downloads_limit": 10,
+                "isPremium": 0,
+            },
+        }
     )
     mock_client.get_recently = AsyncMock(return_value=MOCK_EAPI_SEARCH_RESPONSE)
     mock_client.close = AsyncMock()
@@ -340,9 +354,33 @@ class TestProfileEndpoints:
 
     @pytest.mark.asyncio
     async def test_get_download_limits(self, patch_eapi_client):
+        """Real numbers, from the field names the EAPI actually sends."""
         result = await get_download_limits()
         assert result["daily_limit"] == 10
         assert result["daily_remaining"] == 7
+        assert result["downloads_today"] == 3
+        assert result["is_premium"] is False
+
+    @pytest.mark.asyncio
+    async def test_get_download_limits_clamps_at_zero(self, patch_eapi_client):
+        """The server counts a download when issued and can exceed the cap."""
+        patch_eapi_client.get_profile = AsyncMock(
+            return_value={"user": {"downloads_today": 12, "downloads_limit": 10}}
+        )
+        result = await get_download_limits()
+        assert result["daily_remaining"] == 0
+
+    @pytest.mark.asyncio
+    async def test_get_download_limits_reports_unknown_if_the_shape_changes(
+        self, patch_eapi_client
+    ):
+        """A renamed field must degrade to 'unknown', not to a wrong number."""
+        patch_eapi_client.get_profile = AsyncMock(
+            return_value={"user": {"something_else": 5}}
+        )
+        result = await get_download_limits()
+        assert result["daily_limit"] == "unknown"
+        assert result["daily_remaining"] == "unknown"
 
 
 # --- Tests for get_book_metadata_complete (EAPI-based) ---

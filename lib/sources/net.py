@@ -1,0 +1,351 @@
+"""Bounded-network helpers for the multi-source path.
+
+Everything outbound in `lib/sources/` goes through here so that no call can
+block without a deadline. Three distinct hazards are covered, and they need
+three different mechanisms:
+
+1. **httpx calls we own** — bounded by an `httpx.Timeout` built from config.
+   `build_timeout` exists so connect/read budgets are configurable rather than
+   hard-coded, and so every client in the package gets the same ones.
+
+2. **Blocking third-party calls we do not own** — `libgen_api_enhanced` calls
+   `requests.get(...)` with **no `timeout=` argument** (search_request.py), and
+   even catches a `requests.exceptions.Timeout` that therefore can never fire.
+   An unroutable host (SYN dropped, as libgen.is does from some networks) makes
+   that call block forever. `asyncio.to_thread` cannot rescue it: its worker
+   threads are non-daemon and are joined at interpreter shutdown, so the whole
+   Python process survives the MCP call that spawned it — the orphaned
+   `python_bridge.py search...` processes observed 2026-08-11 with 9h of
+   elapsed time. `run_bounded` runs such calls on a **daemon** thread instead:
+   the await is bounded, and an abandoned thread cannot keep the process alive.
+
+3. **Hosts that are simply gone** — `probe_host` is a cheap pre-flight that
+   separates "DNS has no address for this name" from "the name resolves but
+   the host drops our packets". Those need different fixes (update the mirror
+   list vs. try another mirror), so they get different reason codes rather
+   than one generic failure.
+"""
+
+import asyncio
+import json
+import logging
+import socket
+import ssl
+import threading
+from typing import Any, Callable, Dict, Optional, Tuple
+from urllib.parse import urlsplit
+
+import httpx
+
+from .errors import ProviderTimeoutError, ProviderUnreachableError
+
+logger = logging.getLogger("zlibrary.sources")
+
+# Cached probe verdicts, keyed by (host, port), for the lifetime of the
+# process. The bridge is a one-shot process per MCP call, so this only ever
+# collapses the repeated probes of a single call (LibGen walks three mirrors)
+# and cannot go stale across calls.
+_probe_cache: Dict[Tuple[str, int], Optional[ProviderUnreachableError]] = {}
+
+
+def host_of(url: str) -> str:
+    """Extract the hostname from a URL, or '' if it has none."""
+    return (urlsplit(url).hostname or "").lower()
+
+
+def build_timeout(config) -> httpx.Timeout:
+    """Build an httpx timeout from a SourceConfig.
+
+    Args:
+        config: SourceConfig carrying connect_timeout / read_timeout
+
+    Returns:
+        httpx.Timeout with an explicit budget on every phase. httpx defaults
+        pool/write to the same value so a saturated pool cannot hang either.
+    """
+    return httpx.Timeout(
+        connect=config.connect_timeout,
+        read=config.read_timeout,
+        write=config.read_timeout,
+        pool=config.connect_timeout,
+    )
+
+
+def classify_httpx_error(exc: BaseException) -> Tuple[str, str]:
+    """Map an httpx/transport exception to a (reason, detail) pair.
+
+    The cause chain matters more than the httpx class: httpx raises
+    `ConnectError` for a failed DNS lookup, a refused connection, and a broken
+    TLS handshake alike, and only `__cause__` tells those apart.
+
+    Args:
+        exc: Exception raised by an httpx call
+
+    Returns:
+        (reason code from errors.REASON_TEXT, free-text detail)
+    """
+    detail = type(exc).__name__
+
+    if isinstance(exc, httpx.ConnectTimeout):
+        return "connect_timeout", detail
+    if isinstance(exc, httpx.PoolTimeout):
+        return "connect_timeout", detail
+    if isinstance(exc, (httpx.ReadTimeout, httpx.WriteTimeout)):
+        return "read_timeout", detail
+    if isinstance(exc, httpx.TimeoutException):
+        return "read_timeout", detail
+    if isinstance(exc, httpx.HTTPStatusError):
+        return "http_error", f"HTTP {exc.response.status_code}"
+    if isinstance(exc, (httpx.RemoteProtocolError, httpx.DecodingError)):
+        return "protocol_error", detail
+    # response.json() on a non-JSON body. The host answered, so this is a
+    # response problem, not a reachability one.
+    if isinstance(exc, json.JSONDecodeError):
+        return "protocol_error", f"{detail}: {exc}"
+
+    if isinstance(exc, httpx.ConnectError):
+        cause = exc.__cause__
+        while cause is not None:
+            if isinstance(cause, socket.gaierror):
+                return "dns_failure", f"{detail}: {cause}"
+            if isinstance(cause, ssl.SSLError):
+                return "tls_error", f"{detail}: {type(cause).__name__}"
+            if isinstance(cause, ConnectionRefusedError):
+                return "connect_refused", detail
+            cause = cause.__cause__
+        # httpx does not always preserve the cause; fall back to the text.
+        text = str(exc).lower()
+        if "name or service not known" in text or "nodename nor servname" in text:
+            return "dns_failure", str(exc)
+        if "refused" in text:
+            return "connect_refused", detail
+        return "connect_error", f"{detail}: {exc}"
+
+    if isinstance(exc, ssl.SSLError):
+        return "tls_error", detail
+    if isinstance(exc, socket.gaierror):
+        return "dns_failure", f"{detail}: {exc}"
+    if isinstance(exc, ConnectionRefusedError):
+        return "connect_refused", detail
+    if isinstance(exc, asyncio.TimeoutError):
+        return "read_timeout", detail
+
+    return "unknown", f"{detail}: {exc}"
+
+
+def classify_requests_error(exc: BaseException) -> Tuple[str, str]:
+    """Map an exception from the `requests`-based LibGen library.
+
+    `libgen_api_enhanced` re-raises every transport failure as a bare
+    `requests.exceptions.RequestException` carrying only a sentence, so the
+    original class is usually gone by the time we see it. Match on the cause
+    chain first and fall back to that sentence.
+
+    Args:
+        exc: Exception raised by a libgen_api_enhanced call
+
+    Returns:
+        (reason code from errors.REASON_TEXT, free-text detail)
+    """
+    detail = type(exc).__name__
+
+    cause = exc.__cause__ or exc.__context__
+    while cause is not None:
+        if isinstance(cause, socket.gaierror):
+            return "dns_failure", f"{detail}: {cause}"
+        if isinstance(cause, ssl.SSLError):
+            return "tls_error", f"{detail}: {type(cause).__name__}"
+        if isinstance(cause, ConnectionRefusedError):
+            return "connect_refused", detail
+        cause = cause.__cause__ or cause.__context__
+
+    text = str(exc).lower()
+    if "timed out" in text or "timeout" in text:
+        return "read_timeout", str(exc)
+    if "failed to connect" in text or "connection" in text:
+        return "connect_error", str(exc)
+    if "http error" in text:
+        return "http_error", str(exc)
+    return "unknown", f"{detail}: {exc}"
+
+
+async def probe_host(
+    provider: str,
+    host: str,
+    port: int = 443,
+    timeout: float = 5.0,
+    use_cache: bool = True,
+) -> None:
+    """Check that a host resolves and accepts a TCP connection.
+
+    Runs before the real request so an unreachable provider costs one bounded
+    probe instead of the full per-request budget (and, for LibGen, so we never
+    enter the un-interruptible third-party call at all).
+
+    DNS and connect are probed separately on purpose: they are the two failure
+    modes measured on dionysus 2026-08-11 (annas-archive.org had no DNS record;
+    libgen.is resolved to 193.218.118.42 but dropped every SYN) and they call
+    for different remedies.
+
+    Args:
+        provider: Provider name for error attribution
+        host: Hostname to probe
+        port: TCP port (default 443)
+        timeout: Budget in seconds for EACH of the DNS and connect phases
+        use_cache: Reuse a verdict already reached for this (host, port)
+
+    Raises:
+        ProviderUnreachableError: If DNS or the TCP connect fails or times out
+    """
+    key = (host, port)
+    if use_cache and key in _probe_cache:
+        cached = _probe_cache[key]
+        if cached is not None:
+            raise cached
+        return
+
+    error = await _probe_host_uncached(provider, host, port, timeout)
+    _probe_cache[key] = error
+    if error is not None:
+        raise error
+
+
+async def _probe_host_uncached(
+    provider: str, host: str, port: int, timeout: float
+) -> Optional[ProviderUnreachableError]:
+    """Run the probe, returning the failure rather than raising it."""
+    loop = asyncio.get_running_loop()
+
+    # DNS. loop.getaddrinfo delegates to the default executor, whose threads
+    # are non-daemon; the resolver's own limits (resolv.conf timeout x
+    # attempts, typically <= 10s) are what actually bound it, so the wait_for
+    # here is a second line of defence rather than the only one.
+    try:
+        await asyncio.wait_for(
+            loop.getaddrinfo(host, port, type=socket.SOCK_STREAM), timeout
+        )
+    except asyncio.TimeoutError:
+        return ProviderUnreachableError(
+            provider, host, f"no DNS answer within {timeout:g}s", reason="dns_timeout"
+        )
+    except socket.gaierror as exc:
+        return ProviderUnreachableError(provider, host, str(exc), reason="dns_failure")
+    except OSError as exc:
+        return ProviderUnreachableError(
+            provider, host, f"{type(exc).__name__}: {exc}", reason="dns_failure"
+        )
+
+    # TCP connect. Deliberately no TLS handshake: this only answers "is anything
+    # listening", and a handshake would double the cost of the common case.
+    writer = None
+    try:
+        _, writer = await asyncio.wait_for(asyncio.open_connection(host, port), timeout)
+    except asyncio.TimeoutError:
+        return ProviderUnreachableError(
+            provider,
+            host,
+            f"no TCP handshake within {timeout:g}s",
+            reason="connect_timeout",
+        )
+    except ConnectionRefusedError:
+        return ProviderUnreachableError(provider, host, "", reason="connect_refused")
+    except OSError as exc:
+        return ProviderUnreachableError(
+            provider, host, f"{type(exc).__name__}: {exc}", reason="connect_error"
+        )
+    finally:
+        if writer is not None:
+            writer.close()
+            try:
+                await writer.wait_closed()
+            except OSError:
+                pass
+
+    return None
+
+
+def reset_probe_cache() -> None:
+    """Clear cached probe verdicts (used by tests)."""
+    _probe_cache.clear()
+
+
+async def run_bounded(
+    func: Callable[[], Any],
+    timeout: float,
+    *,
+    provider: str,
+    host: str = "",
+    operation: str = "request",
+) -> Any:
+    """Run a blocking callable on a daemon thread under a wall-clock budget.
+
+    Use this instead of `asyncio.to_thread` for any third-party synchronous
+    call whose own timeouts cannot be configured. Two properties matter:
+
+    - The await returns at `timeout` whether or not the call has finished.
+    - The thread is a daemon, so an abandoned call cannot keep the interpreter
+      alive at shutdown. `asyncio.to_thread` gives neither: its worker threads
+      are registered for join-at-exit, which is precisely how a hung LibGen
+      search outlived its MCP request by nine hours.
+
+    The abandoned thread still holds a socket until the process exits. That is
+    acceptable here because the bridge is a one-shot process per MCP call; it
+    would not be in a long-lived server.
+
+    Args:
+        func: Zero-argument blocking callable
+        timeout: Wall-clock budget in seconds
+        provider: Provider name for error attribution
+        host: Hostname for error attribution
+        operation: Short label for the error message
+
+    Returns:
+        Whatever `func` returns
+
+    Raises:
+        ProviderTimeoutError: If the budget elapses first
+        Exception: Whatever `func` raised
+    """
+    loop = asyncio.get_running_loop()
+    future: "asyncio.Future[Any]" = loop.create_future()
+
+    def _deliver(setter: Callable[[Any], None], value: Any) -> None:
+        # The loop may be gone, or the future already cancelled by the timeout,
+        # by the time a straggling thread reports back. Neither is an error.
+        try:
+            loop.call_soon_threadsafe(_apply, setter, value)
+        except RuntimeError:
+            pass
+
+    def _apply(setter: Callable[[Any], None], value: Any) -> None:
+        if not future.done():
+            setter(value)
+
+    def _runner() -> None:
+        try:
+            result = func()
+        except BaseException as exc:  # noqa: BLE001 - relayed to the awaiter
+            _deliver(future.set_exception, exc)
+        else:
+            _deliver(future.set_result, result)
+
+    thread = threading.Thread(
+        target=_runner, name=f"{provider}-{operation}", daemon=True
+    )
+    thread.start()
+
+    try:
+        return await asyncio.wait_for(future, timeout)
+    except asyncio.TimeoutError:
+        logger.warning(
+            "%s %s exceeded its %.0fs budget; abandoning the worker thread",
+            provider,
+            operation,
+            timeout,
+        )
+        raise ProviderTimeoutError(
+            provider,
+            host,
+            f"{operation} exceeded {timeout:g}s",
+            reason="search_timeout",
+        ) from None

@@ -1,5 +1,11 @@
 # Node/TypeScript
-node_modules/
+# No trailing slash: a worktree may carry node_modules as a symlink to the main
+# checkout, and `node_modules/` matches only a real directory.
+node_modules
+
+# Husky's generated hook shims. Husky writes these on `npm install`; only the
+# hook sources in .husky/ itself are source.
+.husky/_/
 coverage/
 dist/
 build/

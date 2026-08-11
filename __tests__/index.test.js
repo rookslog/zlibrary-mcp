@@ -222,7 +222,7 @@ describe('Tool Handlers (Direct)', () => {
 
      const response = await handler(validatedArgs);
 
-     expect(mockSearchBooks).toHaveBeenCalledWith(validatedArgs);
+     expect(mockSearchBooks).toHaveBeenCalledWith(validatedArgs, { signal: undefined });
      expect(response).toEqual(mockResult);
 
      // Error case
@@ -259,7 +259,7 @@ describe('Tool Handlers (Direct)', () => {
 
        const response = await handler(validatedArgs);
 
-       expect(mockDownloadBookToFile).toHaveBeenCalledWith(validatedArgs);
+       expect(mockDownloadBookToFile).toHaveBeenCalledWith(validatedArgs, { signal: undefined });
        expect(response).toEqual(mockResult);
 
       // Error case
@@ -295,7 +295,7 @@ describe('Tool Handlers (Direct)', () => {
 
        const response = await handler(validatedArgs);
 
-       expect(mockFullTextSearch).toHaveBeenCalledWith(validatedArgs);
+       expect(mockFullTextSearch).toHaveBeenCalledWith(validatedArgs, { signal: undefined });
         expect(response).toEqual(mockResult);
 
        const error = new Error('FullText Error');
@@ -330,7 +330,7 @@ describe('Tool Handlers (Direct)', () => {
 
        const response = await handler(validatedArgs);
 
-       expect(mockGetDownloadHistory).toHaveBeenCalledWith(validatedArgs);
+       expect(mockGetDownloadHistory).toHaveBeenCalledWith(validatedArgs, { signal: undefined });
        expect(response).toEqual(mockResult);
 
        const error = new Error('History Error');
@@ -365,7 +365,7 @@ describe('Tool Handlers (Direct)', () => {
 
        const response = await handler(validatedArgs);
 
-       expect(mockGetDownloadLimits).toHaveBeenCalledWith();
+       expect(mockGetDownloadLimits).toHaveBeenCalledWith({ signal: undefined });
        expect(response).toEqual(mockResult);
 
        const error = new Error('Limits Error');

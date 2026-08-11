@@ -10,6 +10,7 @@ from lib.sources.router import SourceRouter
 from lib.sources.config import SourceConfig
 from lib.sources.models import DownloadResult, QuotaInfo, SourceType, UnifiedBookResult
 from lib.sources.annas import QuotaExhaustedError
+from lib.sources.errors import AllSourcesFailedError, ProviderUnreachableError
 
 pytestmark = pytest.mark.unit
 
@@ -151,7 +152,12 @@ class TestRouterSearch:
 
     @pytest.mark.asyncio
     async def test_no_fallback_when_disabled(self, config_no_fallback):
-        """Should return empty results when fallback is disabled and Anna's fails."""
+        """Should raise, not return [], when fallback is disabled and Anna's fails.
+
+        Returning [] made an unreachable provider indistinguishable from a
+        query with no matches — the caller cannot tell it should retry, switch
+        source, or fix its config.
+        """
         router = SourceRouter(config_no_fallback)
 
         with patch.object(router, "_get_annas") as mock_get_annas:
@@ -159,9 +165,10 @@ class TestRouterSearch:
             annas_adapter.search.side_effect = Exception("Network error")
             mock_get_annas.return_value = annas_adapter
 
-            results = await router.search("test")
+            with pytest.raises(AllSourcesFailedError) as excinfo:
+                await router.search("test")
 
-            assert results == []
+            assert "annas" in str(excinfo.value)
 
     @pytest.mark.asyncio
     async def test_direct_libgen_search(self, config_without_annas):

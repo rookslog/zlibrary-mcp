@@ -33,6 +33,11 @@ class SourceRouter:
     - If fallback_enabled=True (default), LibGen is used as fallback
     - 'auto' source selection picks Anna's if key exists, else LibGen
 
+    An explicit source="annas" is honoured with or without a key, because Anna's
+    search needs no credentials. 'auto' deliberately stays LibGen-first when no
+    key is set: LibGen returns a resolvable download link, whereas an Anna's
+    result without a key still needs a route the caller may not have.
+
     Usage:
         config = get_source_config()
         router = SourceRouter(config)
@@ -50,13 +55,19 @@ class SourceRouter:
         self._annas: Optional[AnnasArchiveAdapter] = None
         self._libgen: Optional[LibgenAdapter] = None
 
-    def _get_annas(self) -> Optional[AnnasArchiveAdapter]:
-        """Get or create Anna's Archive adapter if API key is configured.
+    def _get_annas(self) -> AnnasArchiveAdapter:
+        """Get or create the Anna's Archive adapter.
+
+        Constructed unconditionally. Anna's search is HTML scraping that carries
+        no credentials, so it works without ANNAS_SECRET_KEY; only
+        get_download_url needs the key, and it enforces that itself. Gating
+        construction on the key put the check in the wrong place and made an
+        explicit source="annas" silently return LibGen results instead (#74).
 
         Returns:
-            AnnasArchiveAdapter if key is set, None otherwise
+            AnnasArchiveAdapter instance (always available)
         """
-        if self._annas is None and self.config.has_annas_key:
+        if self._annas is None:
             self._annas = AnnasArchiveAdapter(self.config)
         return self._annas
 
@@ -102,21 +113,19 @@ class SourceRouter:
         actual_source = self._determine_source(source)
 
         if actual_source == "annas":
-            annas = self._get_annas()
-            if annas:
-                try:
-                    results = await annas.search(query, **kwargs)
-                    if results:
-                        return results
-                    logger.info("Anna's Archive returned no results")
-                except Exception as e:
-                    logger.warning(f"Anna's Archive search failed: {e}")
+            try:
+                results = await self._get_annas().search(query, **kwargs)
+                if results:
+                    return results
+                logger.info("Anna's Archive returned no results")
+            except Exception as e:
+                logger.warning(f"Anna's Archive search failed: {e}")
 
-                # Fallback to LibGen if enabled
-                if self.config.fallback_enabled:
-                    logger.info("Falling back to LibGen")
-                    return await self._get_libgen().search(query, **kwargs)
-                return []
+            # Fallback to LibGen if enabled
+            if self.config.fallback_enabled:
+                logger.info("Falling back to LibGen")
+                return await self._get_libgen().search(query, **kwargs)
+            return []
 
         # Direct LibGen search
         return await self._get_libgen().search(query, **kwargs)

@@ -188,8 +188,13 @@ Z-Library applies a daily download limit of approximately 10 books. Call
 Anna's Archive search needs no account. Call `search_multi_source` with
 `source: "annas"`.
 
-**Note:** keyless search returns the MD5 hash and the record URL only. It does not return
-the title, the author, or the file format.
+Search without a key returns the title, the author, the year, the file format, and the
+file size. It also returns `also_available_on`, which lists the other sources that hold
+the same file.
+
+**Note:** `also_available_on` is a hint, not a guarantee. Anna's Archive reports it, and
+the file can leave the other source later. Use it to prefer a source that has no daily
+limit. Do not depend on it.
 
 Anna's Archive downloads need a membership API key in `ANNAS_SECRET_KEY`. Without a key,
 the server cannot download from Anna's Archive. Anna's Archive protects its free download

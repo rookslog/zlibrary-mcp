@@ -9,15 +9,87 @@ Key decisions:
 - ANNAS-SCRAPE-SEARCH: Search via HTML scraping (no search API exists)
 """
 
-from typing import List, Optional
+import re
+from typing import Dict, List, Optional
 from urllib.parse import quote, urlsplit
 
 import httpx
 from bs4 import BeautifulSoup
+from bs4.element import Tag
 
 from .base import SourceAdapter
 from .config import ANNAS_TRUSTED_HOSTS, SourceConfig
 from .models import DownloadResult, QuotaInfo, SourceType, UnifiedBookResult
+
+# Each Anna's result renders a metadata strip of "·"-separated segments, e.g.
+#   English [en] · PDF · 5.6MB · 2008 · 📕 Book (fiction) · 🚀/lgli/nexusstc/zlib
+# Segments are OPTIONAL and ORDER IS NOT GUARANTEED — year is absent from about
+# 9% of results (measured over 100 results across two queries). The strip is
+# therefore matched by pattern, never by index: positional parsing silently
+# shifts year into extension on the records that omit it.
+_SIZE_RE = re.compile(r"^\d+(?:\.\d+)?\s*[KMGT]B$", re.IGNORECASE)
+# Any plausible four-digit year, deliberately including pre-1500 ones. This is a
+# scholarly-text tool: incunabula and early-modern imprints carry dates like
+# 1492, and a 15xx-and-later floor silently dropped a year that was present
+# upstream. Widening is safe because size carries a unit suffix, content type
+# carries parentheses, and extension must start with a letter — so no other
+# segment can be mistaken for a bare four-digit number.
+_YEAR_RE = re.compile(r"^(?:1[0-9]\d{2}|20\d{2})$")
+# Extension must START with a letter. A bare "[A-Z0-9]{2,5}" also matches a
+# four-digit year, which is exactly the corruption this parser exists to avoid.
+_EXT_RE = re.compile(r"^[A-Z][A-Z0-9]{1,6}$")
+_LANG_RE = re.compile(r"\[([a-z]{2,3})\]")
+
+
+def _parse_metadata_strip(strip: str) -> Dict[str, str]:
+    """Pattern-match the '·'-separated metadata strip on an Anna's result.
+
+    Args:
+        strip: Raw strip text
+
+    Returns:
+        Dict with any of: language, extension, size, year, content_type,
+        provenance. Absent segments are simply omitted.
+    """
+    parsed: Dict[str, str] = {}
+    for raw in strip.split("·"):
+        seg = raw.replace("\U0001f680", "").strip()  # 🚀 prefixes provenance
+        if not seg:
+            continue
+        if "year" not in parsed and _YEAR_RE.match(seg):
+            parsed["year"] = seg
+        elif "size" not in parsed and _SIZE_RE.match(seg):
+            parsed["size"] = seg.replace(" ", "")
+        elif "language" not in parsed and _LANG_RE.search(seg):
+            parsed["language"] = _LANG_RE.search(seg).group(1)
+        elif "extension" not in parsed and _EXT_RE.match(seg):
+            parsed["extension"] = seg.lower()
+        elif "content_type" not in parsed and "(" in seg:
+            parsed["content_type"] = seg
+        elif "provenance" not in parsed and ("/" in seg or seg in ("zlib", "upload")):
+            parsed["provenance"] = seg.strip("/")
+    return parsed
+
+
+def _find_metadata_strip(card: Tag) -> Optional[str]:
+    """Locate the metadata strip within a result card.
+
+    Identified by content rather than by class name: Anna's uses generated
+    Tailwind classes that change between deploys, whereas a "·"-separated run
+    of recognisable segments is a stable shape.
+
+    Recognition must not hinge on any single segment. Requiring a size segment
+    discarded the whole strip for records that omit it — losing the language,
+    extension, year and content type that were present — which contradicted the
+    parser's own every-segment-is-optional contract.
+    """
+    for text in card.find_all(string=lambda t: t and "·" in t):
+        candidate = text.strip()
+        for part in candidate.split("·"):
+            seg = part.replace("\U0001f680", "").strip()
+            if _SIZE_RE.match(seg) or _EXT_RE.match(seg) or _LANG_RE.search(seg):
+                return candidate
+    return None
 
 
 class QuotaExhaustedError(Exception):
@@ -88,27 +160,87 @@ class AnnasArchiveAdapter(SourceAdapter):
         results = []
         seen = set()
 
+        # Each record renders TWO /md5/ anchors: a cover image with empty text,
+        # then the title. Dedupe-by-first kept the cover, so every result came
+        # back titled "Unknown" (#78). Select only text-bearing anchors — measured
+        # over 100 records on two unrelated queries, every md5 group has exactly
+        # two anchors and exactly one of them bears text.
         for link in soup.select("a[href^='/md5/']"):
-            href = link.get("href", "")
-            md5 = href.split("/")[-1]
-
-            # Skip empty or duplicate MD5s
-            if not md5 or md5 in seen:
+            title = link.get_text(strip=True)
+            if not title:
                 continue
 
+            md5 = link.get("href", "").split("/")[-1]
+            if not md5 or md5 in seen:
+                continue
             seen.add(md5)
-            title = link.get_text(strip=True) or "Unknown"
 
-            results.append(
-                UnifiedBookResult(
-                    md5=md5,
-                    title=title,
-                    source=SourceType.ANNAS_ARCHIVE,
-                    extra={"url": f"{self.base_url}/md5/{md5}"},
-                )
-            )
+            results.append(self._build_result(link, md5, title))
 
         return results
+
+    def _build_result(self, link: Tag, md5: str, title: str) -> UnifiedBookResult:
+        """Assemble one search result from its title anchor.
+
+        Args:
+            link: The text-bearing /md5/ anchor
+            md5: MD5 extracted from its href
+            title: Its text
+
+        Returns:
+            UnifiedBookResult with whatever fields the card exposed
+        """
+        card = link.parent
+        extra: Dict[str, str] = {"url": f"{self.base_url}/md5/{md5}"}
+
+        # Author and publisher carry semantic icon markers, which survive the
+        # generated-class churn that would break a class-name selector.
+        author = ""
+        if card is not None:
+            author_icon = card.select_one('a span[class*="mdi--user-edit"]')
+            if author_icon is not None and author_icon.parent is not None:
+                author = author_icon.parent.get_text(strip=True)
+
+            publisher_icon = card.select_one('a span[class*="mdi--company"]')
+            if publisher_icon is not None and publisher_icon.parent is not None:
+                publisher = publisher_icon.parent.get_text(strip=True)
+                if publisher:
+                    extra["publisher"] = publisher
+
+        meta: Dict[str, str] = {}
+        strip_host = card.parent if card is not None else None
+        if strip_host is not None:
+            strip = _find_metadata_strip(strip_host)
+            if strip:
+                meta = _parse_metadata_strip(strip)
+
+        if "language" in meta:
+            extra["language"] = meta["language"]
+        if "content_type" in meta:
+            extra["content_type"] = meta["content_type"]
+
+        # Which OTHER sources hold this same file, as claimed by Anna's. Verified
+        # to mean "retrievable", not merely "ingested from": 3/3 records marked
+        # /lgli resolved on LibGen, 0/2 unmarked did (#78).
+        #
+        # Surfaced only. Choosing a source from it is deliberately NOT done here:
+        # how it is reported is #96, and cross-source dedup is #52. Comparison
+        # logic inside a single source's adapter is what invariant 4 forbids.
+        if "provenance" in meta:
+            extra["also_available_on"] = [
+                part for part in meta["provenance"].split("/") if part
+            ]
+
+        return UnifiedBookResult(
+            md5=md5,
+            title=title,
+            source=SourceType.ANNAS_ARCHIVE,
+            author=author,
+            year=meta.get("year", ""),
+            extension=meta.get("extension", ""),
+            size=meta.get("size", ""),
+            extra=extra,
+        )
 
     async def get_download_url(self, md5: str) -> DownloadResult:
         """Get fast download URL for a book.

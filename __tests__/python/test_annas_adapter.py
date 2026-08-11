@@ -7,8 +7,14 @@ Tests cover:
 4. Error handling for invalid inputs
 """
 
+import asyncio
+from pathlib import Path
+
 import pytest
+from bs4 import BeautifulSoup
 from unittest.mock import AsyncMock, MagicMock, patch
+
+from lib.sources.models import SourceType
 
 pytestmark = pytest.mark.unit
 
@@ -512,3 +518,182 @@ class TestSecretKeyHostAllowlist:
             results = await adapter.search("python")
 
         assert len(results) == 3
+
+
+class TestAnnasMetadataExtraction:
+    """Extraction of full metadata from real Anna's search HTML (#78).
+
+    These run against `test_files/annas/search_results.html`, trimmed from a
+    live capture rather than hand-written, because the bug being fixed was
+    caused by real markup that a hand-written mock did not reproduce: each
+    record renders two /md5/ anchors, and deduping by first kept the cover
+    image (empty text) over the title.
+    """
+
+    FIXTURE = (
+        Path(__file__).resolve().parents[2]
+        / "test_files"
+        / "annas"
+        / "search_results.html"
+    )
+
+    @pytest.fixture
+    def results(self):
+        """Drive the real AnnasArchiveAdapter.search() against the fixture.
+
+        Deliberately NOT a reimplementation of search()'s filtering loop. An
+        earlier version of this fixture called _build_result directly, which
+        meant reverting the dedupe fix left these tests green — the headline
+        regression was not pinned at all. The whole point is that search() is
+        the thing under test.
+        """
+        from lib.sources.annas import AnnasArchiveAdapter
+        from lib.sources.config import SourceConfig
+
+        adapter = AnnasArchiveAdapter(
+            SourceConfig(annas_base_url="https://annas-archive.gl")
+        )
+
+        mock_response = MagicMock()
+        mock_response.text = self.FIXTURE.read_text()
+        mock_response.status_code = 200
+        mock_response.raise_for_status = MagicMock()
+
+        with patch.object(adapter, "_get_client") as mock_get_client:
+            mock_client = AsyncMock()
+            mock_client.get.return_value = mock_response
+            mock_get_client.return_value = mock_client
+            return (
+                asyncio.get_event_loop_policy()
+                .new_event_loop()
+                .run_until_complete(adapter.search("hegel"))
+            )
+
+    def test_fixture_reproduces_the_two_anchor_markup(self):
+        """Guard the guard.
+
+        These tests are only meaningful if the fixture contains the cover +
+        title anchor PAIR that caused the bug. A fixture holding just the title
+        anchor passes against the broken implementation too, so assert the
+        precondition rather than trusting it.
+        """
+        soup = BeautifulSoup(self.FIXTURE.read_text(), "html.parser")
+        groups = {}
+        for anchor in soup.select("a[href^='/md5/']"):
+            groups.setdefault(anchor.get("href", "").split("/")[-1], []).append(anchor)
+
+        assert len(groups) == 4
+        for md5, anchors in groups.items():
+            assert len(anchors) == 2, f"{md5} must render cover + title"
+            texts = sorted(len(a.get_text(strip=True)) for a in anchors)
+            assert texts[0] == 0, f"{md5} must have an empty-text cover anchor"
+            assert texts[1] > 0, f"{md5} must have a text-bearing title anchor"
+
+    def test_titles_are_extracted_not_unknown(self, results):
+        """The headline bug: every keyless result came back titled 'Unknown'."""
+        assert len(results) == 4
+        assert all(r.title and r.title != "Unknown" for r in results)
+        assert results[0].title == "Phenomenology of spirit"
+
+    def test_full_metadata_is_extracted(self, results):
+        """Option E: author, year, extension and size, not titles alone."""
+        first = results[0]
+        assert first.author == "Georg Wilhelm Friedrich Hegel"
+        assert first.year == "1977"
+        assert first.extension == "azw3"
+        assert first.size == "0.6MB"
+
+    def test_missing_year_does_not_corrupt_extension(self, results):
+        """The regression this parser exists to prevent.
+
+        Year is absent from ~9% of records. Parsing the metadata strip by
+        position would shift the next segment into the year slot and the
+        extension into the size slot. Record 2 has no year; every other field
+        must still land correctly.
+        """
+        no_year = results[1]
+        assert no_year.year == ""
+        assert no_year.extension == "pdf"
+        assert no_year.size == "6.7MB"
+        assert no_year.title == "Phenomenology of Spirit"
+
+    def test_year_is_never_mistaken_for_an_extension(self):
+        """A bare [A-Z0-9]{2,5} extension pattern also matches a 4-digit year."""
+        from lib.sources.annas import _parse_metadata_strip
+
+        parsed = _parse_metadata_strip(
+            "English [en] · PDF · 5.6MB · 2008 · 📕 Book (fiction)"
+        )
+        assert parsed["year"] == "2008"
+        assert parsed["extension"] == "pdf"
+        assert parsed["size"] == "5.6MB"
+        assert parsed["language"] == "en"
+
+    def test_segments_are_order_independent(self):
+        """Order is not guaranteed, so parsing must not depend on it."""
+        from lib.sources.annas import _parse_metadata_strip
+
+        forward = _parse_metadata_strip("English [en] · EPUB · 1.2MB · 1999")
+        shuffled = _parse_metadata_strip("1999 · 1.2MB · EPUB · English [en]")
+        assert forward == shuffled
+
+    def test_upstream_provenance_is_surfaced(self, results):
+        """Anna's names which other sources hold the same file (#78).
+
+        Verified to mean 'retrievable', not merely 'ingested from': 3/3 records
+        marked /lgli resolved on LibGen, 0/2 unmarked did.
+        """
+        assert results[0].extra["also_available_on"] == ["lgli", "zlib"]
+        assert "lgli" in results[2].extra["also_available_on"]
+
+    def test_provenance_is_surfaced_but_not_acted_on(self, results):
+        """Adapters expose provenance; they must not rank or dedupe on it.
+
+        Reporting is #96 and cross-source dedup is #52. Source-comparison logic
+        inside one source's adapter is what invariant 4 forbids.
+        """
+        for r in results:
+            assert r.source == SourceType.ANNAS_ARCHIVE
+            assert r.download_url == ""
+
+    def test_absent_fields_are_empty_strings(self, results):
+        """Matches UnifiedBookResult defaults and LibGen's behaviour."""
+        for r in results:
+            for field in (r.author, r.year, r.extension, r.size, r.download_url):
+                assert isinstance(field, str)
+
+    def test_pre_1500_years_are_preserved(self):
+        """Incunabula and early-modern imprints carry dates before 1500.
+
+        A 15xx-and-later floor silently dropped a year that was present
+        upstream. This is a scholarly-text tool; those dates are real.
+        """
+        from lib.sources.annas import _parse_metadata_strip
+
+        parsed = _parse_metadata_strip("Latin [la] · PDF · 12.0MB · 1492 · 📘 Book")
+        assert parsed["year"] == "1492"
+        assert parsed["extension"] == "pdf"
+
+    def test_strip_without_size_is_still_parsed(self):
+        """Every segment is optional — including the one used to find the strip.
+
+        Recognising the strip by its size segment discarded the entire strip for
+        records that omit size, losing language, extension, year and content
+        type that were all present.
+        """
+        from bs4 import BeautifulSoup
+
+        from lib.sources.annas import _find_metadata_strip, _parse_metadata_strip
+
+        card = BeautifulSoup(
+            "<div><div>English [en] · PDF · 2008 · 📕 Book (fiction)</div></div>",
+            "html.parser",
+        )
+        strip = _find_metadata_strip(card)
+        assert strip is not None, "strip must be found without a size segment"
+
+        parsed = _parse_metadata_strip(strip)
+        assert parsed["language"] == "en"
+        assert parsed["extension"] == "pdf"
+        assert parsed["year"] == "2008"
+        assert "size" not in parsed

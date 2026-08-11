@@ -28,6 +28,30 @@ Two corollaries the script also checks:
 - **`## [Unreleased]` is written as work lands**, not reconstructed from `git log` at
   release time.
 
+## The neglect rules
+
+Drift is the record contradicting what shipped. Neglect is finished work rotting in
+place. Same silence, so the same script checks both.
+
+6. **An open pull request is a defect with a clock on it, not a queue entry.** Warned at
+   7 days without activity, failed at 14. Merge it, close it, or say on the thread what
+   it is waiting for — those are the three options, and leaving it is not among them.
+7. **A branch does not outlive its pull request.** `delete_branch_on_merge` has been on
+   since 2026-08-11; the check catches stragglers and anything merged by a route that
+   bypasses it. A remote branch with no PR at all and no commits for 14 days fails.
+8. **A local branch older than 14 days is a smell** — merge it or delete it. Checked
+   outside CI only, since it is the author's own workspace.
+
+**Why a clock at all.** PR #48 was opened by an outside contributor on 2026-07-25 with
+all checks green and no conflicts. It was still cleanly mergeable a week later. By the
+time the tracker was audited on 2026-08-11 it was `CONFLICTING` — the base had moved
+under it, and careful work by someone with no commit access had been destroyed by nothing
+more than seventeen days of silence. Staleness is not a neutral holding state.
+
+`npm run doctor` runs the upstream contract check first and this audit second, so a stale
+PR can never mask upstream drift — those are unrelated failures and the more urgent one
+goes first.
+
 ## Why these rules exist
 
 On 2026-08-11 the tracker was audited and found in this state:

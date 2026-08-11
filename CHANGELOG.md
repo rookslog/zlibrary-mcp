@@ -10,11 +10,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Added
 
 - `npm run audit:release` ([scripts/release-audit.mjs](scripts/release-audit.mjs)) and a
-  weekly `Release Record Audit` workflow, checking that the release record agrees with
-  itself: every tag has a GitHub Release and a CHANGELOG section, every release milestone
-  names its map issue, no tagged version has open issues on its milestone, and no closed
-  issue is missing a milestone. Also wired into `npm run doctor`. Rules and the incident
-  that motivated them: [docs/RELEASE_PROCESS.md](docs/RELEASE_PROCESS.md).
+  weekly `Release Record Audit` workflow, checking that the project's record of itself is
+  still true. **Drift:** every tag has a GitHub Release and a CHANGELOG section, every
+  release milestone names its map issue, no tagged version has open issues on its
+  milestone, no closed issue is missing a milestone. **Neglect:** no open PR sits more
+  than 14 days without activity, no branch outlives its merged PR, no branch goes 14 days
+  with neither a PR nor a commit. Also wired into `npm run doctor`, which runs the
+  upstream contract check first so a stale PR cannot mask upstream drift. Rules and the
+  incidents that motivated them: [docs/RELEASE_PROCESS.md](docs/RELEASE_PROCESS.md).
+- `delete_branch_on_merge` enabled on the repository, retiring by configuration the
+  branch sprawl that had to be cleaned by hand on 2026-08-11 (nine dead branches).
 - `publish.yml` now creates the GitHub Release on a tag push, with notes extracted from
   that version's CHANGELOG section, and fails the release if the section is absent.
   Previously a tag published to npm and GHCR while the Releases page silently fell

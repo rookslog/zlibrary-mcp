@@ -1,14 +1,22 @@
 #!/usr/bin/env node
 /**
- * release-audit — checks that the release record agrees with itself.
+ * release-audit — checks that the project's record of itself is still true.
  *
- * Written after the v1.4 drift (2026-08-11). Two artifacts both claimed to
- * define "v1.4": milestone #1 ("Source layer as a first-class citizen", from
- * the 2026-07-24 roadmap) and map issue #75 ("Any source can be downloaded",
- * charted 2026-08-10). The second shipped. Nobody reconciled them, so a
- * released version sat at 5 open / 0 closed while every issue that actually
- * fed the release carried no milestone at all, and the Releases page still
- * showed v1.3.2 as latest. Each of those is a check below.
+ * Two failure classes, one shape. Both are silent: nothing goes red, CI stays
+ * green, and the repo quietly stops describing reality.
+ *
+ * DRIFT — the record contradicts what shipped. Written after the v1.4 drift
+ * (2026-08-11), when two artifacts both claimed to define "v1.4": milestone #1
+ * ("Source layer as a first-class citizen", from the 2026-07-24 roadmap) and
+ * map issue #75 ("Any source can be downloaded", charted 2026-08-10). The
+ * second shipped. Nobody reconciled them, so a released version sat at 5 open
+ * / 0 closed while every issue that actually fed the release carried no
+ * milestone at all, and the Releases page still showed v1.3.2 as latest.
+ *
+ * NEGLECT — work rots in place. PR #48 was green and conflict-free the day it
+ * was opened by an outside contributor, and `CONFLICTING` seventeen days later
+ * purely from sitting. Staleness is not a neutral holding state; it destroys
+ * work that was already finished.
  *
  * The rules being enforced are stated in docs/RELEASE_PROCESS.md. This script
  * is the enforcement; that document is the reasoning.
@@ -24,6 +32,21 @@ import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..');
+
+/**
+ * Neglect thresholds, in days.
+ *
+ * STALE_PR_WARN is a nudge; STALE_PR_FAIL is where the weekly job starts
+ * filing an issue about it. 14 is chosen against the case that motivated the
+ * check: #48 was still cleanly mergeable at 7 days and had rotted by 17.
+ * BRANCH_AGE matches the two-week branch rule already in the global guidance.
+ */
+const STALE_PR_WARN = 7;
+const STALE_PR_FAIL = 14;
+const BRANCH_AGE = 14;
+
+const DAY_MS = 86_400_000;
+const daysSince = (iso) => Math.floor((Date.now() - Date.parse(iso)) / DAY_MS);
 
 const errors = [];
 const warnings = [];
@@ -201,6 +224,97 @@ if (!ghReady) {
       warn(
         `Open issue #${i.number} ("${i.title.slice(0, 60)}") is unrouted.`,
         `Put it on a release milestone or an (unslotted) theme.`,
+      );
+    }
+  }
+
+  // ------------------------------------------------------------------ neglect
+
+  const prs = ghJson([
+    'pr', 'list', '--state', 'all', '--limit', '200',
+    '--json', 'number,state,headRefName,updatedAt,isDraft,title,author,mergeable',
+  ]) ?? [];
+
+  // Rule: an aging PR is a defect with a clock on it, not a queue entry. Every
+  // day it sits, the base moves under it.
+  for (const pr of prs.filter((p) => p.state === 'OPEN' && !p.isDraft)) {
+    const age = daysSince(pr.updatedAt);
+    if (age < STALE_PR_WARN) continue;
+
+    const conflicting = pr.mergeable === 'CONFLICTING' ? ' It is already CONFLICTING.' : '';
+    const who = pr.author?.login ?? 'unknown';
+    const msg =
+      `PR #${pr.number} ("${pr.title.slice(0, 50)}", @${who}) has sat ${age} days without activity.${conflicting}`;
+    const fixIt =
+      `Merge it, close it, or say on the thread what it is waiting for. Leaving it is the option that destroys work.`;
+    if (age >= STALE_PR_FAIL) fail(msg, fixIt);
+    else warn(msg, fixIt);
+  }
+
+  // Rule: a branch outlives its PR only by accident. `delete_branch_on_merge`
+  // was switched on 2026-08-11, so this catches pre-existing stragglers and any
+  // branch merged by a route that bypasses the setting.
+  const remoteBranches = (tryRun('git', [
+    'for-each-ref', '--format=%(refname:short)|%(committerdate:iso8601)', 'refs/remotes/origin',
+  ]) ?? '')
+    .split('\n')
+    .filter(Boolean)
+    .map((line) => {
+      const [ref, date] = line.split('|');
+      return { name: ref.replace(/^origin\//, ''), date };
+    })
+    .filter((b) => b.name !== 'HEAD' && b.name !== 'master');
+
+  if (!remoteBranches.length) {
+    notices.push('no remote branch refs found — branch checks skipped (shallow clone?).');
+  }
+
+  for (const branch of remoteBranches) {
+    const branchPrs = prs.filter((p) => p.headRefName === branch.name);
+    const merged = branchPrs.some((p) => p.state === 'MERGED');
+    const hasOpen = branchPrs.some((p) => p.state === 'OPEN');
+
+    if (merged && !hasOpen) {
+      warn(
+        `Branch origin/${branch.name} is still on the remote although its PR merged.`,
+        `git push origin --delete ${branch.name}`,
+      );
+      continue;
+    }
+    if (hasOpen) continue; // the stale-PR check above owns this one
+
+    // No PR at all. Dependabot opens and closes these on its own schedule, so
+    // only flag a branch that has also gone quiet.
+    const age = daysSince(branch.date);
+    if (age >= BRANCH_AGE) {
+      fail(
+        `Branch origin/${branch.name} has no pull request and its last commit was ${age} days ago.`,
+        `Open a PR for it, or delete it: git push origin --delete ${branch.name}`,
+      );
+    }
+  }
+}
+
+// Local branches are the author's own workspace, so this runs only outside CI,
+// where "delete it" is advice the reader can act on immediately.
+if (!process.env.CI) {
+  const localBranches = (tryRun('git', [
+    'for-each-ref', '--format=%(refname:short)|%(committerdate:iso8601)', 'refs/heads',
+  ]) ?? '')
+    .split('\n')
+    .filter(Boolean)
+    .map((line) => {
+      const [name, date] = line.split('|');
+      return { name, date };
+    })
+    .filter((b) => b.name !== 'master');
+
+  for (const b of localBranches) {
+    const age = daysSince(b.date);
+    if (age >= BRANCH_AGE) {
+      warn(
+        `Local branch ${b.name} is ${age} days old.`,
+        `A branch older than ${BRANCH_AGE} days is a smell — merge it or delete it.`,
       );
     }
   }

@@ -1,18 +1,10 @@
-// Simplified jest.config.js for ESM troubleshooting
-import { createDefaultEsmPreset } from 'ts-jest';
-
-const preset = createDefaultEsmPreset();
-
 export default {
-  // Apply the ts-jest ESM preset
-  ...preset,
-
   // Basic Node environment
   testEnvironment: 'node',
 
   // Match test files in __tests__
   testMatch: [
-    '**/__tests__/**/*.test.js' // Assuming tests remain JS files
+    '**/__tests__/**/*.test.js', // Assuming tests remain JS files
   ],
 
   // Ignore node_modules and dist (except for moduleNameMapper resolution)
@@ -20,13 +12,11 @@ export default {
     '/node_modules/',
     '/dist/', // Ignore compiled output for test discovery
     '/__tests__/e2e/', // E2E tests require running Docker container
-    '/__tests__/integration/' // Integration tests require live services
+    '/__tests__/integration/', // Integration tests require live services
   ],
 
   // Crucial: Map imports from __tests__ to compiled dist/ files
   moduleNameMapper: {
-    // Add preset's moduleNameMapper first
-    ...preset.moduleNameMapper,
     // Map relative paths from __tests__ to the compiled files in dist/
     // Match imports like '../lib/module.js' from '__tests__/...'
     '^../lib/(.*)\\.js$': '<rootDir>/dist/lib/$1.js',
@@ -46,11 +36,7 @@ export default {
   collectCoverage: true,
   coverageDirectory: 'coverage',
   coverageReporters: ['text', 'lcov', 'json-summary'],
-  collectCoverageFrom: [
-    'dist/**/*.js',
-    '!dist/**/*.test.js',
-    '!dist/**/*.d.ts',
-  ],
+  collectCoverageFrom: ['dist/**/*.js', '!dist/**/*.test.js', '!dist/**/*.d.ts'],
   // Ratcheted to just under the actual measurement (85.08 / 79.59 / 77.89 / 87.37
   // at 165 tests) so the gate catches a real regression. The previous floors were
   // set against a 93-test suite and had drifted ~20 points below reality, which

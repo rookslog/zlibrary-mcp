@@ -238,3 +238,68 @@ async def test_rag_operation_without_rag_extra_names_install_command(
 
     with pytest.raises(RuntimeError, match=r"uv sync --extra rag"):
         await process_document(str(document))
+
+
+@pytest.mark.slow
+@pytest.mark.ground_truth
+def test_rag_tier_processes_real_pdf_without_scholar_dependencies(lfs_fixture):
+    """The RAG tier must preserve real-PDF extraction without scholar packages."""
+    pdf_path = REPO_ROOT / "test_files" / "sample.pdf"
+    lfs_fixture(pdf_path)
+
+    script = textwrap.dedent(
+        """
+        import importlib.abc
+        import json
+        from pathlib import Path
+        import sys
+        import time
+
+        SCHOLAR_ONLY = {
+            "PIL", "cv2", "nltk", "ocrmypdf", "pdf2image", "pytesseract"
+        }
+
+        class BlockScholar(importlib.abc.MetaPathFinder):
+            def find_spec(self, fullname, path=None, target=None):
+                if fullname.split(".", 1)[0] in SCHOLAR_ONLY:
+                    raise ModuleNotFoundError(
+                        f"blocked scholar-only dependency: {fullname}", name=fullname
+                    )
+                return None
+
+        sys.meta_path.insert(0, BlockScholar())
+
+        from lib.rag.orchestrator_pdf import process_pdf
+
+        repo_root = Path.cwd()
+        baseline = json.loads(
+            (repo_root / "test_files/ground_truth/body_text_baseline.json").read_text()
+        )["baselines"]["sample.pdf"]
+        budget = json.loads(
+            (repo_root / "test_files/performance_budgets.json").read_text()
+        )["quality_gates"]["pre_commit"]["max_single_test_time_seconds"]
+
+        started = time.perf_counter()
+        text = process_pdf(
+            repo_root / "test_files/sample.pdf",
+            output_format="markdown",
+            enable_quality_pipeline=False,
+        )
+        elapsed = time.perf_counter() - started
+
+        assert len(text) >= baseline["body_text_length"] * 0.95
+        assert all(line in text for line in baseline["sample_lines"])
+        assert elapsed <= budget, f"real-PDF extraction took {elapsed:.2f}s > {budget}s"
+        """
+    )
+
+    result = subprocess.run(
+        [sys.executable, "-c", script],
+        cwd=REPO_ROOT,
+        text=True,
+        capture_output=True,
+        check=False,
+        timeout=20,
+    )
+
+    assert result.returncode == 0, result.stderr

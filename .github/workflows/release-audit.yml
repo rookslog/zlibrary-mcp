@@ -23,6 +23,12 @@ on:
 permissions:
   contents: read
   issues: write
+  # The audit calls `gh pr list`. Declaring any permissions block sets every
+  # unlisted scope to none, so without this the PR query fails against the
+  # workflow token, the audit reports itself INCOMPLETE, and the job files the
+  # inconsistency issue every Monday on a healthy release record — a checker
+  # crying wolf, which is how checkers get ignored.
+  pull-requests: read
 
 jobs:
   audit:

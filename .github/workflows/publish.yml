@@ -11,7 +11,48 @@ permissions:
   packages: write
 
 jobs:
+  # Runs BEFORE anything is published, and everything that publishes depends on
+  # it. This guard used to live inside github-release, which needed publish-npm
+  # — so a tag with a missing or whitespace-only CHANGELOG section published the
+  # npm version first and only then failed. npm versions are immutable, so that
+  # left an unchangelogged release permanently on the registry, and the workflow
+  # could not even be re-run: republishing an existing version fails before
+  # reaching the guard. A gate that fires after the irreversible step is not a
+  # gate. See docs/RELEASE_PROCESS.md.
+  validate-release-notes:
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          lfs: false
+      - name: Extract this version's CHANGELOG section
+        shell: bash
+        run: |
+          set -euo pipefail
+          VERSION="${GITHUB_REF_NAME#v}"
+          awk -v v="$VERSION" '
+            $0 ~ "^## \\[" v "\\]" { f = 1; next }
+            f && /^## \[/          { exit }
+            f                      { print }
+          ' CHANGELOG.md > release-notes.md
+          # Not `-s`. A heading with nothing under it still emits the blank
+          # separator line, so the file is one byte and passes a size test.
+          # Require actual non-whitespace content.
+          if ! grep -q '[^[:space:]]' release-notes.md; then
+            echo "ERROR: CHANGELOG.md has no '## [$VERSION]' section, or it is empty." >&2
+            echo "Add the section with real content before tagging; release notes come from it." >&2
+            exit 1
+          fi
+          echo "Extracted $(wc -l < release-notes.md) lines of notes for $VERSION"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: release-notes
+          path: release-notes.md
+          retention-days: 7
+
   publish-npm:
+    needs: [validate-release-notes]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
@@ -61,6 +102,7 @@ jobs:
   # would derive zero tags and the push step would fail.
   publish-docker:
     if: startsWith(github.ref, 'refs/tags/v')
+    needs: [validate-release-notes]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
@@ -98,7 +140,7 @@ jobs:
   # shipping silently.
   github-release:
     if: startsWith(github.ref, 'refs/tags/v')
-    needs: [publish-npm]
+    needs: [validate-release-notes, publish-npm]
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -106,28 +148,12 @@ jobs:
       - uses: actions/checkout@v7
         with:
           lfs: false
-      - name: Extract this version's CHANGELOG section
-        id: notes
-        shell: bash
-        run: |
-          set -euo pipefail
-          VERSION="${GITHUB_REF_NAME#v}"
-          awk -v v="$VERSION" '
-            $0 ~ "^## \\[" v "\\]" { f = 1; next }
-            f && /^## \[/          { exit }
-            f                      { print }
-          ' CHANGELOG.md > release-notes.md
-          # Not `-s`. A heading with nothing under it still emits the blank
-          # separator line, so the file is one byte and passes a size test —
-          # which would publish to npm and then create a Release with empty
-          # notes, exactly the unchangelogged release this guard exists to stop.
-          # Require actual non-whitespace content.
-          if ! grep -q '[^[:space:]]' release-notes.md; then
-            echo "ERROR: CHANGELOG.md has no '## [$VERSION]' section, or it is empty." >&2
-            echo "Add the section with real content before tagging; release notes come from it." >&2
-            exit 1
-          fi
-          echo "Extracted $(wc -l < release-notes.md) lines of notes for $VERSION"
+      # Reuse the artifact validate-release-notes produced rather than
+      # re-extracting. Two copies of the awk would be two things to drift, and
+      # the notes published here must be exactly the bytes that were validated.
+      - uses: actions/download-artifact@v4
+        with:
+          name: release-notes
       - name: Create the GitHub Release
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}

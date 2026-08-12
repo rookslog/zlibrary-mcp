@@ -36,9 +36,17 @@ transient 5xx, a token missing a scope — is a *failed audit*, never a skipped 
 reports which checks did not run and exits non-zero. An earlier version returned early on
 error and each caller silently skipped its check, so the tool could examine nothing and
 print "release record is consistent": a checker claiming success when it could not look,
-which is the same silent wrongness it exists to catch. If `gh` is absent or
-unauthenticated entirely, the GitHub checks are skipped with an explicit notice and the
-local CHANGELOG and tag checks still run.
+which is the same silent wrongness it exists to catch.
+
+Absent or unauthenticated `gh` splits by environment. **Locally** it is an ordinary state:
+the GitHub checks are skipped with an explicit notice and the local CHANGELOG and tag
+checks still run. **In CI (`$CI` set) it is a failure**, because the only ways to reach it
+there are a revoked token, a missing permission, or a GitHub auth outage — and skipping
+every GitHub check while exiting 0 is the same false green, entered through the door
+before `ghJson`. Fixing the post-authentication path alone closed half the hole.
+
+The same applies to coverage limits: if the closed-issue query ever reaches its fetch cap,
+that is reported as a failure rather than assumed to be the whole list.
 
 **Rules bind from the day they are adopted.** The scheme took effect 2026-08-10, so
 releases before it are not audited against it. An audit that cries wolf about history is

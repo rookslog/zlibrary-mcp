@@ -158,7 +158,21 @@ const ghReady = tryRun('gh', ['auth', 'status']) !== null;
 let ghBroken = false;
 
 if (!ghReady) {
-  notices.push('gh is unavailable or unauthenticated — GitHub checks skipped (local checks still ran).');
+  // Locally, no `gh` is an ordinary state: run the CHANGELOG and tag checks and
+  // say plainly that the rest did not run. In CI it is a failure, because the
+  // only reasons to reach here are a revoked token, a missing secret, or a
+  // GitHub auth outage — and skipping every GitHub check while exiting 0 is the
+  // same false green that `ghJson` was made to fail closed on. Fixing that after
+  // authentication while leaving this path open closed half the hole.
+  if (process.env.CI) {
+    ghBroken = true;
+    fail(
+      'gh is unavailable or unauthenticated, so NO GitHub check ran in CI.',
+      'Check the job\'s token and permissions. This is a failed audit, not a clean one.',
+    );
+  } else {
+    notices.push('gh is unavailable or unauthenticated — GitHub checks skipped (local checks still ran).');
+  }
 } else {
   /**
    * Once `gh` is authenticated, a failed query is a FAILED AUDIT — never a
@@ -311,11 +325,24 @@ if (!ghReady) {
   // Rule: a closed issue carries the milestone of the release that shipped it.
   // Without this the audit trail is blank, which is how v1.4 ended up with
   // 0 closed issues against a shipped release.
+  // --limit caps how many issues are fetched, not how many are examined after
+  // filtering. At 100 the repo would silently outgrow the check: an older
+  // post-backfill issue could lose its milestone and never be looked at, while
+  // the audit kept reporting success. Ask for far more than the repo has, and
+  // say so if the cap is ever reached rather than assuming full coverage.
+  const CLOSED_ISSUE_LIMIT = 1000;
   const closedIssues = ghJson(
-    ['issue', 'list', '--state', 'closed', '--limit', '100',
+    ['issue', 'list', '--state', 'closed', '--limit', String(CLOSED_ISSUE_LIMIT),
       '--json', 'number,title,milestone,closedAt'],
     'closed issues name the release that shipped them',
   );
+  if (closedIssues?.length === CLOSED_ISSUE_LIMIT) {
+    ghBroken = true;
+    fail(
+      `Closed-issue query hit its ${CLOSED_ISSUE_LIMIT}-issue cap, so older issues were NOT checked.`,
+      'Raise CLOSED_ISSUE_LIMIT or paginate. Coverage is incomplete until then.',
+    );
+  }
   if (closedIssues) {
     // Issues closed before the process existed are not actionable history.
     const inScope = closedIssues.filter((i) => Date.parse(i.closedAt) >= MILESTONE_BACKFILL);
@@ -360,7 +387,7 @@ if (!ghReady) {
 
   const prs = ghJson(
     ['pr', 'list', '--state', 'all', '--limit', '200',
-      '--json', 'number,state,headRefName,createdAt,updatedAt,isDraft,title,author,mergeable'],
+      '--json', 'number,state,headRefName,createdAt,updatedAt,isDraft,title,author,mergeable,isCrossRepository'],
     'no pull request or branch has been left to rot',
   ) ?? [];
 
@@ -416,7 +443,11 @@ if (!ghReady) {
   // — a page of confident, fabricated findings. The query failure is already
   // recorded as an error; do not compound it with invented ones.
   for (const branch of ghBroken ? [] : remoteBranches) {
-    const branchPrs = prs.filter((p) => p.headRefName === branch.name);
+    // Match on this repository's PRs only. A fork PR carries the contributor's
+    // own branch name, and names collide — `master`, `main`, a shared fix/
+    // slug. Counting one as this branch's open PR would let a dead origin
+    // branch skip the age check for as long as the fork PR stayed open.
+    const branchPrs = prs.filter((p) => !p.isCrossRepository && p.headRefName === branch.name);
     const merged = branchPrs.some((p) => p.state === 'MERGED');
     const hasOpen = branchPrs.some((p) => p.state === 'OPEN');
 

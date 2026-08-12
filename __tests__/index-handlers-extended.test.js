@@ -136,6 +136,7 @@ describe('Tool Handlers - Extended Coverage', () => {
         error: { message: 'Download sources failed', details },
       });
     });
+
   });
 
   describe('getBookMetadata handler', () => {

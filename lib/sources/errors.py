@@ -28,6 +28,7 @@ REASON_TEXT = {
     "http_error": "returned an HTTP error",
     "quota_exhausted": "has no downloads left on this account today",
     "protocol_error": "returned a malformed response",
+    "configuration_error": "cannot run with the supplied configuration",
     "unknown": "failed for an unclassified reason",
 }
 
@@ -119,6 +120,18 @@ class ProviderResponseError(SourceError):
     """The provider answered, but with an error or an unparseable body."""
 
     reason = "http_error"
+
+
+class ProviderConfigurationError(SourceError, ValueError):
+    """The caller selected a provider without its required configuration.
+
+    This remains a ValueError for adapter callers while carrying a stable
+    source reason through the bridge envelope. It is permanent until the
+    caller changes configuration and therefore must not count as dependency
+    health evidence.
+    """
+
+    reason = "configuration_error"
 
 
 class AllSourcesFailedError(Exception):

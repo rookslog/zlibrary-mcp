@@ -61,6 +61,28 @@ describe('Python Bridge', () => {
     );
   });
 
+  test('preserves a structured provider envelope on non-zero exit', async () => {
+    const details = {
+      operation: 'download',
+      failures: [{ provider: 'libgen', host: 'libgen.li', reason: 'connect_timeout' }],
+    };
+    const bridgeError = Object.assign(new Error('process exited with code 1'), {
+      exitCode: 1,
+      stderr: `diagnostic\n${JSON.stringify({
+        error: 'download failed on every source',
+        type: 'AllSourcesFailedError',
+        details,
+      })}`,
+      stdout: '',
+    });
+    const pythonBridge = await setup({ bridgeError });
+
+    const error = await pythonBridge.callPythonFunction('download_book', {}).catch((err) => err);
+
+    expect(error.context.details).toEqual(details);
+    expect(error.retryable).toBe(false);
+  });
+
   test('preserves the public JSON parse error shape', async () => {
     const pythonBridge = await setup({ bridgeResult: ['Invalid JSON{'] });
 

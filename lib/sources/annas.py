@@ -19,7 +19,12 @@ from bs4.element import Tag
 
 from .base import SourceAdapter
 from .config import ANNAS_TRUSTED_HOSTS, SourceConfig
-from .errors import ProviderResponseError, ProviderUnreachableError, SourceError
+from .errors import (
+    ProviderConfigurationError,
+    ProviderResponseError,
+    ProviderUnreachableError,
+    SourceError,
+)
 from .models import DownloadResult, QuotaInfo, SourceType, UnifiedBookResult
 from .net import (
     bounded_await,
@@ -347,17 +352,24 @@ class AnnasArchiveAdapter(SourceAdapter):
             DownloadResult with URL and quota info
 
         Raises:
-            ValueError: If ANNAS_SECRET_KEY not configured, or if the configured
+            ProviderConfigurationError: If ANNAS_SECRET_KEY is not configured,
+                or if the configured
                 base URL's host is not a known Anna's Archive domain (the key is
                 never sent to unverified hosts)
             Exception: If API returns error or no download_url
         """
-        if not self.secret_key:
-            raise ValueError("ANNAS_SECRET_KEY not configured")
-
         host = (urlsplit(self.base_url).hostname or "").lower()
+        if not self.secret_key:
+            raise ProviderConfigurationError(
+                PROVIDER,
+                host,
+                "ANNAS_SECRET_KEY not configured",
+            )
+
         if host not in ANNAS_TRUSTED_HOSTS:
-            raise ValueError(
+            raise ProviderConfigurationError(
+                PROVIDER,
+                host,
                 f"Refusing to send ANNAS_SECRET_KEY to unverified host '{host}'. "
                 f"The fast-download API passes the key as a URL parameter, and "
                 f"lapsed Anna's Archive domains get re-registered by squatters "
@@ -365,7 +377,7 @@ class AnnasArchiveAdapter(SourceAdapter):
                 f"to a known Anna's Archive domain "
                 f"({', '.join(sorted(ANNAS_TRUSTED_HOSTS))}) or update "
                 f"ANNAS_TRUSTED_HOSTS in lib/sources/config.py if the project "
-                f"has moved to a new domain you have verified yourself."
+                f"has moved to a new domain you have verified yourself.",
             )
 
         await self._preflight()

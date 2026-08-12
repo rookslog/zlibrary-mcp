@@ -188,7 +188,7 @@ class SourceRouter:
         if answered and not failures:
             return []
 
-        raise AllSourcesFailedError(f"search for {query!r}", failures)
+        raise AllSourcesFailedError("search", failures)
 
     def _download_candidates(self, source: SourceSelection) -> List[SourceSelection]:
         """Ordered providers to try for a download.
@@ -265,7 +265,7 @@ class SourceRouter:
         if quota_error is not None and len(candidates) == 1:
             raise quota_error
 
-        raise AllSourcesFailedError(f"download for {md5}", failures)
+        raise AllSourcesFailedError("download", failures)
 
     async def close(self) -> None:
         """Clean up all adapter resources."""

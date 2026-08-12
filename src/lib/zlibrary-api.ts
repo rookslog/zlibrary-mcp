@@ -10,6 +10,11 @@ import { CircuitBreaker } from './circuit-breaker.js';
 import { ZLibraryError, PythonBridgeError } from './errors.js';
 import { logger } from './logger.js';
 import { runPythonBridge, LONG_BRIDGE_TIMEOUT_MS } from './python-runner.js';
+import {
+  isBridgeDetailRetryable,
+  isConfigurationBridgeDetail,
+  parseBridgeErrorEnvelope,
+} from './python-bridge.js';
 
 // Recreate __dirname for ESM
 const __filename = fileURLToPath(import.meta.url);
@@ -32,64 +37,10 @@ const pythonBridgeCircuitBreaker = new CircuitBreaker({
   // bridge's health. Counting cancellations would mean five aborted searches
   // open the breaker and fail every unrelated tool for the timeout window —
   // turning a user's own impatience into an outage.
-  isFailure: (error) => error?.context?.reason !== 'aborted',
+  isFailure: (error) =>
+    error?.context?.reason !== 'aborted' &&
+    !isConfigurationBridgeDetail(error?.context?.details),
 });
-
-/** Reason codes meaning the provider's host never answered at all. */
-const UNREACHABLE_REASONS = new Set([
-  'dns_failure',
-  'dns_timeout',
-  'connect_timeout',
-  'connect_refused',
-  'connect_error',
-  'tls_error',
-]);
-
-interface BridgeErrorEnvelope {
-  error: string;
-  type?: string;
-  details?: any;
-}
-
-/**
- * Parse the JSON error envelope python_bridge.py writes to stderr.
- *
- * The bridge may also emit log lines on stderr, so the envelope is found by
- * scanning lines from the end rather than assuming it is the whole stream.
- *
- * @param stderr - Raw stderr text from the subprocess
- * @returns The envelope, or null if stderr holds no parseable one
- */
-function parseBridgeError(stderr: unknown): BridgeErrorEnvelope | null {
-  if (typeof stderr !== 'string' || stderr.length === 0) return null;
-  const lines = stderr.split('\n');
-  for (let i = lines.length - 1; i >= 0; i -= 1) {
-    const line = (lines[i] ?? '').trim();
-    if (!line.startsWith('{')) continue;
-    try {
-      const parsed = JSON.parse(line);
-      if (parsed && typeof parsed.error === 'string') return parsed;
-    } catch {
-      // Not the envelope; keep scanning.
-    }
-  }
-  return null;
-}
-
-/**
- * Whether a bridge error's details describe a host that never answered.
- *
- * @param details - The `details` field of a bridge error envelope
- * @returns true if every reported failure is a reachability failure
- */
-function isUnreachableDetail(details: any): boolean {
-  if (!details || typeof details !== 'object') return false;
-  if (typeof details.reason === 'string') return UNREACHABLE_REASONS.has(details.reason);
-  if (Array.isArray(details.failures) && details.failures.length > 0) {
-    return details.failures.every((f: any) => UNREACHABLE_REASONS.has(f?.reason));
-  }
-  return false;
-}
 
 /**
  * Bridge functions whose work is bounded by file size and CPU, not by a
@@ -233,7 +184,7 @@ async function callPythonFunction(
           // connect_timeout vs http_error); lead with that instead of a
           // traceback, so the caller can tell "this domain is gone" from
           // "this mirror is dropping packets".
-          const bridgeError = parseBridgeError(err.stderr);
+          const bridgeError = parseBridgeErrorEnvelope(err.stderr);
           const stderrOutput = err.stderr ? ` Stderr: ${err.stderr}` : '';
 
           if (bridgeError) {
@@ -250,7 +201,7 @@ async function callPythonFunction(
               // A provider that is not reachable at all will not become
               // reachable inside the retry window; retrying just re-pays the
               // probe. Response-level failures may be transient.
-              !isUnreachableDetail(bridgeError.details)
+              isBridgeDetailRetryable(bridgeError.details)
             );
           }
 
@@ -558,8 +509,20 @@ export async function downloadBookToFile({
     return result as DownloadBookResult;
 
   } catch (error: any) {
-    // Re-throw errors from callPythonFunction or validation checks
-    throw new Error(`Failed to download book: ${error.message || 'Unknown error'}`, { cause: error });
+    // Keep the normalized bridge context on the public error itself. A generic
+    // Error with details hidden under cause made every direct consumer invent
+    // its own traversal rule and dropped structuredContent at the handler.
+    if (error instanceof ZLibraryError) {
+      throw new PythonBridgeError(
+        `Failed to download book: ${error.message || 'Unknown error'}`,
+        error.context,
+        error.retryable,
+      );
+    }
+    throw new Error(
+      `Failed to download book: ${error.message || 'Unknown error'}`,
+      { cause: error },
+    );
   }
 }
 

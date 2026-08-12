@@ -11,6 +11,7 @@ import httpx
 import pytest
 
 from lib.sources.config import SourceConfig
+from lib.sources.errors import AllSourcesFailedError, ProviderUnreachableError
 from lib.sources.models import SourceType
 
 pytestmark = pytest.mark.unit
@@ -281,6 +282,28 @@ class TestLibgenAdapterDownload:
         assert result.url.startswith("https://libgen.vg/")
 
     @pytest.mark.asyncio
+    async def test_cdn_transport_failure_retains_its_host_and_reason(self, adapter):
+        """A failed byte probe is transport evidence, not a protocol response."""
+
+        def handler(request):
+            if "ads.php" in request.url.path:
+                return httpx.Response(200, text=ADS_PAGE_WITH_KEY)
+            raise httpx.ConnectTimeout("cdn stalled", request=request)
+
+        with self._patched_client(handler):
+            with pytest.raises(AllSourcesFailedError) as excinfo:
+                await adapter.get_download_url(MD5)
+
+        assert [failure.host for failure in excinfo.value.failures] == [
+            "libgen.li",
+            "libgen.vg",
+            "libgen.la",
+        ]
+        assert {failure.reason for failure in excinfo.value.failures} == {
+            "connect_timeout"
+        }
+
+    @pytest.mark.asyncio
     async def test_expired_key_bounce_is_treated_as_failure(self, adapter):
         """An expired key 307s back to ads.php rather than erroring."""
 
@@ -310,8 +333,31 @@ class TestLibgenAdapterDownload:
             return httpx.Response(200, text=ADS_PAGE_NO_KEY)
 
         with self._patched_client(handler):
-            with pytest.raises(ValueError, match="No LibGen mirror"):
+            with pytest.raises(AllSourcesFailedError, match="every source"):
                 await adapter.get_download_url(MD5)
+
+    @pytest.mark.asyncio
+    async def test_retains_each_unreachable_mirror_as_a_structured_failure(
+        self, adapter
+    ):
+        """A failed mirror walk must keep the host and stable reason per attempt."""
+
+        async def unreachable(mirror):
+            host = f"libgen.{mirror}"
+            raise ProviderUnreachableError("libgen", host, reason="connect_timeout")
+
+        with patch.object(adapter, "_preflight", side_effect=unreachable):
+            with pytest.raises(AllSourcesFailedError) as excinfo:
+                await adapter.get_download_url(MD5)
+
+        assert [failure.host for failure in excinfo.value.failures] == [
+            "libgen.li",
+            "libgen.vg",
+            "libgen.la",
+        ]
+        assert {failure.reason for failure in excinfo.value.failures} == {
+            "connect_timeout"
+        }
 
     @pytest.mark.asyncio
     async def test_tries_configured_mirror_first_without_duplicates(self, adapter):
@@ -334,7 +380,7 @@ class TestLibgenAdapterDownload:
             patch.object(adapter, "_resolve_key", new=AsyncMock(return_value="KEY")),
             patch.object(adapter, "_serves_bytes", side_effect=trickle),
         ):
-            with pytest.raises(ValueError, match="No LibGen mirror"):
+            with pytest.raises(AllSourcesFailedError, match="every source"):
                 await asyncio.wait_for(adapter.get_download_url(MD5), timeout=0.2)
 
 

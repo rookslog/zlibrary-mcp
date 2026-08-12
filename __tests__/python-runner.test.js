@@ -35,6 +35,10 @@ let baselineProcessListeners;
 function isAlive(pid) {
   try {
     process.kill(pid, 0);
+    if (process.platform === 'linux') {
+      const stat = fs.readFileSync(`/proc/${pid}/stat`, 'utf8');
+      if (stat.slice(stat.lastIndexOf(')') + 2).startsWith('Z ')) return false;
+    }
     return true;
   } catch {
     return false;
@@ -169,7 +173,7 @@ maybe('python-runner', () => {
       'tree.py',
       [
         'import os, pathlib, subprocess, sys, time',
-        'child = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(600)"])',
+        'child = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(600)"], stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, close_fds=True)',
         `pathlib.Path(${JSON.stringify(pidFile)}).write_text(f"{os.getpid()} {child.pid}")`,
         'time.sleep(600)',
         '',
@@ -216,6 +220,86 @@ maybe('python-runner', () => {
     }
   });
 
+  test('keeps a descendant-only process group owned after the bridge parent exits', async () => {
+    if (process.platform === 'win32') return;
+
+    const pidFile = path.join(tmpDir, 'descendant-only.pid');
+    const name = script(
+      'parent-exits-on-term.py',
+      [
+        'import pathlib, subprocess, sys, time',
+        'child = subprocess.Popen([sys.executable, "-c", "import signal, time; signal.signal(signal.SIGTERM, signal.SIG_IGN); time.sleep(600)"], stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, close_fds=True)',
+        `pathlib.Path(${JSON.stringify(pidFile)}).write_text(str(child.pid))`,
+        'time.sleep(600)',
+        '',
+      ].join('\n'),
+    );
+    let descendantPid = -1;
+
+    try {
+      const error = await runner
+        .runPythonBridge(
+          name,
+          { mode: 'text', pythonPath: PYTHON, scriptPath: tmpDir },
+          { timeoutMs: 300, label: 'descendant-only-test' },
+        )
+        .catch((err) => err);
+      expect(await waitFor(() => fs.existsSync(pidFile))).toBe(true);
+      descendantPid = Number(fs.readFileSync(pidFile, 'utf8'));
+      expect(error.code).toBe('TIMEOUT');
+      expect(isAlive(descendantPid)).toBe(true);
+      expect(runner.liveChildCount()).toBe(1);
+
+      expect(runner.killAllPythonChildren('SIGKILL')).toBe(1);
+      expect(await waitFor(() => !isAlive(descendantPid))).toBe(true);
+      expect(await waitFor(() => runner.liveChildCount() === 0)).toBe(true);
+    } finally {
+      if (descendantPid > 0 && isAlive(descendantPid)) {
+        process.kill(descendantPid, 'SIGKILL');
+      }
+    }
+  });
+
+  test('automatically reaps a surviving descendant after a successful parent exit', async () => {
+    if (process.platform === 'win32') return;
+
+    const pidFile = path.join(tmpDir, 'successful-parent-descendant.pid');
+    const name = script(
+      'successful-parent-with-descendant.py',
+      [
+        'import pathlib, subprocess, sys',
+        'child = subprocess.Popen([sys.executable, "-c", "import signal, time; signal.signal(signal.SIGTERM, signal.SIG_IGN); time.sleep(600)"], stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, close_fds=True)',
+        `pathlib.Path(${JSON.stringify(pidFile)}).write_text(str(child.pid))`,
+        'print("complete")',
+        '',
+      ].join('\n'),
+    );
+    let descendantPid = -1;
+
+    try {
+      await expect(
+        runner.runPythonBridge(
+          name,
+          { mode: 'text', pythonPath: PYTHON, scriptPath: tmpDir },
+          { timeoutMs: 60000, label: 'successful-parent-descendant-test' },
+        ),
+      ).resolves.toEqual(['complete']);
+      descendantPid = Number(fs.readFileSync(pidFile, 'utf8'));
+      expect(isAlive(descendantPid)).toBe(true);
+
+      expect(
+        await waitFor(
+          () => !isAlive(descendantPid) && runner.liveChildCount() === 0,
+          runner.KILL_GRACE_MS + 3000,
+        ),
+      ).toBe(true);
+    } finally {
+      if (descendantPid > 0 && isAlive(descendantPid)) {
+        process.kill(descendantPid, 'SIGKILL');
+      }
+    }
+  });
+
   test('a bridge that ignores SIGTERM is force-killed after the grace period', async () => {
     if (process.platform === 'win32') return;
 
@@ -249,6 +333,52 @@ maybe('python-runner', () => {
       expect(await waitFor(() => !isAlive(pid), runner.KILL_GRACE_MS + 3000)).toBe(true);
     } finally {
       if (pid > 0 && isAlive(pid)) process.kill(pid, 'SIGKILL');
+    }
+  });
+
+  test('keeps an unkillable process tree registered until it actually exits', async () => {
+    if (process.platform === 'win32') return;
+
+    const pidFile = path.join(tmpDir, 'survives-kill.pid');
+    const name = script(
+      'survives-kill.py',
+      [
+        'import os, pathlib, signal, time',
+        'signal.signal(signal.SIGTERM, signal.SIG_IGN)',
+        `pathlib.Path(${JSON.stringify(pidFile)}).write_text(str(os.getpid()))`,
+        'time.sleep(600)',
+        '',
+      ].join('\n'),
+    );
+    const realKill = process.kill.bind(process);
+    let pid = -1;
+    let killSpy;
+    const promise = runner
+      .runPythonBridge(
+        name,
+        { mode: 'text', pythonPath: PYTHON, scriptPath: tmpDir },
+        { timeoutMs: 300, label: 'surviving-tree-test' },
+      )
+      .catch((err) => err);
+
+    try {
+      expect(await waitFor(() => fs.existsSync(pidFile))).toBe(true);
+      pid = Number(fs.readFileSync(pidFile, 'utf8'));
+      killSpy = jest.spyOn(process, 'kill').mockImplementation((target, signal) => {
+        if (target === -pid && signal === 'SIGKILL') return true;
+        return realKill(target, signal);
+      });
+
+      const error = await promise;
+      expect(error.code).toBe('TIMEOUT');
+      await new Promise((resolve) => setTimeout(resolve, runner.KILL_GRACE_MS + 300));
+
+      expect(isAlive(pid)).toBe(true);
+      expect(runner.liveChildCount()).toBe(1);
+    } finally {
+      killSpy?.mockRestore();
+      if (pid > 0 && isAlive(pid)) realKill(-pid, 'SIGKILL');
+      await waitFor(() => runner.liveChildCount() === 0);
     }
   });
 

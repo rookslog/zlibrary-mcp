@@ -4,8 +4,60 @@ import { getManagedPythonPath } from './venv-manager.js'; // Import from the TS 
 import { getPythonLibDirectory, getPythonScriptPath } from './paths.js';
 import { runPythonBridge } from './python-runner.js';
 import type { RunBridgeOptions } from './python-runner.js';
+import { PythonBridgeError } from './errors.js';
 
 const BRIDGE_SCRIPT_NAME = 'python_bridge.py';
+
+export interface BridgeErrorEnvelope {
+  error: string;
+  type?: string;
+  details?: any;
+}
+
+const UNREACHABLE_REASONS = new Set([
+  'dns_failure',
+  'dns_timeout',
+  'connect_timeout',
+  'connect_refused',
+  'connect_error',
+  'tls_error',
+]);
+
+function everyFailureHasReason(details: any, predicate: (reason: unknown) => boolean): boolean {
+  if (!details || typeof details !== 'object') return false;
+  if (typeof details.reason === 'string') return predicate(details.reason);
+  return (
+    Array.isArray(details.failures) &&
+    details.failures.length > 0 &&
+    details.failures.every((failure: any) => predicate(failure?.reason))
+  );
+}
+
+export function isConfigurationBridgeDetail(details: any): boolean {
+  return everyFailureHasReason(details, (reason) => reason === 'configuration_error');
+}
+
+export function isBridgeDetailRetryable(details: any): boolean {
+  if (isConfigurationBridgeDetail(details)) return false;
+  return !everyFailureHasReason(details, (reason) => UNREACHABLE_REASONS.has(String(reason)));
+}
+
+/** Extract the final JSON provider-error envelope from mixed stderr logs. */
+export function parseBridgeErrorEnvelope(stderr: unknown): BridgeErrorEnvelope | null {
+  if (typeof stderr !== 'string' || stderr.length === 0) return null;
+  const lines = stderr.split('\n');
+  for (let index = lines.length - 1; index >= 0; index -= 1) {
+    const line = (lines[index] ?? '').trim();
+    if (!line.startsWith('{')) continue;
+    try {
+      const parsed = JSON.parse(line);
+      if (parsed && typeof parsed.error === 'string') return parsed;
+    } catch {
+      // Diagnostic line, not the envelope.
+    }
+  }
+  return null;
+}
 
 /**
  * Execute a Python function from the python_bridge.py script.
@@ -52,11 +104,23 @@ export async function callPythonFunction(
     output = lines.join('\n');
   } catch (error: any) {
     if (typeof error?.exitCode === 'number') {
-      throw new Error(
-        `Python process exited with code ${error.exitCode}: ${error.stderr ?? error.message}. ` +
-          `Raw stdout: ${error.stdout ?? ''}`,
-        { cause: error },
-      );
+      const envelope = parseBridgeErrorEnvelope(error.stderr);
+      const message = `Python process exited with code ${error.exitCode}: ${error.stderr ?? error.message}. Raw stdout: ${error.stdout ?? ''}`;
+      if (envelope) {
+        throw new PythonBridgeError(
+          message,
+          {
+            functionName,
+            args,
+            details: envelope.details,
+            pythonErrorType: envelope.type,
+            stderr: error.stderr,
+            originalError: error,
+          },
+          isBridgeDetailRetryable(envelope.details),
+        );
+      }
+      throw new Error(message, { cause: error });
     }
     throw error;
   }

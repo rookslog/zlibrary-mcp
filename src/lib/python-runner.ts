@@ -24,6 +24,7 @@
 import { PythonShell } from 'python-shell';
 import type { Options as PythonShellOptions } from 'python-shell';
 import { spawnSync } from 'child_process';
+import { readdirSync, readFileSync } from 'fs';
 import { logger } from './logger.js';
 import { BridgeTimeoutError } from './errors.js';
 
@@ -69,7 +70,14 @@ export const KILL_GRACE_MS = positiveIntEnv('PYTHON_BRIDGE_KILL_GRACE', 3000);
  * child outlives its parent by default, so without this an exiting server
  * leaves orphans behind exactly like an abandoned promise does.
  */
-const liveShells = new Set<PythonShell>();
+interface ProcessTreeRecord {
+  shell: PythonShell;
+  /** POSIX process-group id, retained after the direct child exits. */
+  pid: number;
+  livenessTimer?: NodeJS.Timeout;
+}
+
+const liveTrees = new Set<ProcessTreeRecord>();
 
 let exitHooksInstalled = false;
 
@@ -80,9 +88,8 @@ let exitHooksInstalled = false;
  * targets the whole group. Windows has no equivalent in Node's kill API;
  * taskkill /T is the platform facility for terminating a process tree.
  */
-function signalProcessTree(shell: PythonShell, signal: NodeJS.Signals): boolean {
-  const pid = shell.childProcess?.pid;
-  if (!pid) return false;
+function signalProcessTree(tree: ProcessTreeRecord, signal: NodeJS.Signals): boolean {
+  const { shell, pid } = tree;
 
   if (process.platform === 'win32') {
     const result = spawnSync('taskkill', ['/PID', String(pid), '/T', '/F'], {
@@ -113,16 +120,47 @@ function signalProcessTree(shell: PythonShell, signal: NodeJS.Signals): boolean 
 }
 
 /** Whether any member of the isolated POSIX process group still exists. */
-function processTreeIsAlive(shell: PythonShell): boolean {
-  const pid = shell.childProcess?.pid;
-  if (!pid) return false;
+function processTreeIsAlive(tree: ProcessTreeRecord): boolean {
+  const { shell, pid } = tree;
   if (process.platform === 'win32') return shell.childProcess.exitCode === null;
   try {
     process.kill(-pid, 0);
-    return true;
+    if (process.platform !== 'linux') return true;
+
+    // kill(0) also succeeds for zombies. A descendant whose direct parent
+    // exited can remain as a zombie until the container's init reaps it; such
+    // a task cannot execute or hold resources and must not pin the ownership
+    // record forever. Inspect the Linux process-group field and require at
+    // least one non-zombie member. Other POSIX hosts retain kill(0) semantics.
+    for (const entry of readdirSync('/proc')) {
+      if (!/^\d+$/.test(entry)) continue;
+      try {
+        const stat = readFileSync(`/proc/${entry}/stat`, 'utf8');
+        const fields = stat.slice(stat.lastIndexOf(')') + 2).split(' ');
+        const state = fields[0];
+        const processGroup = Number(fields[2]);
+        if (processGroup === pid && state !== 'Z') return true;
+      } catch {
+        // Process exited between directory listing and stat read.
+      }
+    }
+    return false;
   } catch {
     return false;
   }
+}
+
+function releaseTreeIfGone(tree: ProcessTreeRecord): boolean {
+  if (processTreeIsAlive(tree)) return false;
+  if (tree.livenessTimer) clearInterval(tree.livenessTimer);
+  liveTrees.delete(tree);
+  return true;
+}
+
+function monitorTree(tree: ProcessTreeRecord): void {
+  if (releaseTreeIfGone(tree) || tree.livenessTimer) return;
+  tree.livenessTimer = setInterval(() => releaseTreeIfGone(tree), 250);
+  tree.livenessTimer.unref?.();
 }
 
 /**
@@ -133,8 +171,10 @@ function processTreeIsAlive(shell: PythonShell): boolean {
  */
 export function killAllPythonChildren(signal: NodeJS.Signals = 'SIGTERM'): number {
   let killed = 0;
-  for (const shell of Array.from(liveShells)) {
-    if (signalProcessTree(shell, signal)) killed += 1;
+  for (const tree of Array.from(liveTrees)) {
+    if (releaseTreeIfGone(tree)) continue;
+    if (signalProcessTree(tree, signal)) killed += 1;
+    monitorTree(tree);
   }
   return killed;
 }
@@ -216,12 +256,18 @@ export function runPythonBridge(
       // bridge-owned tree addressable without walking /proc.
       detached: process.platform === 'win32' ? options.detached : true,
     });
-    liveShells.add(shell);
+    const pid = shell.childProcess?.pid;
+    if (!pid) {
+      return reject(new Error(`${label} did not expose a child process id`));
+    }
+    const tree: ProcessTreeRecord = { shell, pid };
+    liveTrees.add(tree);
 
     const output: string[] = [];
     const stderrLines: string[] = [];
     let settled = false;
     let killTimer: NodeJS.Timeout | undefined;
+    let terminationStarted = false;
 
     // Armed here so `cleanup` below can close over it. Its callback calls
     // `failWith`, which is declared further down — safe because a setTimeout
@@ -230,7 +276,7 @@ export function runPythonBridge(
       failWith(
         new BridgeTimeoutError(
           `${label} exceeded its ${timeoutMs}ms budget and was terminated. ` +
-            `The subprocess was killed, so no orphan remains. ` +
+            `Termination was requested and the process group remains owned until exit. ` +
             `Raise PYTHON_BRIDGE_TIMEOUT if this operation is legitimately slower.`,
           { label, timeoutMs, reason: 'timeout', stderr: stderrLines.join('\n') },
         ),
@@ -239,10 +285,8 @@ export function runPythonBridge(
     }, timeoutMs);
     if (typeof timer.unref === 'function') timer.unref();
 
-    const cleanup = () => {
-      liveShells.delete(shell);
+    const cleanupCall = () => {
       clearTimeout(timer);
-      if (killTimer) clearTimeout(killTimer);
       if (runOptions.signal) runOptions.signal.removeEventListener('abort', onAbort);
     };
 
@@ -253,12 +297,19 @@ export function runPythonBridge(
      * which is the case this exists for.
      */
     const terminate = (why: string) => {
-      signalProcessTree(shell, 'SIGTERM');
+      if (terminationStarted || releaseTreeIfGone(tree)) return;
+      terminationStarted = true;
+      signalProcessTree(tree, 'SIGTERM');
       killTimer = setTimeout(() => {
-        if (process.platform === 'win32' || processTreeIsAlive(shell)) {
+        if (process.platform === 'win32' || processTreeIsAlive(tree)) {
           logger.warn(`${label}: process tree survived SIGTERM after ${why}; sending SIGKILL`);
-          signalProcessTree(shell, 'SIGKILL');
+          signalProcessTree(tree, 'SIGKILL');
         }
+        // A kill request is not proof of exit: SIGKILL can remain pending
+        // while a POSIX task is stuck in uninterruptible I/O, and Windows
+        // termination can fail. Keep survivors registered so shutdown can
+        // retry; the liveness monitor removes them once exit is observed.
+        monitorTree(tree);
       }, KILL_GRACE_MS);
       if (typeof killTimer.unref === 'function') killTimer.unref();
     };
@@ -271,7 +322,6 @@ export function runPythonBridge(
       // a shutdown in the meantime still SIGKILLs it.
       clearTimeout(timer);
       if (runOptions.signal) runOptions.signal.removeEventListener('abort', onAbort);
-      setTimeout(() => liveShells.delete(shell), KILL_GRACE_MS + 100).unref?.();
       reject(error);
     };
 
@@ -297,9 +347,18 @@ export function runPythonBridge(
     });
 
     shell.end((err: any) => {
-      if (settled) return;
+      if (settled) {
+        cleanupCall();
+        monitorTree(tree);
+        return;
+      }
       settled = true;
-      cleanup();
+      cleanupCall();
+      // A successful direct child can leave detached-stdio descendants in its
+      // process group. Preserve its output/result, but bound ownership of the
+      // surviving group with the same TERM/grace/KILL lifecycle as a timeout.
+      if (processTreeIsAlive(tree)) terminate('direct parent exit');
+      else monitorTree(tree);
       if (err) {
         if (stderrLines.length > 0 && !err.stderr) {
           err.stderr = stderrLines.join('\n');
@@ -314,5 +373,6 @@ export function runPythonBridge(
 
 /** Number of bridge children currently registered (used by tests). */
 export function liveChildCount(): number {
-  return liveShells.size;
+  for (const tree of Array.from(liveTrees)) releaseTreeIfGone(tree);
+  return liveTrees.size;
 }

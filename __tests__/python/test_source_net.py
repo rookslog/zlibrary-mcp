@@ -41,6 +41,36 @@ class TestBuildTimeout:
         assert timeout.write == 11.0
         assert timeout.pool == 7.0
 
+
+class TestBoundedResolver:
+    """Actual httpx resolution must not enter asyncio's joined executor."""
+
+    @pytest.mark.asyncio
+    async def test_httpx_hostname_resolution_uses_a_daemon_bounded_worker(
+        self, monkeypatch
+    ):
+        release = threading.Event()
+        worker_daemon = []
+
+        def stalled_getaddrinfo(*_args, **_kwargs):
+            worker_daemon.append(threading.current_thread().daemon)
+            release.wait(5)
+            return []
+
+        monkeypatch.setattr(socket, "getaddrinfo", stalled_getaddrinfo)
+        started = time.monotonic()
+        try:
+            async with net.bounded_resolver(0.05):
+                async with httpx.AsyncClient(trust_env=False) as client:
+                    with pytest.raises(httpx.ConnectError) as excinfo:
+                        await client.get("http://resolver-stall.invalid/")
+        finally:
+            release.set()
+
+        assert time.monotonic() - started < 1
+        assert worker_daemon == [True]
+        assert net.classify_httpx_error(excinfo.value)[0] == "dns_timeout"
+
     def test_no_phase_is_unbounded(self):
         """A None anywhere here is the bug this module exists to prevent."""
         timeout = net.build_timeout(SourceConfig())
@@ -187,13 +217,46 @@ class TestProbeHost:
             await asyncio.sleep(30)
 
         monkeypatch.setattr(socket, "getaddrinfo", _resolves)
-        monkeypatch.setattr(asyncio, "open_connection", _never_connects)
+        monkeypatch.setattr(net, "_open_resolved_connection", _never_connects)
 
         with pytest.raises(ProviderUnreachableError) as excinfo:
             await net.probe_host("libgen", "libgen.is", timeout=0.05)
 
         assert excinfo.value.reason == "connect_timeout"
         assert excinfo.value.reason != "dns_failure", "must not blur into DNS failure"
+
+    @pytest.mark.asyncio
+    async def test_tcp_probe_reuses_the_daemon_resolved_address(self, monkeypatch):
+        """The TCP phase must not ask open_connection to resolve the host again."""
+        address = ("192.0.2.25", 443)
+        connected = []
+
+        def _resolves(*_args, **_kwargs):
+            return [
+                (socket.AF_INET, socket.SOCK_STREAM, socket.IPPROTO_TCP, "", address)
+            ]
+
+        async def _open_resolved(_loop, sock, target):
+            connected.append((sock, target))
+            return object(), _Writer(sock)
+
+        class _Writer:
+            def __init__(self, sock):
+                self.sock = sock
+
+            def close(self):
+                self.sock.close()
+
+            async def wait_closed(self):
+                return None
+
+        monkeypatch.setattr(socket, "getaddrinfo", _resolves)
+        monkeypatch.setattr(net, "_open_resolved_connection", _open_resolved)
+
+        await net.probe_host("libgen", "libgen.example", timeout=0.2, use_cache=False)
+
+        assert len(connected) == 1
+        assert connected[0][1] == address
 
     @pytest.mark.asyncio
     async def test_reachable_host_returns_quietly(self):

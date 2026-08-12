@@ -1,9 +1,14 @@
 # Tests for lib/python_bridge.py (EAPI-based)
 
+import json
 import pytest
 import os
 import sys
+import asyncio
+from types import SimpleNamespace
 from unittest.mock import AsyncMock
+
+import httpx
 
 from pathlib import Path
 
@@ -16,6 +21,7 @@ import python_bridge  # Import the module itself
 
 # Import functions from the module under test
 from python_bridge import (
+    main,
     process_document,
     download_book,
     normalize_book_details,
@@ -461,6 +467,251 @@ class TestBridgeFunctions:
 
 
 class TestDownloadBook:
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        ("failure", "expected_reason"),
+        [
+            (httpx.ConnectTimeout("connect stalled"), "connect_timeout"),
+            (httpx.ReadTimeout("body stalled"), "read_timeout"),
+            (
+                httpx.HTTPStatusError(
+                    "bad status",
+                    request=httpx.Request("GET", "https://cdn.example/book"),
+                    response=httpx.Response(503),
+                ),
+                "http_error",
+            ),
+            ("trickle", "read_timeout"),
+        ],
+    )
+    async def test_source_transfer_failures_reach_main_as_typed_envelopes(
+        self, failure, expected_reason, tmp_path, mocker, monkeypatch, capsys
+    ):
+        """The actual source transfer boundary must classify every failure."""
+
+        class FakeResponse:
+            headers = {"content-type": "application/pdf"}
+
+            def raise_for_status(self):
+                if isinstance(failure, httpx.HTTPStatusError):
+                    raise failure
+
+            async def aiter_bytes(self, _chunk_size):
+                if failure == "trickle":
+                    await asyncio.sleep(1)
+                    yield b"late"
+                    return
+                if isinstance(failure, httpx.ReadTimeout):
+                    raise failure
+                yield b"%PDF"
+
+        class FakeStream:
+            async def __aenter__(self):
+                if isinstance(failure, httpx.ConnectTimeout):
+                    raise failure
+                return FakeResponse()
+
+            async def __aexit__(self, *_args):
+                return False
+
+        class FakeClient:
+            def __init__(self, **_kwargs):
+                pass
+
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, *_args):
+                return False
+
+            def stream(self, *_args, **_kwargs):
+                return FakeStream()
+
+        router = SimpleNamespace(
+            get_download_url=AsyncMock(
+                return_value=SimpleNamespace(
+                    url="https://cdn.example/book", source="libgen"
+                )
+            ),
+            close=AsyncMock(),
+        )
+        config = python_bridge.get_source_config()
+        config.total_timeout = 0.03
+        config.preflight_timeout = 0.03
+        mocker.patch(
+            "python_bridge.get_source_router", new=AsyncMock(return_value=router)
+        )
+        mocker.patch("python_bridge.get_source_config", return_value=config)
+        mocker.patch("httpx.AsyncClient", FakeClient)
+        monkeypatch.setattr(
+            sys,
+            "argv",
+            [
+                "python_bridge.py",
+                "download_book",
+                json.dumps(
+                    {
+                        "book_details": {
+                            "md5": "0123456789abcdef0123456789abcdef",
+                            "source": "libgen",
+                        },
+                        "output_dir": str(tmp_path),
+                    }
+                ),
+            ],
+        )
+
+        with pytest.raises(SystemExit):
+            await main()
+
+        envelope = json.loads(capsys.readouterr().err.strip().splitlines()[-1])
+        assert envelope["details"]["provider"] == "libgen"
+        assert envelope["details"]["host"] == "cdn.example"
+        assert envelope["details"]["reason"] == expected_reason
+        assert envelope["details"]["operation"] == "download"
+        assert not (tmp_path / "0123456789abcdef0123456789abcdef.download").exists()
+
+    @pytest.mark.asyncio
+    async def test_redirected_partial_read_timeout_attributes_the_cdn_host(
+        self, tmp_path, mocker, monkeypatch, capsys
+    ):
+        """After a redirect, the failing request host owns the failure."""
+        cdn_request = httpx.Request("GET", "https://cdn.example/file")
+
+        class FakeResponse:
+            url = cdn_request.url
+            headers = {"content-type": "application/pdf"}
+
+            def raise_for_status(self):
+                pass
+
+            async def aiter_bytes(self, _chunk_size):
+                yield b"partial"
+                raise httpx.ReadTimeout("CDN body stalled", request=cdn_request)
+
+        class FakeStream:
+            async def __aenter__(self):
+                return FakeResponse()
+
+            async def __aexit__(self, *_args):
+                return False
+
+        class FakeClient:
+            def __init__(self, **_kwargs):
+                pass
+
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, *_args):
+                return False
+
+            def stream(self, *_args, **_kwargs):
+                return FakeStream()
+
+        router = SimpleNamespace(
+            get_download_url=AsyncMock(
+                return_value=SimpleNamespace(
+                    url="https://mirror.example/get", source="libgen"
+                )
+            ),
+            close=AsyncMock(),
+        )
+        mocker.patch(
+            "python_bridge.get_source_router", new=AsyncMock(return_value=router)
+        )
+        mocker.patch("httpx.AsyncClient", FakeClient)
+        monkeypatch.setattr(
+            sys,
+            "argv",
+            [
+                "python_bridge.py",
+                "download_book",
+                json.dumps(
+                    {
+                        "book_details": {
+                            "md5": "0123456789abcdef0123456789abcdef",
+                            "source": "libgen",
+                        },
+                        "output_dir": str(tmp_path),
+                    }
+                ),
+            ],
+        )
+
+        with pytest.raises(SystemExit):
+            await main()
+
+        envelope = json.loads(capsys.readouterr().err.strip().splitlines()[-1])
+        assert envelope["details"]["host"] == "cdn.example"
+        assert envelope["details"]["reason"] == "read_timeout"
+        assert envelope["details"]["operation"] == "download"
+        assert not (tmp_path / "0123456789abcdef0123456789abcdef.download").exists()
+
+    @pytest.mark.asyncio
+    async def test_main_routes_libgen_before_eapi_initialization(
+        self, tmp_path, mocker, monkeypatch, capsys
+    ):
+        """The CLI dispatch must inspect source before deciding authentication."""
+        args = {
+            "book_details": {
+                "md5": "0123456789abcdef0123456789abcdef",
+                "source": "libgen",
+                "title": "LibGen Book",
+            },
+            "output_dir": str(tmp_path),
+        }
+        monkeypatch.setattr(
+            sys, "argv", ["python_bridge.py", "download_book", json.dumps(args)]
+        )
+        initialize = mocker.patch(
+            "python_bridge.initialize_eapi_client",
+            new=AsyncMock(side_effect=AssertionError("EAPI initialization attempted")),
+        )
+        mocker.patch(
+            "python_bridge.download_book",
+            new=AsyncMock(return_value={"file_path": str(tmp_path / "book.pdf")}),
+        )
+
+        await main()
+
+        initialize.assert_not_awaited()
+        response = json.loads(capsys.readouterr().out)
+        assert json.loads(response["content"][0]["text"])["file_path"].endswith(
+            "book.pdf"
+        )
+
+    @pytest.mark.asyncio
+    async def test_libgen_download_does_not_initialize_zlibrary(self, tmp_path, mocker):
+        """A LibGen search result must route without unrelated EAPI credentials."""
+        raw_path = tmp_path / "raw.pdf"
+        raw_path.write_bytes(b"%PDF test")
+        initialize = mocker.patch(
+            "python_bridge.initialize_eapi_client",
+            new=AsyncMock(side_effect=AssertionError("EAPI initialization attempted")),
+        )
+        fetch = mocker.patch(
+            "python_bridge._fetch_from_source",
+            new=AsyncMock(return_value=str(raw_path)),
+        )
+        mocker.patch(
+            "python_bridge.create_unified_filename", return_value="libgen-book.pdf"
+        )
+
+        result = await download_book(
+            book_details={
+                "md5": "0123456789abcdef0123456789abcdef",
+                "source": "libgen",
+                "title": "LibGen Book",
+                "extension": "pdf",
+            },
+            output_dir=str(tmp_path),
+        )
+
+        initialize.assert_not_awaited()
+        fetch.assert_awaited_once()
+        assert result["file_path"].endswith("libgen-book.pdf")
+
     @pytest.mark.asyncio
     async def test_download_book_success(
         self, mock_eapi_download, tmp_path, mocker, patch_eapi_client

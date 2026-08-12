@@ -508,6 +508,39 @@ describe('Z-Library API - Extended Coverage', () => {
     });
   });
 
+  describe('downloadBookToFile error envelope', () => {
+    test('keeps provider details directly on its public-facing wrapper', async () => {
+      const details = {
+        operation: 'download',
+        failures: [
+          { provider: 'libgen', host: 'libgen.li', reason: 'connect_timeout' },
+        ],
+      };
+      mockGetManagedPythonPath.mockResolvedValue('/fake/python');
+      mockRunPythonBridge.mockRejectedValue(
+        Object.assign(new Error('bridge failed'), {
+          stderr: JSON.stringify({
+            error: 'download failed on every source',
+            type: 'AllSourcesFailedError',
+            details,
+          }),
+        }),
+      );
+
+      const error = await zlibApi
+        .downloadBookToFile({
+          bookDetails: {
+            md5: '0123456789abcdef0123456789abcdef',
+            source: 'libgen',
+          },
+        })
+        .catch((err) => err);
+
+      expect(error.context.details).toEqual(details);
+      expect(error.cause).toBeUndefined();
+    });
+  });
+
   /**
    * The bridge writes a JSON envelope to stderr when a provider fails. These
    * assert it survives the trip to the caller: a caller that cannot tell
@@ -592,6 +625,38 @@ describe('Z-Library API - Extended Coverage', () => {
       // heuristic classifier retry a host already known to be dead.
       expect(isRetryableError(error)).toBe(false);
       expect(mockRunPythonBridge).toHaveBeenCalledTimes(1);
+    });
+
+    test('configuration failures do not open the shared bridge circuit', async () => {
+      mockGetManagedPythonPath.mockResolvedValue('/fake/python');
+      mockRunPythonBridge.mockRejectedValue(
+        bridgeFailure({
+          error: 'download failed on every source',
+          type: 'AllSourcesFailedError',
+          details: {
+            operation: 'download',
+            failures: [
+              {
+                provider: 'annas',
+                host: 'annas-archive.gl',
+                reason: 'configuration_error',
+                detail: 'ANNAS_SECRET_KEY not configured',
+              },
+            ],
+          },
+        }),
+      );
+
+      const messages = [];
+      for (let attempt = 0; attempt < 6; attempt += 1) {
+        const error = await zlibApi
+          .searchMultiSource({ query: 'test', source: 'annas' })
+          .catch((e) => e);
+        messages.push(error.message);
+      }
+
+      expect(messages).not.toContain('Circuit breaker is OPEN');
+      expect(mockRunPythonBridge).toHaveBeenCalledTimes(6);
     });
 
     test('a response-level failure is not marked non-retryable', async () => {

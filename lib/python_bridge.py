@@ -3,6 +3,7 @@ import sys
 import os
 import json
 import traceback
+from urllib.parse import urlsplit
 
 # Add project root to sys.path to allow importing 'lib'
 project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -23,7 +24,19 @@ from lib import enhanced_metadata
 # Import multi-source router
 from lib.sources.router import SourceRouter
 from lib.sources.config import get_source_config
-from lib.sources.errors import AllSourcesFailedError, SourceError
+from lib.sources.errors import (
+    AllSourcesFailedError,
+    ProviderResponseError,
+    ProviderTimeoutError,
+    ProviderUnreachableError,
+    SourceError,
+)
+from lib.sources.net import (
+    bounded_await,
+    bounded_resolver,
+    build_timeout,
+    classify_httpx_error,
+)
 
 # Add zlibrary source directory to path for EAPI imports
 zlibrary_src_path = os.path.join(os.path.dirname(__file__), "..", "zlibrary", "src")
@@ -694,7 +707,9 @@ async def process_document(
 SOURCE_ALIASES = {"libgen", "annas", "annas_archive"}
 
 
-async def _download_url_to_file(url: str, output_dir: str, md5: str) -> str:
+async def _download_url_to_file(
+    url: str, output_dir: str, md5: str, provider: str
+) -> str:
     """Stream a resolved source URL to disk and return the raw path.
 
     The source-agnostic half of acquisition: everything downstream of this
@@ -710,26 +725,97 @@ async def _download_url_to_file(url: str, output_dir: str, md5: str) -> str:
     Path(output_dir).mkdir(parents=True, exist_ok=True)
     raw_path = Path(output_dir) / f"{md5}.download"
 
-    async with httpx.AsyncClient(timeout=180, follow_redirects=True) as client:
-        async with client.stream("GET", url) as response:
-            response.raise_for_status()
+    original_host = (urlsplit(url).hostname or "").lower()
+    active_host = original_host
+    config = get_source_config()
 
-            content_type = response.headers.get("content-type", "")
-            if "text/html" in content_type:
-                raise ValueError(
-                    f"Source served HTML rather than a file for {md5} — the "
-                    f"download key has most likely expired. Re-resolve and retry."
-                )
+    async def stream_to_disk() -> int:
+        nonlocal active_host
+        try:
+            async with httpx.AsyncClient(
+                timeout=build_timeout(config), follow_redirects=True
+            ) as client:
+                async with client.stream("GET", url) as response:
+                    response_url = getattr(response, "url", None)
+                    if response_url is not None:
+                        active_host = (
+                            urlsplit(str(response_url)).hostname or active_host
+                        ).lower()
+                    response.raise_for_status()
 
-            written = 0
-            with open(raw_path, "wb") as handle:
-                async for chunk in response.aiter_bytes(65536):
-                    handle.write(chunk)
-                    written += len(chunk)
+                    content_type = response.headers.get("content-type", "")
+                    if "text/html" in content_type:
+                        raise ProviderResponseError(
+                            provider,
+                            active_host,
+                            f"HTML response for {md5}; download key may have expired",
+                            reason="protocol_error",
+                        )
+
+                    written = 0
+                    with open(raw_path, "wb") as handle:
+                        async for chunk in response.aiter_bytes(65536):
+                            handle.write(chunk)
+                            written += len(chunk)
+                    return written
+        except BaseException:
+            # Cancellation and every classified failure must leave no partial
+            # artifact for a later retry to mistake for a completed download.
+            raw_path.unlink(missing_ok=True)
+            raise
+
+    try:
+        written = await bounded_await(
+            stream_to_disk(),
+            config.total_timeout,
+            provider=provider,
+            host=original_host,
+            operation="download",
+        )
+    except SourceError as exc:
+        if isinstance(exc, ProviderTimeoutError) and exc.reason == "search_timeout":
+            raise ProviderTimeoutError(
+                provider,
+                active_host,
+                exc.detail,
+                reason="read_timeout",
+            ) from exc
+        raise
+    except httpx.HTTPError as exc:
+        reason, detail = classify_httpx_error(exc)
+        try:
+            request = exc.request
+        except RuntimeError:
+            # Manually raised or transport-created exceptions may expose the
+            # property while leaving it unset. The active response/original
+            # host remains the correct fallback in that case.
+            request = None
+        request_url = getattr(request, "url", None)
+        failure_host = active_host
+        if request_url is not None:
+            failure_host = (urlsplit(str(request_url)).hostname or failure_host).lower()
+        error_type = (
+            ProviderUnreachableError
+            if reason
+            in {
+                "dns_failure",
+                "dns_timeout",
+                "connect_timeout",
+                "connect_refused",
+                "connect_error",
+                "tls_error",
+            }
+            else ProviderTimeoutError
+            if reason == "read_timeout"
+            else ProviderResponseError
+        )
+        raise error_type(provider, failure_host, detail, reason=reason) from exc
 
     if written == 0:
         raw_path.unlink(missing_ok=True)
-        raise ValueError(f"Source returned an empty body for {md5}")
+        raise ProviderResponseError(
+            provider, active_host, f"empty body for {md5}", reason="protocol_error"
+        )
 
     logger.info(f"Downloaded {written} bytes from source to {raw_path}")
     return str(raw_path)
@@ -752,7 +838,8 @@ async def _fetch_from_source(book_details: dict, output_dir: str) -> str:
     result = await router.get_download_url(md5, source=selection)
     logger.info(f"Resolved {source} download for {md5} via {result.source}")
 
-    return await _download_url_to_file(result.url, output_dir, md5)
+    provider = getattr(result.source, "value", result.source) or selection
+    return await _download_url_to_file(result.url, output_dir, md5, str(provider))
 
 
 async def download_book(
@@ -1141,60 +1228,32 @@ async def main():
         sys.exit(1)
 
     try:
-        # Initialize EAPI client for all functions except local file processing and multi-source search
-        if function_name not in ["process_document", "search_multi_source"]:
-            await initialize_eapi_client()
+        book_source = ""
+        if function_name == "download_book":
+            book_source = (
+                (args_dict.get("book_details") or {}).get("source") or ""
+            ).lower()
+        needs_eapi = function_name not in ["process_document", "search_multi_source"]
+        if function_name == "download_book" and book_source in SOURCE_ALIASES:
+            needs_eapi = False
 
-        # Standardize 'language' key to 'languages' if present for search functions
-        if function_name in ["search", "full_text_search"]:
-            if "language" in args_dict and args_dict["language"]:
-                args_dict["languages"] = args_dict.pop("language")
-            elif "languages" in args_dict and args_dict["languages"]:
-                pass
-            else:
-                args_dict["languages"] = []
+        # Install before authentication and dispatch: httpx/AnyIO resolves
+        # again even after source preflight, and its default executor is joined
+        # during asyncio.run() shutdown.
+        resolver_timeout = get_source_config().preflight_timeout
+        async with bounded_resolver(resolver_timeout):
+            if needs_eapi:
+                await initialize_eapi_client()
 
-            if "content_types" not in args_dict or not args_dict["content_types"]:
-                args_dict["content_types"] = []
-
-        if function_name == "search":
-            logger.info(
-                f"python_bridge.main: About to call search with args_dict: {args_dict}"
-            )
-            result = await search(**args_dict)
-        elif function_name == "full_text_search":
-            logger.info(
-                f"python_bridge.main: About to call full_text_search with args_dict: {args_dict}"
-            )
-            result = await full_text_search(**args_dict)
-        elif function_name == "get_download_history":
-            result = await get_download_history(**args_dict)
-        elif function_name == "get_download_limits":
-            result = await get_download_limits(**args_dict)
-        elif function_name == "download_book":
-            result = await download_book(**args_dict)
-        elif function_name == "process_document":
-            if "file_path" in args_dict:
-                args_dict["file_path_str"] = args_dict.pop("file_path")
-            result = await process_document(**args_dict)
-        elif function_name == "get_book_metadata_complete":
-            result = await get_book_metadata_complete(**args_dict)
-        elif function_name == "search_by_term_bridge":
-            result = await search_by_term_bridge(**args_dict)
-        elif function_name == "search_by_author_bridge":
-            result = await search_by_author_bridge(**args_dict)
-        elif function_name == "search_advanced":
-            result = await search_advanced(**args_dict)
-        elif function_name == "fetch_booklist_bridge":
-            result = await fetch_booklist_bridge(**args_dict)
-        elif function_name == "get_recent_books":
-            result = await get_recent_books(**args_dict)
-        elif function_name == "eapi_health_check":
-            result = await eapi_health_check()
-        elif function_name == "search_multi_source":
-            result = await search_multi_source(**args_dict)
-        else:
-            raise ValueError(f"Unknown function: {function_name}")
+            # Standardize 'language' key to 'languages' for search functions.
+            if function_name in ["search", "full_text_search"]:
+                if "language" in args_dict and args_dict["language"]:
+                    args_dict["languages"] = args_dict.pop("language")
+                elif not args_dict.get("languages"):
+                    args_dict["languages"] = []
+                if not args_dict.get("content_types"):
+                    args_dict["content_types"] = []
+            result = await _dispatch_bridge_function(function_name, args_dict)
 
         # Print only confirmation and path to stdout to avoid large content
         mcp_style_response = {"content": [{"type": "text", "text": json.dumps(result)}]}
@@ -1212,6 +1271,14 @@ async def main():
         # MCP caller can act on it instead of pattern-matching prose.
         if isinstance(e, (SourceError, AllSourcesFailedError)):
             error_info["details"] = e.to_dict()
+            operation = (
+                "download"
+                if function_name == "download_book"
+                else "search"
+                if function_name == "search_multi_source"
+                else function_name
+            )
+            error_info["details"].setdefault("operation", operation)
         print(json.dumps(error_info), file=sys.stderr)
         sys.exit(1)
     finally:
@@ -1221,6 +1288,47 @@ async def main():
         # Clean up source router
         if _source_router:
             await _source_router.close()
+
+
+async def _dispatch_bridge_function(function_name: str, args_dict: dict):
+    """Dispatch one parsed bridge operation after lifecycle setup."""
+    if function_name == "search":
+        logger.info(
+            f"python_bridge.main: About to call search with args_dict: {args_dict}"
+        )
+        return await search(**args_dict)
+    elif function_name == "full_text_search":
+        logger.info(
+            f"python_bridge.main: About to call full_text_search with args_dict: {args_dict}"
+        )
+        return await full_text_search(**args_dict)
+    elif function_name == "get_download_history":
+        return await get_download_history(**args_dict)
+    elif function_name == "get_download_limits":
+        return await get_download_limits(**args_dict)
+    elif function_name == "download_book":
+        return await download_book(**args_dict)
+    elif function_name == "process_document":
+        if "file_path" in args_dict:
+            args_dict["file_path_str"] = args_dict.pop("file_path")
+        return await process_document(**args_dict)
+    elif function_name == "get_book_metadata_complete":
+        return await get_book_metadata_complete(**args_dict)
+    elif function_name == "search_by_term_bridge":
+        return await search_by_term_bridge(**args_dict)
+    elif function_name == "search_by_author_bridge":
+        return await search_by_author_bridge(**args_dict)
+    elif function_name == "search_advanced":
+        return await search_advanced(**args_dict)
+    elif function_name == "fetch_booklist_bridge":
+        return await fetch_booklist_bridge(**args_dict)
+    elif function_name == "get_recent_books":
+        return await get_recent_books(**args_dict)
+    elif function_name == "eapi_health_check":
+        return await eapi_health_check()
+    elif function_name == "search_multi_source":
+        return await search_multi_source(**args_dict)
+    raise ValueError(f"Unknown function: {function_name}")
 
 
 if __name__ == "__main__":

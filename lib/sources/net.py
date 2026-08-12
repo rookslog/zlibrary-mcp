@@ -42,6 +42,7 @@ import socket
 import ssl
 import threading
 import urllib.request
+from contextlib import asynccontextmanager
 from typing import Any, Callable, Dict, Optional, Tuple
 from urllib.parse import urlsplit
 
@@ -50,6 +51,12 @@ import httpx
 from .errors import ProviderTimeoutError, ProviderUnreachableError
 
 logger = logging.getLogger("zlibrary.sources")
+
+# Machine marker deliberately carried in the gaierror text. httpcore/httpx
+# discard the original exception type and cause on this path but preserve its
+# message. Matching this exact token is stable and avoids guessing from broad
+# human-readable timeout prose.
+DNS_TIMEOUT_MARKER = "zlibrary_mcp_dns_timeout"
 
 # Cached probe verdicts, keyed by (host, port), for the lifetime of the
 # process. The bridge is a one-shot process per MCP call, so this only ever
@@ -177,7 +184,11 @@ def classify_httpx_error(exc: BaseException) -> Tuple[str, str]:
             if isinstance(cause, ConnectionRefusedError):
                 return "connect_refused", detail
             cause = cause.__cause__
-        # httpx does not always preserve the cause; fall back to the text.
+        # httpx strips the gaierror cause produced by its AnyIO transport, but
+        # retains our exact machine marker in the ConnectError message.
+        if DNS_TIMEOUT_MARKER in str(exc):
+            return "dns_timeout", f"{detail}: DNS resolution deadline exceeded"
+        # httpx does not always preserve other causes; fall back to the text.
         text = str(exc).lower()
         if "name or service not known" in text or "nodename nor servname" in text:
             return "dns_failure", str(exc)
@@ -301,7 +312,7 @@ async def _probe_host_uncached(
     # third-party LibGen client; translate its generic operation timeout into
     # the DNS-specific stable reason expected from a preflight.
     try:
-        await run_bounded(
+        addresses = await run_bounded(
             lambda: socket.getaddrinfo(host, port, type=socket.SOCK_STREAM),
             timeout,
             provider=provider,
@@ -321,9 +332,28 @@ async def _probe_host_uncached(
 
     # TCP connect. Deliberately no TLS handshake: this only answers "is anything
     # listening", and a handshake would double the cost of the common case.
+    async def connect_resolved():
+        """Connect using numeric sockaddrs from the daemon-bounded lookup."""
+        loop = asyncio.get_running_loop()
+        last_error: Optional[OSError] = None
+        for family, socktype, proto, _canonname, sockaddr in addresses:
+            sock = socket.socket(family, socktype, proto)
+            sock.setblocking(False)
+            try:
+                return await _open_resolved_connection(loop, sock, sockaddr)
+            except BaseException as exc:
+                sock.close()
+                if isinstance(exc, OSError):
+                    last_error = exc
+                    continue
+                raise
+        if last_error is not None:
+            raise last_error
+        raise OSError("DNS returned no usable stream addresses")
+
     writer = None
     try:
-        _, writer = await asyncio.wait_for(asyncio.open_connection(host, port), timeout)
+        _, writer = await asyncio.wait_for(connect_resolved(), timeout)
     except asyncio.TimeoutError:
         return ProviderUnreachableError(
             provider,
@@ -346,6 +376,12 @@ async def _probe_host_uncached(
                 pass
 
     return None
+
+
+async def _open_resolved_connection(loop, sock, sockaddr):
+    """Connect a prepared socket to one numeric address tuple."""
+    await loop.sock_connect(sock, sockaddr)
+    return await asyncio.open_connection(sock=sock)
 
 
 def reset_probe_cache() -> None:
@@ -433,6 +469,48 @@ async def run_bounded(
             f"{operation} exceeded {timeout:g}s",
             reason="search_timeout",
         ) from None
+
+
+@asynccontextmanager
+async def bounded_resolver(timeout: float):
+    """Route event-loop hostname resolution through a daemon worker.
+
+    httpx/AnyIO performs its own resolution after provider preflight. The
+    default loop implementation delegates that libc/NSS call to a non-daemon
+    executor which asyncio joins at shutdown, so cancelling the HTTP request
+    cannot bound the one-shot interpreter. Replacing the loop method keeps the
+    public signature AnyIO expects while reusing the daemon lifecycle boundary.
+    """
+    loop = asyncio.get_running_loop()
+    original = loop.getaddrinfo
+
+    async def getaddrinfo(
+        host,
+        port,
+        *,
+        family=0,
+        type=0,
+        proto=0,
+        flags=0,
+    ):
+        try:
+            return await run_bounded(
+                lambda: socket.getaddrinfo(host, port, family, type, proto, flags),
+                timeout,
+                provider="network",
+                host=str(host),
+                operation="dns resolution",
+            )
+        except ProviderTimeoutError as exc:
+            raise socket.gaierror(
+                socket.EAI_AGAIN, f"{DNS_TIMEOUT_MARKER}:{timeout:g}s"
+            ) from exc
+
+    loop.getaddrinfo = getaddrinfo
+    try:
+        yield
+    finally:
+        loop.getaddrinfo = original
 
 
 async def bounded_await(

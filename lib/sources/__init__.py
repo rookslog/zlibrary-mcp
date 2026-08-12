@@ -18,6 +18,7 @@ from .base import SourceAdapter
 from .config import SourceConfig, get_source_config
 from .errors import (
     AllSourcesFailedError,
+    ProviderConfigurationError,
     ProviderResponseError,
     ProviderTimeoutError,
     ProviderUnreachableError,
@@ -42,6 +43,7 @@ __all__ = [
     "SourceError",
     "ProviderUnreachableError",
     "ProviderTimeoutError",
+    "ProviderConfigurationError",
     "ProviderResponseError",
     "AllSourcesFailedError",
 ]

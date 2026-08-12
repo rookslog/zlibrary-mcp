@@ -10,7 +10,7 @@ from lib.sources.router import SourceRouter
 from lib.sources.config import SourceConfig
 from lib.sources.models import DownloadResult, QuotaInfo, SourceType, UnifiedBookResult
 from lib.sources.annas import QuotaExhaustedError
-from lib.sources.errors import AllSourcesFailedError, ProviderUnreachableError
+from lib.sources.errors import AllSourcesFailedError
 
 pytestmark = pytest.mark.unit
 
@@ -195,6 +195,22 @@ class TestRouterSearch:
 
 class TestRouterDownload:
     """Tests for download URL routing and quota fallback."""
+
+    @pytest.mark.asyncio
+    async def test_missing_annas_key_is_a_structured_configuration_failure(
+        self, config_without_annas
+    ):
+        """An explicit Anna download without a key is caller config, not outage."""
+        router = SourceRouter(config_without_annas)
+
+        with pytest.raises(AllSourcesFailedError) as excinfo:
+            await router.get_download_url("abc123", source="annas")
+
+        assert len(excinfo.value.failures) == 1
+        failure = excinfo.value.failures[0]
+        assert failure.provider == "annas"
+        assert failure.reason == "configuration_error"
+        assert "ANNAS_SECRET_KEY" in failure.detail
 
     @pytest.mark.asyncio
     async def test_download_returns_url_with_source(self, config_with_annas):

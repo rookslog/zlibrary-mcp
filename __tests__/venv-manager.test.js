@@ -6,7 +6,7 @@
  * New tests only validate path detection and error messages.
  */
 
-import { describe, test, expect } from '@jest/globals';
+import { describe, test, expect, jest } from '@jest/globals';
 import { getManagedPythonPath } from '../dist/lib/venv-manager.js';
 import { existsSync } from 'fs';
 import * as path from 'path';
@@ -82,6 +82,20 @@ describe('venv-manager (UV-based)', () => {
 
       // This ensures if project moves, venv moves with it
     });
+  });
+});
+
+describe('venv-manager path validation', () => {
+  test('does not launch an unbounded Python version subprocess before the owned runner', async () => {
+    jest.resetModules();
+    const execSync = jest.fn(() => {
+      throw new Error('unbounded validation subprocess launched');
+    });
+    jest.unstable_mockModule('child_process', () => ({ execSync }));
+
+    const { getManagedPythonPath: getPath } = await import('../dist/lib/venv-manager.js');
+    await expect(getPath()).resolves.toContain('.venv');
+    expect(execSync).not.toHaveBeenCalled();
   });
 });
 

@@ -261,10 +261,10 @@ class LibgenAdapter(SourceAdapter):
         an expired key silently redirects back to `/ads.php`, and a dead node
         can answer 200 with an HTML error page.
         """
-        try:
-            response = await client.get(url, headers={"Range": "bytes=0-2047"})
-        except Exception as exc:
-            return False, type(exc).__name__
+        # Transport exceptions must reach the normal classifier. Returning
+        # their class name as a semantic non-byte result reclassified DNS/TLS
+        # and timeout failures as protocol_error at the mirror aggregate.
+        response = await client.get(url, headers={"Range": "bytes=0-2047"})
 
         if "/ads.php" in str(response.url):
             return False, "key expired (bounced to ads.php)"
@@ -299,9 +299,9 @@ class LibgenAdapter(SourceAdapter):
             DownloadResult with URL and no quota_info (LibGen has no quota)
 
         Raises:
-            ValueError: If no mirror yields a download key
+            AllSourcesFailedError: If no mirror yields a working download URL
         """
-        attempts = []
+        failures: List[SourceError] = []
 
         async with httpx.AsyncClient(
             timeout=build_timeout(self.config), follow_redirects=True
@@ -310,7 +310,7 @@ class LibgenAdapter(SourceAdapter):
                 try:
                     await self._preflight(mirror)
                 except ProviderUnreachableError as exc:
-                    attempts.append(f"{mirror}: {exc.reason}")
+                    failures.append(exc)
                     logger.warning(f"LibGen mirror {mirror} unreachable: {exc}")
                     continue
 
@@ -336,14 +336,21 @@ class LibgenAdapter(SourceAdapter):
                     )
                 except Exception as exc:  # network, TLS, HTTP error
                     failure = self._as_source_error(exc, mirror_host(mirror))
-                    attempts.append(f"{mirror}: {failure.reason}")
+                    failures.append(failure)
                     logger.warning(
                         f"LibGen mirror {mirror} failed for {md5}: {failure}"
                     )
                     continue
 
                 if not url:
-                    attempts.append(f"{mirror}: {detail}")
+                    failures.append(
+                        ProviderResponseError(
+                            PROVIDER,
+                            mirror_host(mirror),
+                            detail,
+                            reason="protocol_error",
+                        )
+                    )
                     logger.warning(
                         f"LibGen mirror {mirror} could not serve {md5}: {detail}"
                     )
@@ -358,10 +365,7 @@ class LibgenAdapter(SourceAdapter):
                     quota_info=None,  # LibGen has no quota
                 )
 
-        raise ValueError(
-            f"No LibGen mirror could resolve a download for {md5} "
-            f"(tried {', '.join(attempts)})"
-        )
+        raise AllSourcesFailedError("download", failures)
 
     async def close(self) -> None:
         """Clean up resources.

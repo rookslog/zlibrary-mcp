@@ -145,6 +145,61 @@ maybe('python-runner', () => {
     expect(await waitFor(() => !isAlive(pid))).toBe(true);
   });
 
+  test('an abort signal kills descendants spawned by the bridge', async () => {
+    if (process.platform === 'win32') return;
+
+    const pidFile = path.join(tmpDir, 'tree.pids');
+    const name = script(
+      'tree.py',
+      [
+        'import os, pathlib, subprocess, sys, time',
+        'child = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(600)"])',
+        `pathlib.Path(${JSON.stringify(pidFile)}).write_text(f"{os.getpid()} {child.pid}")`,
+        'time.sleep(600)',
+        '',
+      ].join('\n'),
+    );
+    const controller = new AbortController();
+    let parentPid = -1;
+    let descendantPid = -1;
+
+    const promise = runner
+      .runPythonBridge(
+        name,
+        { mode: 'text', pythonPath: PYTHON, scriptPath: tmpDir },
+        { timeoutMs: 60000, signal: controller.signal, label: 'tree-abort-test' },
+      )
+      .catch((err) => err);
+
+    try {
+      expect(await waitFor(() => fs.existsSync(pidFile))).toBe(true);
+      [parentPid, descendantPid] = fs
+        .readFileSync(pidFile, 'utf8')
+        .split(' ')
+        .map(Number);
+      expect(parentPid).toBeGreaterThan(0);
+      expect(descendantPid).toBeGreaterThan(0);
+      expect(isAlive(descendantPid)).toBe(true);
+
+      controller.abort();
+      const error = await promise;
+
+      expect(error.code).toBe('TIMEOUT');
+      expect(await waitFor(() => !isAlive(parentPid))).toBe(true);
+      expect(await waitFor(() => !isAlive(descendantPid), 1500)).toBe(true);
+    } finally {
+      // RED leaves the grandchild alive; do not leak the regression fixture.
+      if (!controller.signal.aborted) controller.abort();
+      await promise;
+      if (parentPid > 0 && isAlive(parentPid)) {
+        process.kill(parentPid, 'SIGKILL');
+      }
+      if (descendantPid > 0 && isAlive(descendantPid)) {
+        process.kill(descendantPid, 'SIGKILL');
+      }
+    }
+  });
+
   test('does not spawn anything when the caller has already aborted', async () => {
     const name = script('never.py', 'print("should not run")\n');
     const controller = new AbortController();

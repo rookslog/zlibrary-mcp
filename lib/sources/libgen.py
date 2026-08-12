@@ -24,6 +24,7 @@ from .errors import (
 )
 from .models import DownloadResult, SourceType, UnifiedBookResult
 from .net import (
+    bounded_await,
     build_timeout,
     classify_httpx_error,
     classify_requests_error,
@@ -314,8 +315,25 @@ class LibgenAdapter(SourceAdapter):
                     continue
 
                 await self._rate_limit()
-                try:
+
+                async def resolve_attempt() -> tuple[Optional[str], str]:
+                    """Resolve and validate one mirror under one total budget."""
                     key = await self._resolve_key(client, mirror, md5)
+                    if not key:
+                        return None, "no GET link"
+
+                    candidate = f"https://libgen.{mirror}/get.php?md5={md5}&key={key}"
+                    ok, detail = await self._serves_bytes(client, candidate)
+                    return (candidate if ok else None), detail
+
+                try:
+                    url, detail = await bounded_await(
+                        resolve_attempt(),
+                        self.config.total_timeout,
+                        provider=PROVIDER,
+                        host=mirror_host(mirror),
+                        operation="download resolution",
+                    )
                 except Exception as exc:  # network, TLS, HTTP error
                     failure = self._as_source_error(exc, mirror_host(mirror))
                     attempts.append(f"{mirror}: {failure.reason}")
@@ -324,16 +342,10 @@ class LibgenAdapter(SourceAdapter):
                     )
                     continue
 
-                if not key:
-                    attempts.append(f"{mirror}: no GET link")
-                    continue
-
-                url = f"https://libgen.{mirror}/get.php?md5={md5}&key={key}"
-                ok, detail = await self._serves_bytes(client, url)
-                if not ok:
+                if not url:
                     attempts.append(f"{mirror}: {detail}")
                     logger.warning(
-                        f"LibGen mirror {mirror} resolved but cannot serve {md5}: {detail}"
+                        f"LibGen mirror {mirror} could not serve {md5}: {detail}"
                     )
                     continue
 

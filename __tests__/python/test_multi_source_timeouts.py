@@ -7,6 +7,7 @@ prevent a repeat — every path is bounded, every failure names its provider and
 reason, and an explicitly requested source is never silently swapped.
 """
 
+import asyncio
 import socket
 import time
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -20,6 +21,7 @@ from lib.sources.config import SourceConfig, get_source_config
 from lib.sources.errors import (
     AllSourcesFailedError,
     ProviderResponseError,
+    ProviderTimeoutError,
     ProviderUnreachableError,
 )
 from lib.sources.libgen import LibgenAdapter
@@ -70,13 +72,15 @@ class TestConfigTimeouts:
         assert config.total_timeout == 20.0
         assert config.preflight_enabled is False
 
-    @pytest.mark.parametrize("bad", ["0", "-5", "abc", ""])
+    @pytest.mark.parametrize(
+        "bad", ["0", "-5", "abc", "", "inf", "Infinity", "1e999", "nan"]
+    )
     def test_nonsense_falls_back_to_the_default_not_to_unbounded(
         self, monkeypatch, bad
     ):
         monkeypatch.setenv("BOOK_SOURCE_CONNECT_TIMEOUT", bad)
         config = get_source_config()
-        assert config.connect_timeout > 0
+        assert config.connect_timeout == 10.0
 
 
 class TestLibgenSearchIsBounded:
@@ -253,6 +257,30 @@ class TestAnnasSearchIsBounded:
 
         assert excinfo.value.reason == "http_error"
         assert excinfo.value.unreachable is False
+
+    @pytest.mark.asyncio
+    async def test_total_deadline_reason_survives_adapter_classification(
+        self, fast_config
+    ):
+        """The outer wall-clock timeout is already a fully attributed error."""
+        adapter = AnnasArchiveAdapter(fast_config)
+
+        async def trickle(*_args, **_kwargs):
+            await asyncio.sleep(30)
+
+        client = AsyncMock()
+        client.get.side_effect = trickle
+
+        with patch("lib.sources.annas.probe_host", new=AsyncMock(return_value=None)):
+            with patch.object(
+                adapter, "_get_client", new=AsyncMock(return_value=client)
+            ):
+                with pytest.raises(ProviderTimeoutError) as excinfo:
+                    await adapter.search("hegel")
+
+        assert excinfo.value.provider == "annas"
+        assert excinfo.value.host == "annas-archive.gl"
+        assert excinfo.value.reason == "search_timeout"
 
 
 class TestRouterSourceSelection:

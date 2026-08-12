@@ -148,6 +148,35 @@ class TestProbeHost:
         assert excinfo.value.unreachable is True
 
     @pytest.mark.asyncio
+    async def test_timed_out_dns_resolver_cannot_keep_the_bridge_alive(
+        self, monkeypatch
+    ):
+        """The resolver worker must be daemonised because it cannot be cancelled."""
+        release = threading.Event()
+        seen = {}
+
+        def _hang(*_args, **_kwargs):
+            seen["daemon"] = threading.current_thread().daemon
+            release.wait(30)
+            return []
+
+        monkeypatch.setattr(socket, "getaddrinfo", _hang)
+
+        try:
+            with pytest.raises(ProviderUnreachableError) as excinfo:
+                await net.probe_host(
+                    "annas",
+                    "stalled-resolver.invalid",
+                    timeout=0.05,
+                    use_cache=False,
+                )
+        finally:
+            release.set()
+
+        assert excinfo.value.reason == "dns_timeout"
+        assert seen["daemon"] is True
+
+    @pytest.mark.asyncio
     async def test_connect_timeout_when_syn_is_dropped(self, monkeypatch):
         """The libgen.is shape: resolves fine, never completes a handshake."""
 

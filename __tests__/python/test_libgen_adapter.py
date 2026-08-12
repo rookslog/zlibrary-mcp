@@ -5,7 +5,8 @@ returning UnifiedBookResult with source=LIBGEN and wrapping sync
 LibgenSearch calls in asyncio.to_thread().
 """
 
-from unittest.mock import MagicMock, patch
+import asyncio
+from unittest.mock import AsyncMock, MagicMock, patch
 import httpx
 import pytest
 
@@ -318,6 +319,23 @@ class TestLibgenAdapterDownload:
         adapter.mirror = "vg"
 
         assert adapter._mirror_candidates() == ["vg", "li", "la"]
+
+    @pytest.mark.asyncio
+    async def test_resolution_walk_obeys_each_mirrors_total_deadline(self, adapter):
+        """A trickling CDN must not defer failure to the 30-minute bridge budget."""
+        adapter.config.total_timeout = 0.02
+
+        async def trickle(*_args, **_kwargs):
+            await asyncio.sleep(30)
+
+        with (
+            patch.object(adapter, "_preflight", new=AsyncMock(return_value=None)),
+            patch.object(adapter, "_rate_limit", new=AsyncMock(return_value=None)),
+            patch.object(adapter, "_resolve_key", new=AsyncMock(return_value="KEY")),
+            patch.object(adapter, "_serves_bytes", side_effect=trickle),
+        ):
+            with pytest.raises(ValueError, match="No LibGen mirror"):
+                await asyncio.wait_for(adapter.get_download_url(MD5), timeout=0.2)
 
 
 class TestLibgenAdapterRateLimiting:

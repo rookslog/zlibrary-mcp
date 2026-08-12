@@ -13,6 +13,7 @@ Environment variables:
     BOOK_SOURCE_PREFLIGHT_TIMEOUT: Budget per probe phase, seconds (default: 5)
 """
 
+import math
 import os
 from dataclasses import dataclass
 
@@ -119,7 +120,7 @@ def _positive_float(name: str, default: float) -> float:
         value = float(raw)
     except ValueError:
         return default
-    return value if value > 0 else default
+    return value if math.isfinite(value) and value > 0 else default
 
 
 def get_source_config() -> SourceConfig:

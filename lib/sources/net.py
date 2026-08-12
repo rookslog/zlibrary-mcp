@@ -293,17 +293,22 @@ async def _probe_host_uncached(
     provider: str, host: str, port: int, timeout: float
 ) -> Optional[ProviderUnreachableError]:
     """Run the probe, returning the failure rather than raising it."""
-    loop = asyncio.get_running_loop()
-
-    # DNS. loop.getaddrinfo delegates to the default executor, whose threads
-    # are non-daemon; the resolver's own limits (resolv.conf timeout x
-    # attempts, typically <= 10s) are what actually bound it, so the wait_for
-    # here is a second line of defence rather than the only one.
+    # DNS is a blocking libc/NSS call and cannot be cancelled. The event loop's
+    # default executor uses non-daemon workers and joins them during
+    # asyncio.run() shutdown, so wait_for(loop.getaddrinfo(...)) can return at
+    # five seconds yet still keep the one-shot bridge alive until the resolver
+    # eventually returns. Reuse the daemon-thread boundary that protects the
+    # third-party LibGen client; translate its generic operation timeout into
+    # the DNS-specific stable reason expected from a preflight.
     try:
-        await asyncio.wait_for(
-            loop.getaddrinfo(host, port, type=socket.SOCK_STREAM), timeout
+        await run_bounded(
+            lambda: socket.getaddrinfo(host, port, type=socket.SOCK_STREAM),
+            timeout,
+            provider=provider,
+            host=host,
+            operation="dns probe",
         )
-    except asyncio.TimeoutError:
+    except ProviderTimeoutError:
         return ProviderUnreachableError(
             provider, host, f"no DNS answer within {timeout:g}s", reason="dns_timeout"
         )

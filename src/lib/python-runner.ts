@@ -23,6 +23,7 @@
 
 import { PythonShell } from 'python-shell';
 import type { Options as PythonShellOptions } from 'python-shell';
+import { spawnSync } from 'child_process';
 import { logger } from './logger.js';
 import { BridgeTimeoutError } from './errors.js';
 
@@ -70,6 +71,58 @@ const liveShells = new Set<PythonShell>();
 let exitHooksInstalled = false;
 
 /**
+ * Signal the bridge and every subprocess it spawned.
+ *
+ * POSIX children are launched as their own process group, so a negative pid
+ * targets the whole group. Windows has no equivalent in Node's kill API;
+ * taskkill /T is the platform facility for terminating a process tree.
+ */
+function signalProcessTree(shell: PythonShell, signal: NodeJS.Signals): boolean {
+  const pid = shell.childProcess?.pid;
+  if (!pid) return false;
+
+  if (process.platform === 'win32') {
+    const result = spawnSync('taskkill', ['/PID', String(pid), '/T', '/F'], {
+      stdio: 'ignore',
+      windowsHide: true,
+    });
+    if (result.status === 0) return true;
+    try {
+      return shell.childProcess.kill(signal);
+    } catch {
+      return false;
+    }
+  }
+
+  try {
+    process.kill(-pid, signal);
+    return true;
+  } catch {
+    // The group may already be gone, or a caller may have supplied a Python
+    // implementation that cannot start a new session. Direct-child fallback
+    // preserves the old best effort in either case.
+    try {
+      return shell.childProcess.kill(signal);
+    } catch {
+      return false;
+    }
+  }
+}
+
+/** Whether any member of the isolated POSIX process group still exists. */
+function processTreeIsAlive(shell: PythonShell): boolean {
+  const pid = shell.childProcess?.pid;
+  if (!pid) return false;
+  if (process.platform === 'win32') return shell.childProcess.exitCode === null;
+  try {
+    process.kill(-pid, 0);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/**
  * Kill every bridge subprocess still running.
  *
  * @param signal - Signal to send (SIGTERM by default)
@@ -78,12 +131,7 @@ let exitHooksInstalled = false;
 export function killAllPythonChildren(signal: NodeJS.Signals = 'SIGTERM'): number {
   let killed = 0;
   for (const shell of Array.from(liveShells)) {
-    try {
-      shell.kill(signal);
-      killed += 1;
-    } catch {
-      // Already gone; nothing to do.
-    }
+    if (signalProcessTree(shell, signal)) killed += 1;
   }
   return killed;
 }
@@ -155,7 +203,13 @@ export function runPythonBridge(
   }
 
   return new Promise<string[]>((resolve, reject) => {
-    const shell = new PythonShell(scriptName, options);
+    const shell = new PythonShell(scriptName, {
+      ...options,
+      // On POSIX this creates a new session/process group whose id is the
+      // Python pid. OCR and other grandchildren inherit it, making the whole
+      // bridge-owned tree addressable without walking /proc.
+      detached: process.platform === 'win32' ? options.detached : true,
+    });
     liveShells.add(shell);
 
     const output: string[] = [];
@@ -193,19 +247,11 @@ export function runPythonBridge(
      * which is the case this exists for.
      */
     const terminate = (why: string) => {
-      try {
-        shell.kill('SIGTERM');
-      } catch {
-        /* already gone */
-      }
+      signalProcessTree(shell, 'SIGTERM');
       killTimer = setTimeout(() => {
-        if (shell.childProcess && shell.childProcess.exitCode === null) {
-          logger.warn(`${label}: child survived SIGTERM after ${why}; sending SIGKILL`);
-          try {
-            shell.kill('SIGKILL');
-          } catch {
-            /* already gone */
-          }
+        if (process.platform === 'win32' || processTreeIsAlive(shell)) {
+          logger.warn(`${label}: process tree survived SIGTERM after ${why}; sending SIGKILL`);
+          signalProcessTree(shell, 'SIGKILL');
         }
       }, KILL_GRACE_MS);
       if (typeof killTimer.unref === 'function') killTimer.unref();

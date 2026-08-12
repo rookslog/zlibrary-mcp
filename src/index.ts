@@ -521,7 +521,13 @@ const handlers: HandlerMap = {
       // puts that on stderr as `details`; surface it rather than flattening
       // everything to one sentence, because "annas could not be resolved" and
       // "libgen did not accept a connection" call for different responses.
-      return { error: { message: error.message || 'Failed to search multi-source' } };
+      const details = error?.context?.details;
+      return {
+        error: {
+          message: error.message || 'Failed to search multi-source',
+          ...(details === undefined ? {} : { details }),
+        },
+      };
     }
   },
 };
@@ -627,6 +633,7 @@ function wrapResult(result: any, toolName: string) {
           text: `Error from tool "${toolName}": ${result.error.message || result.error}`,
         },
       ],
+      structuredContent: result,
       isError: true as const,
     };
   }

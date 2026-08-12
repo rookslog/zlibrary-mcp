@@ -37,11 +37,27 @@ describe('Tool Handlers - Extended Coverage', () => {
     };
 
     const mocks = { ...defaults, ...overrides };
+    const registeredTools = new Map();
+    const mockServer = {
+      connect: jest.fn().mockResolvedValue(undefined),
+      tool: jest.fn((...args) => registeredTools.set(args[0], args[4])),
+      close: jest.fn(),
+    };
 
     jest.unstable_mockModule('../lib/zlibrary-api.js', () => mocks);
+    jest.unstable_mockModule('@modelcontextprotocol/sdk/server/mcp.js', () => ({
+      McpServer: jest.fn(() => mockServer),
+    }));
+    jest.unstable_mockModule('@modelcontextprotocol/sdk/server/stdio.js', () => ({
+      StdioServerTransport: jest.fn(() => ({})),
+    }));
+    jest.unstable_mockModule('../lib/venv-manager.js', () => ({
+      ensureVenvReady: jest.fn().mockResolvedValue(undefined),
+      getManagedPythonPath: jest.fn().mockResolvedValue('/fake/python'),
+    }));
 
-    const { toolRegistry, handlers } = await import('../dist/index.js');
-    return { toolRegistry, handlers, mocks };
+    const { toolRegistry, handlers, start } = await import('../dist/index.js');
+    return { toolRegistry, handlers, start, registeredTools, mocks };
   }
 
   describe('processDocumentForRag handler', () => {
@@ -309,6 +325,55 @@ describe('Tool Handlers - Extended Coverage', () => {
       const response = await handler(validatedArgs);
 
       expect(response).toEqual({ error: { message: 'Multi-source failed' } });
+    });
+
+    test('should retain structured provider details on failure', async () => {
+      const details = {
+        failures: [
+          { provider: 'annas', host: 'annas-archive.gl', reason: 'dns_failure' },
+          { provider: 'libgen', host: 'libgen.li', reason: 'connect_timeout' },
+        ],
+      };
+      const error = Object.assign(new Error('All sources failed'), {
+        context: { details },
+      });
+      const mockMulti = jest.fn().mockRejectedValue(error);
+      const { toolRegistry } = await setupWithMocks({ searchMultiSource: mockMulti });
+
+      const handler = toolRegistry.search_multi_source.handler;
+      const args = toolRegistry.search_multi_source.schema.parse({ query: 'test' });
+
+      await expect(handler(args)).resolves.toEqual({
+        error: { message: 'All sources failed', details },
+      });
+    });
+
+    test('should preserve provider details in the MCP error response', async () => {
+      const details = {
+        provider: 'annas',
+        host: 'annas-archive.gl',
+        reason: 'dns_failure',
+      };
+      const error = Object.assign(new Error('Anna source failed'), {
+        context: { details },
+      });
+      const mockMulti = jest.fn().mockRejectedValue(error);
+      const { start, registeredTools } = await setupWithMocks({ searchMultiSource: mockMulti });
+      await start({ testing: true });
+
+      const callback = registeredTools.get('search_multi_source');
+      const response = await callback({ query: 'test' }, {});
+
+      expect(response).toEqual({
+        content: [
+          {
+            type: 'text',
+            text: 'Error from tool "search_multi_source": Anna source failed',
+          },
+        ],
+        structuredContent: { error: { message: 'Anna source failed', details } },
+        isError: true,
+      });
     });
   });
 

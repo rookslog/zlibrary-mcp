@@ -19,7 +19,7 @@ from bs4.element import Tag
 
 from .base import SourceAdapter
 from .config import ANNAS_TRUSTED_HOSTS, SourceConfig
-from .errors import ProviderResponseError, ProviderUnreachableError
+from .errors import ProviderResponseError, ProviderUnreachableError, SourceError
 from .models import DownloadResult, QuotaInfo, SourceType, UnifiedBookResult
 from .net import (
     bounded_await,
@@ -186,7 +186,7 @@ class AnnasArchiveAdapter(SourceAdapter):
             ProviderUnreachableError (transport) or ProviderResponseError
             (the host answered but the answer was unusable).
         """
-        if isinstance(exc, (ProviderUnreachableError, ProviderResponseError)):
+        if isinstance(exc, SourceError):
             return exc
         reason, detail = classify_httpx_error(exc)
         if reason in ("http_error", "protocol_error"):

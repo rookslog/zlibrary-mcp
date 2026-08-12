@@ -285,10 +285,27 @@ The project maintains its own Python venv (`.venv/`) with these key dependencies
 
 ## Current Development
 
-The live plan is
-[claudedocs/architecture/repo-health-and-roadmap-2026-07-24.md](claudedocs/architecture/repo-health-and-roadmap-2026-07-24.md)
-— the current health assessment and forward roadmap covering open PR/issue
-disposition, CI and release state, coverage gaps, and multi-source expansion.
+### How releases are tracked
+
+**A release is a GitHub milestone whose description names its map issue** (`Map: #N`).
+The milestone is the index of what shipped; the map issue is the narrative of why. A
+theme with no release slot carries no version number — it is marked `(unslotted)`.
+Rules and rationale: [docs/RELEASE_PROCESS.md](docs/RELEASE_PROCESS.md). Enforced by
+`npm run audit:release` (also inside `npm run doctor`) and a weekly CI job.
+
+Do not treat a roadmap document as the plan. On 2026-08-11 the tracker was audited
+and found holding **two** conflicting definitions of "v1.4" — a milestone derived from
+the 2026-07-24 roadmap doc, and map issue #75 — of which only the second shipped. The
+roadmap doc below is therefore **historical**, useful for the reasoning it records and
+not for what is next:
+[claudedocs/architecture/repo-health-and-roadmap-2026-07-24.md](claudedocs/architecture/repo-health-and-roadmap-2026-07-24.md).
+
+| Milestone | Kind | Map |
+|---|---|---|
+| `v1.4 — Any source can be downloaded` (closed) | release, shipped 2026-08-10 | #75 |
+| `v1.5 — Anna's Archive is a real source` | release, open | #95 |
+| `Source layer as a first-class citizen (unslotted)` | theme, no slot | — |
+| `Lightweight core (unslotted)` | theme, no slot | — |
 
 **v1.4.0 was released 2026-08-10** — npm, GHCR, and the git tag are all live. LibGen
 is now a real download source: `download_book_to_file` accepts a `search_multi_source`
@@ -298,9 +315,15 @@ because a mirror can return a valid key while its CDN node is dead. **LibGen nee
 Z-Library account and has no daily limit**, so the ~10/day Z-Library ceiling finally
 has a fallback.
 
-Keyless Anna's Archive downloads are ruled out, not deferred: the free route sits
-behind a DDoS-Guard browser challenge the project operates deliberately. Anna's
-keyless *search* still works. See the v1.4 map (issue #75) for the full disposition.
+**Anna's Archive has exactly one supported download route: keyed `fast_download`.**
+Both alternatives are dead, not deferred. A machine-solved challenge is permanently out
+of scope (#76) — the free route sits behind a DDoS-Guard challenge the project operates
+deliberately. The operator-cookie route was then also ruled out (#84, 2026-08-11):
+DDoS-Guard binds the cookie to the issuing IP inside `__ddg9_`, so a transplanted cookie
+is rejected exactly as an absent one is. Anna's **key-free search** still works and is
+the reason Anna's remains a source at all. Do not write "keyless" — the term is banned
+in [CONTEXT.md](CONTEXT.md) for conflating *no API key* with *no human in the loop*,
+and that conflation caused approved work to be recorded as cancelled.
 
 npm publishing authenticates via OIDC trusted publishing (no `NPM_TOKEN` secret; the
 trusted publisher is bound to `publish.yml`). Note the account rename
@@ -334,15 +357,30 @@ The `.claude` folder contains comprehensive documentation for development:
 
 ### 🎯 Current Priorities
 
-Check `ISSUES.md` (project root) for the full list, and the health assessment
-linked under "Current Development" for the reasoning behind these:
+**The milestones are the priority list.** Read them from GitHub rather than from a
+document — that is the whole point of the scheme above, and a hand-maintained copy here
+is what drifted last time. `gh issue list --milestone "v1.5 — Anna's Archive is a real
+source"` is the live answer.
 
-1. Phases 20-21 — RAG quality scoring harness + CI reporting — per
-   `claudedocs/architecture/phase-20-21-review-2026-07-24.md`
-2. Promote Z-Library to a `SourceAdapter` so all tools route through `SourceRouter`
+The current release is **v1.5 — Anna's Archive is a real source** (map #95): every
+result declares its route. The implementation ticket is #101, from the reporting
+contract decided in #96.
 
-Done and no longer priorities: the v1.3.0 release shipped 2026-07-24 (modulo the
-npm token above), Windows support (PR #13) shipped in v1.3.0, and ISSUE-API-002
+Two themes are deliberately **unslotted** — real work, no release slot, do not assume
+they belong to the next version:
+
+- *Source layer as a first-class citizen* — Phases 20-21 RAG quality harness (#39, per
+  `claudedocs/architecture/phase-20-21-review-2026-07-24.md`), Gutenberg/DOAB adapters
+  (#51), Open Library enrichment (#52), per-source health (#53, #109).
+- *Lightweight core* — invariant 7: optional heavy dependencies (#103, #104, #105),
+  plus the LFS/real-PDF coverage gap (#85).
+
+Promoting Z-Library to a `SourceAdapter` (#40) **is not unslotted** — it is v1.5 work,
+per the standing decision recorded in the v1.4 map (#75). It was listed as a v1.4
+priority here for a month while sitting on a milestone that never shipped.
+
+Done and no longer priorities: the v1.3.0 release shipped 2026-07-24, v1.4.0 shipped
+2026-08-10, Windows support (PR #13) shipped in v1.3.0, and ISSUE-API-002
 (DiamWall-walled default domain) is fixed by the probed EAPI domain fallback list
 with probe-guarded hydra discovery (see ISSUES.md).
 

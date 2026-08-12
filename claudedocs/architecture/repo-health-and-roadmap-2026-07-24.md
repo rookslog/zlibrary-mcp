@@ -1,5 +1,23 @@
 # Repo Health Assessment & Forward Roadmap
 
+> **HISTORICAL — superseded 2026-08-11. Do not plan from this document.**
+>
+> The forward-roadmap half of this file is superseded by the milestone + map-issue
+> scheme in [docs/RELEASE_PROCESS.md](../../docs/RELEASE_PROCESS.md). The health
+> assessment and its evidence remain accurate as of 2026-07-24 and are worth reading
+> for the reasoning they record.
+>
+> This document is *why* that scheme exists. Its roadmap section proposed a v1.4
+> themed "source layer as a first-class citizen", which was turned into a GitHub
+> milestone. v1.4 was later re-chartered as "any source can be downloaded" (map issue
+> #75) and shipped under that scope on 2026-08-10. Nobody reconciled the two, so a
+> released version sat at 5 open / 0 closed while the issues that actually shipped it
+> carried no milestone. The milestone has since been retitled *Source layer as a
+> first-class citizen (unslotted)* — it is a real theme, with no release slot.
+>
+> Roadmap intent belongs in a milestone and its map issue, where the tracker can
+> contradict it. A document cannot be contradicted by anything.
+
 **Date:** 2026-07-24
 **Baseline commit:** `0289b78` (`release: v1.2.1`, 2026-04-16)
 **Scope:** open PRs and issues, CI/release infrastructure, test coverage, upstream

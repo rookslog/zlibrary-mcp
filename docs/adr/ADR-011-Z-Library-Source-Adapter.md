@@ -207,6 +207,15 @@ and `md5` fields may remain in tool responses. New routing and acquisition code
 uses `source_ref`. Tests must prove that removing a compatibility field does
 not change adapter dispatch.
 
+The compatibility facade normalises a full pre-migration Z-Library
+`bookDetails` search result before router validation: it adds
+`source=zlibrary` and constructs `source_ref={id, hash}` from the legacy
+identifier fields. This conversion applies only to the existing
+search-result-shaped `bookDetails` input, not to a naked direct-ID request.
+Contract tests must distinguish the accepted legacy result shape from raw
+`id`/`hash` parameters so the compatibility interval does not recreate a
+generic direct-ID path.
+
 Acquisition is bound to the source that produced the selected result. Ordered
 fallback applies to discovery and other operations that do not consume a
 source-scoped reference; it must not pass a Z-Library `{id, hash}` reference to
@@ -237,7 +246,11 @@ protocols cover:
 selects only adapters declaring the required capability. An explicit request
 for an unsupported source returns `unsupported_operation`. A fallback request
 skips an incapable adapter and reports that decision in routing metadata; it
-does not ask an adapter to fabricate a response.
+does not ask an adapter to fabricate a response. If every source in an ordered
+request is skipped as incapable, the router returns an aggregate
+`unsupported_operation` with no top-level `source` and with the ordered skipped
+attempts in routing metadata. It does not return an empty result or require an
+invented child failure.
 
 The existing Z-Library helper modules become implementation details of
 `ZLibraryAdapter` or thin query-shaping helpers called by it. They must receive
@@ -277,13 +290,18 @@ not a default inside the generic router.
 names and controls `auto` only when set. Until an operator sets it, the router
 normalises the legacy `BOOK_SOURCE_DEFAULT` and
 `BOOK_SOURCE_FALLBACK_ENABLED` scalars into an Anna's/LibGen-only order: a
-concrete legacy default starts the order, `auto`/unset preserves the current
-key-dependent primary, and enabled fallback appends the other capable legacy
-source. Z-Library is not added to that derived order merely by registration;
-its named compatibility tools remain explicit. Invalid legacy or new order
-values fail configuration validation before a network call. Contract tests
-cover the normaliser for keyed, unkeyed, fallback-disabled, explicit-default,
-and new-order cases.
+concrete legacy default starts the order and `auto`/unset preserves the current
+key-dependent primary. Legacy fallback is one-way: when Anna's Archive is the
+primary and fallback is enabled, LibGen is appended; LibGen never implicitly
+falls through to Anna's Archive. Therefore an unkeyed `auto`/unset default
+normalises to `[libgen]` even when fallback is enabled, while a keyed default
+normalises to `[annas, libgen]` when fallback is enabled. An operator may opt
+into another order only through `BOOK_SOURCE_ORDER`. Z-Library is not added to
+the derived legacy order merely by registration; its named compatibility tools
+remain explicit. Invalid legacy or new order values fail configuration
+validation before a network call. Contract tests cover the normaliser for
+keyed, unkeyed, fallback-disabled, explicit-default, and new-order cases,
+including the unkeyed no-Anna's invariant.
 
 ### 5. Z-Library adapter lifecycle
 
@@ -336,6 +354,11 @@ empty while another fails, the bridge returns an aggregate
 failed outcomes and `failures` holding the attributed error details. Public
 error data crosses the bridge as JSON. Tracebacks and diagnostics remain on
 stderr.
+
+When every source in an ordered request lacks the requested capability, the
+bridge returns aggregate `unsupported_operation`. Its ordered `attempts`
+record each capability skip, `failures` may be empty, and the aggregate omits
+`source` because no adapter owned the outcome.
 
 The permanent vocabulary says `source`, matching project language. If #106
 lands with its current serialized `provider` field, the migration serializer
@@ -426,6 +449,9 @@ until parity is demonstrated.
 
 - Make `download_book_to_file` pass the selected `bookDetails` to
   `SourceRouter.acquire` for every source.
+- Before router validation, normalise a full legacy Z-Library `bookDetails`
+  result to `source=zlibrary` and `source_ref={id, hash}`; do not normalise raw
+  direct-ID parameters.
 - Keep rename, validation, RAG processing, and final bundle construction in
   the shared post-acquisition pipeline.
 - Reject source/ref mismatches and raw-ID-only input at the router boundary.

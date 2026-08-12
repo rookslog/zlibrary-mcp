@@ -34,7 +34,7 @@
 ## All ADRs (Chronological)
 
 ### ADR-001: Jest ESM Migration
-**Status**: ✅ Accepted
+**Status**: 🟡 Proposed
 **Date**: 2024-04-13
 **Context**: Need to test ES modules in Node.js/TypeScript codebase
 **Decision**: Migrate Jest configuration to support ESM with `node --experimental-vm-modules`
@@ -353,6 +353,6 @@ def quality_pipeline():
 **Metadata**:
 - Created: 2025-10-21
 - Last Updated: 2026-08-12
-- Total ADRs: 10 accepted + 1 proposed
+- Total ADRs: 9 accepted + 2 proposed
 - Next ADR Number: ADR-012
 - Maintained by: Project contributors

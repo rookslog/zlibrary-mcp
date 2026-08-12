@@ -6,7 +6,10 @@ from __future__ import annotations
 import argparse
 import asyncio
 import ast
+from contextlib import redirect_stdout
 from dataclasses import dataclass
+import io
+import json
 from pathlib import Path
 import sys
 import tempfile
@@ -53,11 +56,7 @@ class _ImportVisitor(ast.NodeVisitor):
 
     def _record(self, node: ast.Import | ast.ImportFrom, module: str) -> None:
         root = module.split(".", 1)[0]
-        if (
-            self._function_depth == 0
-            and self._guarded == 0
-            and root in HEAVY_MODULES
-        ):
+        if self._function_depth == 0 and self._guarded == 0 and root in HEAVY_MODULES:
             self.violations.append(Violation(self.path, node.lineno, root))
 
     def visit_Import(self, node: ast.Import) -> None:  # noqa: N802
@@ -110,6 +109,7 @@ async def _run_core_smoke(repo_root: Path) -> None:
     import python_bridge
     import lib.rag_processing as facade
     from lib.rag.orchestrator import process_document
+    from lib.rag.orchestrator_pdf import process_pdf_structured
 
     class OfflineRouter:
         async def search(self, query, source="auto", **kwargs):
@@ -121,11 +121,29 @@ async def _run_core_smoke(repo_root: Path) -> None:
             return None
 
     python_bridge._source_router = OfflineRouter()
-    result = await python_bridge.search_multi_source(
-        query="offline boundary probe", source="libgen", count=1
-    )
+    original_argv = sys.argv
+    stdout = io.StringIO()
+    try:
+        sys.argv = [
+            str(repo_root / "lib" / "python_bridge.py"),
+            "search_multi_source",
+            json.dumps(
+                {
+                    "query": "offline boundary probe",
+                    "source": "libgen",
+                    "count": 1,
+                }
+            ),
+        ]
+        with redirect_stdout(stdout):
+            await python_bridge.main()
+    finally:
+        sys.argv = original_argv
+
+    envelope = json.loads(stdout.getvalue())
+    result = json.loads(envelope["content"][0]["text"])
     if result != {"books": [], "sources_used": []}:
-        raise AssertionError(f"unexpected offline search result: {result!r}")
+        raise AssertionError(f"unexpected bridge search result: {result!r}")
 
     original_pymupdf = facade.PYMUPDF_AVAILABLE
     original_ebooklib = facade.EBOOKLIB_AVAILABLE
@@ -137,8 +155,11 @@ async def _run_core_smoke(repo_root: Path) -> None:
                 document = Path(temp_dir) / f"missing-extra{suffix}"
                 document.write_bytes(b"")
                 try:
-                    await process_document(str(document))
-                except RuntimeError as error:
+                    if suffix == ".pdf":
+                        process_pdf_structured(document)
+                    else:
+                        await process_document(str(document))
+                except (ImportError, RuntimeError) as error:
                     if "uv sync --extra rag" not in str(error):
                         raise AssertionError(
                             f"missing actionable rag install hint for {suffix}: {error}"

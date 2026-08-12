@@ -91,9 +91,17 @@ maybe('python-runner', () => {
   test('kills the child when the wall-clock budget expires', async () => {
     // A script with no timeout of its own, standing in for the un-timed
     // requests.get inside libgen_api_enhanced.
-    const name = script('hang.py', 'import time\ntime.sleep(600)\n');
+    const pidFile = path.join(tmpDir, 'hang.pid');
+    const name = script(
+      'hang.py',
+      [
+        'import os, pathlib, time',
+        `pathlib.Path(${JSON.stringify(pidFile)}).write_text(str(os.getpid()))`,
+        'time.sleep(600)',
+        '',
+      ].join('\n'),
+    );
 
-    let capturedPid;
     const promise = runner
       .runPythonBridge(
         name,
@@ -102,9 +110,8 @@ maybe('python-runner', () => {
       )
       .catch((err) => err);
 
-    // Give the child a moment to exist so its pid can be captured.
-    await new Promise((resolve) => setTimeout(resolve, 300));
-    capturedPid = lastSpawnedPid();
+    expect(await waitFor(() => fs.existsSync(pidFile))).toBe(true);
+    const capturedPid = Number(fs.readFileSync(pidFile, 'utf8'));
 
     const error = await promise;
 
@@ -261,6 +268,26 @@ maybe('python-runner', () => {
 
     expect(runner.liveChildCount()).toBe(before);
   });
+
+  test.each([Infinity, Number.NaN, 0, -1, 1.5])(
+    'falls back to the default budget for the invalid direct override %p',
+    async (timeoutMs) => {
+      // Mutation caught: passing timeoutMs straight to setTimeout makes these
+      // values fire after 1ms instead of using the finite default budget.
+      const name = script(
+        `invalid-timeout-${String(timeoutMs).replace(/\W/g, '_')}.py`,
+        'import time\ntime.sleep(0.05)\nprint("done")\n',
+      );
+
+      await expect(
+        runner.runPythonBridge(
+          name,
+          { mode: 'text', pythonPath: PYTHON, scriptPath: tmpDir },
+          { timeoutMs, label: 'invalid-direct-timeout-test' },
+        ),
+      ).resolves.toEqual(['done']);
+    },
+  );
 
   test('killAllPythonChildren reaps children still running', async () => {
     const name = script('hang4.py', 'import time\ntime.sleep(600)\n');

@@ -39,11 +39,14 @@ import { BridgeTimeoutError } from './errors.js';
  * `_positive_float` on the Python side (lib/sources/config.py), which is
  * already safe here because it parses a float.
  */
+function positiveIntOrFallback(value: unknown, fallback: number): number {
+  return Number.isSafeInteger(value) && (value as number) > 0 ? (value as number) : fallback;
+}
+
 function positiveIntEnv(name: string, fallback: number): number {
   const raw = process.env[name]?.trim();
   if (!raw || !/^\d+$/.test(raw)) return fallback;
-  const value = Number(raw);
-  return Number.isSafeInteger(value) && value > 0 ? value : fallback;
+  return positiveIntOrFallback(Number(raw), fallback);
 }
 
 /** Wall-clock budget for one bridge call. */
@@ -187,7 +190,10 @@ export function runPythonBridge(
   options: PythonShellOptions,
   runOptions: RunBridgeOptions = {},
 ): Promise<string[]> {
-  const timeoutMs = runOptions.timeoutMs ?? DEFAULT_BRIDGE_TIMEOUT_MS;
+  const timeoutMs = positiveIntOrFallback(
+    runOptions.timeoutMs ?? DEFAULT_BRIDGE_TIMEOUT_MS,
+    DEFAULT_BRIDGE_TIMEOUT_MS,
+  );
   const label = runOptions.label ?? scriptName;
 
   installExitHooks();

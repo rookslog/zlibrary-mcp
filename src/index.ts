@@ -389,7 +389,13 @@ const handlers: HandlerMap = {
     try {
       return await zlibraryApi.downloadBookToFile(args, options);
     } catch (error: any) {
-      return { error: { message: error.message || 'Failed to download book' } };
+      const details = error?.context?.details;
+      return {
+        error: {
+          message: error.message || 'Failed to download book',
+          ...(details === undefined ? {} : { details }),
+        },
+      };
     }
   },
 

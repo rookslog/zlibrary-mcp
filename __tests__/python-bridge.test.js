@@ -1,124 +1,79 @@
-import { jest, describe, beforeEach, test, expect } from '@jest/globals';
-// Top-level import of spawn removed - will be mocked and imported dynamically
-import * as path from 'path';
-
-// Top-level import and mock removed - will use inline unstable_mockModule + dynamic import
+import { jest, describe, test, expect } from '@jest/globals';
 
 describe('Python Bridge', () => {
-  beforeEach(() => {
-    // jest.* calls moved inside tests
-    // jest.resetModules(); // Moved inside tests
-    // jest.clearAllMocks(); // Moved inside tests
+  async function setup({
+    bridgeResult = [JSON.stringify({ success: true, data: 'test data' })],
+    bridgeError,
+    venvError,
+  } = {}) {
+    jest.resetModules();
+    jest.clearAllMocks();
+
+    jest.unstable_mockModule('../lib/venv-manager.js', () => ({
+      getManagedPythonPath: venvError
+        ? jest.fn().mockRejectedValue(venvError)
+        : jest.fn().mockResolvedValue('/mock/venv/python'),
+    }));
+    jest.unstable_mockModule('../lib/python-runner.js', () => ({
+      runPythonBridge: bridgeError
+        ? jest.fn().mockRejectedValue(bridgeError)
+        : jest.fn().mockResolvedValue(bridgeResult),
+    }));
+    jest.unstable_mockModule('child_process', () => ({
+      spawn: jest.fn(() => {
+        throw new Error('raw spawn used');
+      }),
+    }));
+
+    return import('../lib/python-bridge.js');
+  }
+
+  test('uses the owned runner instead of creating an unmanaged subprocess', async () => {
+    // Mutation caught: replacing runPythonBridge with a direct child_process.spawn
+    // bypasses timeout, abort, registry, and process-tree cleanup.
+    const pythonBridge = await setup({
+      bridgeResult: [JSON.stringify({ success: true, data: 'owned' })],
+    });
+
+    await expect(
+      pythonBridge.callPythonFunction('test_function', { arg: 'value' }),
+    ).resolves.toEqual({ success: true, data: 'owned' });
   });
 
-  test('should call Python function and parse result successfully', async () => {
-    // --- Setup Mocks for this test ---
-    jest.resetModules(); // Reset modules for this specific test
-    jest.clearAllMocks(); // Clear mocks for this specific test
-    const mockStdoutSuccess = { on: jest.fn((event, callback) => { if (event === 'data') { callback(Buffer.from(JSON.stringify({ success: true, data: 'test data' }))); } return mockStdoutSuccess; }) };
-    const mockStderrSuccess = { on: jest.fn().mockReturnThis() };
-    const mockProcessSuccess = { stdout: mockStdoutSuccess, stderr: mockStderrSuccess, on: jest.fn((event, callback) => { if (event === 'close') { process.nextTick(() => callback(0)); } return mockProcessSuccess; }) }; // Simulate async close
+  test('parses a successful result from the owned runner', async () => {
+    const pythonBridge = await setup();
 
-    jest.unstable_mockModule('../lib/venv-manager.js', () => ({ // Mock venv-manager
-      getManagedPythonPath: jest.fn().mockResolvedValue('/mock/venv/python'),
-    }));
-    jest.unstable_mockModule('child_process', () => ({ // Mock child_process
-      spawn: jest.fn().mockReturnValue(mockProcessSuccess),
-    }));
-
-    // --- Dynamic Imports AFTER Mocks ---
-    const { spawn } = await import('child_process');
-    const venvManager = await import('../lib/venv-manager.js'); // Import mocked venv-manager
-    const pythonBridge = await import('../lib/python-bridge.js');
-
-    // --- Act ---
-    const result = await pythonBridge.callPythonFunction('test_function', ['arg1', 'arg2']);
-
-    // --- Assert ---
-    // Use dynamic path resolution instead of hardcoded path for portability
-    const expectedScriptPath = path.resolve(process.cwd(), 'lib', 'python_bridge.py');
-    expect(spawn).toHaveBeenCalledWith('/mock/venv/python', [expectedScriptPath, 'test_function', JSON.stringify(['arg1', 'arg2'])]);
-
-    expect(result).toEqual({ success: true, data: 'test data' });
+    await expect(
+      pythonBridge.callPythonFunction('test_function', ['arg1', 'arg2']),
+    ).resolves.toEqual({ success: true, data: 'test data' });
   });
 
-  test('should handle Python process errors', async () => {
-    // --- Setup Mocks for this test ---
-    jest.resetModules(); // Reset modules for this specific test
-    jest.clearAllMocks(); // Clear mocks for this specific test
-    const mockStdoutError = { on: jest.fn().mockReturnThis() };
-    const mockStderrError = { on: jest.fn((event, callback) => { if (event === 'data') { callback(Buffer.from('Python error message')); } return mockStderrError; }) };
-    const mockProcessError = { stdout: mockStdoutError, stderr: mockStderrError, on: jest.fn((event, callback) => { if (event === 'close') { process.nextTick(() => callback(1)); } return mockProcessError; }) }; // Simulate async close with error code
+  test('preserves the public non-zero-exit error shape', async () => {
+    const bridgeError = Object.assign(new Error('process exited with code 1'), {
+      exitCode: 1,
+      stderr: 'Python error message',
+      stdout: '',
+    });
+    const pythonBridge = await setup({ bridgeError });
 
-    jest.unstable_mockModule('../lib/venv-manager.js', () => ({ // Mock venv-manager
-      getManagedPythonPath: jest.fn().mockResolvedValue('/mock/venv/python'),
-    }));
-    jest.unstable_mockModule('child_process', () => ({ // Mock child_process
-      spawn: jest.fn().mockReturnValue(mockProcessError),
-    }));
-
-    // --- Dynamic Imports AFTER Mocks ---
-    const { spawn } = await import('child_process');
-    const venvManager = await import('../lib/venv-manager.js'); // Import mocked venv-manager
-    const pythonBridge = await import('../lib/python-bridge.js');
-
-    // --- Act & Assert ---
-    await expect(pythonBridge.callPythonFunction('test_function', ['arg1']))
-      .rejects.toThrow('Python process exited with code 1: Python error message');
-    expect(spawn).toHaveBeenCalled(); // Ensure spawn was called
+    await expect(pythonBridge.callPythonFunction('test_function', ['arg1'])).rejects.toThrow(
+      'Python process exited with code 1: Python error message. Raw stdout:',
+    );
   });
 
-  test('should handle JSON parse errors', async () => {
-    // --- Setup Mocks for this test ---
-    jest.resetModules(); // Reset modules for this specific test
-    jest.clearAllMocks(); // Clear mocks for this specific test
-    const mockStdoutInvalidJson = { on: jest.fn((event, callback) => { if (event === 'data') { callback(Buffer.from('Invalid JSON{')); } return mockStdoutInvalidJson; }) };
-    const mockStderrInvalidJson = { on: jest.fn().mockReturnThis() };
-    const mockProcessInvalidJson = { stdout: mockStdoutInvalidJson, stderr: mockStderrInvalidJson, on: jest.fn((event, callback) => { if (event === 'close') { process.nextTick(() => callback(0)); } return mockProcessInvalidJson; }) };
+  test('preserves the public JSON parse error shape', async () => {
+    const pythonBridge = await setup({ bridgeResult: ['Invalid JSON{'] });
 
-    jest.unstable_mockModule('../lib/venv-manager.js', () => ({ // Mock venv-manager
-      getManagedPythonPath: jest.fn().mockResolvedValue('/mock/venv/python'),
-    }));
-    jest.unstable_mockModule('child_process', () => ({ // Mock child_process
-      spawn: jest.fn().mockReturnValue(mockProcessInvalidJson),
-    }));
-
-    // --- Dynamic Imports AFTER Mocks ---
-    const { spawn } = await import('child_process');
-    const venvManager = await import('../lib/venv-manager.js'); // Import mocked venv-manager
-    const pythonBridge = await import('../lib/python-bridge.js');
-
-    // --- Act & Assert ---
-    await expect(pythonBridge.callPythonFunction('test_function', []))
-      // Update regex to match the actual error format from python-bridge.ts
-      .rejects.toThrow(/^Failed to parse Python result JSON: .*?\. Raw output:.*?\. Stderr:.*?$/);
-    expect(spawn).toHaveBeenCalled();
+    await expect(pythonBridge.callPythonFunction('test_function', [])).rejects.toThrow(
+      /^Failed to parse Python result JSON: .*?\. Raw output: Invalid JSON\{\. Stderr: $/,
+    );
   });
 
-  test('should handle Python process spawn error', async () => {
-    // --- Setup Mocks for this test ---
-    jest.resetModules(); // Reset modules for this specific test
-    jest.clearAllMocks(); // Clear mocks for this specific test
-    const mockSpawnError = new Error('Failed to spawn process');
-    const mockProcessSpawnError = { stdout: { on: jest.fn().mockReturnThis() }, stderr: { on: jest.fn().mockReturnThis() }, on: jest.fn((event, callback) => { if (event === 'error') { process.nextTick(() => callback(mockSpawnError)); } return mockProcessSpawnError; }) }; // Simulate async error
+  test('propagates managed-Python setup failures without spawning', async () => {
+    const pythonBridge = await setup({ venvError: new Error('Failed to get venv path') });
 
-    jest.unstable_mockModule('../lib/venv-manager.js', () => ({ // Mock venv-manager
-      // Simulate getManagedPythonPath failing itself
-      getManagedPythonPath: jest.fn().mockRejectedValue(new Error('Failed to get venv path')),
-    }));
-    jest.unstable_mockModule('child_process', () => ({ // Mock child_process (spawn won't be called if getManagedPythonPath fails)
-      spawn: jest.fn(),
-    }));
-
-    // --- Dynamic Imports AFTER Mocks ---
-    const { spawn } = await import('child_process');
-    const venvManager = await import('../lib/venv-manager.js'); // Import mocked venv-manager
-    const pythonBridge = await import('../lib/python-bridge.js');
-
-    // --- Act & Assert ---
-    await expect(pythonBridge.callPythonFunction('test_function', []))
-      // getManagedPythonPath rejection propagates directly (no wrapper)
-      .rejects.toThrow('Failed to get venv path');
-    // spawn is NOT called when getManagedPythonPath rejects, so no assertion needed here.
+    await expect(pythonBridge.callPythonFunction('test_function', [])).rejects.toThrow(
+      'Failed to get venv path',
+    );
   });
 });

@@ -109,6 +109,35 @@ describe('Tool Handlers - Extended Coverage', () => {
     });
   });
 
+  describe('downloadBookToFile handler', () => {
+    test('preserves structured provider details on failure', async () => {
+      // Mutation caught: returning a message-only envelope discards the
+      // provider, host, and reason needed to choose a useful recovery.
+      const details = {
+        operation: 'download',
+        failures: [
+          { provider: 'libgen', host: 'libgen.li', reason: 'connect_timeout' },
+        ],
+      };
+      const error = Object.assign(new Error('Download sources failed'), {
+        context: { details },
+      });
+      const mockDownload = jest.fn().mockRejectedValue(error);
+      const { toolRegistry } = await setupWithMocks({ downloadBookToFile: mockDownload });
+      const args = toolRegistry.download_book_to_file.schema.parse({
+        bookDetails: {
+          md5: '0123456789abcdef0123456789abcdef',
+          title: 'Test Book',
+          source: 'libgen',
+        },
+      });
+
+      await expect(toolRegistry.download_book_to_file.handler(args)).resolves.toEqual({
+        error: { message: 'Download sources failed', details },
+      });
+    });
+  });
+
   describe('getBookMetadata handler', () => {
     test('should call zlibApi.getBookMetadata with correct args on success', async () => {
       const mockGetMeta = jest.fn().mockResolvedValue({

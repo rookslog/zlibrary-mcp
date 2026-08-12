@@ -462,6 +462,28 @@ def test_libgen_download_probe_targets_the_configured_mirror_first(check_upstrea
     )
 
 
+def test_annas_probe_rejects_md5_links_without_an_extracted_title(check_upstream):
+    """An empty cover link is reachable but cannot produce a book result title."""
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        assert request.url.path == "/search"
+        return httpx.Response(
+            200,
+            text='<a href="/md5/deadbeef"><img alt="Cover"></a>',
+        )
+
+    async def probe() -> object:
+        async with httpx.AsyncClient(
+            transport=httpx.MockTransport(handler), follow_redirects=True
+        ) as client:
+            return await check_upstream.probe_annas(client)
+
+    result = asyncio.run(probe())
+
+    assert result.ok is False
+    assert "no non-empty title" in result.detail
+
+
 def test_annas_parking_page_is_reported_as_parked(check_upstream):
     """A parked domain returns HTTP 200 with no /md5/ links; the report must say
     'parked', not just 'no links found', so the operator knows the domain is gone."""

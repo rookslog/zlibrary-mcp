@@ -339,8 +339,10 @@ curl -s -N --max-time 3 http://localhost:8000/sse | head -2
 # data: /message?sessionId=...
 ```
 
-> Alpine caveat: OpenCV has no musl wheels, so X-mark detection is unavailable
-> in the container; everything else works.
+The image includes the `rag` tier, so PDF and EPUB extraction work without an
+additional install step. It does not include the `scholar` tier. In particular,
+OpenCV-backed X-mark detection remains unavailable on Alpine; see [Optional
+Python dependencies](docs/optional-dependencies.md) for the tier boundaries.
 
 **Building from source instead** (adds a `/health` endpoint via compose):
 

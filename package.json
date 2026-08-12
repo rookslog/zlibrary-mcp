@@ -54,6 +54,7 @@
     "pyproject.toml",
     "uv.lock",
     "setup-uv.sh",
+    "docs/optional-dependencies.md",
     "!**/__pycache__/",
     "!**/*.pyc"
   ],

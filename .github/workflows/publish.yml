@@ -117,9 +117,14 @@ jobs:
             f && /^## \[/          { exit }
             f                      { print }
           ' CHANGELOG.md > release-notes.md
-          if [ ! -s release-notes.md ]; then
-            echo "ERROR: CHANGELOG.md has no '## [$VERSION]' section." >&2
-            echo "Add the section before tagging; release notes come from it." >&2
+          # Not `-s`. A heading with nothing under it still emits the blank
+          # separator line, so the file is one byte and passes a size test —
+          # which would publish to npm and then create a Release with empty
+          # notes, exactly the unchangelogged release this guard exists to stop.
+          # Require actual non-whitespace content.
+          if ! grep -q '[^[:space:]]' release-notes.md; then
+            echo "ERROR: CHANGELOG.md has no '## [$VERSION]' section, or it is empty." >&2
+            echo "Add the section with real content before tagging; release notes come from it." >&2
             exit 1
           fi
           echo "Extracted $(wc -l < release-notes.md) lines of notes for $VERSION"

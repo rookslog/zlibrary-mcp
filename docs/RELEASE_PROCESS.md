@@ -21,12 +21,28 @@ pass.
 5. **A version does not ship while its milestone has open issues.** Move them or close
    them; do not tag around them.
 
-Two corollaries the script also checks:
+Corollaries the script also checks:
 
-- **A tag that shipped has a GitHub Release.** npm and GHCR are distribution. The Releases
-  page is the record a human reads, and it is the one that silently falls behind.
+- **A tag that shipped has a *published* GitHub Release.** npm and GHCR are distribution;
+  the Releases page is the record a human reads, and it is the one that silently falls
+  behind. A draft does not count — nobody outside the maintainers can see it.
+- **One release slot, one milestone.** Two milestones both claiming `v1.5` is the precise
+  state that motivated this document, so it fails even when both are otherwise well-formed.
 - **`## [Unreleased]` is written as work lands**, not reconstructed from `git log` at
   release time.
+
+**The audit fails closed.** Once `gh` is authenticated, a query that fails — rate limit,
+transient 5xx, a token missing a scope — is a *failed audit*, never a skipped check. It
+reports which checks did not run and exits non-zero. An earlier version returned early on
+error and each caller silently skipped its check, so the tool could examine nothing and
+print "release record is consistent": a checker claiming success when it could not look,
+which is the same silent wrongness it exists to catch. If `gh` is absent or
+unauthenticated entirely, the GitHub checks are skipped with an explicit notice and the
+local CHANGELOG and tag checks still run.
+
+**Rules bind from the day they are adopted.** The scheme took effect 2026-08-10, so
+releases before it are not audited against it. An audit that cries wolf about history is
+one people learn to ignore.
 
 ## The neglect rules
 

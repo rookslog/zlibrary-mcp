@@ -63,6 +63,28 @@ jobs:
             gh issue create --title "$TITLE" --body "$BODY"
           fi
 
+      # An open "Release record is inconsistent" issue against a green audit is
+      # itself a stale record — the tracker contradicting reality, which is the
+      # disease this job treats. Recovery has to close the loop, or a maintainer
+      # has to notice a bot issue is obsolete and close it by hand, which is
+      # precisely the manual reconciliation the job exists to remove.
+      - name: Close the tracking issue once the audit is green
+        if: steps.audit.outcome == 'success'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          TITLE="Release record is inconsistent"
+          EXISTING=$(gh issue list --state open --search "$TITLE in:title" --json number,title \
+            --jq "[.[] | select(.title == \"$TITLE\")] | .[0].number // empty")
+          if [ -n "$EXISTING" ]; then
+            gh issue close "$EXISTING" \
+              --comment "The release-record audit is green again as of run ${GITHUB_RUN_ID}. Closing automatically; it will reopen as a new issue if the record drifts again."
+            echo "closed #$EXISTING"
+          else
+            echo "no open tracking issue; nothing to close"
+          fi
+
       - name: Fail the run if the audit failed
         if: steps.audit.outcome == 'failure'
         run: exit 1

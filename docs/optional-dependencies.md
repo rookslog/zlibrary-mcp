@@ -18,5 +18,10 @@ The core bridge can start without either extra. Calling PDF or EPUB processing w
 when their dependencies are absent; install `scholar` when you need NLTK, OpenCV,
 OCRmyPDF, Tesseract shims, or Pillow-backed rendering.
 
+The Docker image deliberately includes `rag`, so its PDF and EPUB processing works out
+of the box. It does not install `scholar`: the image is Alpine-based, and the OpenCV
+dependency used for X-mark detection has no compatible musl wheel. This does not change
+the lightweight core default for source and npm installations.
+
 The extras install Python libraries only. OCR execution also requires the relevant
 system tools, such as Tesseract and Ghostscript, to be available on `PATH`.

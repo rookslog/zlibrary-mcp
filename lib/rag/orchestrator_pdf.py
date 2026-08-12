@@ -12,6 +12,7 @@ import subprocess
 from pathlib import Path
 
 from lib.rag.utils.exceptions import TesseractNotFoundError, OCRDependencyError
+from lib.rag.utils.deps import require_optional_dependency
 from lib.rag.utils.cache import _clear_textpage_cache
 from lib.rag.utils.header import (
     _generate_document_header,
@@ -121,8 +122,7 @@ def process_pdf_structured(
     _fitz = getattr(_rp, "fitz", fitz)
     _PYMUPDF_AVAILABLE = getattr(_rp, "PYMUPDF_AVAILABLE", PYMUPDF_AVAILABLE)
 
-    if not _PYMUPDF_AVAILABLE:
-        raise ImportError("Required library 'PyMuPDF' (fitz) is not installed.")
+    require_optional_dependency(_PYMUPDF_AVAILABLE, "PyMuPDF (fitz)", "rag")
 
     logger.info("Processing PDF (structured): %s", file_path)
     doc = None
@@ -189,8 +189,7 @@ def process_pdf(
     _extract_toc_fn = getattr(_rp, "_extract_and_format_toc", _extract_and_format_toc)
     _format_md = getattr(_rp, "_format_pdf_markdown", _format_pdf_markdown)
 
-    if not _PYMUPDF_AVAILABLE:
-        raise ImportError("Required library 'PyMuPDF' (fitz) is not installed.")
+    require_optional_dependency(_PYMUPDF_AVAILABLE, "PyMuPDF (fitz)", "rag")
     logging.info(f"Processing PDF: {file_path} for format: {output_format}")
     doc = None
 

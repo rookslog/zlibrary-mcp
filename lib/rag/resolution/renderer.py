@@ -1,13 +1,22 @@
 """Adaptive page and region renderer using DPI decisions."""
 
+from __future__ import annotations
+
 import time
 from dataclasses import dataclass, field
 
-import fitz
-from PIL import Image
-
 from .analyzer import DPI_CEILING, DPI_PAGE_CAP
 from .models import PageAnalysis, RegionDPI
+from ..utils.deps import (
+    Image,
+    PYMUPDF_AVAILABLE,
+    fitz,
+    require_optional_dependency,
+)
+
+
+def _require_renderer_dependencies() -> None:
+    require_optional_dependency(PYMUPDF_AVAILABLE, "PyMuPDF (fitz)", "rag")
 
 
 @dataclass
@@ -32,6 +41,8 @@ def pixel_to_pdf(coord: float, dpi: int) -> float:
 
 def _pixmap_to_pil(pix: fitz.Pixmap) -> Image.Image:
     """Convert a PyMuPDF Pixmap to a PIL Image."""
+    _require_renderer_dependencies()
+    require_optional_dependency(Image is not None, "Pillow", "scholar")
     return Image.frombytes(
         "RGB", (pix.width, pix.height), pix.samples, "raw", "RGB", pix.stride
     )
@@ -41,6 +52,7 @@ def _clip_bbox_to_page(
     bbox: tuple[float, float, float, float], page: fitz.Page
 ) -> fitz.Rect:
     """Clip bbox to page bounds."""
+    require_optional_dependency(PYMUPDF_AVAILABLE, "PyMuPDF (fitz)", "rag")
     x0 = max(bbox[0], page.rect.x0)
     y0 = max(bbox[1], page.rect.y0)
     x1 = min(bbox[2], page.rect.x1)
@@ -61,6 +73,7 @@ def render_region(
     Returns:
         PIL Image of the rendered region.
     """
+    _require_renderer_dependencies()
     clip_rect = _clip_bbox_to_page(bbox, page)
     mat = fitz.Matrix(dpi / 72, dpi / 72)
     pix = page.get_pixmap(matrix=mat, clip=clip_rect)
@@ -79,6 +92,7 @@ def render_page_adaptive(
     Returns:
         AdaptiveRenderResult with page image and optional region re-renders.
     """
+    _require_renderer_dependencies()
     t0 = time.perf_counter()
 
     # Cap page DPI at DPI_PAGE_CAP (300)

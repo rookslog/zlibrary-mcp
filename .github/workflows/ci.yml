@@ -29,7 +29,7 @@ jobs:
           node-version: '22'
       - uses: astral-sh/setup-uv@v7
       - run: npm ci
-      - run: uv sync
+      - run: uv sync --all-extras
       - run: npm run build
       - run: node --experimental-vm-modules node_modules/jest/bin/jest.js
       - run: uv run pytest -m "not slow and not integration and not performance" --benchmark-disable -rs
@@ -53,7 +53,7 @@ jobs:
           node-version: '22'
       - uses: astral-sh/setup-uv@v7
       - run: npm ci
-      - run: uv sync
+      - run: uv sync --all-extras
       - run: npm run build
       - run: node --experimental-vm-modules node_modules/jest/bin/jest.js
       - run: uv run pytest -rs
@@ -67,7 +67,7 @@ jobs:
           node-version: '22'
       - uses: astral-sh/setup-uv@v7
       - run: npm ci
-      - run: uv sync
+      - run: uv sync --all-extras
       - run: npm audit --omit=dev --audit-level=critical
       # Blocking gate: any advisory with an available fix must be picked up via
       # tool.uv.constraint-dependencies. Only advisories with NO shipped fix, or
@@ -91,6 +91,17 @@ jobs:
           build: 'false'
       - run: npx eslint src/
       - run: npx prettier --check src/
+
+  optional-dependency-boundary:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          lfs: false
+      - uses: astral-sh/setup-uv@v7
+      - run: uv sync --no-dev
+      - name: Check optional imports and core-only bridge behavior
+        run: .venv/bin/python scripts/check_optional_imports.py --core-smoke
 
   pack-check:
     runs-on: ubuntu-latest
@@ -135,8 +146,8 @@ jobs:
           rm -f "$TARBALL"
           cd "$EXTRACT/package"
           uv sync
-          .venv/bin/python -c "import zlibrary, fitz, ebooklib" \
-            && echo "OK: packed layout installs and bridge imports resolve"
+          .venv/bin/python -c "import sys, zlibrary; sys.path.insert(0, 'lib'); import python_bridge" \
+            && echo "OK: packed core layout installs and bridge imports resolve"
 
   docs-check:
     runs-on: ubuntu-latest

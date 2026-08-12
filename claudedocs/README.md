@@ -2,8 +2,8 @@
 
 Internal working notes for development sessions: architecture analyses, session
 handoffs, and research findings. Kebab-case naming; timestamped when the content
-is a point-in-time record (see the documentation-guidelines table in
-[CLAUDE.md](../CLAUDE.md) for what goes where).
+is a point-in-time record (see the documentation-guidelines paragraph in
+[AGENTS.md](../AGENTS.md) for what goes where).
 
 ## Current contents
 

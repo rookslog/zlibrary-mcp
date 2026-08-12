@@ -80,7 +80,7 @@ A CommonJS script (one that calls `require()`) saved as `.js` fails with
 
 ### Where to Document
 
-See the documentation-guidelines table in [CLAUDE.md](../CLAUDE.md) for the complete guide.
+See the documentation-guidelines paragraph in [AGENTS.md](../AGENTS.md) for the complete guide.
 
 **Quick Reference**:
 | Type | Location |

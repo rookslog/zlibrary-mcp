@@ -438,7 +438,7 @@ import('./dist/lib/python-bridge.js').then(async (m) => {
 - **Architecture Decision**: [ADR-004](adr/ADR-004-Python-Bridge-Path-Resolution.md)
 - **Build Validation**: `scripts/validate-python-bridge.js`
 - **Integration Tests**: `__tests__/integration/`
-- **Main Docs**: [CLAUDE.md](../CLAUDE.md)
+- **Main Docs**: [AGENTS.md](../AGENTS.md)
 
 ---
 

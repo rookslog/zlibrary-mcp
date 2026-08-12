@@ -16,10 +16,13 @@ history and remote-LFS purge is warranted.
 
 ## Method and coverage boundary
 
-**observed:** this audit ran both `git grep` over tracked text and `rg --hidden`
-over the checkout, excluding `.git`, `node_modules`, `.venv`, and `dist`, for the
-four exact basenames. The literal search returned 12 tracked text occurrences in
-six files. `git ls-files` independently established the four tracked PDF paths.
+**observed:** before adding this audit artifact, the audit ran both `git grep`
+over tracked text and `rg --hidden` over the checkout, excluding `.git`,
+`node_modules`, `.venv`, and `dist`, for the four exact basenames. That dependency
+scan returned 12 tracked text occurrences in six source/data files. The committed
+audit necessarily repeats the names it inventories; those self-references are not
+fixture dependencies. `git ls-files` independently established the four tracked
+PDF paths.
 
 **corroborated-for-this-decision:** there are no additional *current checkout*
 textual references to those exact four basenames outside the inventory below.
@@ -60,7 +63,7 @@ matches the actual working-tree sizes, not the rounded figures in #105.
 | Archived manual analyses | `scripts/archive/search_sous_rature.py`, `scripts/archive/test_specific_pages_analysis.py`, and `scripts/archive/test_strikethrough_detection.py` each name the Derrida and Heidegger full books. | **source-supported:** pytest discovery is restricted to `__tests__/python` by `pytest.ini`; these archive scripts are not part of the normal Python suite. They remain manual dependencies if someone runs them. |
 | Active manual analysis | `scripts/test_marginalia_detection.py` names the Kant full book under its `__main__` path. | **observed:** this is a direct future break if the Kant file is removed without redirecting or retiring the script. |
 | Ground-truth schema/loader claim in #105 | `test_schema_validation.py` explicitly excludes `body_text_baseline.json`; `ground_truth_loader.py` reads per-test ground-truth JSON, not the recall-baseline manifest. | **corroborated-for-this-decision:** #105’s assertion that those two components consume the full-book baseline is not supported by their current source. |
-| Production/runtime package | Exact-name search found no match in `src/` or `lib/`. `npm pack --dry-run --json` listed 93 package files and no `test_files/` path. | **corroborated-for-this-decision:** the four PDFs do not ship in the current npm tarball. This says nothing about source clones, forks, or external archives. |
+| Production/runtime package | Exact-name search found no match in `src/` or `lib/`. `npm pack --dry-run --json` listed no `test_files/` path. | **corroborated-for-this-decision:** the four PDFs do not ship in the current npm tarball. This says nothing about source clones, forks, or external archives. |
 
 ## Storage and distribution: four distinct effects
 
@@ -96,9 +99,10 @@ client's LFS/smudge configuration.
 **observed:** in this checkout's shared Git directory, `du -sh .git` reported
 137M and `du -sh .git/lfs` reported 110M. A direct object-file count measured 18
 local LFS object files totaling 114,825,340 bytes. `git lfs ls-files --all`
-reported the same 18 current-ref LFS entries; the four full books are 93.95% of
-that local LFS-byte total. `git log --all -- <four paths>` found two commits that
-touch the four paths.
+reported 18 distinct reachable LFS object IDs; HEAD has 19 LFS pointer paths
+because two paths share one object. The four target object IDs have no aliases and
+are 93.95% of that local LFS-byte total. `git log --all -- <four paths>` found two
+commits that touch the four paths.
 
 **inference:** a future tip-only deletion leaves those objects in this existing
 local `.git/lfs` directory and leaves historical references reachable. Any local
@@ -123,11 +127,15 @@ purge/repository-recreation route or a Support outcome. The current remote quota
 account plan, and Support disposition were not inspected; they are
 **uncorroborated** for this repository.
 
-## Current measurements and issue-claim comparison
+## Pre-audit tree measurements and issue-claim comparison
 
-| Surface measured from current local Git/worktree data | Result | Decision use |
+The tracked-file and Git-blob totals below were measured before committing this
+audit and its index entry, so the audit does not count its own prose as target
+content. Fixture, LFS, and `.git` measurements are unchanged by those text files.
+
+| Surface measured from pre-audit local Git/worktree data | Result | Decision use |
 | --- | ---: | --- |
-| All materialized tracked working-tree files | 123,442,662 bytes (117.72 MiB) | A current-checkout measurement, not a remote quota figure. |
+| All materialized tracked working-tree files | 123,442,662 bytes (117.72 MiB) | A pre-audit-tree measurement, not a remote quota figure. |
 | `test_files/` materialized tree | 116,371,585 bytes (110.98 MiB) | The four books are 92.71% of this directory. |
 | Four full books | 107,884,573 bytes (102.89 MiB) | Direct target magnitude for a future tip-only removal. |
 | Git blob objects for all tracked files | 7,190,531 bytes (6.86 MiB) | Mostly ordinary Git content and LFS pointers; not LFS payload size. |

@@ -1,10 +1,10 @@
 # ADR-011: Promote Z-Library to a Source Adapter
 
-**Status:** Proposed
+**Status:** Accepted
 
 **Date:** 2026-08-12
 
-**Decision owner:** rookslog (acceptance occurs when this ADR is merged)
+**Decision owner:** rookslog (accepted by this ADR's merge; implementation remains #40)
 
 **Issue:** [#40](https://github.com/rookslog/zlibrary-mcp/issues/40)
 
@@ -65,9 +65,11 @@ The source abstraction is only partial on current `master`.
   Anna's/LibGen result goes through `_fetch_from_source`, while a Z-Library
   result goes directly through `EAPIClient.download_file`.
 - `lib/python_bridge.py::main` eagerly calls `initialize_eapi_client` for every
-  operation except document processing and multi-source search. This is why a
-  credential-free LibGen path can work, but it also keeps authentication and
-  source dispatch outside the router.
+  operation except document processing and multi-source search. Consequently,
+  credential-free LibGen search works today, but `download_book` fails before
+  `_fetch_from_source` can run. The migration must make EAPI initialisation
+  operation- and source-specific before it can claim credential-free LibGen
+  acquisition as a working baseline.
 - `lib/term_tools.py`, `lib/author_tools.py`, `lib/booklist_tools.py`, and
   `lib/enhanced_metadata.py` each know how to create and authenticate an EAPI
   client when a shared client is not supplied. Their public shapes are richer
@@ -174,6 +176,12 @@ transfer provenance. The existing shared rename and optional RAG-processing
 pipeline remains outside adapters, after raw acquisition, so every source
 produces the same final file bundle.
 
+Each acquisition attempt writes to an attempt-specific temporary path beneath
+`output_dir`. On failure or cancellation, the adapter removes that temporary
+file; only a completed raw file is atomically promoted to the path returned in
+`RawAcquisitionResult`. This prevents a failed attempt or retry from leaving a
+truncated artifact that a later stage could mistake for an acquisition.
+
 An adapter may use an internal `resolve_download` step, but a resolved URL is
 not part of the required cross-source contract and is never returned as the
 MCP acquisition result.
@@ -198,6 +206,15 @@ For a compatibility interval, existing top-level `id`, `hash`, `book_hash`,
 and `md5` fields may remain in tool responses. New routing and acquisition code
 uses `source_ref`. Tests must prove that removing a compatibility field does
 not change adapter dispatch.
+
+Acquisition is bound to the source that produced the selected result. Ordered
+fallback applies to discovery and other operations that do not consume a
+source-scoped reference; it must not pass a Z-Library `{id, hash}` reference to
+LibGen or invent an alternate lookup. A quota or acquisition failure is
+returned with the selected source's provenance. The caller may then select a
+result from another source. Cross-source availability hints remain hints under
+#96 and do not authorize automatic acquisition fallback; source-to-source
+deduplication or matching remains #52.
 
 `get_book_metadata` should likewise migrate from raw `bookId`/`bookHash`
 parameters to the selected `bookDetails` result. The old parameters may be
@@ -236,8 +253,10 @@ Routing rules are:
 
 1. One explicitly requested source means one attempt. It never silently falls
    back.
-2. Fallback requires an ordered source list supplied by the caller or operator
-   configuration. The router attempts that order exactly.
+2. Fallback for search and other reference-free operations requires an ordered
+   source list supplied by the caller or operator configuration. The router
+   attempts that order exactly. Acquisition remains source-bound as specified
+   above.
 3. The legacy `source="auto"` input is a compatibility alias for configured
    order. Adapter registration order is never used as the fallback order, and
    registering Z-Library does not silently put it first.
@@ -252,6 +271,19 @@ Routing rules are:
 Legacy Z-Library-named tool behaviour may supply an explicit Z-Library source
 at its compatibility façade. That is a property of the legacy tool contract,
 not a default inside the generic router.
+
+`source="auto"` has an explicit migration path. A new optional
+`BOOK_SOURCE_ORDER` is a validated, non-empty ordered list of registered source
+names and controls `auto` only when set. Until an operator sets it, the router
+normalises the legacy `BOOK_SOURCE_DEFAULT` and
+`BOOK_SOURCE_FALLBACK_ENABLED` scalars into an Anna's/LibGen-only order: a
+concrete legacy default starts the order, `auto`/unset preserves the current
+key-dependent primary, and enabled fallback appends the other capable legacy
+source. Z-Library is not added to that derived order merely by registration;
+its named compatibility tools remain explicit. Invalid legacy or new order
+values fail configuration validation before a network call. Contract tests
+cover the normaliser for keyed, unkeyed, fallback-disabled, explicit-default,
+and new-order cases.
 
 ### 5. Z-Library adapter lifecycle
 
@@ -268,10 +300,12 @@ is never treated as global.
 
 ## Error vocabulary
 
-All source-path failures use a structured envelope. The stable fields are:
+All source-path failures use a structured envelope. A single-source failure
+contains `source`; an aggregate omits it and attributes each child failure.
+The stable fields are:
 
 ```text
-source       SourceType value
+source       SourceType value, required only for a single-source failure
 operation    search, acquire, metadata, limits, history, recent, or booklist
 reason       stable machine-readable reason code
 retryable    explicit boolean when known
@@ -279,6 +313,7 @@ detail       bounded human-readable context
 host         optional host that failed
 mirror       optional source-internal mirror
 failures     optional ordered child failures for an aggregate
+attempts     optional ordered source outcomes for a mixed aggregate
 ```
 
 The transport and upstream reason codes introduced by PR #106 are retained:
@@ -290,12 +325,17 @@ The transport and upstream reason codes introduced by PR #106 are retained:
 #40 adds operation/contract reasons as needed:
 
 - `credentials_missing`, `authentication_failed`, `unsupported_operation`,
-  `invalid_book_ref`, `not_found`, `dependency_unavailable`, and `aborted`.
+  `invalid_book_ref`, `not_found`, `dependency_unavailable`, `aborted`, and
+  `partial_failure`.
 
-An aggregate error retains each source failure in attempted order. An empty
-search result means every attempted capable source answered and none matched;
-it never means that a source was unreachable. Public error data crosses the
-bridge as JSON. Tracebacks and diagnostics remain on stderr.
+An aggregate error retains each source failure in attempted order. A complete
+empty search result means every attempted capable source answered and none
+matched; it never means that a source was unreachable. If one source answers
+empty while another fails, the bridge returns an aggregate
+`partial_failure`—not `[]`—with ordered `attempts` recording the empty and
+failed outcomes and `failures` holding the attributed error details. Public
+error data crosses the bridge as JSON. Tracebacks and diagnostics remain on
+stderr.
 
 The permanent vocabulary says `source`, matching project language. If #106
 lands with its current serialized `provider` field, the migration serializer
@@ -357,7 +397,8 @@ until parity is demonstrated.
 - Rebase on merged #106, #103, #101, and #107 as applicable.
 - Record contract tests for current Z-Library search, metadata, limits,
   history, recent books, booklist degradation, and acquisition.
-- Record the existing credential-free LibGen startup/search/acquisition path.
+- Record the existing credential-free LibGen startup/search path and the
+  current acquisition failure caused by eager EAPI initialisation.
 - Confirm test counts before and after every stage; a lower count is a failure
   signal, not a simplification.
 
@@ -372,6 +413,9 @@ until parity is demonstrated.
 
 ### Stage 2: add `ZLibraryAdapter` behind a dispatch gate
 
+- Make bridge EAPI initialisation lazy and source-specific: a LibGen result
+  reaches router acquisition without Z-Library credentials, while legacy
+  Z-Library operations still initialise the shared client when selected.
 - Wrap the existing shared EAPI lifecycle; do not introduce another login
   path.
 - Implement general search and raw acquisition first.
@@ -421,10 +465,12 @@ until parity is demonstrated.
 
 - One shared adapter-contract suite runs against Anna's Archive, LibGen, and
   Z-Library fakes: source attribution, capability declarations, search result
-  shape, source/ref matching, raw file output, and close semantics.
+  shape, source/ref matching, raw file output, atomic promotion/failed-attempt
+  cleanup, and close semantics.
 - Router tests cover explicit-source no-fallback, caller-ordered fallback,
-  unsupported-capability skipping, aggregate failure order, quota exhaustion,
-  and the rule that partial failure is not an empty result.
+  unsupported-capability skipping, aggregate failure order, source-bound
+  acquisition quota exhaustion, and the rule that a mixed empty/failure search
+  is a `partial_failure`, not an empty result.
 - Z-Library adapter tests use a fake EAPI client and assert exactly one login
   lifecycle per bridge call, no credentials in errors/logs, and per-user quota
   reporting.

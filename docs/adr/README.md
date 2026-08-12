@@ -244,7 +244,7 @@ IF garbled detected (Stage 1 OR custom threshold)
 ---
 
 ### ADR-011: Promote Z-Library to a Source Adapter
-**Status**: 🟡 Proposed
+**Status**: ✅ Accepted
 **Date**: 2026-08-12
 **Context**: Z-Library still bypasses the adapter/router path used by Anna's Archive and LibGen
 **Decision**: Use a capability-based adapter contract with opaque source-scoped references and caller-ordered routing
@@ -264,7 +264,7 @@ IF garbled detected (Stage 1 OR custom threshold)
 
 | Status | Meaning | Can Be Changed? |
 |--------|---------|-----------------|
-| ✅ Accepted | Decision made and implemented | No (supersede with new ADR) |
+| ✅ Accepted | Decision made; implementation may be staged separately | No (supersede with new ADR) |
 | 🟡 Proposed | Under discussion | Yes |
 | ❌ Rejected | Decision not adopted | No (keep for historical record) |
 | 🔄 Superseded | Replaced by newer ADR | No (keep for context) |
@@ -352,7 +352,6 @@ def quality_pipeline():
 
 **Metadata**:
 - Created: 2025-10-21
-- Last Updated: 2026-08-12
-- Total ADRs: 9 accepted + 2 proposed
+- Total ADRs: 10 accepted + 1 proposed
 - Next ADR Number: ADR-012
 - Maintained by: Project contributors

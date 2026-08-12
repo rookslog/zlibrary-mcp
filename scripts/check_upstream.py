@@ -30,6 +30,7 @@ from typing import Any, Optional
 from urllib.parse import parse_qs, urljoin, urlsplit
 
 import httpx
+from bs4 import BeautifulSoup
 
 # Import the runtime defaults directly from lib/sources/config.py so the probe
 # cannot drift from what the server actually contacts (it previously hardcoded
@@ -233,16 +234,21 @@ async def probe_zlibrary_eapi(client: httpx.AsyncClient) -> list[ProbeResult]:
 
 
 async def probe_annas(client: httpx.AsyncClient) -> ProbeResult:
-    """Anna's Archive is HTML-scraped, so reachability alone is worth reporting."""
+    """Check that Anna's HTML adapter can extract a search-result title."""
     try:
         resp = await client.get(f"{ANNAS_BASE_URL}/search", params={"q": "philosophy"})
         resp.raise_for_status()
         body = resp.text
-        # The adapter keys off result anchors; their absence means either a layout
-        # change, a block page, or a parked domain.
-        looks_like_results = "/md5/" in body
-        if looks_like_results:
-            detail = "search page contains /md5/ result links"
+        soup = BeautifulSoup(body, "html.parser")
+        # The runtime adapter skips the empty cover anchor and uses the text-bearing
+        # /md5/ anchor as the result title. Probe that extracted field directly.
+        titles = [
+            link.get_text(strip=True)
+            for link in soup.select("a[href^='/md5/']")
+            if link.get_text(strip=True)
+        ]
+        if titles:
+            detail = f"search extracted title: {titles[0]!r}"
         else:
             lower_body = body.lower()
             parked = any(marker in lower_body for marker in PARKING_MARKERS)
@@ -251,12 +257,12 @@ async def probe_annas(client: httpx.AsyncClient) -> ProbeResult:
                 "the configured base URL no longer belongs to Anna's Archive; "
                 "update ANNAS_BASE_URL / lib/sources/config.py"
                 if parked
-                else "reachable but no /md5/ links found "
+                else "reachable but no non-empty title extracted "
                 "(layout change or block page — the HTML adapter will return nothing)"
             )
         return ProbeResult(
             name="annas-archive:search",
-            ok=looks_like_results,
+            ok=bool(titles),
             detail=detail,
             # Anna's is optional: the router falls back to LibGen without a key.
             required=False,

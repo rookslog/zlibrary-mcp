@@ -2,7 +2,7 @@
 
 **Purpose**: Index of all architecture decisions for the Z-Library MCP server
 **Format**: ADR template follows [MADR](https://adr.github.io/madr/) lightweight format
-**Status**: 7 ADRs recorded (ADR-005 missing - under investigation)
+**Status**: 11 ADRs recorded
 
 ---
 
@@ -10,10 +10,15 @@
 
 ### Python Bridge & Integration
 - **[ADR-004](ADR-004-Python-Bridge-Path-Resolution.md)**: Python Bridge Path Resolution ⭐
+- **[ADR-009](ADR-009-Python-Monolith-Decomposition.md)**: Python Monolith Decomposition
 
 ### Z-Library API Integration
 - **[ADR-002](ADR-002-Download-Workflow-Redesign.md)**: Download Workflow Redesign ⭐
 - **[ADR-003](ADR-003-Handle-ID-Lookup-Failure.md)**: Handle ID Lookup Failure ⭐
+- **[ADR-005](ADR-005-EAPI-Migration.md)**: EAPI Migration ⭐
+
+### Source Adapters & Routing
+- **[ADR-011](ADR-011-Z-Library-Source-Adapter.md)**: Promote Z-Library to a Source Adapter
 
 ### RAG Pipeline & Quality
 - **[ADR-006](ADR-006-Quality-Pipeline-Architecture.md)**: Quality Pipeline Architecture ⭐
@@ -22,6 +27,7 @@
 
 ### Testing & Infrastructure
 - **[ADR-001](ADR-001-Jest-ESM-Migration.md)**: Jest ESM Migration
+- **[ADR-010](ADR-010-MCP-SDK-Upgrade.md)**: MCP SDK Upgrade to 1.25+
 
 ---
 
@@ -113,19 +119,15 @@ const scriptPath = getPythonScriptPath('python_bridge.py');
 
 ---
 
-### ADR-005: [MISSING]
-**Status**: ⚠️ Investigation Needed
-**Date**: Unknown
-**Context**: Gap in ADR sequence
-**Investigation**:
-- Check git history for deleted ADR-005
-- Determine if intentionally skipped or lost
-- Update this index once resolved
-
-**Action Items**:
-- [ ] Search git history: `git log --all --full-history -- "*ADR-005*"`
-- [ ] Check if number was skipped intentionally
-- [ ] Document findings in this index
+### ADR-005: EAPI Migration
+**Status**: ✅ Accepted
+**Date**: 2026-02-01
+**Context**: Browser verification made the HTML scraping path unusable
+**Decision**: Move Z-Library search, metadata, and domain discovery to JSON EAPI endpoints
+**Consequences**:
+- ✅ Removes HTML parsing from the Z-Library query path
+- ✅ Uses structured EAPI responses behind a shared client
+- ⚠️ Depends on an undocumented upstream API and runtime domain discovery
 
 ---
 
@@ -217,6 +219,47 @@ IF garbled detected (Stage 1 OR custom threshold)
 
 ---
 
+### ADR-009: Python Monolith Decomposition
+**Status**: ✅ Accepted
+**Date**: 2026-01-31
+**Context**: `lib/rag_processing.py` had grown into a 4,968-line multi-purpose module
+**Decision**: Split the RAG pipeline into domain modules under `lib/rag/` behind a compatibility facade
+**Consequences**:
+- ✅ Smaller focused modules with preserved imports
+- ✅ Existing callers continue through the facade
+- ⚠️ Cross-module access retains some indirection
+
+---
+
+### ADR-010: MCP SDK Upgrade to 1.25+
+**Status**: ✅ Accepted
+**Date**: 2026-01-30
+**Context**: The old MCP SDK version had a high-severity vulnerability and obsolete registration API
+**Decision**: Upgrade to `McpServer` and register typed tools through `server.tool()`
+**Consequences**:
+- ✅ Removes the vulnerable dependency version
+- ✅ Establishes the current typed registration surface
+- ⚠️ Tool schemas must be passed as Zod raw shapes
+
+---
+
+### ADR-011: Promote Z-Library to a Source Adapter
+**Status**: 🟡 Proposed
+**Date**: 2026-08-12
+**Context**: Z-Library still bypasses the adapter/router path used by Anna's Archive and LibGen
+**Decision**: Use a capability-based adapter contract with opaque source-scoped references and caller-ordered routing
+**Consequences**:
+- ✅ Removes MD5 and Z-Library EAPI shapes from the common source boundary
+- ✅ Preserves search-result-first, file-return, credential, quota, and source-neutrality invariants
+- ⚠️ Requires staged migration after #106 and #103 settle overlapping error, config, and registration surfaces
+
+**Related**:
+- [ADR-002](ADR-002-Download-Workflow-Redesign.md) - Search-result-first acquisition
+- [ADR-005](ADR-005-EAPI-Migration.md) - Current Z-Library EAPI mechanism
+- [Issue #40](https://github.com/rookslog/zlibrary-mcp/issues/40) - Implementation work
+
+---
+
 ## ADR Status Definitions
 
 | Status | Meaning | Can Be Changed? |
@@ -232,8 +275,8 @@ IF garbled detected (Stage 1 OR custom threshold)
 ## How to Create a New ADR
 
 ### 1. Choose the Next Number
-Current: ADR-008 (latest)
-Next: ADR-009
+Current: ADR-011 (latest)
+Next: ADR-012
 
 ### 2. Use the Template
 ```markdown
@@ -286,23 +329,15 @@ def quality_pipeline():
 ## ADR Topics Covered
 
 - [x] Testing Infrastructure (ADR-001)
-- [x] Z-Library API Integration (ADR-002, ADR-003)
-- [x] Python Bridge (ADR-004)
+- [x] Z-Library API Integration (ADR-002, ADR-003, ADR-005)
+- [x] Python Bridge (ADR-004, ADR-009)
 - [x] RAG Quality Pipeline (ADR-006, ADR-007, ADR-008)
+- [x] MCP SDK and tool registration (ADR-010)
+- [x] Source adapter architecture (ADR-011)
 - [ ] Performance Optimization (future)
 - [ ] Caching Strategy (future)
-- [ ] Error Handling Patterns (future)
+- [x] Error Handling Patterns (ADR-011)
 - [ ] Deployment Architecture (future)
-
----
-
-## Investigation Tasks
-
-**ADR-005 Missing**:
-- [ ] Search git history for deleted ADR-005
-- [ ] Determine if intentionally skipped
-- [ ] Document resolution in this index
-- [ ] If truly missing, use ADR-009 for next decision (don't reuse ADR-005)
 
 ---
 
@@ -317,7 +352,7 @@ def quality_pipeline():
 
 **Metadata**:
 - Created: 2025-10-21
-- Last Updated: 2025-10-21
-- Total ADRs: 7 active + 1 missing (8 total numbers used)
-- Next ADR Number: ADR-009
+- Last Updated: 2026-08-12
+- Total ADRs: 10 accepted + 1 proposed
+- Next ADR Number: ADR-012
 - Maintained by: Project contributors

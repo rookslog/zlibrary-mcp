@@ -29,6 +29,7 @@ const maybe = PYTHON ? describe : describe.skip;
 
 let tmpDir;
 let runner;
+let baselineProcessListeners;
 
 /** True if the OS still knows about this pid. */
 function isAlive(pid) {
@@ -53,11 +54,19 @@ async function waitFor(predicate, timeoutMs = 8000) {
 maybe('python-runner', () => {
   beforeEach(async () => {
     jest.resetModules();
+    baselineProcessListeners = new Map(
+      ['exit', 'SIGINT', 'SIGTERM'].map((event) => [event, new Set(process.rawListeners(event))]),
+    );
     tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'zlib-runner-'));
     runner = await import('../lib/python-runner.js');
   });
 
   afterEach(() => {
+    for (const [event, baseline] of baselineProcessListeners) {
+      for (const listener of process.rawListeners(event)) {
+        if (!baseline.has(listener)) process.removeListener(event, listener);
+      }
+    }
     fs.rmSync(tmpDir, { recursive: true, force: true });
   });
 
@@ -197,6 +206,42 @@ maybe('python-runner', () => {
       if (descendantPid > 0 && isAlive(descendantPid)) {
         process.kill(descendantPid, 'SIGKILL');
       }
+    }
+  });
+
+  test('a bridge that ignores SIGTERM is force-killed after the grace period', async () => {
+    if (process.platform === 'win32') return;
+
+    const pidFile = path.join(tmpDir, 'ignores-term.pid');
+    const name = script(
+      'ignores-term.py',
+      [
+        'import os, pathlib, signal, time',
+        'signal.signal(signal.SIGTERM, signal.SIG_IGN)',
+        `pathlib.Path(${JSON.stringify(pidFile)}).write_text(str(os.getpid()))`,
+        'time.sleep(600)',
+        '',
+      ].join('\n'),
+    );
+    let pid = -1;
+
+    const error = await runner
+      .runPythonBridge(
+        name,
+        { mode: 'text', pythonPath: PYTHON, scriptPath: tmpDir },
+        { timeoutMs: 300, label: 'sigkill-escalation-test' },
+      )
+      .catch((err) => err);
+
+    try {
+      expect(error.code).toBe('TIMEOUT');
+      expect(await waitFor(() => fs.existsSync(pidFile))).toBe(true);
+      pid = Number(fs.readFileSync(pidFile, 'utf8'));
+      expect(pid).toBeGreaterThan(0);
+      expect(isAlive(pid)).toBe(true);
+      expect(await waitFor(() => !isAlive(pid), runner.KILL_GRACE_MS + 3000)).toBe(true);
+    } finally {
+      if (pid > 0 && isAlive(pid)) process.kill(pid, 'SIGKILL');
     }
   });
 

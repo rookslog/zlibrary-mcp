@@ -9,6 +9,21 @@ import logging
 
 logger = logging.getLogger(__name__)
 
+
+class OptionalDependencyError(ImportError):
+    """Raised when an operation needs an optional dependency extra."""
+
+
+def require_optional_dependency(
+    available: bool, dependency: str, extra: str
+) -> None:
+    """Raise an actionable error when an optional dependency is unavailable."""
+    if not available:
+        raise OptionalDependencyError(
+            f"{dependency} is required for this operation. Install the `{extra}` "
+            f"extra with `uv sync --extra {extra}`."
+        )
+
 # OCR Dependencies (Optional)
 try:
     import pytesseract

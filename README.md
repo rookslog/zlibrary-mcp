@@ -18,6 +18,11 @@ npm install -g zlibrary-mcp
 cd "$(npm root -g)/zlibrary-mcp" && bash setup-uv.sh   # one-time Python environment setup
 ```
 
+This installs the lightweight core for search, metadata, and downloads. Document
+processing is opt-in: run `uv sync --extra rag` for PDF/EPUB extraction, or
+`uv sync --extra scholar` for the complete scholarly/OCR pipeline. See
+[Optional Python dependencies](docs/optional-dependencies.md) for the tier details.
+
 Then add the server to your MCP client config (Claude Code `.mcp.json`, Claude Desktop `claude_desktop_config.json`):
 
 ```json
@@ -264,6 +269,13 @@ npm install          # Installs Node.js dependencies
 npm run build        # Compiles TypeScript to dist/
 ```
 
+The default environment is the lightweight core. Before working on document
+processing or running the complete Python suite, install all optional tiers:
+
+```bash
+uv sync --all-extras
+```
+
 **MCP client configuration (stdio transport):**
 
 Claude Code (`.mcp.json` in your project root):
@@ -327,8 +339,10 @@ curl -s -N --max-time 3 http://localhost:8000/sse | head -2
 # data: /message?sessionId=...
 ```
 
-> Alpine caveat: OpenCV has no musl wheels, so X-mark detection is unavailable
-> in the container; everything else works.
+The image includes the `rag` tier, so PDF and EPUB extraction work without an
+additional install step. It does not include the `scholar` tier. In particular,
+OpenCV-backed X-mark detection remains unavailable on Alpine; see [Optional
+Python dependencies](docs/optional-dependencies.md) for the tier boundaries.
 
 **Building from source instead** (adds a `/health` endpoint via compose):
 
@@ -355,6 +369,10 @@ curl http://localhost:8000/health
 ## Output Format (RAG Processing)
 
 The RAG pipeline processes downloaded documents (EPUB, PDF, TXT) into clean text files for use in retrieval-augmented generation workflows.
+
+PDF and EPUB processing require `uv sync --extra rag`. Scholarly analysis and OCR
+require `uv sync --extra scholar`, which includes the RAG tier. If a required tier is
+missing, the operation returns the exact `uv sync` command to install it.
 
 - **Output location:** Processed text files are saved to `./processed_rag_output/`
 - **File-based output:** Tools return file paths rather than raw text content, avoiding context overflow in AI assistants

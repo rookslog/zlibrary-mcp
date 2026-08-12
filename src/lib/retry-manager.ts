@@ -91,6 +91,12 @@ export function isRetryableError(error: any): boolean {
   if (error.retryable === false) {
     return false;
   }
+  if (
+    error.retryable === true &&
+    (error.code !== 'PYTHON_ERROR' || error.context?.details)
+  ) {
+    return true;
+  }
 
   // Authentication/authorization errors are not retryable
   if (error.code === 'AUTH_ERROR' || error.code === 'FORBIDDEN') {

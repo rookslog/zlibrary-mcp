@@ -9,6 +9,7 @@ Environment variables:
     BOOK_SOURCE_CONNECT_TIMEOUT: TCP/TLS connect budget, seconds (default: 10)
     BOOK_SOURCE_READ_TIMEOUT: Response-read budget, seconds (default: 30)
     BOOK_SOURCE_TOTAL_TIMEOUT: Per-provider wall-clock budget, seconds (default: 45)
+    BOOK_SOURCE_DOWNLOAD_TIMEOUT: Full source-file transfer budget, seconds (default: 1500)
     BOOK_SOURCE_PREFLIGHT: Probe host reachability before searching (default: true)
     BOOK_SOURCE_PREFLIGHT_TIMEOUT: Budget per probe phase, seconds (default: 5)
 """
@@ -33,6 +34,13 @@ from dataclasses import dataclass
 DEFAULT_CONNECT_TIMEOUT = 10.0
 DEFAULT_READ_TIMEOUT = 30.0
 DEFAULT_TOTAL_TIMEOUT = 45.0
+# A source URL can legitimately serve a multi-hundred-megabyte book. Keep its
+# full-transfer wall clock finite but separate from the 45-second search and
+# URL-resolution budget. The independent 40-minute Node budget allows 165
+# seconds for worst-case LibGen resolution, 25 minutes for transfer, 10 minutes
+# for OCR, and 135 seconds for finalization without coupling Python config to a
+# TypeScript constant.
+DEFAULT_DOWNLOAD_TIMEOUT = 1500.0
 DEFAULT_PREFLIGHT_TIMEOUT = 5.0
 
 # Hosts operated by the Anna's Archive project, per the mirror list the live
@@ -85,6 +93,7 @@ class SourceConfig:
         connect_timeout: Seconds allowed for TCP/TLS connect
         read_timeout: Seconds allowed to read a response
         total_timeout: Seconds allowed for a whole provider operation
+        download_timeout: Seconds allowed for a complete source-file transfer
         preflight_enabled: Probe host reachability before the real request
         preflight_timeout: Seconds allowed for each probe phase
     """
@@ -97,6 +106,7 @@ class SourceConfig:
     connect_timeout: float = DEFAULT_CONNECT_TIMEOUT
     read_timeout: float = DEFAULT_READ_TIMEOUT
     total_timeout: float = DEFAULT_TOTAL_TIMEOUT
+    download_timeout: float = DEFAULT_DOWNLOAD_TIMEOUT
     preflight_enabled: bool = True
     preflight_timeout: float = DEFAULT_PREFLIGHT_TIMEOUT
 
@@ -142,6 +152,9 @@ def get_source_config() -> SourceConfig:
         read_timeout=_positive_float("BOOK_SOURCE_READ_TIMEOUT", DEFAULT_READ_TIMEOUT),
         total_timeout=_positive_float(
             "BOOK_SOURCE_TOTAL_TIMEOUT", DEFAULT_TOTAL_TIMEOUT
+        ),
+        download_timeout=_positive_float(
+            "BOOK_SOURCE_DOWNLOAD_TIMEOUT", DEFAULT_DOWNLOAD_TIMEOUT
         ),
         preflight_enabled=os.environ.get("BOOK_SOURCE_PREFLIGHT", "true").lower()
         == "true",

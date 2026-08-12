@@ -538,13 +538,18 @@ describe('python-runner budget configuration', () => {
     });
 
     expect(mod.DEFAULT_BRIDGE_TIMEOUT_MS).toBe(240000);
-    expect(mod.LONG_BRIDGE_TIMEOUT_MS).toBe(1800000);
+    expect(mod.LONG_BRIDGE_TIMEOUT_MS).toBe(2400000);
     expect(mod.KILL_GRACE_MS).toBe(3000);
   });
 
   test('honours a valid override', async () => {
     const mod = await importWith({ PYTHON_BRIDGE_TIMEOUT: '90000' });
     expect(mod.DEFAULT_BRIDGE_TIMEOUT_MS).toBe(90000);
+  });
+
+  test('honours a valid long-operation override', async () => {
+    const mod = await importWith({ PYTHON_BRIDGE_LONG_TIMEOUT: '2700000' });
+    expect(mod.LONG_BRIDGE_TIMEOUT_MS).toBe(2700000);
   });
 
   // A malformed value must never SHORTEN the budget. parseInt is not enough of
@@ -574,7 +579,7 @@ describe('python-runner budget configuration', () => {
       });
 
       expect(mod.DEFAULT_BRIDGE_TIMEOUT_MS).toBe(240000);
-      expect(mod.LONG_BRIDGE_TIMEOUT_MS).toBe(1800000);
+      expect(mod.LONG_BRIDGE_TIMEOUT_MS).toBe(2400000);
       expect(mod.KILL_GRACE_MS).toBe(3000);
     },
   );
@@ -587,5 +592,22 @@ describe('python-runner budget configuration', () => {
       PYTHON_BRIDGE_LONG_TIMEOUT: undefined,
     });
     expect(mod.LONG_BRIDGE_TIMEOUT_MS).toBeGreaterThan(mod.DEFAULT_BRIDGE_TIMEOUT_MS);
+  });
+
+  test('the long default covers resolution, transfer, OCR, and finalization', async () => {
+    const mod = await importWith({ PYTHON_BRIDGE_LONG_TIMEOUT: undefined });
+
+    const libgenResolutionSeconds = 3 * (2 * 5 + 45);
+    const transferSeconds = 1500;
+    const ocrSeconds = 600;
+    const finalizationHeadroomSeconds = 135;
+
+    expect(mod.LONG_BRIDGE_TIMEOUT_MS).toBe(
+      (libgenResolutionSeconds +
+        transferSeconds +
+        ocrSeconds +
+        finalizationHeadroomSeconds) *
+        1000,
+    );
   });
 });

@@ -60,7 +60,7 @@ export const DEFAULT_BRIDGE_TIMEOUT_MS = positiveIntEnv('PYTHON_BRIDGE_TIMEOUT',
  * these would kill real work, which is a worse failure than the orphan this
  * module exists to prevent.
  */
-export const LONG_BRIDGE_TIMEOUT_MS = positiveIntEnv('PYTHON_BRIDGE_LONG_TIMEOUT', 1800000);
+export const LONG_BRIDGE_TIMEOUT_MS = positiveIntEnv('PYTHON_BRIDGE_LONG_TIMEOUT', 2400000);
 
 /** Grace period between SIGTERM and SIGKILL. */
 export const KILL_GRACE_MS = positiveIntEnv('PYTHON_BRIDGE_KILL_GRACE', 3000);

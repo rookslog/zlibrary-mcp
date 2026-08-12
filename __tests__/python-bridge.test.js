@@ -14,10 +14,12 @@ describe('Python Bridge', () => {
         ? jest.fn().mockRejectedValue(venvError)
         : jest.fn().mockResolvedValue('/mock/venv/python'),
     }));
+    const runPythonBridge = bridgeError
+      ? jest.fn().mockRejectedValue(bridgeError)
+      : jest.fn().mockResolvedValue(bridgeResult);
     jest.unstable_mockModule('../lib/python-runner.js', () => ({
-      runPythonBridge: bridgeError
-        ? jest.fn().mockRejectedValue(bridgeError)
-        : jest.fn().mockResolvedValue(bridgeResult),
+      runPythonBridge,
+      LONG_BRIDGE_TIMEOUT_MS: 2400000,
     }));
     jest.unstable_mockModule('child_process', () => ({
       spawn: jest.fn(() => {
@@ -25,13 +27,13 @@ describe('Python Bridge', () => {
       }),
     }));
 
-    return import('../lib/python-bridge.js');
+    return { pythonBridge: await import('../lib/python-bridge.js'), runPythonBridge };
   }
 
   test('uses the owned runner instead of creating an unmanaged subprocess', async () => {
     // Mutation caught: replacing runPythonBridge with a direct child_process.spawn
     // bypasses timeout, abort, registry, and process-tree cleanup.
-    const pythonBridge = await setup({
+    const { pythonBridge } = await setup({
       bridgeResult: [JSON.stringify({ success: true, data: 'owned' })],
     });
 
@@ -41,7 +43,7 @@ describe('Python Bridge', () => {
   });
 
   test('parses a successful result from the owned runner', async () => {
-    const pythonBridge = await setup();
+    const { pythonBridge } = await setup();
 
     await expect(
       pythonBridge.callPythonFunction('test_function', ['arg1', 'arg2']),
@@ -54,7 +56,7 @@ describe('Python Bridge', () => {
       stderr: 'Python error message',
       stdout: '',
     });
-    const pythonBridge = await setup({ bridgeError });
+    const { pythonBridge } = await setup({ bridgeError });
 
     await expect(pythonBridge.callPythonFunction('test_function', ['arg1'])).rejects.toThrow(
       'Python process exited with code 1: Python error message. Raw stdout:',
@@ -75,7 +77,7 @@ describe('Python Bridge', () => {
       })}`,
       stdout: '',
     });
-    const pythonBridge = await setup({ bridgeError });
+    const { pythonBridge } = await setup({ bridgeError });
 
     const error = await pythonBridge.callPythonFunction('download_book', {}).catch((err) => err);
 
@@ -84,7 +86,7 @@ describe('Python Bridge', () => {
   });
 
   test('preserves the public JSON parse error shape', async () => {
-    const pythonBridge = await setup({ bridgeResult: ['Invalid JSON{'] });
+    const { pythonBridge } = await setup({ bridgeResult: ['Invalid JSON{'] });
 
     await expect(pythonBridge.callPythonFunction('test_function', [])).rejects.toThrow(
       /^Failed to parse Python result JSON: .*?\. Raw output: Invalid JSON\{\. Stderr: $/,
@@ -92,10 +94,37 @@ describe('Python Bridge', () => {
   });
 
   test('propagates managed-Python setup failures without spawning', async () => {
-    const pythonBridge = await setup({ venvError: new Error('Failed to get venv path') });
+    const { pythonBridge } = await setup({ venvError: new Error('Failed to get venv path') });
 
     await expect(pythonBridge.callPythonFunction('test_function', [])).rejects.toThrow(
       'Failed to get venv path',
     );
+  });
+
+  test.each(['download_book', 'process_document'])(
+    'uses the long bridge default for %s',
+    async (functionName) => {
+      const { pythonBridge, runPythonBridge } = await setup();
+
+      await pythonBridge.callPythonFunction(functionName, {});
+
+      expect(runPythonBridge.mock.calls[0][2].timeoutMs).toBe(2400000);
+    },
+  );
+
+  test('leaves ordinary bridge calls on the runner default', async () => {
+    const { pythonBridge, runPythonBridge } = await setup();
+
+    await pythonBridge.callPythonFunction('search', {});
+
+    expect(runPythonBridge.mock.calls[0][2].timeoutMs).toBeUndefined();
+  });
+
+  test('preserves an explicit timeout override for a long-running call', async () => {
+    const { pythonBridge, runPythonBridge } = await setup();
+
+    await pythonBridge.callPythonFunction('download_book', {}, { timeoutMs: 1234 });
+
+    expect(runPythonBridge.mock.calls[0][2].timeoutMs).toBe(1234);
   });
 });

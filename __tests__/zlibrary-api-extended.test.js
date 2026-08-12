@@ -47,7 +47,7 @@ describe('Z-Library API - Extended Coverage', () => {
       installExitHooks: jest.fn(),
       liveChildCount: jest.fn(() => 0),
       DEFAULT_BRIDGE_TIMEOUT_MS: 240000,
-      LONG_BRIDGE_TIMEOUT_MS: 1800000,
+      LONG_BRIDGE_TIMEOUT_MS: 2400000,
     }));
 
     // Minimal fs mock (required by module imports)

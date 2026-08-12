@@ -39,10 +39,11 @@ the outer Node budget must remain larger than the worst-case inner provider walk
 | `BOOK_SOURCE_CONNECT_TIMEOUT` | `10` | TCP/TLS connect budget per phase, in seconds |
 | `BOOK_SOURCE_READ_TIMEOUT` | `30` | Response-read budget per phase, in seconds |
 | `BOOK_SOURCE_TOTAL_TIMEOUT` | `45` | Wall-clock budget for one provider operation, in seconds |
+| `BOOK_SOURCE_DOWNLOAD_TIMEOUT` | `1500` | Wall-clock budget for a complete source-file transfer, in seconds |
 | `BOOK_SOURCE_PREFLIGHT` | `true` | Probe DNS and TCP before a provider request |
 | `BOOK_SOURCE_PREFLIGHT_TIMEOUT` | `5` | Budget per DNS or TCP probe phase, in seconds |
 | `PYTHON_BRIDGE_TIMEOUT` | `240000` | Ordinary Python bridge wall-clock budget, in milliseconds |
-| `PYTHON_BRIDGE_LONG_TIMEOUT` | `1800000` | Download and document-processing bridge budget, in milliseconds |
+| `PYTHON_BRIDGE_LONG_TIMEOUT` | `2400000` | Download and document-processing bridge budget, in milliseconds |
 | `PYTHON_BRIDGE_KILL_GRACE` | `3000` | Grace between process-tree termination and forced kill, in milliseconds |
 
 Malformed, non-positive, and non-finite values fall back to their defaults rather
@@ -58,6 +59,14 @@ mirrors and `auto` can add Anna's Archive, so the worst-case search budget is
 `4 × 55s = 220s`, below the 240-second ordinary bridge budget. Raise
 `PYTHON_BRIDGE_TIMEOUT` whenever provider budgets make that composition larger;
 otherwise the outer process-tree kill can preempt legitimate fallback work.
+
+Source-file transfer has a separate 1,500-second default because a valid large
+book can exceed the 45-second search and URL-resolution budget. The 2,400-second
+long bridge default composes worst-case LibGen resolution
+(`3 × (2 × 5s + 45s) = 165s`), transfer (`1,500s`), the OCR subprocess default
+(`600s`), and finalization headroom (`135s`). If any component is overridden,
+keep `PYTHON_BRIDGE_LONG_TIMEOUT` at least as large as their sum after converting
+milliseconds to seconds.
 
 ## How It Works
 

@@ -2,11 +2,12 @@ import { existsSync } from 'fs';
 import type { Options as PythonShellOptions } from 'python-shell';
 import { getManagedPythonPath } from './venv-manager.js'; // Import from the TS file
 import { getPythonLibDirectory, getPythonScriptPath } from './paths.js';
-import { runPythonBridge } from './python-runner.js';
+import { LONG_BRIDGE_TIMEOUT_MS, runPythonBridge } from './python-runner.js';
 import type { RunBridgeOptions } from './python-runner.js';
 import { PythonBridgeError } from './errors.js';
 
 const BRIDGE_SCRIPT_NAME = 'python_bridge.py';
+const LONG_RUNNING_FUNCTIONS = new Set(['download_book', 'process_document']);
 
 export interface BridgeErrorEnvelope {
   error: string;
@@ -99,6 +100,9 @@ export async function callPythonFunction(
   try {
     const lines = await runPythonBridge(BRIDGE_SCRIPT_NAME, options, {
       ...runOptions,
+      timeoutMs:
+        runOptions.timeoutMs ??
+        (LONG_RUNNING_FUNCTIONS.has(functionName) ? LONG_BRIDGE_TIMEOUT_MS : undefined),
       label: runOptions.label ?? `python_bridge.${functionName}`,
     });
     output = lines.join('\n');

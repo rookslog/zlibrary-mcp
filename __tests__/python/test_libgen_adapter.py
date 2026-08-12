@@ -368,7 +368,7 @@ class TestLibgenAdapterDownload:
 
     @pytest.mark.asyncio
     async def test_resolution_walk_obeys_each_mirrors_total_deadline(self, adapter):
-        """A trickling CDN must not defer failure to the 30-minute bridge budget."""
+        """A trickling CDN must not defer failure to the outer bridge budget."""
         adapter.config.total_timeout = 0.02
 
         async def trickle(*_args, **_kwargs):

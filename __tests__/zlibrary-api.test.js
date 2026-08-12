@@ -11,8 +11,8 @@ jest.setTimeout(30000);
 const mockGetManagedPythonPath = jest.fn();
 const mockRunPythonBridge = jest.fn();
 
-/** Mirrors the runner's PYTHON_BRIDGE_LONG_TIMEOUT default (30 minutes). */
-const LONG_BRIDGE_TIMEOUT_MS = 1800000;
+/** Mirrors the runner's PYTHON_BRIDGE_LONG_TIMEOUT default (40 minutes). */
+const LONG_BRIDGE_TIMEOUT_MS = 2400000;
 const mockFsExistsSync = jest.fn();
 const mockFsMkdirSync = jest.fn();
 const mockFsCreateWriteStream = jest.fn();

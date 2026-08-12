@@ -80,6 +80,14 @@ Install a bounded resolver on the one-shot Python bridge event loop before dispa
 
 The numeric-address TCP preflight remains useful but is no longer the only DNS safety mechanism.
 
+Search and URL resolution use the short provider-operation budget. A complete
+source-file transfer uses a separate finite download budget so a valid large
+book is not cancelled at the search deadline. The finite 2,400-second Node
+long-operation default composes 165 seconds of worst-case LibGen resolution,
+1,500 seconds of transfer, the 600-second OCR subprocess default, and 135
+seconds of finalization headroom. Per-phase HTTP limits and partial-file cleanup
+continue to apply inside that wall clock.
+
 If an integration test demonstrates that httpx bypasses the bounded loop resolver in the installed dependency versions, stop and reconsider alternative B rather than adding another site patch.
 
 ## Source Routing and Initialization
@@ -156,6 +164,9 @@ Required mutations/scenarios:
 7. LibGen preflight, key resolution, and CDN byte-probe DNS/TLS/timeout failures retain mirror host and reason;
 8. search and download aggregates survive Python serialization, both Node wrappers, handlers, and MCP `structuredContent` unchanged;
 9. stdio purity remains intact.
+10. a valid source transfer may exceed the provider-resolution deadline but not the finite download deadline;
+11. normalized retry verdicts override legacy message heuristics without changing generic legacy bridge-error behavior;
+12. both exported Node wrappers use the long bridge budget for downloads and document processing while preserving explicit overrides.
 
 After focused RED-GREEN cycles, run on the exact committed and rebased tree:
 

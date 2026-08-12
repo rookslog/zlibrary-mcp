@@ -18,6 +18,7 @@ sys.path.insert(
 )
 
 import python_bridge  # Import the module itself
+from lib.sources.errors import ProviderTimeoutError
 
 # Import functions from the module under test
 from python_bridge import (
@@ -468,6 +469,111 @@ class TestBridgeFunctions:
 
 class TestDownloadBook:
     @pytest.mark.asyncio
+    async def test_valid_slow_transfer_can_exceed_provider_resolution_budget(
+        self, tmp_path, mocker
+    ):
+        """A large transfer must not inherit the short resolution deadline."""
+
+        class SlowResponse:
+            url = httpx.URL("https://cdn.example/file")
+            headers = {"content-type": "application/pdf"}
+
+            def raise_for_status(self):
+                pass
+
+            async def aiter_bytes(self, _chunk_size):
+                await asyncio.sleep(0.06)
+                yield b"%PDF slow but valid"
+
+        class SlowStream:
+            async def __aenter__(self):
+                return SlowResponse()
+
+            async def __aexit__(self, *_args):
+                return False
+
+        class SlowClient:
+            def __init__(self, **_kwargs):
+                pass
+
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, *_args):
+                return False
+
+            def stream(self, *_args, **_kwargs):
+                return SlowStream()
+
+        config = python_bridge.get_source_config()
+        config.total_timeout = 0.02
+        config.download_timeout = 0.15
+        mocker.patch("python_bridge.get_source_config", return_value=config)
+        mocker.patch("httpx.AsyncClient", SlowClient)
+
+        result = await python_bridge._download_url_to_file(
+            "https://mirror.example/get", str(tmp_path), "slow-valid", "libgen"
+        )
+
+        assert Path(result).read_bytes() == b"%PDF slow but valid"
+
+    @pytest.mark.asyncio
+    async def test_transfer_exceeding_download_budget_is_typed_and_cleans_partial(
+        self, tmp_path, mocker
+    ):
+        """The larger transfer budget remains finite and cleanup-safe."""
+
+        class OverBudgetResponse:
+            url = httpx.URL("https://cdn.example/file")
+            headers = {"content-type": "application/pdf"}
+
+            def raise_for_status(self):
+                pass
+
+            async def aiter_bytes(self, _chunk_size):
+                yield b"partial"
+                await asyncio.sleep(0.15)
+                yield b"late"
+
+        class OverBudgetStream:
+            async def __aenter__(self):
+                return OverBudgetResponse()
+
+            async def __aexit__(self, *_args):
+                return False
+
+        class OverBudgetClient:
+            def __init__(self, **_kwargs):
+                pass
+
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, *_args):
+                return False
+
+            def stream(self, *_args, **_kwargs):
+                return OverBudgetStream()
+
+        config = python_bridge.get_source_config()
+        config.total_timeout = 1.0
+        config.download_timeout = 0.03
+        mocker.patch("python_bridge.get_source_config", return_value=config)
+        mocker.patch("httpx.AsyncClient", OverBudgetClient)
+
+        with pytest.raises(ProviderTimeoutError) as excinfo:
+            await python_bridge._download_url_to_file(
+                "https://mirror.example/get",
+                str(tmp_path),
+                "over-budget",
+                "libgen",
+            )
+
+        assert excinfo.value.reason == "read_timeout"
+        assert excinfo.value.host == "cdn.example"
+        assert not (tmp_path / "over-budget.download").exists()
+
+    @pytest.mark.asyncio
     @pytest.mark.parametrize(
         ("failure", "expected_reason"),
         [
@@ -537,6 +643,7 @@ class TestDownloadBook:
         )
         config = python_bridge.get_source_config()
         config.total_timeout = 0.03
+        config.download_timeout = 0.03
         config.preflight_timeout = 0.03
         mocker.patch(
             "python_bridge.get_source_router", new=AsyncMock(return_value=router)

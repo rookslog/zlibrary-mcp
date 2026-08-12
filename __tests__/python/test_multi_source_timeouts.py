@@ -8,6 +8,7 @@ reason, and an explicitly requested source is never silently swapped.
 """
 
 import asyncio
+import math
 import socket
 import time
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -57,12 +58,15 @@ class TestConfigTimeouts:
         assert config.connect_timeout > 0
         assert config.read_timeout > 0
         assert config.total_timeout > 0
+        assert config.download_timeout > config.total_timeout
+        assert math.isfinite(config.download_timeout)
         assert config.preflight_timeout > 0
 
     def test_env_overrides_are_honoured(self, monkeypatch):
         monkeypatch.setenv("BOOK_SOURCE_CONNECT_TIMEOUT", "3.5")
         monkeypatch.setenv("BOOK_SOURCE_READ_TIMEOUT", "12")
         monkeypatch.setenv("BOOK_SOURCE_TOTAL_TIMEOUT", "20")
+        monkeypatch.setenv("BOOK_SOURCE_DOWNLOAD_TIMEOUT", "900")
         monkeypatch.setenv("BOOK_SOURCE_PREFLIGHT", "false")
 
         config = get_source_config()
@@ -70,7 +74,21 @@ class TestConfigTimeouts:
         assert config.connect_timeout == 3.5
         assert config.read_timeout == 12.0
         assert config.total_timeout == 20.0
+        assert config.download_timeout == 900.0
         assert config.preflight_enabled is False
+
+    @pytest.mark.parametrize(
+        "bad", ["0", "-5", "abc", "", "inf", "Infinity", "1e999", "nan"]
+    )
+    def test_invalid_download_budget_falls_back_to_a_finite_default(
+        self, monkeypatch, bad
+    ):
+        monkeypatch.setenv("BOOK_SOURCE_DOWNLOAD_TIMEOUT", bad)
+
+        config = get_source_config()
+
+        assert config.download_timeout == 1500.0
+        assert math.isfinite(config.download_timeout)
 
     @pytest.mark.parametrize(
         "bad", ["0", "-5", "abc", "", "inf", "Infinity", "1e999", "nan"]

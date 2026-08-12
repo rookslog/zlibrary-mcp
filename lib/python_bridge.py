@@ -767,7 +767,7 @@ async def _download_url_to_file(
     try:
         written = await bounded_await(
             stream_to_disk(),
-            config.total_timeout,
+            config.download_timeout,
             provider=provider,
             host=original_host,
             operation="download",

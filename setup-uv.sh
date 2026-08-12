@@ -44,6 +44,20 @@ fi
 
 UV_VERSION=$(uv --version)
 echo "✅ UV found: $UV_VERSION"
+
+# Dev dependencies live in [dependency-groups] (PEP 735), which uv gained in
+# 0.4.27. An older uv does not read that table and installs no dev group, so
+# `uv run pytest` fails with "not found" — a symptom that points nowhere near
+# the cause. Check it here rather than letting it surface three steps later.
+# Same `sort -V` comparison used for the Python version above.
+UV_NUMBER=$(printf '%s' "$UV_VERSION" | awk '{print $2}')
+UV_REQUIRED="0.4.27"
+if [ -n "$UV_NUMBER" ] && \
+   [ "$(printf '%s\n' "$UV_REQUIRED" "$UV_NUMBER" | sort -V | head -n1)" != "$UV_REQUIRED" ]; then
+    echo "Error: UV $UV_REQUIRED+ required (dev dependencies use PEP 735 [dependency-groups]), found $UV_NUMBER"
+    echo "Upgrade with: uv self update    (or reinstall: curl -LsSf https://astral.sh/uv/install.sh | sh)"
+    exit 1
+fi
 echo ""
 
 # Initialize UV project (creates .venv and installs deps)

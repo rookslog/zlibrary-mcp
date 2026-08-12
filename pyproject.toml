@@ -98,6 +98,16 @@ build-backend = "setuptools.build_meta"
 # ['lib', 'zlibrary', 'node_modules'] and refused to build — breaking
 # `uv sync` for every npm-installed user.
 package = false
+# Dev dependencies are declared in [dependency-groups] (PEP 735), which uv
+# gained in 0.4.27. The legacy `tool.uv.dev-dependencies` field that older
+# clients understand is gone, so on a pre-0.4.27 uv the dev group is not
+# installed and `uv run ruff` / `uv run pytest` fail with a confusing
+# "not found" rather than a version complaint. Fail early and say why instead.
+#
+# This is a backstop, not the whole guard: a uv old enough to lack PEP 735 may
+# also predate `required-version` and ignore this key. setup-uv.sh checks the
+# version directly, which works regardless.
+required-version = ">=0.4.27"
 # Constraints to fix security vulnerabilities in transitive deps.
 # Floors are raised to the lowest version pip-audit reports as fixed; keep them
 # as `>=` so Dependabot/`uv lock --upgrade` can move forward without edits here.

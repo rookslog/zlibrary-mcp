@@ -59,6 +59,20 @@ dev = [
     "pytest-benchmark>=5.2.3",
 ]
 
+# Development and test dependencies (PEP 735 dependency groups)
+[dependency-groups]
+dev = [
+    "pytest>=9.0.3",  # PYSEC-2026-1845
+    "pytest-asyncio>=1.2.0",
+    "pytest-mock>=3.15.0",
+    "pytest-benchmark>=5.2.3",
+    "ruff>=0.14.14",
+    "jsonschema>=4.26.0",
+    "pytest-cov>=7.0.0",
+    "pip-audit>=2.7.0",
+    "pip>=26.1.2",  # PYSEC-2026-196, PYSEC-2026-2875, PYSEC-2026-2876 (pulled in by pip-audit)
+]
+
 [project.urls]
 Homepage = "https://github.com/rookslog/zlibrary-mcp"
 Repository = "https://github.com/rookslog/zlibrary-mcp.git"
@@ -84,19 +98,16 @@ build-backend = "setuptools.build_meta"
 # ['lib', 'zlibrary', 'node_modules'] and refused to build — breaking
 # `uv sync` for every npm-installed user.
 package = false
-# Development dependencies (alternative syntax)
-dev-dependencies = [
-    "pytest>=9.0.3",  # PYSEC-2026-1845
-    "pytest-asyncio>=1.2.0",
-    "pytest-mock>=3.15.0",
-    "pytest-benchmark>=5.2.3",
-    "ruff>=0.14.14",
-    "jsonschema>=4.26.0",
-    "pytest-cov>=7.0.0",
-    "pip-audit>=2.7.0",
-    "pip>=26.1.2",  # PYSEC-2026-196, PYSEC-2026-2875, PYSEC-2026-2876 (pulled in by pip-audit)
-]
-
+# Dev dependencies are declared in [dependency-groups] (PEP 735), which uv
+# gained in 0.4.27. The legacy `tool.uv.dev-dependencies` field that older
+# clients understand is gone, so on a pre-0.4.27 uv the dev group is not
+# installed and `uv run ruff` / `uv run pytest` fail with a confusing
+# "not found" rather than a version complaint. Fail early and say why instead.
+#
+# This is a backstop, not the whole guard: a uv old enough to lack PEP 735 may
+# also predate `required-version` and ignore this key. setup-uv.sh checks the
+# version directly, which works regardless.
+required-version = ">=0.4.27"
 # Constraints to fix security vulnerabilities in transitive deps.
 # Floors are raised to the lowest version pip-audit reports as fixed; keep them
 # as `>=` so Dependabot/`uv lock --upgrade` can move forward without edits here.

@@ -13,6 +13,12 @@ export default {
     '/dist/', // Ignore compiled output for test discovery
     '/__tests__/e2e/', // E2E tests require running Docker container
     '/__tests__/integration/', // Integration tests require live services
+    // Agent worktrees check out a full copy of the repo under the project
+    // root, so Jest discovers a second copy of every test file and runs it
+    // against a tree with no node_modules and no dist/. Observed 2026-08-12:
+    // one leftover worktree produced 111 phantom failures on a suite that is
+    // green in CI. .gitignore does not help — Jest walks the filesystem.
+    '/\\.claude/worktrees/',
   ],
 
   // Crucial: Map imports from __tests__ to compiled dist/ files

@@ -17,6 +17,9 @@ is a point-in-time record (see the documentation-guidelines paragraph in
 - [session-notes/2025-10-28-footnote-continuation-state-machine.md](session-notes/2025-10-28-footnote-continuation-state-machine.md)
   — design notes behind the footnote-continuation detector
   (referenced by `docs/FOOTNOTE_CONTINUATION_QUICKSTART.md`)
+- [research/pdf-fixture-dependency-audit/2026-08-12-dependency-audit.md](research/pdf-fixture-dependency-audit/2026-08-12-dependency-audit.md)
+  — current dependency, size, and Git/LFS-remediation audit for the four
+  full-book PDF fixtures tracked by issue [#105](https://github.com/rookslog/zlibrary-mcp/issues/105)
 
 ## Where did everything else go?
 

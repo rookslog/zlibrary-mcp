@@ -34,8 +34,20 @@ Drift is the record contradicting what shipped. Neglect is finished work rotting
 place. Same silence, so the same script checks both.
 
 6. **An open pull request is a defect with a clock on it, not a queue entry.** Warned at
-   7 days without activity, failed at 14. Merge it, close it, or say on the thread what
-   it is waiting for — those are the three options, and leaving it is not among them.
+   7 days, failed at 14 — **measured from when it was opened, not from last activity.**
+   Land it or close it; those are the two options. Commenting is not a third.
+
+   The clock ignores activity on purpose. An open PR has by definition never merged, and
+   what rots it is elapsed time with the base moving underneath — not silence. An
+   activity-based clock is reset by any comment while the PR stays exactly as unlanded as
+   it was, which is the failure mode wearing the costume of a fix. That was observed
+   live: rebasing #48 on 2026-08-11 cleared the check on the strength of the comment
+   rather than the merge, and the rule was tightened the same day.
+
+   The consequence is deliberate. A PR under active review still fails at 14 days —
+   "it is being discussed" is not a defence against having been open a fortnight. Last
+   activity is reported next to the age so a moving PR can be told from an abandoned one,
+   but it does not change the verdict.
 7. **A branch does not outlive its pull request.** `delete_branch_on_merge` has been on
    since 2026-08-11; the check catches stragglers and anything merged by a route that
    bypasses it. A remote branch with no PR at all and no commits for 14 days fails.

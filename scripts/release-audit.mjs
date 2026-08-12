@@ -40,6 +40,9 @@ const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..');
  * filing an issue about it. 14 is chosen against the case that motivated the
  * check: #48 was still cleanly mergeable at 7 days and had rotted by 17.
  * BRANCH_AGE matches the two-week branch rule already in the global guidance.
+ *
+ * PR age is measured from creation, so the clock cannot be reset by commenting
+ * — see the note above the check itself.
  */
 const STALE_PR_WARN = 7;
 const STALE_PR_FAIL = 14;
@@ -232,21 +235,34 @@ if (!ghReady) {
 
   const prs = ghJson([
     'pr', 'list', '--state', 'all', '--limit', '200',
-    '--json', 'number,state,headRefName,updatedAt,isDraft,title,author,mergeable',
+    '--json', 'number,state,headRefName,createdAt,updatedAt,isDraft,title,author,mergeable',
   ]) ?? [];
 
-  // Rule: an aging PR is a defect with a clock on it, not a queue entry. Every
-  // day it sits, the base moves under it.
+  // Rule: an aging PR is a defect with a clock on it, not a queue entry.
+  //
+  // The clock runs from createdAt, not updatedAt. An open PR has by definition
+  // never merged, and what rots it is elapsed time with the base moving
+  // underneath — not silence. Keying off activity meant any comment reset the
+  // clock while the PR stayed exactly as unlanded as before: the failure mode
+  // wearing the costume of a fix. Observed live on 2026-08-11, when rebasing
+  // #48 cleared this check on the strength of the comment rather than the merge.
+  //
+  // The consequence is deliberate: a PR under active review still fails at 14
+  // days. "It is being discussed" is not a defence against having been open a
+  // fortnight. Last-activity is reported alongside so the reader can tell a
+  // moving PR from an abandoned one, but it does not change the verdict.
   for (const pr of prs.filter((p) => p.state === 'OPEN' && !p.isDraft)) {
-    const age = daysSince(pr.updatedAt);
+    const age = daysSince(pr.createdAt);
     if (age < STALE_PR_WARN) continue;
 
-    const conflicting = pr.mergeable === 'CONFLICTING' ? ' It is already CONFLICTING.' : '';
+    const quiet = daysSince(pr.updatedAt);
+    const activity = quiet >= 1 ? `last activity ${quiet}d ago` : 'active today';
+    const conflicting = pr.mergeable === 'CONFLICTING' ? ', already CONFLICTING' : '';
     const who = pr.author?.login ?? 'unknown';
     const msg =
-      `PR #${pr.number} ("${pr.title.slice(0, 50)}", @${who}) has sat ${age} days without activity.${conflicting}`;
+      `PR #${pr.number} ("${pr.title.slice(0, 50)}", @${who}) has been open ${age} days (${activity}${conflicting}).`;
     const fixIt =
-      `Merge it, close it, or say on the thread what it is waiting for. Leaving it is the option that destroys work.`;
+      `Land it or close it. A comment does not clear this — only merging or closing does.`;
     if (age >= STALE_PR_FAIL) fail(msg, fixIt);
     else warn(msg, fixIt);
   }

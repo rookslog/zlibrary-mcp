@@ -13,9 +13,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   weekly `Release Record Audit` workflow, checking that the project's record of itself is
   still true. **Drift:** every tag has a GitHub Release and a CHANGELOG section, every
   release milestone names its map issue, no tagged version has open issues on its
-  milestone, no closed issue is missing a milestone. **Neglect:** no open PR sits more
-  than 14 days without activity, no branch outlives its merged PR, no branch goes 14 days
-  with neither a PR nor a commit. Also wired into `npm run doctor`, which runs the
+  milestone, no closed issue is missing a milestone. **Neglect:** no PR stays open more
+  than 14 days (measured from when it was opened, so commenting cannot reset the clock —
+  only merging or closing clears it), no branch outlives its merged PR, no branch goes 14
+  days with neither a PR nor a commit. Also wired into `npm run doctor`, which runs the
   upstream contract check first so a stale PR cannot mask upstream drift. Rules and the
   incidents that motivated them: [docs/RELEASE_PROCESS.md](docs/RELEASE_PROCESS.md).
 - `delete_branch_on_merge` enabled on the repository, retiring by configuration the

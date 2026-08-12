@@ -2,12 +2,18 @@
 
 from __future__ import annotations
 
+import asyncio
+import json
 import os
 from pathlib import Path
 import subprocess
 import sys
 import textwrap
-import tomllib
+
+try:
+    import tomllib
+except ModuleNotFoundError:  # Python 3.10
+    import tomli as tomllib
 
 import pytest
 
@@ -109,6 +115,19 @@ def test_checker_core_smoke_completes_offline_search_and_checks_rag_error():
     assert "Core-only bridge smoke OK" in result.stdout
 
 
+@pytest.mark.asyncio
+async def test_core_smoke_does_not_create_a_background_executor(monkeypatch):
+    """The standalone core check must terminate without executor shutdown work."""
+    from scripts.check_optional_imports import _run_core_smoke
+
+    async def unexpected_to_thread(*args, **kwargs):
+        raise AssertionError("core smoke started a background executor")
+
+    monkeypatch.setattr(asyncio, "to_thread", unexpected_to_thread)
+
+    await _run_core_smoke(REPO_ROOT)
+
+
 def test_resolution_package_does_not_eagerly_import_heavy_implementations():
     """Importing resolution models must not pull analyzer or renderer into startup."""
     script = textwrap.dedent(
@@ -168,12 +187,18 @@ def test_core_only_bridge_starts_and_completes_offline_search():
                 return None
 
         bridge._source_router = OfflineRouter()
-        result = asyncio.run(
-            bridge.search_multi_source(
-                query="offline boundary probe", source="libgen", count=1
-            )
-        )
-        print(json.dumps(result, sort_keys=True))
+        sys.argv = [
+            "python_bridge.py",
+            "search_multi_source",
+            json.dumps(
+                {
+                    "query": "offline boundary probe",
+                    "source": "libgen",
+                    "count": 1,
+                }
+            ),
+        ]
+        asyncio.run(bridge.main())
         """
     )
     env = os.environ.copy()
@@ -190,7 +215,9 @@ def test_core_only_bridge_starts_and_completes_offline_search():
     )
 
     assert result.returncode == 0, result.stderr
-    assert result.stdout.strip() == '{"books": [], "sources_used": []}'
+    envelope = json.loads(result.stdout)
+    payload = json.loads(envelope["content"][0]["text"])
+    assert payload == {"books": [], "sources_used": []}
 
 
 @pytest.mark.asyncio

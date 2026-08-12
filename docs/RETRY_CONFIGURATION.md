@@ -29,6 +29,36 @@ The Z-Library MCP server implements comprehensive retry logic with exponential b
 | `CIRCUIT_BREAKER_THRESHOLD` | `5` | Number of failures before opening circuit |
 | `CIRCUIT_BREAKER_TIMEOUT` | `60000` | Time in ms before attempting to close circuit (1 minute) |
 
+### Multi-Source Timeout Configuration
+
+Nothing in the multi-source path may run unbounded. Two layers cooperate, and
+the outer Node budget must remain larger than the worst-case inner provider walk.
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `BOOK_SOURCE_CONNECT_TIMEOUT` | `10` | TCP/TLS connect budget per phase, in seconds |
+| `BOOK_SOURCE_READ_TIMEOUT` | `30` | Response-read budget per phase, in seconds |
+| `BOOK_SOURCE_TOTAL_TIMEOUT` | `45` | Wall-clock budget for one provider operation, in seconds |
+| `BOOK_SOURCE_PREFLIGHT` | `true` | Probe DNS and TCP before a provider request |
+| `BOOK_SOURCE_PREFLIGHT_TIMEOUT` | `5` | Budget per DNS or TCP probe phase, in seconds |
+| `PYTHON_BRIDGE_TIMEOUT` | `240000` | Ordinary Python bridge wall-clock budget, in milliseconds |
+| `PYTHON_BRIDGE_LONG_TIMEOUT` | `1800000` | Download and document-processing bridge budget, in milliseconds |
+| `PYTHON_BRIDGE_KILL_GRACE` | `3000` | Grace between process-tree termination and forced kill, in milliseconds |
+
+Malformed, non-positive, and non-finite values fall back to their defaults rather
+than disabling a deadline.
+
+Preflight is skipped when `HTTP_PROXY` or `HTTPS_PROXY` covers the target, with
+`NO_PROXY` honored. A direct DNS/TCP socket cannot represent a proxied request;
+letting that probe veto the real client would create a false outage.
+
+The preflight budget applies to two phases (DNS, then TCP). At the defaults, one
+provider attempt can cost at most `2 × 5s + 45s = 55s`. LibGen can walk three
+mirrors and `auto` can add Anna's Archive, so the worst-case search budget is
+`4 × 55s = 220s`, below the 240-second ordinary bridge budget. Raise
+`PYTHON_BRIDGE_TIMEOUT` whenever provider budgets make that composition larger;
+otherwise the outer process-tree kill can preempt legitimate fallback work.
+
 ## How It Works
 
 ### Exponential Backoff

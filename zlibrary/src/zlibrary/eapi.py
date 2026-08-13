@@ -195,6 +195,7 @@ async def select_advertised_domain(
 _CD_EXTENDED = re.compile(r"filename\*\s*=\s*UTF-8''([^;\s]+)", re.IGNORECASE)
 _CD_QUOTED = re.compile(r'filename\s*=\s*"([^"]*)"', re.IGNORECASE)
 _CD_BARE = re.compile(r'filename\s*=\s*([^;"\s]+)', re.IGNORECASE)
+_DOWNLOAD_STAGING_PREFIX = ".zlibrary-eapi-"
 
 
 def filename_from_content_disposition(header: str) -> Optional[str]:
@@ -464,7 +465,7 @@ class EAPIClient:
                     output_path = Path(output_dir) / filename
                     staging_fd, staging_name = tempfile.mkstemp(
                         dir=output_dir,
-                        prefix=f".{filename}.",
+                        prefix=_DOWNLOAD_STAGING_PREFIX,
                         suffix=".part",
                     )
                     staging_path = Path(staging_name)

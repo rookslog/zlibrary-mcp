@@ -149,6 +149,58 @@ class TestDownloadFile:
         assert os.listdir(tmp_download_dir) == ["atomic.epub"]
 
     @pytest.mark.asyncio
+    async def test_download_file_replaces_near_name_max_filename(
+        self, eapi_client, tmp_download_dir
+    ):
+        """Staging supports a valid final basename at the filesystem name limit."""
+        os.makedirs(tmp_download_dir)
+        try:
+            name_max = os.pathconf(tmp_download_dir, "PC_NAME_MAX")
+        except (AttributeError, OSError, ValueError):
+            pytest.skip("filesystem does not expose a component-name limit")
+
+        extension = ".epub"
+        assert name_max > len(extension)
+        filename = "n" * (name_max - len(extension)) + extension
+        output_path = os.path.join(tmp_download_dir, filename)
+        with open(output_path, "wb") as existing:
+            existing.write(b"known good artifact")
+
+        eapi_client.get_download_link = AsyncMock(
+            return_value={"file": {"downloadLink": "https://download.example/book"}}
+        )
+        mock_response = AsyncMock()
+        mock_response.raise_for_status = MagicMock()
+        mock_response.headers = {}
+        mock_response.url = "https://download.example/book"
+
+        async def replacement_bytes():
+            yield b"replacement content"
+
+        mock_response.aiter_bytes = replacement_bytes
+        mock_stream_cm = AsyncMock()
+        mock_stream_cm.__aenter__ = AsyncMock(return_value=mock_response)
+        mock_stream_cm.__aexit__ = AsyncMock(return_value=False)
+        mock_client_instance = AsyncMock()
+        mock_client_instance.stream = MagicMock(return_value=mock_stream_cm)
+        mock_client_cm = AsyncMock()
+        mock_client_cm.__aenter__ = AsyncMock(return_value=mock_client_instance)
+        mock_client_cm.__aexit__ = AsyncMock(return_value=False)
+
+        with patch("zlibrary.eapi.httpx.AsyncClient", return_value=mock_client_cm):
+            result = await eapi_client.download_file(
+                book_id=123,
+                book_hash="abc123",
+                output_dir=tmp_download_dir,
+                filename=filename,
+            )
+
+        assert result == os.path.abspath(output_path)
+        with open(output_path, "rb") as replaced:
+            assert replaced.read() == b"replacement content"
+        assert os.listdir(tmp_download_dir) == [filename]
+
+    @pytest.mark.asyncio
     async def test_download_file_cancellation_removes_partial_output(
         self, eapi_client, tmp_download_dir
     ):

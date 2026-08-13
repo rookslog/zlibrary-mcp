@@ -17,7 +17,7 @@ import asyncio
 import signal
 
 from pathlib import Path
-from filename_utils import create_unified_filename
+from filename_utils import create_unified_filename, normalize_document_extension
 import logging
 
 # Import the new RAG processing functions
@@ -760,6 +760,10 @@ def _response_extension(
     headers, response_url: str, signature: bytes
 ) -> tuple[str, str]:
     """Infer a safe document extension from strongest to weakest evidence."""
+    signature_extension = _signature_extension(signature)
+    if signature_extension:
+        return signature_extension, "signature"
+
     disposition = headers.get("content-disposition", "")
     if disposition:
         message = Message()
@@ -783,11 +787,47 @@ def _response_extension(
     if content_type in by_content_type:
         return by_content_type[content_type], "content_type"
 
-    if signature.startswith(b"%PDF"):
-        return "pdf", "signature"
-    if signature.startswith(b"PK\x03\x04") and b"application/epub+zip" in signature:
-        return "epub", "signature"
     return "", ""
+
+
+def _signature_probe(signature: bytes) -> bytes:
+    """Strip a UTF-8 BOM and leading whitespace for content classification."""
+    return signature.removeprefix(b"\xef\xbb\xbf").lstrip()
+
+
+def _looks_like_html(signature: bytes) -> bool:
+    """Recognize common leading HTML shapes independent of response headers."""
+    probe = _signature_probe(signature).lower()
+    return bool(
+        re.match(
+            rb"^(?:<!doctype\s+html|<html(?:\s|>)|<head(?:\s|>)|<body(?:\s|>)|<script(?:\s|>)|<!--)",
+            probe,
+        )
+    )
+
+
+def _signature_extension(signature: bytes) -> str:
+    """Classify supported document bytes without trusting names or MIME."""
+    probe = _signature_probe(signature)
+    if probe.startswith(b"%PDF"):
+        return "pdf"
+    if probe.startswith(b"PK\x03\x04") and b"application/epub+zip" in signature:
+        return "epub"
+    if not probe or b"\x00" in probe:
+        return ""
+    try:
+        text = probe.decode("utf-8")
+    except UnicodeDecodeError:
+        return ""
+    if all(character.isprintable() or character in "\r\n\t" for character in text):
+        return "txt"
+    return ""
+
+
+def _publish_no_replace(source: Path, destination: Path) -> None:
+    """Atomically publish one owned file without replacing an existing path."""
+    os.link(source, destination)
+    source.unlink()
 
 
 async def _download_url_to_file(
@@ -862,6 +902,13 @@ async def _download_url_to_file(
                             if len(signature) < 4096:
                                 signature.extend(chunk[: 4096 - len(signature)])
                             written += len(chunk)
+                    if _looks_like_html(bytes(signature)):
+                        raise ProviderResponseError(
+                            provider,
+                            active_host,
+                            f"HTML body for {md5}; download key may have expired",
+                            reason="protocol_error",
+                        )
                     actual_md5 = digest.hexdigest()
                     if actual_md5 != expected_md5:
                         raise ProviderResponseError(
@@ -877,7 +924,7 @@ async def _download_url_to_file(
                     completed_path = attempt_path.with_suffix(
                         f".{extension}" if extension else ""
                     )
-                    attempt_path.rename(completed_path)
+                    _publish_no_replace(attempt_path, completed_path)
                     return written, _DownloadedPath(
                         str(completed_path), extension_evidence
                     )
@@ -966,25 +1013,21 @@ async def _fetch_from_source(book_details: dict, output_dir: str) -> str:
 
     config = get_source_config()
     active_host = ""
+    failures = []
+    seen_failure_ids = set()
+
+    def record(failure):
+        identity = id(failure)
+        if identity not in seen_failure_ids:
+            seen_failure_ids.add(identity)
+            failures.append(failure)
 
     async def acquire() -> str:
         nonlocal active_host
-        failures = []
-        seen_failures = set()
 
-        def record(failure):
-            key = (
-                failure.provider,
-                failure.host,
-                failure.reason,
-                failure.detail,
-            )
-            if key not in seen_failures:
-                seen_failures.add(key)
-                failures.append(failure)
-
+        candidate_stream = router.iter_download_candidates(md5, source=selection)
         try:
-            async for result in router.iter_download_candidates(md5, source=selection):
+            async for result in candidate_stream:
                 provider = getattr(result.source, "value", result.source) or selection
                 if provider == "annas_archive":
                     provider = "annas"
@@ -1008,6 +1051,10 @@ async def _fetch_from_source(book_details: dict, output_dir: str) -> str:
                 record(failure)
         except SourceError as exc:
             record(exc)
+        finally:
+            close = getattr(candidate_stream, "aclose", None)
+            if close is not None:
+                await close()
 
         raise AllSourcesFailedError("download", failures)
 
@@ -1025,9 +1072,13 @@ async def _fetch_from_source(book_details: dict, output_dir: str) -> str:
         )
     except ProviderTimeoutError as exc:
         if exc.reason == "search_timeout":
-            raise ProviderTimeoutError(
+            terminal_timeout = ProviderTimeoutError(
                 selection, active_host or exc.host, exc.detail, reason="read_timeout"
-            ) from exc
+            )
+            if failures:
+                record(terminal_timeout)
+                raise AllSourcesFailedError("download", failures) from exc
+            raise terminal_timeout from exc
         raise
 
 
@@ -1105,10 +1156,10 @@ async def download_book(
             )
 
         # Step 2: Create the unified filename.
-        declared_extension = str(book_details.get("extension") or "").strip()
+        declared_extension = normalize_document_extension(book_details.get("extension"))
         strong_response_extension = getattr(
             original_download_path_str, "extension_evidence", ""
-        ) in {"content_disposition", "response_url"}
+        ) in {"signature", "content_disposition", "response_url"}
         if original_download_path_str and (
             not declared_extension or strong_response_extension
         ):
@@ -1124,11 +1175,18 @@ async def download_book(
         final_file_path = Path(output_dir) / unified_filename
         final_file_path_str = str(final_file_path)
 
+        if process_for_rag and final_file_path.suffix.lower() not in {
+            ".pdf",
+            ".epub",
+            ".txt",
+        }:
+            raise ValueError("RAG processing supports only PDF, EPUB, and TXT files")
+
         # Step 3: Rename the downloaded file to the enhanced filename.
         Path(output_dir).mkdir(parents=True, exist_ok=True)
-        os.rename(original_download_path_str, final_file_path_str)
+        _publish_no_replace(Path(original_download_path_str), final_file_path)
         logger.info(
-            f"Renamed downloaded file from {original_download_path_str} to {final_file_path_str}"
+            f"Published downloaded file from {original_download_path_str} to {final_file_path_str}"
         )
         downloaded_file_path_str = final_file_path_str
 

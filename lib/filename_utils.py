@@ -17,6 +17,32 @@ import unicodedata
 from pathlib import Path
 
 
+SAFE_DOCUMENT_EXTENSIONS = frozenset(
+    {
+        "azw",
+        "azw3",
+        "cbr",
+        "cbz",
+        "djvu",
+        "doc",
+        "docx",
+        "epub",
+        "fb2",
+        "mobi",
+        "odt",
+        "pdf",
+        "rtf",
+        "txt",
+    }
+)
+
+
+def normalize_document_extension(extension) -> str:
+    """Return a supported, path-safe document extension or an empty string."""
+    normalized = str(extension or "").strip().lstrip(".").lower()
+    return normalized if normalized in SAFE_DOCUMENT_EXTENSIONS else ""
+
+
 def to_camel_case(value: str, max_length: int = None) -> str:
     """
     Convert string to CamelCase (remove all hyphens, spaces, special chars).
@@ -237,9 +263,8 @@ def create_unified_filename(
 
     # Add extension first (if no suffix provided)
     if not suffix:
-        normalized_extension = str(extension or "").strip().lstrip(".").strip()
-        metadata_extension = str(book_details.get("extension") or "").strip()
-        metadata_extension = metadata_extension.lstrip(".").strip()
+        normalized_extension = normalize_document_extension(extension)
+        metadata_extension = normalize_document_extension(book_details.get("extension"))
         if normalized_extension:
             ext = normalized_extension.lower()
             filename = f"{base_name}.{ext}"

@@ -230,6 +230,40 @@ class TestCreateUnifiedFilename:
 
         assert result == "AuthorTest_Book_7"
 
+    @pytest.mark.parametrize(
+        "extension",
+        [
+            "../pdf",
+            "pdf/../../escape",
+            "pdf\\escape",
+            "pdf\x00.exe",
+            "pdf\nexe",
+            "exe",
+            "sh",
+            "unknown",
+            "a" * 64,
+        ],
+    )
+    def test_unsafe_or_unknown_extension_cannot_alter_the_output_path(self, extension):
+        """Untrusted metadata must not become a path or executable suffix."""
+        result = create_unified_filename(
+            {"author": "Test Author", "title": "Book", "id": "7"},
+            extension=extension,
+        )
+
+        assert result == "AuthorTest_Book_7"
+        assert Path(result).name == result
+
+    @pytest.mark.parametrize("extension", ["pdf", ".EPUB", " txt ", "mobi", "azw3"])
+    def test_safe_document_extensions_are_normalized(self, extension):
+        """Non-RAG acquisition retains a conservative document vocabulary."""
+        result = create_unified_filename(
+            {"author": "Test Author", "title": "Book", "id": "7"},
+            extension=extension,
+        )
+
+        assert result.rsplit(".", 1)[1] == extension.strip().lstrip(".").lower()
+
 
 class TestCreateMetadataFilename:
     """Test metadata filename generation."""

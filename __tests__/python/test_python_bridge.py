@@ -551,6 +551,43 @@ class TestDownloadBook:
         assert not [path for path in tmp_path.iterdir() if path.suffix == ".part"]
 
     @pytest.mark.asyncio
+    async def test_successful_acquisition_closes_suspended_candidate_stream(
+        self, tmp_path, mocker
+    ):
+        """Returning the first successful transfer must close router resources."""
+        body = b"%PDF-1.7 successful close"
+        digest = hashlib.md5(body).hexdigest()
+        closed = False
+
+        async def candidates(_md5, source):
+            nonlocal closed
+            try:
+                yield DownloadResult(
+                    url="https://libgen.li/book", source=SourceType.LIBGEN
+                )
+                await asyncio.sleep(30)
+            finally:
+                closed = True
+
+        router = SimpleNamespace(iter_download_candidates=candidates)
+        mocker.patch(
+            "python_bridge.get_source_router", new=AsyncMock(return_value=router)
+        )
+        raw_path = tmp_path / "owned.pdf"
+        raw_path.write_bytes(body)
+        mocker.patch(
+            "python_bridge._download_url_to_file",
+            new=AsyncMock(return_value=str(raw_path)),
+        )
+
+        result = await python_bridge._fetch_from_source(
+            {"md5": digest, "source": "libgen"}, str(tmp_path)
+        )
+
+        assert result == str(raw_path)
+        assert closed is True
+
+    @pytest.mark.asyncio
     async def test_integrity_mismatch_names_expected_actual_and_final_cdn_host(
         self, tmp_path, mocker
     ):
@@ -622,7 +659,7 @@ class TestDownloadBook:
                 {"content-type": "application/pdf"},
                 "https://cdn.example/get",
                 b"not a signature but declared pdf",
-                ".pdf",
+                ".txt",
             ),
             (
                 {"content-type": "text/plain; charset=utf-8"},
@@ -691,6 +728,58 @@ class TestDownloadBook:
         assert Path(result).read_bytes() == body
 
     @pytest.mark.asyncio
+    async def test_mislabeled_html_signature_is_a_protocol_failure(
+        self, tmp_path, mocker
+    ):
+        """PDF headers and names cannot disguise an HTML interstitial."""
+        body = b"\xef\xbb\xbf  \r\n\t<HtMl><body>challenge</body></html>"
+        digest = hashlib.md5(body).hexdigest()
+
+        class Response:
+            url = httpx.URL("https://cdn.example/book.pdf")
+            headers = {
+                "content-type": "application/pdf",
+                "content-disposition": 'attachment; filename="book.pdf"',
+            }
+
+            def raise_for_status(self):
+                pass
+
+            async def aiter_bytes(self, _chunk_size):
+                yield body
+
+        class Stream:
+            async def __aenter__(self):
+                return Response()
+
+            async def __aexit__(self, *_args):
+                return False
+
+        class Client:
+            def __init__(self, **_kwargs):
+                pass
+
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, *_args):
+                return False
+
+            def stream(self, *_args):
+                return Stream()
+
+        mocker.patch("httpx.AsyncClient", Client)
+
+        with pytest.raises(ProviderResponseError) as excinfo:
+            await python_bridge._download_url_to_file(
+                "https://mirror.example/book", str(tmp_path), digest, "libgen"
+            )
+
+        assert excinfo.value.reason == "protocol_error"
+        assert excinfo.value.host == "cdn.example"
+        assert not list(tmp_path.glob(".source-*"))
+
+    @pytest.mark.asyncio
     async def test_all_candidate_transfer_failures_are_ordered_and_unique(
         self, tmp_path, mocker
     ):
@@ -745,6 +834,55 @@ class TestDownloadBook:
             "cdn-la.example",
         ]
         assert len({str(failure) for failure in excinfo.value.failures}) == 3
+
+    @pytest.mark.asyncio
+    async def test_equal_failure_envelopes_preserve_distinct_candidate_attempts(
+        self, tmp_path, mocker
+    ):
+        """Two mirrors reaching one failed CDN are two definitive attempts."""
+
+        async def candidates(_md5, source):
+            for mirror in ("li", "vg"):
+                yield DownloadResult(
+                    url=f"https://libgen.{mirror}/book", source=SourceType.LIBGEN
+                )
+
+        transfer = mocker.patch(
+            "python_bridge._download_url_to_file",
+            new=AsyncMock(
+                side_effect=[
+                    ProviderUnreachableError(
+                        "libgen",
+                        "shared-cdn.example",
+                        "offline",
+                        reason="connect_error",
+                    ),
+                    ProviderUnreachableError(
+                        "libgen",
+                        "shared-cdn.example",
+                        "offline",
+                        reason="connect_error",
+                    ),
+                ]
+            ),
+        )
+        mocker.patch(
+            "python_bridge.get_source_router",
+            new=AsyncMock(
+                return_value=SimpleNamespace(iter_download_candidates=candidates)
+            ),
+        )
+
+        with pytest.raises(AllSourcesFailedError) as excinfo:
+            await python_bridge._fetch_from_source(
+                {"md5": "0" * 32, "source": "libgen"}, str(tmp_path)
+            )
+
+        assert transfer.await_count == 2
+        assert [failure.host for failure in excinfo.value.failures] == [
+            "shared-cdn.example",
+            "shared-cdn.example",
+        ]
 
     @pytest.mark.asyncio
     async def test_transfer_and_resolution_failures_share_ordered_aggregate(
@@ -942,6 +1080,89 @@ class TestDownloadBook:
         assert not [path for path in tmp_path.iterdir() if path.suffix == ".part"]
 
     @pytest.mark.asyncio
+    async def test_outer_timeout_retains_prior_attempt_and_active_host(
+        self, tmp_path, mocker
+    ):
+        """A late timeout augments, rather than replaces, earlier evidence."""
+        closed = False
+
+        async def candidates(_md5, source):
+            nonlocal closed
+            try:
+                yield DownloadResult(
+                    url="https://first-cdn.example/book", source=SourceType.LIBGEN
+                )
+                yield DownloadResult(
+                    url="https://mirror-vg.example/book", source=SourceType.LIBGEN
+                )
+            finally:
+                closed = True
+
+        class HangingResponse:
+            url = httpx.URL("https://final-cdn.example/book.pdf")
+            headers = {"content-type": "application/pdf"}
+
+            def raise_for_status(self):
+                pass
+
+            async def aiter_bytes(self, _chunk_size):
+                yield b"partial"
+                await asyncio.sleep(30)
+
+        class Stream:
+            def __init__(self, url):
+                self.url = url
+
+            async def __aenter__(self):
+                if "first-cdn" in self.url:
+                    request = httpx.Request("GET", self.url)
+                    raise httpx.ConnectError("offline", request=request)
+                return HangingResponse()
+
+            async def __aexit__(self, *_args):
+                return False
+
+        class Client:
+            def __init__(self, **_kwargs):
+                pass
+
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, *_args):
+                return False
+
+            def stream(self, _method, url):
+                return Stream(url)
+
+        config = python_bridge.get_source_config()
+        config.download_timeout = 0.03
+        mocker.patch("python_bridge.get_source_config", return_value=config)
+        mocker.patch(
+            "python_bridge.get_source_router",
+            new=AsyncMock(
+                return_value=SimpleNamespace(iter_download_candidates=candidates)
+            ),
+        )
+        mocker.patch("httpx.AsyncClient", Client)
+
+        with pytest.raises(AllSourcesFailedError) as excinfo:
+            await python_bridge._fetch_from_source(
+                {"md5": "0" * 32, "source": "libgen"}, str(tmp_path)
+            )
+
+        assert [failure.reason for failure in excinfo.value.failures] == [
+            "connect_error",
+            "read_timeout",
+        ]
+        assert [failure.host for failure in excinfo.value.failures] == [
+            "first-cdn.example",
+            "final-cdn.example",
+        ]
+        assert closed is True
+        assert not list(tmp_path.glob(".source-*"))
+
+    @pytest.mark.asyncio
     async def test_cancelled_transfer_removes_only_its_unique_attempt(
         self, tmp_path, mocker
     ):
@@ -1001,6 +1222,91 @@ class TestDownloadBook:
         assert sorted(path.name for path in tmp_path.iterdir()) == sorted(
             [preexisting.name, unrelated.name]
         )
+
+    @pytest.mark.asyncio
+    async def test_raw_extension_publish_never_replaces_preexisting_sibling(
+        self, tmp_path, mocker
+    ):
+        """Changing unique staging suffixes cannot overwrite another attempt."""
+        body = b"%PDF-1.7 owned body"
+        digest = hashlib.md5(body).hexdigest()
+        attempt = tmp_path / ".source-fixed.part"
+        sibling = tmp_path / ".source-fixed.pdf"
+        sibling.write_bytes(b"another attempt")
+
+        def fixed_mkstemp(**_kwargs):
+            descriptor = os.open(attempt, os.O_CREAT | os.O_EXCL | os.O_RDWR, 0o600)
+            return descriptor, str(attempt)
+
+        class Response:
+            url = httpx.URL("https://cdn.example/book.pdf")
+            headers = {"content-type": "application/pdf"}
+
+            def raise_for_status(self):
+                pass
+
+            async def aiter_bytes(self, _chunk_size):
+                yield body
+
+        class Stream:
+            async def __aenter__(self):
+                return Response()
+
+            async def __aexit__(self, *_args):
+                return False
+
+        class Client:
+            def __init__(self, **_kwargs):
+                pass
+
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, *_args):
+                return False
+
+            def stream(self, *_args):
+                return Stream()
+
+        mocker.patch("python_bridge.tempfile.mkstemp", side_effect=fixed_mkstemp)
+        mocker.patch("httpx.AsyncClient", Client)
+
+        with pytest.raises(FileExistsError):
+            await python_bridge._download_url_to_file(
+                "https://mirror.example/book", str(tmp_path), digest, "libgen"
+            )
+
+        assert sibling.read_bytes() == b"another attempt"
+        assert not attempt.exists()
+
+    @pytest.mark.asyncio
+    async def test_final_filename_collision_preserves_existing_and_owned_artifacts(
+        self, tmp_path, mocker
+    ):
+        """A deterministic unified name must never silently replace another book."""
+        digest = "a" * 32
+        owned = tmp_path / ".source-owned.pdf"
+        owned.write_bytes(b"newly acquired")
+        final_path = tmp_path / f"UnknownAuthor_Collision_{digest}.pdf"
+        final_path.write_bytes(b"existing artifact")
+        mocker.patch(
+            "python_bridge._fetch_from_source",
+            new=AsyncMock(return_value=str(owned)),
+        )
+
+        with pytest.raises(FileExistsError):
+            await download_book(
+                book_details={
+                    "md5": digest,
+                    "source": "libgen",
+                    "title": "Collision",
+                    "extension": "pdf",
+                },
+                output_dir=str(tmp_path),
+            )
+
+        assert final_path.read_bytes() == b"existing artifact"
+        assert owned.read_bytes() == b"newly acquired"
 
     @pytest.mark.skipif(os.name == "nt", reason="POSIX signal semantics")
     def test_sigterm_cancels_dispatch_and_removes_partial_download(self, tmp_path):
@@ -1350,26 +1656,44 @@ asyncio.run(python_bridge.main())
 
     @pytest.mark.asyncio
     @pytest.mark.parametrize(
-        ("headers", "declared_extension", "expected_extension"),
+        ("headers", "declared_extension", "body", "expected_extension"),
         [
             (
                 {"content-disposition": 'attachment; filename="actual.epub"'},
-                "pdf",
+                "epub",
+                b"%PDF-1.7 signature wins",
+                ".pdf",
+            ),
+            (
+                {"content-type": "application/pdf"},
+                "epub",
+                b"\x00\x01unknown binary",
                 ".epub",
             ),
-            ({"content-type": "application/pdf"}, "epub", ".epub"),
+            (
+                {"content-type": "application/epub+zip"},
+                "epub",
+                b"plain text signature",
+                ".txt",
+            ),
+            (
+                {"content-type": "application/pdf"},
+                "../escape.exe",
+                b"\x00\x01unknown binary",
+                ".pdf",
+            ),
         ],
     )
     async def test_extension_evidence_precedence_reaches_final_boundary(
         self,
         headers,
         declared_extension,
+        body,
         expected_extension,
         tmp_path,
         mocker,
     ):
-        """Strong response names outrank metadata; metadata outranks MIME inference."""
-        body = b"%PDF-1.7 extension precedence"
+        """Signatures outrank names/metadata; metadata outranks MIME alone."""
         digest = hashlib.md5(body).hexdigest()
 
         async def candidates(_md5, source):
@@ -1608,6 +1932,38 @@ asyncio.run(python_bridge.main())
         assert final_path.name.endswith(f"_{'a' * 32}.epub")
 
     @pytest.mark.asyncio
+    async def test_rag_rejects_safe_but_unsupported_document_before_publish(
+        self, tmp_path, mocker
+    ):
+        """A valid acquisition extension is not automatically a valid RAG format."""
+        raw_path = tmp_path / ".source-owned.mobi"
+        raw_path.write_bytes(b"MOBI book bytes")
+        mocker.patch(
+            "python_bridge._fetch_from_source",
+            new=AsyncMock(return_value=str(raw_path)),
+        )
+        process = mocker.patch(
+            "python_bridge.process_document",
+            new=AsyncMock(side_effect=AssertionError("unsupported path reached RAG")),
+        )
+
+        with pytest.raises(ValueError, match="RAG processing supports"):
+            await download_book(
+                book_details={
+                    "md5": "a" * 32,
+                    "source": "annas_archive",
+                    "title": "Unsupported RAG",
+                    "extension": "mobi",
+                },
+                output_dir=str(tmp_path),
+                process_for_rag=True,
+            )
+
+        process.assert_not_awaited()
+        assert raw_path.exists()
+        assert not list(tmp_path.glob("UnknownAuthor_UnsupportedRAG_*"))
+
+    @pytest.mark.asyncio
     async def test_download_book_success(
         self, mock_eapi_download, tmp_path, mocker, patch_eapi_client
     ):
@@ -1627,11 +1983,11 @@ asyncio.run(python_bridge.main())
         expected_final_path = str(Path(output_dir_mock) / expected_filename)
 
         mock_eapi_download.download_file.return_value = original_path
+        Path(output_dir_mock).mkdir(parents=True)
+        Path(original_path).write_bytes(b"%PDF EAPI fixture")
         mocker.patch(
             "python_bridge.create_unified_filename", return_value=expected_filename
         )
-        mocker.patch("os.rename")
-        mocker.patch("pathlib.Path.exists", return_value=True)
         mocker.patch("python_bridge.process_document", AsyncMock())
 
         result = await download_book(
@@ -1663,11 +2019,11 @@ asyncio.run(python_bridge.main())
         processed_path = expected_final_path + ".processed.md"
 
         mock_eapi_download.download_file.return_value = original_path
+        Path(output_dir_mock).mkdir(parents=True)
+        Path(original_path).write_text("EAPI text fixture")
         mocker.patch(
             "python_bridge.create_unified_filename", return_value=expected_filename
         )
-        mocker.patch("os.rename")
-        mocker.patch("pathlib.Path.exists", return_value=True)
         mocker.patch(
             "python_bridge.process_document",
             AsyncMock(

@@ -3,6 +3,8 @@
 Tests routing behavior, fallback on failure/quota exhaustion, and source selection.
 """
 
+import asyncio
+
 import pytest
 from unittest.mock import AsyncMock, patch
 
@@ -289,6 +291,33 @@ class TestRouterDownload:
             "https://libgen.li/book",
             "https://libgen.vg/book",
         ]
+
+    @pytest.mark.asyncio
+    async def test_closing_router_stream_closes_suspended_provider_stream(
+        self, config_with_annas
+    ):
+        """Early consumer success must release the adapter's client context."""
+        router = SourceRouter(config_with_annas)
+        closed = False
+
+        class ResourceAdapter:
+            async def iter_download_candidates(self, _md5):
+                nonlocal closed
+                try:
+                    yield DownloadResult(
+                        url="https://libgen.li/book", source=SourceType.LIBGEN
+                    )
+                    await asyncio.sleep(30)
+                finally:
+                    closed = True
+
+        router._libgen = ResourceAdapter()
+        stream = router.iter_download_candidates("abc", source="libgen")
+
+        assert (await anext(stream)).url == "https://libgen.li/book"
+        await stream.aclose()
+
+        assert closed is True
 
     @pytest.mark.asyncio
     @pytest.mark.parametrize(

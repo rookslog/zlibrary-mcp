@@ -115,6 +115,8 @@ These errors trigger retry logic:
 - Server errors (`SERVER_ERROR`, `5xx` status codes)
 - Domain errors (`DOMAIN_ERROR`)
 - Transient Python errors (connection/network related)
+- Source integrity failures (`integrity_mismatch`), because a later mirror can
+  serve the requested digest even when one CDN returned the wrong bytes
 
 ### Non-Retryable Errors
 

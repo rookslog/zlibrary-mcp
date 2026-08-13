@@ -253,6 +253,7 @@ class SourceRouter:
         failures: List[SourceError] = []
 
         for name in candidates:
+            provider_stream = None
             try:
                 adapter = self._adapter_for(name)
                 candidate_method = getattr(adapter, "iter_download_candidates", None)
@@ -285,6 +286,11 @@ class SourceRouter:
                     SourceError(name, detail=f"{type(exc).__name__}: {exc}")
                 )
                 logger.warning(f"{name} download failed: {exc}")
+            finally:
+                if provider_stream is not None:
+                    close = getattr(provider_stream, "aclose", None)
+                    if close is not None:
+                        await close()
 
         if failures:
             raise AllSourcesFailedError("download", failures)

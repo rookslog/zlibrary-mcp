@@ -1,5 +1,6 @@
 """Tests for EAPIClient.download_file method."""
 
+import asyncio
 import os
 import sys
 import pytest
@@ -86,6 +87,84 @@ class TestDownloadFile:
         assert "mybook.epub" in result
         with open(result, "rb") as f:
             assert f.read() == b"fake epub content here"
+
+    @pytest.mark.asyncio
+    async def test_download_file_cancellation_removes_partial_output(
+        self, eapi_client, tmp_download_dir
+    ):
+        """Cancellation after a written chunk removes the incomplete final path."""
+        eapi_client.get_download_link = AsyncMock(
+            return_value={
+                "file": {"downloadLink": "https://dl.z-library.sk/file/book123.epub"}
+            }
+        )
+        output_path = os.path.join(tmp_download_dir, "partial.epub")
+        first_chunk_written = asyncio.Event()
+        release_stream = asyncio.Event()
+        lifecycle = {
+            "client_entered": False,
+            "client_exited": False,
+            "stream_entered": False,
+            "stream_exited": False,
+        }
+
+        class Response:
+            headers = {"content-disposition": 'attachment; filename="partial.epub"'}
+            url = "https://dl.z-library.sk/file/book123.epub"
+
+            def raise_for_status(self):
+                return None
+
+            async def aiter_bytes(self):
+                yield b"partial content"
+                # The generator is resumed only after download_file has awaited
+                # the real file write for the yielded chunk.
+                first_chunk_written.set()
+                await release_stream.wait()
+
+        class StreamContext:
+            async def __aenter__(self):
+                lifecycle["stream_entered"] = True
+                return Response()
+
+            async def __aexit__(self, exc_type, exc, traceback):
+                lifecycle["stream_exited"] = True
+                return False
+
+        class Client:
+            def stream(self, method, url):
+                return StreamContext()
+
+        class ClientContext:
+            async def __aenter__(self):
+                lifecycle["client_entered"] = True
+                return Client()
+
+            async def __aexit__(self, exc_type, exc, traceback):
+                lifecycle["client_exited"] = True
+                return False
+
+        with patch("zlibrary.eapi.httpx.AsyncClient", return_value=ClientContext()):
+            task = asyncio.create_task(
+                eapi_client.download_file(
+                    book_id=123,
+                    book_hash="abc123",
+                    output_dir=tmp_download_dir,
+                )
+            )
+            await asyncio.wait_for(first_chunk_written.wait(), timeout=1)
+
+            task.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await task
+
+        assert not os.path.exists(output_path)
+        assert lifecycle == {
+            "client_entered": True,
+            "client_exited": True,
+            "stream_entered": True,
+            "stream_exited": True,
+        }
 
     @pytest.mark.asyncio
     async def test_download_file_with_explicit_filename(

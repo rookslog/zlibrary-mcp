@@ -433,35 +433,51 @@ class EAPIClient:
         # Ensure output directory exists
         os.makedirs(output_dir, exist_ok=True)
 
-        # Stream download
-        async with httpx.AsyncClient(
-            cookies=self._cookies,
-            follow_redirects=True,
-            timeout=httpx.Timeout(60.0, connect=10.0),
-        ) as dl_client:
-            async with dl_client.stream("GET", download_url) as response:
-                response.raise_for_status()
+        output_path: Optional[Path] = None
+        transfer_started = False
+        transfer_complete = False
+        try:
+            # Stream download
+            async with httpx.AsyncClient(
+                cookies=self._cookies,
+                follow_redirects=True,
+                timeout=httpx.Timeout(60.0, connect=10.0),
+            ) as dl_client:
+                async with dl_client.stream("GET", download_url) as response:
+                    response.raise_for_status()
 
-                # Determine filename
-                if not filename:
-                    cd = response.headers.get("content-disposition", "")
-                    filename = filename_from_content_disposition(cd)
+                    # Determine filename
                     if not filename:
-                        # Derive from URL path
-                        url_path = str(response.url).split("?")[0]
-                        filename = url_path.split("/")[-1] or f"{book_id}.bin"
+                        cd = response.headers.get("content-disposition", "")
+                        filename = filename_from_content_disposition(cd)
+                        if not filename:
+                            # Derive from URL path
+                            url_path = str(response.url).split("?")[0]
+                            filename = url_path.split("/")[-1] or f"{book_id}.bin"
 
-                # The filename may come from a server-controlled header, so reduce
-                # it to a bare basename before joining. Without this,
-                # `filename="../../x"` escapes output_dir entirely, since
-                # Path("/downloads") / "../../x" resolves outside the directory.
-                filename = sanitize_download_filename(filename) or f"{book_id}.bin"
+                    # The filename may come from a server-controlled header, so reduce
+                    # it to a bare basename before joining. Without this,
+                    # `filename="../../x"` escapes output_dir entirely, since
+                    # Path("/downloads") / "../../x" resolves outside the directory.
+                    filename = sanitize_download_filename(filename) or f"{book_id}.bin"
 
-                output_path = Path(output_dir) / filename
+                    output_path = Path(output_dir) / filename
 
-                async with aiofiles.open(output_path, "wb") as f:
-                    async for chunk in response.aiter_bytes():
-                        await f.write(chunk)
+                    async with aiofiles.open(output_path, "wb") as f:
+                        transfer_started = True
+                        async for chunk in response.aiter_bytes():
+                            await f.write(chunk)
+                    transfer_complete = True
+        finally:
+            if transfer_started and not transfer_complete and output_path is not None:
+                try:
+                    output_path.unlink(missing_ok=True)
+                except OSError as exc:
+                    # Cleanup must not replace the transfer's original exception or
+                    # cancellation with an unlink failure.
+                    logger.warning(
+                        f"Failed to remove incomplete EAPI download {output_path}: {exc}"
+                    )
 
         # Verify non-empty
         if not output_path.exists() or output_path.stat().st_size == 0:

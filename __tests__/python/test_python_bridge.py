@@ -473,9 +473,21 @@ class TestBridgeFunctions:
 class TestDownloadBook:
     @pytest.mark.skipif(os.name == "nt", reason="POSIX signal semantics")
     def test_sigterm_cancels_dispatch_and_removes_partial_download(self, tmp_path):
-        """The real bridge process must unwind its transfer cleanup on SIGTERM."""
-        partial = tmp_path / "cooperative.download"
+        """SIGTERM must unwind cleanup in the production EAPI download method."""
+        partial = tmp_path / "bridge-partial.epub"
         ready = tmp_path / "ready"
+        args_json = json.dumps(
+            {
+                "book_details": {
+                    "id": "123",
+                    "hash": "abc123",
+                    "title": "Signal test",
+                    "author": "Test Author",
+                    "extension": "epub",
+                },
+                "output_dir": str(tmp_path),
+            }
+        )
         code = f"""
 import asyncio
 import pathlib
@@ -483,18 +495,55 @@ import sys
 from types import SimpleNamespace
 sys.path.insert(0, {str(Path(python_bridge.__file__).parent)!r})
 import python_bridge
+import zlibrary.eapi as eapi
 partial = pathlib.Path({str(partial)!r})
 ready = pathlib.Path({str(ready)!r})
-async def fake_dispatch(*_args):
-    try:
-        partial.write_bytes(b'partial')
+
+class SignalResponse:
+    headers = {{'content-disposition': 'attachment; filename="bridge-partial.epub"'}}
+    url = 'https://download.example/bridge-partial.epub'
+
+    def raise_for_status(self):
+        pass
+
+    async def aiter_bytes(self):
+        yield b'partial'
         ready.write_text('ready')
         await asyncio.sleep(600)
-    finally:
-        partial.unlink(missing_ok=True)
-python_bridge._dispatch_bridge_function = fake_dispatch
+
+class SignalStream:
+    async def __aenter__(self):
+        return SignalResponse()
+
+    async def __aexit__(self, *_args):
+        return False
+
+class SignalClient:
+    def __init__(self, **_kwargs):
+        pass
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, *_args):
+        return False
+
+    def stream(self, *_args, **_kwargs):
+        return SignalStream()
+
+class SignalEAPIClient(eapi.EAPIClient):
+    async def get_download_link(self, book_id, book_hash):
+        return {{'file': {{'downloadLink': 'https://download.example/book'}}}}
+
+eapi.httpx.AsyncClient = SignalClient
+python_bridge._eapi_client = SignalEAPIClient('test.example')
+
+async def use_test_client():
+    return python_bridge._eapi_client
+
+python_bridge.initialize_eapi_client = use_test_client
 python_bridge.get_source_config = lambda: SimpleNamespace(preflight_timeout=1)
-sys.argv = ['python_bridge.py', 'process_document', '{{}}']
+sys.argv = ['python_bridge.py', 'download_book', {args_json!r}]
 asyncio.run(python_bridge.main())
 """
         process = subprocess.Popen(
@@ -512,8 +561,10 @@ asyncio.run(python_bridge.main())
 
             process.send_signal(signal.SIGTERM)
             process.wait(timeout=5)
+            stdout, _stderr = process.communicate()
 
             assert not partial.exists()
+            assert stdout == ""
         finally:
             if process.poll() is None:
                 process.kill()

@@ -569,7 +569,7 @@ maybe('python-runner', () => {
     expect(runner.liveChildCount()).toBe(before);
   });
 
-  test.each([Infinity, Number.NaN, 0, -1, 1.5])(
+  test.each([Infinity, Number.NaN, 0, -1, 1.5, 2147483648, Number.MAX_SAFE_INTEGER])(
     'falls back to the default budget for the invalid direct override %p',
     async (timeoutMs) => {
       // Mutation caught: passing timeoutMs straight to setTimeout makes these
@@ -640,6 +640,39 @@ maybe('python-runner', () => {
 
     expect(error).toBeInstanceOf(Error);
     expect(String(error.stderr)).toContain('boom on stderr');
+  });
+
+  test('keeps the latest 200 stderr lines so the final provider envelope remains parseable', async () => {
+    const { parseBridgeErrorEnvelope } = await import('../lib/python-bridge.js');
+    const envelope = {
+      error: 'libgen mirror did not accept a connection',
+      type: 'ProviderUnreachableError',
+      details: { provider: 'libgen', host: 'libgen.li', reason: 'connect_timeout' },
+    };
+    const name = script(
+      'verbose-failure.py',
+      [
+        'import json, sys',
+        'for i in range(201):',
+        '    print(f"diagnostic-{i}", file=sys.stderr)',
+        `print(${JSON.stringify(JSON.stringify(envelope))}, file=sys.stderr)`,
+        'sys.exit(1)',
+        '',
+      ].join('\n'),
+    );
+
+    const error = await runner
+      .runPythonBridge(name, {
+        mode: 'text',
+        pythonPath: PYTHON,
+        scriptPath: tmpDir,
+      })
+      .catch((err) => err);
+    const stderr = String(error.stderr).split('\n');
+
+    expect(stderr).toHaveLength(200);
+    expect(stderr[0]).toBe('diagnostic-2');
+    expect(parseBridgeErrorEnvelope(error.stderr)).toEqual(envelope);
   });
 
   test('killAllPythonChildren is a no-op with nothing running', () => {
@@ -722,6 +755,33 @@ describe('python-runner budget configuration', () => {
     expect(mod.LONG_BRIDGE_TIMEOUT_MS).toBe(2700000);
   });
 
+  test('accepts Node maximum timer delay for every bridge timer', async () => {
+    const mod = await importWith({
+      PYTHON_BRIDGE_TIMEOUT: '2147483647',
+      PYTHON_BRIDGE_LONG_TIMEOUT: '2147483647',
+      PYTHON_BRIDGE_KILL_GRACE: '2147483647',
+    });
+
+    expect(mod.DEFAULT_BRIDGE_TIMEOUT_MS).toBe(2147483647);
+    expect(mod.LONG_BRIDGE_TIMEOUT_MS).toBe(2147483647);
+    expect(mod.KILL_GRACE_MS).toBe(2147483647);
+  });
+
+  test.each(['2147483648', '9007199254740991'])(
+    'falls back for the oversized timer delay %s',
+    async (raw) => {
+      const mod = await importWith({
+        PYTHON_BRIDGE_TIMEOUT: raw,
+        PYTHON_BRIDGE_LONG_TIMEOUT: raw,
+        PYTHON_BRIDGE_KILL_GRACE: raw,
+      });
+
+      expect(mod.DEFAULT_BRIDGE_TIMEOUT_MS).toBe(240000);
+      expect(mod.LONG_BRIDGE_TIMEOUT_MS).toBe(2400000);
+      expect(mod.KILL_GRACE_MS).toBe(3000);
+    },
+  );
+
   // A malformed value must never SHORTEN the budget. parseInt is not enough of
   // a guard on its own: it stops at the first character it cannot use, so
   // '1.5' and '1e6' both yield 1 — a 1ms deadline that kills every bridge call
@@ -779,5 +839,65 @@ describe('python-runner budget configuration', () => {
         finalizationHeadroomSeconds) *
         1000,
     );
+  });
+});
+
+describe('python-runner Linux procfs liveness', () => {
+  const processGroup = 4242;
+
+  function procStat(pid, state) {
+    return `${pid} (bridge child) ${state} 1 ${processGroup} 0 0`;
+  }
+
+  test('treats unavailable procfs as possibly alive', async () => {
+    const mod = await import('../lib/python-runner.js');
+    const unavailable = () => {
+      throw new Error('EACCES: permission denied, scandir /proc');
+    };
+
+    expect(mod.linuxProcessGroupPossiblyAlive(processGroup, unavailable)).toBe(true);
+  });
+
+  test('treats a scan with every stat read denied as possibly alive', async () => {
+    const mod = await import('../lib/python-runner.js');
+    const denied = () => {
+      throw new Error('EACCES: permission denied, open stat');
+    };
+
+    expect(mod.linuxProcessGroupPossiblyAlive(processGroup, () => ['100', '101'], denied)).toBe(
+      true,
+    );
+  });
+
+  test('treats a readable process group containing only zombies as gone', async () => {
+    const mod = await import('../lib/python-runner.js');
+    const stats = new Map([
+      ['100', procStat(100, 'Z')],
+      ['101', procStat(101, 'Z')],
+    ]);
+
+    expect(
+      mod.linuxProcessGroupPossiblyAlive(
+        processGroup,
+        () => [...stats.keys()],
+        (entry) => stats.get(entry),
+      ),
+    ).toBe(false);
+  });
+
+  test('ignores a proc entry that exits during an otherwise readable zombie-only scan', async () => {
+    const mod = await import('../lib/python-runner.js');
+    const disappeared = Object.assign(new Error('ENOENT: process exited'), { code: 'ENOENT' });
+
+    expect(
+      mod.linuxProcessGroupPossiblyAlive(
+        processGroup,
+        () => ['99', '100'],
+        (entry) => {
+          if (entry === '99') throw disappeared;
+          return procStat(100, 'Z');
+        },
+      ),
+    ).toBe(false);
   });
 });

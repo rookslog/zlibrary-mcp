@@ -29,19 +29,27 @@ import { logger } from './logger.js';
 import { BridgeTimeoutError } from './errors.js';
 
 /**
- * Read a positive-integer millisecond budget from the environment.
+ * Read a positive-integer millisecond budget within Node's timer range.
  *
  * A malformed value must not shorten the budget: `setTimeout(fn, NaN)` fires on
  * the next tick, so a typo would kill every bridge call instantly rather than
  * loosen anything. `parseInt` is not enough of a guard on its own — it stops at
  * the first character it cannot use, so `'1.5'` and `'1e6'` both yield 1 (a 1ms
  * deadline) and `'240000abc'` yields 240000. The whole string must therefore be
- * a plain positive integer, or we fall back to the default. Mirrors
+ * a plain positive integer no larger than 2,147,483,647, or we fall back to
+ * the default. Mirrors
  * `_positive_float` on the Python side (lib/sources/config.py), which is
  * already safe here because it parses a float.
  */
+const MAX_TIMER_DELAY_MS = 2_147_483_647;
+const MAX_STDERR_LINES = 200;
+
 function positiveIntOrFallback(value: unknown, fallback: number): number {
-  return Number.isSafeInteger(value) && (value as number) > 0 ? (value as number) : fallback;
+  return Number.isSafeInteger(value) &&
+    (value as number) > 0 &&
+    (value as number) <= MAX_TIMER_DELAY_MS
+    ? (value as number)
+    : fallback;
 }
 
 function positiveIntEnv(name: string, fallback: number): number {
@@ -124,6 +132,42 @@ function signalProcessTree(tree: ProcessTreeRecord, signal: NodeJS.Signals): boo
   }
 }
 
+/**
+ * Whether procfs shows an executable member of a Linux process group.
+ *
+ * The readers are injectable so permission and availability failures can be
+ * exercised deterministically without weakening the real process-tree tests.
+ */
+export function linuxProcessGroupPossiblyAlive(
+  pid: number,
+  listEntries: () => string[] = () => readdirSync('/proc'),
+  readStat: (entry: string) => string = (entry) => readFileSync(`/proc/${entry}/stat`, 'utf8'),
+): boolean {
+  try {
+    let scanUncertain = false;
+    for (const entry of listEntries()) {
+      if (!/^\d+$/.test(entry)) continue;
+      try {
+        const stat = readStat(entry);
+        const fields = stat.slice(stat.lastIndexOf(')') + 2).split(' ');
+        const state = fields[0];
+        const processGroup = Number(fields[2]);
+        if (processGroup === pid && state !== 'Z') return true;
+      } catch (error) {
+        // A vanished entry is the ordinary list/stat race. Other failures may
+        // be permission denial, so preserve ownership until a later readable
+        // scan can show the group is gone or zombie-only.
+        if ((error as NodeJS.ErrnoException).code !== 'ENOENT') scanUncertain = true;
+      }
+    }
+    return scanUncertain;
+  } catch {
+    // kill(0) already established that the group may exist. Unavailable or
+    // unreadable procfs cannot safely contradict that kernel liveness result.
+    return true;
+  }
+}
+
 /** Whether any member of the isolated POSIX process group still exists. */
 function processTreeIsAlive(tree: ProcessTreeRecord): boolean {
   const { shell, pid } = tree;
@@ -137,19 +181,7 @@ function processTreeIsAlive(tree: ProcessTreeRecord): boolean {
     // a task cannot execute or hold resources and must not pin the ownership
     // record forever. Inspect the Linux process-group field and require at
     // least one non-zombie member. Other POSIX hosts retain kill(0) semantics.
-    for (const entry of readdirSync('/proc')) {
-      if (!/^\d+$/.test(entry)) continue;
-      try {
-        const stat = readFileSync(`/proc/${entry}/stat`, 'utf8');
-        const fields = stat.slice(stat.lastIndexOf(')') + 2).split(' ');
-        const state = fields[0];
-        const processGroup = Number(fields[2]);
-        if (processGroup === pid && state !== 'Z') return true;
-      } catch {
-        // Process exited between directory listing and stat read.
-      }
-    }
-    return false;
+    return linuxProcessGroupPossiblyAlive(pid);
   } catch {
     return false;
   }
@@ -407,8 +439,10 @@ export function runPythonBridge(
     });
 
     shell.on('stderr', (line: string) => {
-      // Bounded: a runaway child must not be able to grow this without limit.
-      if (stderrLines.length < 200) stderrLines.push(line);
+      // Keep a bounded tail: provider envelopes are written last, after any
+      // diagnostics, and downstream error classification needs that envelope.
+      stderrLines.push(line);
+      if (stderrLines.length > MAX_STDERR_LINES) stderrLines.shift();
     });
 
     shell.end((err: any) => {

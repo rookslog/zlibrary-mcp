@@ -557,13 +557,16 @@ asyncio.run(python_bridge.main())
             while time.monotonic() < deadline and not ready.exists():
                 time.sleep(0.02)
             assert ready.exists()
-            assert partial.exists()
+            assert not partial.exists()
+            staging_files = list(tmp_path.glob(".bridge-partial.epub.*.part"))
+            assert len(staging_files) == 1
 
             process.send_signal(signal.SIGTERM)
             process.wait(timeout=5)
             stdout, _stderr = process.communicate()
 
             assert not partial.exists()
+            assert not list(tmp_path.glob(".bridge-partial.epub.*.part"))
             assert stdout == ""
         finally:
             if process.poll() is None:

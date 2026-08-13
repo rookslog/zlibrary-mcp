@@ -11,6 +11,7 @@ import re
 import httpx
 import aiofiles
 import os
+import tempfile
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Sequence, Union
 from urllib.parse import unquote
@@ -434,8 +435,7 @@ class EAPIClient:
         os.makedirs(output_dir, exist_ok=True)
 
         output_path: Optional[Path] = None
-        transfer_started = False
-        transfer_complete = False
+        staging_path: Optional[Path] = None
         try:
             # Stream download
             async with httpx.AsyncClient(
@@ -462,28 +462,33 @@ class EAPIClient:
                     filename = sanitize_download_filename(filename) or f"{book_id}.bin"
 
                     output_path = Path(output_dir) / filename
+                    staging_fd, staging_name = tempfile.mkstemp(
+                        dir=output_dir,
+                        prefix=f".{filename}.",
+                        suffix=".part",
+                    )
+                    staging_path = Path(staging_name)
+                    os.close(staging_fd)
 
-                    async with aiofiles.open(output_path, "wb") as f:
-                        transfer_started = True
+                    async with aiofiles.open(staging_path, "wb") as f:
                         async for chunk in response.aiter_bytes():
                             await f.write(chunk)
-                    transfer_complete = True
+
+            if staging_path.stat().st_size == 0:
+                raise RuntimeError(f"Download produced empty file for book {book_id}")
+
+            os.replace(staging_path, output_path)
+            staging_path = None
         finally:
-            if transfer_started and not transfer_complete and output_path is not None:
+            if staging_path is not None:
                 try:
-                    output_path.unlink(missing_ok=True)
+                    staging_path.unlink(missing_ok=True)
                 except OSError as exc:
                     # Cleanup must not replace the transfer's original exception or
                     # cancellation with an unlink failure.
                     logger.warning(
-                        f"Failed to remove incomplete EAPI download {output_path}: {exc}"
+                        f"Failed to remove incomplete EAPI download {staging_path}: {exc}"
                     )
-
-        # Verify non-empty
-        if not output_path.exists() or output_path.stat().st_size == 0:
-            if output_path.exists():
-                output_path.unlink()
-            raise RuntimeError(f"Download produced empty file for book {book_id}")
 
         return str(output_path.resolve())
 

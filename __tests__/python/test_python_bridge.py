@@ -3,7 +3,10 @@
 import json
 import pytest
 import os
+import signal
+import subprocess
 import sys
+import time
 import asyncio
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
@@ -468,6 +471,80 @@ class TestBridgeFunctions:
 
 
 class TestDownloadBook:
+    @pytest.mark.skipif(os.name == "nt", reason="POSIX signal semantics")
+    def test_sigterm_cancels_dispatch_and_removes_partial_download(self, tmp_path):
+        """The real bridge process must unwind its transfer cleanup on SIGTERM."""
+        partial = tmp_path / "cooperative.download"
+        ready = tmp_path / "ready"
+        code = f"""
+import asyncio
+import pathlib
+import sys
+from types import SimpleNamespace
+sys.path.insert(0, {str(Path(python_bridge.__file__).parent)!r})
+import python_bridge
+partial = pathlib.Path({str(partial)!r})
+ready = pathlib.Path({str(ready)!r})
+async def fake_dispatch(*_args):
+    try:
+        partial.write_bytes(b'partial')
+        ready.write_text('ready')
+        await asyncio.sleep(600)
+    finally:
+        partial.unlink(missing_ok=True)
+python_bridge._dispatch_bridge_function = fake_dispatch
+python_bridge.get_source_config = lambda: SimpleNamespace(preflight_timeout=1)
+sys.argv = ['python_bridge.py', 'process_document', '{{}}']
+asyncio.run(python_bridge.main())
+"""
+        process = subprocess.Popen(
+            [sys.executable, "-c", code],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+        )
+        try:
+            deadline = time.monotonic() + 5
+            while time.monotonic() < deadline and not ready.exists():
+                time.sleep(0.02)
+            assert ready.exists()
+            assert partial.exists()
+
+            process.send_signal(signal.SIGTERM)
+            process.wait(timeout=5)
+
+            assert not partial.exists()
+        finally:
+            if process.poll() is None:
+                process.kill()
+                process.wait(timeout=5)
+
+    @pytest.mark.asyncio
+    async def test_annas_transfer_uses_canonical_provider_name(self, tmp_path, mocker):
+        """Transfer failures use `annas`, while success models retain their enum."""
+        router = SimpleNamespace(
+            get_download_url=AsyncMock(
+                return_value=SimpleNamespace(
+                    url="https://cdn.example/book",
+                    source=SimpleNamespace(value="annas_archive"),
+                )
+            )
+        )
+        transfer = mocker.patch(
+            "python_bridge._download_url_to_file",
+            new=AsyncMock(return_value="book.pdf"),
+        )
+        mocker.patch(
+            "python_bridge.get_source_router", new=AsyncMock(return_value=router)
+        )
+
+        await python_bridge._fetch_from_source(
+            {"md5": "0123456789abcdef0123456789abcdef", "source": "annas"},
+            str(tmp_path),
+        )
+
+        assert transfer.await_args.args[3] == "annas"
+
     @pytest.mark.asyncio
     async def test_valid_slow_transfer_can_exceed_provider_resolution_budget(
         self, tmp_path, mocker

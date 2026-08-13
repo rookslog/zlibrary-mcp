@@ -12,7 +12,7 @@ import { logger } from './logger.js';
 import { runPythonBridge, LONG_BRIDGE_TIMEOUT_MS } from './python-runner.js';
 import {
   isBridgeDetailRetryable,
-  isConfigurationBridgeDetail,
+  isPermanentBridgeDetail,
   parseBridgeErrorEnvelope,
 } from './python-bridge.js';
 
@@ -39,7 +39,7 @@ const pythonBridgeCircuitBreaker = new CircuitBreaker({
   // turning a user's own impatience into an outage.
   isFailure: (error) =>
     error?.context?.reason !== 'aborted' &&
-    !isConfigurationBridgeDetail(error?.context?.details),
+    !isPermanentBridgeDetail(error?.context?.details),
 });
 
 /**

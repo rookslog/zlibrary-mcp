@@ -99,6 +99,18 @@ class TestClassifyHttpxError:
         assert reason == "dns_failure"
         assert "Name or service not known" in detail
 
+    def test_dns_timeout_marker_beats_generic_gaierror_in_cause_chain(self):
+        """A bounded resolver deadline is temporary, not a missing domain."""
+        exc = httpx.ConnectError("boom")
+        exc.__cause__ = socket.gaierror(
+            socket.EAI_AGAIN, f"{net.DNS_TIMEOUT_MARKER}:5s"
+        )
+
+        reason, detail = net.classify_httpx_error(exc)
+
+        assert reason == "dns_timeout"
+        assert "deadline exceeded" in detail
+
     def test_dns_failure_from_message_when_cause_is_missing(self):
         reason, _ = net.classify_httpx_error(
             httpx.ConnectError("[Errno -2] Name or service not known")

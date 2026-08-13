@@ -68,6 +68,18 @@ long bridge default composes worst-case LibGen resolution
 keep `PYTHON_BRIDGE_LONG_TIMEOUT` at least as large as their sum after converting
 milliseconds to seconds.
 
+LibGen download resolution inspects at most the first 2 KiB of a candidate
+response. Some CDNs ignore `Range` and answer `200`; the probe streams and closes
+that response after the inspection window instead of buffering the complete book
+inside the 45-second resolution budget.
+
+On POSIX, bridge timeout, MCP abort, and server shutdown first send `SIGTERM` so
+Python can cancel the active coroutine and remove partial `.download` artifacts.
+After `PYTHON_BRIDGE_KILL_GRACE`, any live process group receives `SIGKILL`; the
+server rejects new bridge work during shutdown and does not re-raise its shutdown
+signal until owned groups are observed gone. A second shutdown signal skips the
+remaining grace period. Native Windows hard ownership remains tracked by #116.
+
 ## How It Works
 
 ### Exponential Backoff
@@ -111,6 +123,12 @@ These errors fail immediately without retry:
 - Validation errors (`INVALID_INPUT`, `VALIDATION_ERROR`)
 - Fatal errors (marked with `fatal: true`)
 - Parse errors (malformed responses)
+- Permanent provider state (`configuration_error`, `quota_exhausted`), including
+  rejected Anna fast-download credentials and exhausted Anna quota
+
+Only aggregates whose every child is permanent caller state bypass retry and
+circuit-breaker accounting. Mixed permanent/transient aggregates remain health
+evidence and retain normal retry classification.
 
 ## Usage Examples
 

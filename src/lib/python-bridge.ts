@@ -23,6 +23,7 @@ const UNREACHABLE_REASONS = new Set([
   'connect_error',
   'tls_error',
 ]);
+const PERMANENT_CALLER_REASONS = new Set(['configuration_error', 'quota_exhausted']);
 
 function everyFailureHasReason(details: any, predicate: (reason: unknown) => boolean): boolean {
   if (!details || typeof details !== 'object') return false;
@@ -38,8 +39,12 @@ export function isConfigurationBridgeDetail(details: any): boolean {
   return everyFailureHasReason(details, (reason) => reason === 'configuration_error');
 }
 
+export function isPermanentBridgeDetail(details: any): boolean {
+  return everyFailureHasReason(details, (reason) => PERMANENT_CALLER_REASONS.has(String(reason)));
+}
+
 export function isBridgeDetailRetryable(details: any): boolean {
-  if (isConfigurationBridgeDetail(details)) return false;
+  if (isPermanentBridgeDetail(details)) return false;
   return !everyFailureHasReason(details, (reason) => UNREACHABLE_REASONS.has(String(reason)));
 }
 

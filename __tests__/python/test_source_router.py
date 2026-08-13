@@ -10,7 +10,7 @@ from lib.sources.router import SourceRouter
 from lib.sources.config import SourceConfig
 from lib.sources.models import DownloadResult, QuotaInfo, SourceType, UnifiedBookResult
 from lib.sources.annas import QuotaExhaustedError
-from lib.sources.errors import AllSourcesFailedError
+from lib.sources.errors import AllSourcesFailedError, SourceError
 
 pytestmark = pytest.mark.unit
 
@@ -296,7 +296,7 @@ class TestRouterDownload:
 
     @pytest.mark.asyncio
     async def test_quota_exhausted_no_fallback(self, config_no_fallback):
-        """Should raise QuotaExhaustedError when fallback is disabled."""
+        """Explicit Anna quota exhaustion retains the canonical provider envelope."""
         router = SourceRouter(config_no_fallback)
 
         with patch.object(router, "_get_annas") as mock_get_annas:
@@ -306,8 +306,11 @@ class TestRouterDownload:
             )
             mock_get_annas.return_value = annas_adapter
 
-            with pytest.raises(QuotaExhaustedError):
+            with pytest.raises(SourceError) as excinfo:
                 await router.get_download_url("abc123")
+
+        assert excinfo.value.provider == "annas"
+        assert excinfo.value.reason == "quota_exhausted"
 
     @pytest.mark.asyncio
     async def test_fallback_on_download_error(self, config_with_annas):

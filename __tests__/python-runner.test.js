@@ -2,7 +2,8 @@ import { jest, describe, beforeEach, afterEach, test, expect } from '@jest/globa
 import * as os from 'os';
 import * as fs from 'fs';
 import * as path from 'path';
-import { execFileSync } from 'child_process';
+import { execFileSync, spawn } from 'child_process';
+import { pathToFileURL } from 'url';
 
 jest.setTimeout(30000);
 
@@ -53,6 +54,16 @@ async function waitFor(predicate, timeoutMs = 8000) {
     await new Promise((resolve) => setTimeout(resolve, 50));
   }
   return predicate();
+}
+
+/** Observe child exit without missing an event that fired before registration. */
+function waitForExit(child) {
+  if (child.exitCode !== null || child.signalCode !== null) {
+    return Promise.resolve({ code: child.exitCode, signal: child.signalCode });
+  }
+  return new Promise((resolve) => {
+    child.once('exit', (code, signal) => resolve({ code, signal }));
+  });
 }
 
 maybe('python-runner', () => {
@@ -333,6 +344,165 @@ maybe('python-runner', () => {
       expect(await waitFor(() => !isAlive(pid), runner.KILL_GRACE_MS + 3000)).toBe(true);
     } finally {
       if (pid > 0 && isAlive(pid)) process.kill(pid, 'SIGKILL');
+    }
+  });
+
+  test('installed signal hooks reject new work and accelerate cleanup on a second signal', async () => {
+    if (process.platform === 'win32') return;
+
+    const pidFile = path.join(tmpDir, 'in-process-shutdown.pid');
+    const name = script(
+      'in-process-shutdown.py',
+      [
+        'import os, pathlib, signal, time',
+        'signal.signal(signal.SIGTERM, signal.SIG_IGN)',
+        `pathlib.Path(${JSON.stringify(pidFile)}).write_text(str(os.getpid()))`,
+        'time.sleep(600)',
+        '',
+      ].join('\n'),
+    );
+    const run = runner
+      .runPythonBridge(
+        name,
+        { mode: 'text', pythonPath: PYTHON, scriptPath: tmpDir },
+        { timeoutMs: 60000, label: 'in-process-shutdown-test' },
+      )
+      .catch((error) => error);
+    const realKill = process.kill.bind(process);
+    const selfSignals = [];
+    const killSpy = jest.spyOn(process, 'kill').mockImplementation((pid, signal) => {
+      if (pid === process.pid) {
+        selfSignals.push(signal);
+        return true;
+      }
+      return realKill(pid, signal);
+    });
+    let pid = -1;
+
+    try {
+      expect(await waitFor(() => fs.existsSync(pidFile))).toBe(true);
+      pid = Number(fs.readFileSync(pidFile, 'utf8'));
+
+      process.emit('SIGTERM', 'SIGTERM');
+      await expect(
+        runner.runPythonBridge(name, {
+          mode: 'text',
+          pythonPath: PYTHON,
+          scriptPath: tmpDir,
+        }),
+      ).rejects.toThrow(/shutting down/i);
+      expect(isAlive(pid)).toBe(true);
+
+      process.emit('SIGTERM', 'SIGTERM');
+      expect(await waitFor(() => !isAlive(pid))).toBe(true);
+      expect(await waitFor(() => selfSignals.includes('SIGTERM'))).toBe(true);
+      expect(runner.liveChildCount()).toBe(0);
+      await run;
+    } finally {
+      killSpy.mockRestore();
+      if (pid > 0 && isAlive(pid)) realKill(pid, 'SIGKILL');
+    }
+  });
+
+  test('server shutdown waits for TERM-grace-KILL and rejects new bridge work', async () => {
+    if (process.platform === 'win32') return;
+
+    const descendantFile = path.join(tmpDir, 'shutdown-descendant.pid');
+    const rejectionFile = path.join(tmpDir, 'shutdown-rejection.txt');
+    script(
+      'shutdown-tree.py',
+      [
+        'import pathlib, subprocess, sys, time',
+        'child = subprocess.Popen([sys.executable, "-c", "import signal, time; signal.signal(signal.SIGTERM, signal.SIG_IGN); time.sleep(600)"], stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, close_fds=True)',
+        `pathlib.Path(${JSON.stringify(descendantFile)}).write_text(str(child.pid))`,
+        'time.sleep(600)',
+        '',
+      ].join('\n'),
+    );
+    script('shutdown-new-work.py', 'print("must not spawn")\n');
+    const runnerUrl = pathToFileURL(path.resolve('dist/lib/python-runner.js')).href;
+    const childCode = [
+      `import * as runner from ${JSON.stringify(runnerUrl)};`,
+      `import fs from 'fs';`,
+      `const options = { mode: 'text', pythonPath: ${JSON.stringify(PYTHON)}, scriptPath: ${JSON.stringify(tmpDir)} };`,
+      `runner.runPythonBridge('shutdown-tree.py', options, { timeoutMs: 60000 }).catch(() => {});`,
+      `while (!fs.existsSync(${JSON.stringify(descendantFile)})) await new Promise(r => setTimeout(r, 10));`,
+      `process.on('SIGTERM', async () => {`,
+      `  try { await runner.runPythonBridge('shutdown-new-work.py', options); }`,
+      `  catch (error) { fs.writeFileSync(${JSON.stringify(rejectionFile)}, error.message); }`,
+      `});`,
+      `process.kill(process.pid, 'SIGTERM');`,
+      `await new Promise(() => {});`,
+    ].join('\n');
+    const node = spawn(process.execPath, ['--input-type=module', '--eval', childCode], {
+      env: { ...process.env, PYTHON_BRIDGE_KILL_GRACE: '150' },
+      stdio: ['ignore', 'ignore', 'pipe'],
+    });
+    let descendantPid = -1;
+
+    try {
+      expect(await waitFor(() => fs.existsSync(descendantFile))).toBe(true);
+      descendantPid = Number(fs.readFileSync(descendantFile, 'utf8'));
+
+      const result = await waitForExit(node);
+
+      expect(result).toEqual({ code: null, signal: 'SIGTERM' });
+      expect(await waitFor(() => !isAlive(descendantPid), 3000)).toBe(true);
+      expect(fs.readFileSync(rejectionFile, 'utf8')).toMatch(/shutting down/i);
+    } finally {
+      if (node.exitCode === null && node.signalCode === null) node.kill('SIGKILL');
+      if (descendantPid > 0 && isAlive(descendantPid)) process.kill(descendantPid, 'SIGKILL');
+    }
+  });
+
+  test('a second shutdown signal skips the remaining grace period', async () => {
+    if (process.platform === 'win32') return;
+
+    const descendantFile = path.join(tmpDir, 'second-signal-descendant.pid');
+    script(
+      'second-signal-tree.py',
+      [
+        'import pathlib, signal, subprocess, sys, time',
+        'signal.signal(signal.SIGTERM, signal.SIG_IGN)',
+        'child = subprocess.Popen([sys.executable, "-c", "import signal, time; signal.signal(signal.SIGTERM, signal.SIG_IGN); time.sleep(600)"], stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, close_fds=True)',
+        `pathlib.Path(${JSON.stringify(descendantFile)}).write_text(str(child.pid))`,
+        'time.sleep(600)',
+        '',
+      ].join('\n'),
+    );
+    const runnerUrl = pathToFileURL(path.resolve('dist/lib/python-runner.js')).href;
+    const childCode = [
+      `import * as runner from ${JSON.stringify(runnerUrl)};`,
+      `import fs from 'fs';`,
+      `const options = { mode: 'text', pythonPath: ${JSON.stringify(PYTHON)}, scriptPath: ${JSON.stringify(tmpDir)} };`,
+      `runner.runPythonBridge('second-signal-tree.py', options, { timeoutMs: 60000 }).catch(() => {});`,
+      `while (!fs.existsSync(${JSON.stringify(descendantFile)})) await new Promise(r => setTimeout(r, 10));`,
+      `await new Promise(() => {});`,
+    ].join('\n');
+    const node = spawn(process.execPath, ['--input-type=module', '--eval', childCode], {
+      env: { ...process.env, PYTHON_BRIDGE_KILL_GRACE: '2000' },
+      stdio: ['ignore', 'ignore', 'pipe'],
+    });
+    let descendantPid = -1;
+
+    try {
+      expect(await waitFor(() => fs.existsSync(descendantFile))).toBe(true);
+      descendantPid = Number(fs.readFileSync(descendantFile, 'utf8'));
+      node.kill('SIGTERM');
+      await new Promise((resolve) => setTimeout(resolve, 100));
+      expect(node.exitCode).toBeNull();
+      expect(node.signalCode).toBeNull();
+
+      const secondSignalAt = Date.now();
+      node.kill('SIGTERM');
+      const result = await waitForExit(node);
+
+      expect(result).toEqual({ code: null, signal: 'SIGTERM' });
+      expect(Date.now() - secondSignalAt).toBeLessThan(1000);
+      expect(await waitFor(() => !isAlive(descendantPid))).toBe(true);
+    } finally {
+      if (node.exitCode === null && node.signalCode === null) node.kill('SIGKILL');
+      if (descendantPid > 0 && isAlive(descendantPid)) process.kill(descendantPid, 'SIGKILL');
     }
   });
 

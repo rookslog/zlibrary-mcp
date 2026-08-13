@@ -225,7 +225,7 @@ class SourceRouter:
             DownloadResult with URL and quota info (if Anna's)
 
         Raises:
-            QuotaExhaustedError: If the only candidate's quota is exhausted
+            SourceError: If the only candidate's quota is exhausted
             AllSourcesFailedError: If every candidate provider failed
         """
         candidates = self._download_candidates(source)
@@ -259,11 +259,11 @@ class SourceRouter:
                 )
                 logger.warning(f"{name} download failed: {exc}")
 
-        # With a single candidate, quota exhaustion is the whole story and the
-        # caller wants to branch on it, so it is re-raised in its own type
-        # rather than flattened into the aggregate.
+        # With a single candidate, quota exhaustion is the whole story. Keep
+        # the recorded SourceError so the canonical bridge envelope retains
+        # provider and reason instead of rethrowing the adapter-only exception.
         if quota_error is not None and len(candidates) == 1:
-            raise quota_error
+            raise failures[0]
 
         raise AllSourcesFailedError("download", failures)
 

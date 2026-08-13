@@ -264,19 +264,27 @@ class LibgenAdapter(SourceAdapter):
         # Transport exceptions must reach the normal classifier. Returning
         # their class name as a semantic non-byte result reclassified DNS/TLS
         # and timeout failures as protocol_error at the mirror aggregate.
-        response = await client.get(url, headers={"Range": "bytes=0-2047"})
+        inspected = bytearray()
+        async with client.stream(
+            "GET", url, headers={"Range": "bytes=0-2047"}
+        ) as response:
+            if "/ads.php" in str(response.url):
+                return False, "key expired (bounced to ads.php)"
+            if response.status_code not in (200, 206):
+                return False, f"HTTP {response.status_code}"
+            if "text/html" in response.headers.get("content-type", ""):
+                return False, "served HTML, not a file"
 
-        if "/ads.php" in str(response.url):
-            return False, "key expired (bounced to ads.php)"
-        if response.status_code not in (200, 206):
-            return False, f"HTTP {response.status_code}"
-        if "text/html" in response.headers.get("content-type", ""):
-            return False, "served HTML, not a file"
-        if not response.content[:4] == b"%PDF" and len(response.content) < 512:
-            return False, "response too small to be a file"
+            async for chunk in response.aiter_bytes():
+                inspected.extend(chunk[: 2048 - len(inspected)])
+                if len(inspected) >= 2048:
+                    break
 
-        cdn = urlparse(str(response.url)).hostname or "?"
-        return True, cdn
+            if not inspected[:4] == b"%PDF" and len(inspected) < 512:
+                return False, "response too small to be a file"
+
+            cdn = urlparse(str(response.url)).hostname or "?"
+            return True, cdn
 
     async def get_download_url(self, md5: str) -> DownloadResult:
         """Resolve a clearnet download URL for a book by MD5 hash.

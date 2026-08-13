@@ -659,6 +659,34 @@ describe('Z-Library API - Extended Coverage', () => {
       expect(mockRunPythonBridge).toHaveBeenCalledTimes(6);
     });
 
+    test('quota exhaustion does not retry or open the shared bridge circuit', async () => {
+      mockGetManagedPythonPath.mockResolvedValue('/fake/python');
+      mockRunPythonBridge.mockRejectedValue(
+        bridgeFailure({
+          error: 'annas quota exhausted',
+          type: 'SourceError',
+          details: {
+            operation: 'download',
+            provider: 'annas',
+            reason: 'quota_exhausted',
+          },
+        }),
+      );
+
+      const messages = [];
+      for (let attempt = 0; attempt < 6; attempt += 1) {
+        const error = await zlibApi
+          .downloadBookToFile({
+            bookDetails: { md5: '0123456789abcdef0123456789abcdef', source: 'annas' },
+          })
+          .catch((e) => e);
+        messages.push(error.message);
+      }
+
+      expect(messages).not.toContain('Circuit breaker is OPEN');
+      expect(mockRunPythonBridge).toHaveBeenCalledTimes(6);
+    });
+
     test('a response-level failure is not marked non-retryable', async () => {
       // Only reachability failures get the explicit veto. An HTTP error means
       // the host answered, so whether to retry is left to the general

@@ -399,6 +399,15 @@ class AnnasArchiveAdapter(SourceAdapter):
                 operation="download resolution",
             )
             data = response.json()
+        except httpx.HTTPStatusError as exc:
+            if exc.response.status_code in (401, 403):
+                raise ProviderConfigurationError(
+                    PROVIDER,
+                    self.host,
+                    f"ANNAS_SECRET_KEY rejected by fast-download endpoint "
+                    f"(HTTP {exc.response.status_code})",
+                ) from exc
+            raise self._as_source_error(exc) from exc
         except Exception as exc:
             raise self._as_source_error(exc) from exc
 

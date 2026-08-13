@@ -71,7 +71,11 @@ Replace direct-`PythonShell` lifecycle state with a process-tree record whose id
 - Direct-parent exit cleans stream/listener state but does not cancel escalation or deregister a live group.
 - After the grace period, a live group receives SIGKILL.
 - A lightweight unref'd liveness check removes the record only after the group is gone.
-- Shutdown retries termination for every still-live record.
+- POSIX Python turns SIGTERM into task cancellation so coroutine `finally`
+  blocks close clients and remove partial download artifacts before exit.
+- Shutdown uses the same TERM/grace/KILL path, rejects new bridge work, and
+  re-raises the initiating signal only after every owned group is observed gone.
+  A second signal skips the remaining grace period but retains the observed-gone gate.
 - Windows retains the best-effort `taskkill /T /F` strategy with direct-child
   fallback. It does not provide hard descendant ownership after direct-parent exit,
   remains Linux-host-uncorroborated, and must not be described as host-tested. Native
@@ -136,21 +140,25 @@ This preserves the repository contract that LibGen needs no account and Z-Librar
 }
 ```
 
-Single-source failures may use the top-level provider/host/reason fields. Aggregate failures carry ordered child failures. Configuration errors use `configuration_error` and are permanent caller errors.
+Single-source failures may use the top-level provider/host/reason fields. Aggregate failures carry ordered child failures. Configuration errors use `configuration_error`; exhausted provider quota uses `quota_exhausted`. Both are permanent caller state. An aggregate is permanent only when every child carries one of those reasons.
 
 ### Adapter and aggregate rules
 
 - LibGen resolution accumulates `SourceError` objects, never display strings.
-- `_serves_bytes` returns semantic success/non-byte results but lets transport exceptions propagate for normal classification.
+- `_serves_bytes` streams only its 2 KiB inspection window, returns semantic
+  success/non-byte results, and lets transport exceptions propagate for normal classification.
 - `SourceRouter` preserves child failures from nested aggregates.
-- Anna configuration failures are typed before the router catches them.
+- Anna missing/rejected-key failures and explicit quota exhaustion remain typed
+  before the router or bridge can flatten them.
+- Anna transfer errors normalize the provider to canonical `annas`; success
+  models retain the `annas_archive` source enum.
 
 ### Node normalization
 
 Extract one bridge-envelope parser/normalizer used by both exported Node wrappers. A wrapper may add a human-facing message, but it must preserve the normalized error object directly rather than requiring consumers to traverse arbitrary `cause` chains.
 
 - retry classification reads normalized `reason`/`failures`;
-- the circuit breaker excludes aborts and permanent configuration-only failures;
+- the circuit breaker excludes aborts and all-permanent caller-state failures;
 - search and download handlers use the same normalized details helper;
 - `wrapResult` emits the unchanged envelope as `structuredContent`;
 - no error or diagnostic writes to stdout.
@@ -185,6 +193,14 @@ Required mutations/scenarios:
 10. a valid source transfer may exceed the provider-resolution deadline but not the finite download deadline;
 11. normalized retry verdicts override legacy message heuristics without changing generic legacy bridge-error behavior;
 12. both exported Node wrappers use the long bridge budget for downloads and document processing while preserving explicit overrides.
+13. a real POSIX SIGTERM cancels bridge dispatch and removes a partial download;
+14. server shutdown rejects new work, applies shared TERM/grace/KILL ownership,
+    waits for observed exit, and accelerates safely on a second signal;
+15. a Range-ignoring LibGen CDN cannot make the probe consume the complete body;
+16. Anna rejected-key and quota envelopes bypass retry/breaker accounting only
+    when every aggregate child is permanent;
+17. DNS timeout markers outrank generic `gaierror`, and Anna transfer failures
+    use canonical provider `annas`.
 
 After focused RED-GREEN cycles, run on the exact committed and rebased tree:
 

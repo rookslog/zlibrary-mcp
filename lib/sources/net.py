@@ -178,6 +178,11 @@ def classify_httpx_error(exc: BaseException) -> Tuple[str, str]:
         cause = exc.__cause__
         while cause is not None:
             if isinstance(cause, socket.gaierror):
+                if DNS_TIMEOUT_MARKER in str(cause):
+                    return (
+                        "dns_timeout",
+                        f"{detail}: DNS resolution deadline exceeded",
+                    )
                 return "dns_failure", f"{detail}: {cause}"
             if isinstance(cause, ssl.SSLError):
                 return "tls_error", f"{detail}: {type(cause).__name__}"

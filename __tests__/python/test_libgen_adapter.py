@@ -282,6 +282,39 @@ class TestLibgenAdapterDownload:
         assert result.url.startswith("https://libgen.vg/")
 
     @pytest.mark.asyncio
+    async def test_range_ignoring_probe_stops_after_the_inspection_window(
+        self, adapter
+    ):
+        """A 200 probe must not buffer the complete book before accepting it."""
+
+        class LargeBookStream(httpx.AsyncByteStream):
+            def __init__(self):
+                self.chunks_read = 0
+
+            async def __aiter__(self):
+                for index in range(64):
+                    self.chunks_read += 1
+                    prefix = b"%PDF" if index == 0 else b"xxxx"
+                    yield prefix + (b"x" * 1020)
+
+        body = LargeBookStream()
+
+        def handler(request):
+            if "ads.php" in request.url.path:
+                return httpx.Response(200, text=ADS_PAGE_WITH_KEY)
+            return httpx.Response(
+                200,
+                stream=body,
+                headers={"content-type": "application/pdf"},
+            )
+
+        with self._patched_client(handler):
+            result = await adapter.get_download_url(MD5)
+
+        assert result.url.startswith("https://libgen.li/")
+        assert body.chunks_read <= 3
+
+    @pytest.mark.asyncio
     async def test_cdn_transport_failure_retains_its_host_and_reason(self, adapter):
         """A failed byte probe is transport evidence, not a protocol response."""
 

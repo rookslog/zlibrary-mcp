@@ -74,12 +74,17 @@ interface ProcessTreeRecord {
   shell: PythonShell;
   /** POSIX process-group id, retained after the direct child exits. */
   pid: number;
+  label: string;
   livenessTimer?: NodeJS.Timeout;
+  killTimer?: NodeJS.Timeout;
+  terminationStarted?: boolean;
 }
 
 const liveTrees = new Set<ProcessTreeRecord>();
 
 let exitHooksInstalled = false;
+let shutdownSignal: NodeJS.Signals | undefined;
+let shutdownObservationTimer: NodeJS.Timeout | undefined;
 
 /**
  * Signal the bridge and every subprocess it spawned.
@@ -153,6 +158,7 @@ function processTreeIsAlive(tree: ProcessTreeRecord): boolean {
 function releaseTreeIfGone(tree: ProcessTreeRecord): boolean {
   if (processTreeIsAlive(tree)) return false;
   if (tree.livenessTimer) clearInterval(tree.livenessTimer);
+  if (tree.killTimer) clearTimeout(tree.killTimer);
   liveTrees.delete(tree);
   return true;
 }
@@ -161,6 +167,80 @@ function monitorTree(tree: ProcessTreeRecord): void {
   if (releaseTreeIfGone(tree) || tree.livenessTimer) return;
   tree.livenessTimer = setInterval(() => releaseTreeIfGone(tree), 250);
   tree.livenessTimer.unref?.();
+}
+
+/** Apply the one shared TERM -> grace -> KILL lifecycle to an owned tree. */
+function terminateProcessTree(
+  tree: ProcessTreeRecord,
+  why: string,
+  keepEventLoopAlive = false,
+): boolean {
+  if (releaseTreeIfGone(tree)) return false;
+  if (tree.terminationStarted) {
+    if (keepEventLoopAlive) tree.killTimer?.ref?.();
+    return false;
+  }
+
+  tree.terminationStarted = true;
+  const signalled = signalProcessTree(tree, 'SIGTERM');
+  tree.killTimer = setTimeout(() => {
+    if (process.platform === 'win32' || processTreeIsAlive(tree)) {
+      logger.warn(`${tree.label}: process tree survived SIGTERM after ${why}; sending SIGKILL`);
+      signalProcessTree(tree, 'SIGKILL');
+    }
+    monitorTree(tree);
+  }, KILL_GRACE_MS);
+  if (!keepEventLoopAlive) tree.killTimer.unref?.();
+  return signalled;
+}
+
+function forceProcessTree(tree: ProcessTreeRecord): boolean {
+  if (releaseTreeIfGone(tree)) return false;
+  if (tree.killTimer) clearTimeout(tree.killTimer);
+  tree.killTimer = undefined;
+  const signalled = signalProcessTree(tree, 'SIGKILL');
+  monitorTree(tree);
+  return signalled;
+}
+
+function observeShutdownUntilGone(): void {
+  if (shutdownObservationTimer) return;
+  const observe = () => {
+    shutdownObservationTimer = undefined;
+    for (const tree of Array.from(liveTrees)) releaseTreeIfGone(tree);
+    if (liveTrees.size > 0) {
+      shutdownObservationTimer = setTimeout(observe, 25);
+      return;
+    }
+
+    const signal = shutdownSignal;
+    if (!signal) return;
+    process.removeAllListeners('SIGINT');
+    process.removeAllListeners('SIGTERM');
+    process.kill(process.pid, signal);
+  };
+  shutdownObservationTimer = setTimeout(observe, 0);
+}
+
+function beginShutdown(signal: NodeJS.Signals): void {
+  if (shutdownSignal) {
+    // A second signal is the operator's request to skip the remaining grace
+    // period, but the parent still waits until the owned groups are observed gone.
+    shutdownSignal = signal;
+    for (const tree of Array.from(liveTrees)) forceProcessTree(tree);
+    observeShutdownUntilGone();
+    return;
+  }
+
+  shutdownSignal = signal;
+  let signalled = 0;
+  for (const tree of Array.from(liveTrees)) {
+    if (terminateProcessTree(tree, 'server shutdown', true)) signalled += 1;
+  }
+  if (signalled > 0) {
+    logger.info(`Received ${signal}; signalled ${signalled} Python bridge child(ren)`);
+  }
+  observeShutdownUntilGone();
 }
 
 /**
@@ -173,8 +253,11 @@ export function killAllPythonChildren(signal: NodeJS.Signals = 'SIGTERM'): numbe
   let killed = 0;
   for (const tree of Array.from(liveTrees)) {
     if (releaseTreeIfGone(tree)) continue;
-    if (signalProcessTree(tree, signal)) killed += 1;
-    monitorTree(tree);
+    const signalled =
+      signal === 'SIGTERM'
+        ? terminateProcessTree(tree, 'shutdown request')
+        : forceProcessTree(tree);
+    if (signalled) killed += 1;
   }
   return killed;
 }
@@ -195,13 +278,7 @@ export function installExitHooks(): void {
 
   for (const signal of ['SIGINT', 'SIGTERM'] as NodeJS.Signals[]) {
     process.on(signal, () => {
-      const killed = killAllPythonChildren('SIGTERM');
-      if (killed > 0) {
-        logger.info(`Received ${signal}; signalled ${killed} Python bridge child(ren)`);
-      }
-      // Re-raise with the default disposition so normal exit semantics hold.
-      process.removeAllListeners(signal);
-      process.kill(process.pid, signal);
+      beginShutdown(signal);
     });
   }
 }
@@ -238,6 +315,10 @@ export function runPythonBridge(
 
   installExitHooks();
 
+  if (shutdownSignal) {
+    return Promise.reject(new Error(`${label} rejected because the bridge runner is shutting down`));
+  }
+
   // Never spawn work the caller has already given up on.
   if (runOptions.signal?.aborted) {
     return Promise.reject(
@@ -260,14 +341,12 @@ export function runPythonBridge(
     if (!pid) {
       return reject(new Error(`${label} did not expose a child process id`));
     }
-    const tree: ProcessTreeRecord = { shell, pid };
+    const tree: ProcessTreeRecord = { shell, pid, label };
     liveTrees.add(tree);
 
     const output: string[] = [];
     const stderrLines: string[] = [];
     let settled = false;
-    let killTimer: NodeJS.Timeout | undefined;
-    let terminationStarted = false;
 
     // Armed here so `cleanup` below can close over it. Its callback calls
     // `failWith`, which is declared further down — safe because a setTimeout
@@ -297,21 +376,7 @@ export function runPythonBridge(
      * which is the case this exists for.
      */
     const terminate = (why: string) => {
-      if (terminationStarted || releaseTreeIfGone(tree)) return;
-      terminationStarted = true;
-      signalProcessTree(tree, 'SIGTERM');
-      killTimer = setTimeout(() => {
-        if (process.platform === 'win32' || processTreeIsAlive(tree)) {
-          logger.warn(`${label}: process tree survived SIGTERM after ${why}; sending SIGKILL`);
-          signalProcessTree(tree, 'SIGKILL');
-        }
-        // A kill request is not proof of exit: SIGKILL can remain pending
-        // while a POSIX task is stuck in uninterruptible I/O, and Windows
-        // termination can fail. Keep survivors registered so shutdown can
-        // retry; the liveness monitor removes them once exit is observed.
-        monitorTree(tree);
-      }, KILL_GRACE_MS);
-      if (typeof killTimer.unref === 'function') killTimer.unref();
+      terminateProcessTree(tree, why);
     };
 
     const failWith = (error: Error, why: string) => {

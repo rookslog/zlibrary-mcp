@@ -85,6 +85,30 @@ describe('Python Bridge', () => {
     expect(error.retryable).toBe(false);
   });
 
+  test('treats all-permanent quota/configuration aggregates as non-retryable', async () => {
+    const { pythonBridge } = await setup();
+    const details = {
+      failures: [
+        { provider: 'annas', reason: 'configuration_error' },
+        { provider: 'annas', reason: 'quota_exhausted' },
+      ],
+    };
+
+    expect(pythonBridge.isBridgeDetailRetryable(details)).toBe(false);
+  });
+
+  test('does not flatten mixed permanent/transient aggregates to permanent', async () => {
+    const { pythonBridge } = await setup();
+    const details = {
+      failures: [
+        { provider: 'annas', reason: 'quota_exhausted' },
+        { provider: 'libgen', reason: 'http_error' },
+      ],
+    };
+
+    expect(pythonBridge.isBridgeDetailRetryable(details)).toBe(true);
+  });
+
   test('preserves the public JSON parse error shape', async () => {
     const { pythonBridge } = await setup({ bridgeResult: ['Invalid JSON{'] });
 

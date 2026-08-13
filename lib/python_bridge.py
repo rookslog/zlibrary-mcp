@@ -10,6 +10,7 @@ project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if project_root not in sys.path:
     sys.path.insert(0, project_root)
 import asyncio
+import signal
 
 from pathlib import Path
 from filename_utils import create_unified_filename
@@ -57,6 +58,39 @@ _eapi_client: EAPIClient = None
 
 # Module-level source router (for multi-source search)
 _source_router: SourceRouter = None
+
+
+def _install_cooperative_signal_handlers():
+    """Turn POSIX termination into task cancellation so async cleanup runs."""
+    state = {"signal": None}
+    originals = {}
+    if os.name == "nt":
+        return state, originals
+
+    loop = asyncio.get_running_loop()
+    task = asyncio.current_task()
+    if task is None:
+        return state, originals
+
+    def cancel(signum):
+        if state["signal"] is None:
+            state["signal"] = signum
+            task.cancel()
+
+    for signum in (signal.SIGINT, signal.SIGTERM):
+        originals[signum] = signal.getsignal(signum)
+        loop.add_signal_handler(signum, cancel, signum)
+    return state, originals
+
+
+def _restore_signal_handlers(originals):
+    if not originals:
+        return
+    loop = asyncio.get_running_loop()
+    for signum, original in originals.items():
+        loop.remove_signal_handler(signum)
+        signal.signal(signum, original)
+
 
 # Debug mode configuration (ISSUE-009)
 # Enable with: ZLIBRARY_DEBUG=1 or DEBUG=1
@@ -839,6 +873,8 @@ async def _fetch_from_source(book_details: dict, output_dir: str) -> str:
     logger.info(f"Resolved {source} download for {md5} via {result.source}")
 
     provider = getattr(result.source, "value", result.source) or selection
+    if provider == "annas_archive":
+        provider = "annas"
     return await _download_url_to_file(result.url, output_dir, md5, str(provider))
 
 
@@ -1208,6 +1244,7 @@ async def main():
     cli_args = parser.parse_args()
 
     function_name = cli_args.function_name
+    termination, original_signal_handlers = _install_cooperative_signal_handlers()
     try:
         logger.info(f"python_bridge.main: Received raw args_json: {cli_args.args_json}")
         args_dict_immediately_after_parse = json.loads(cli_args.args_json)
@@ -1259,6 +1296,10 @@ async def main():
         mcp_style_response = {"content": [{"type": "text", "text": json.dumps(result)}]}
         print(json.dumps(mcp_style_response))
 
+    except asyncio.CancelledError:
+        signum = termination["signal"] or signal.SIGTERM
+        logger.info(f"python_bridge.main: received signal {signum}; cancelling")
+        raise SystemExit(128 + int(signum))
     except Exception as e:
         # Print error as JSON to stderr
         error_info = {
@@ -1282,12 +1323,15 @@ async def main():
         print(json.dumps(error_info), file=sys.stderr)
         sys.exit(1)
     finally:
-        # Clean up EAPI client
-        if _eapi_client:
-            await _eapi_client.close()
-        # Clean up source router
-        if _source_router:
-            await _source_router.close()
+        try:
+            # Clean up EAPI client
+            if _eapi_client:
+                await _eapi_client.close()
+            # Clean up source router
+            if _source_router:
+                await _source_router.close()
+        finally:
+            _restore_signal_handlers(original_signal_handlers)
 
 
 async def _dispatch_bridge_function(function_name: str, args_dict: dict):

@@ -160,7 +160,7 @@ async def _run_core_smoke(repo_root: Path) -> None:
                     else:
                         await process_document(str(document))
                 except (ImportError, RuntimeError) as error:
-                    if "uv sync --extra rag" not in str(error):
+                    if "uv sync --no-dev --extra rag" not in str(error):
                         raise AssertionError(
                             f"missing actionable rag install hint for {suffix}: {error}"
                         ) from error

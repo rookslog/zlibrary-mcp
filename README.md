@@ -15,12 +15,12 @@ For what this project is — and deliberately isn't — see [VISION.md](VISION.m
 
 ```bash
 npm install -g zlibrary-mcp
-cd "$(npm root -g)/zlibrary-mcp" && bash setup-uv.sh   # one-time Python environment setup
+cd "$(npm root -g)/zlibrary-mcp" && bash setup-uv.sh --no-dev   # one-time core setup
 ```
 
 This installs the lightweight core for search, metadata, and downloads. Document
-processing is opt-in: run `uv sync --extra rag` for PDF/EPUB extraction, or
-`uv sync --extra scholar` for the complete scholarly/OCR pipeline. See
+processing is opt-in: run `uv sync --no-dev --extra rag` for PDF/EPUB extraction, or
+`uv sync --no-dev --extra scholar` for the complete scholarly/OCR pipeline. See
 [Optional Python dependencies](docs/optional-dependencies.md) for the tier details.
 
 Then add the server to your MCP client config (Claude Code `.mcp.json`, Claude Desktop `claude_desktop_config.json`):
@@ -240,7 +240,7 @@ Then set up the Python environment inside the installed package (one-time):
 ```bash
 cd "$(npm root -g)/zlibrary-mcp"
 curl -LsSf https://astral.sh/uv/install.sh | sh  # Install UV if needed
-bash setup-uv.sh
+bash setup-uv.sh --no-dev
 ```
 
 The package ships the complete Python bridge (`lib/`, the vendored `zlibrary/`
@@ -264,13 +264,14 @@ git clone https://github.com/rookslog/zlibrary-mcp.git
 cd zlibrary-mcp
 git lfs pull         # Hydrates LFS-tracked test PDFs (don't run `git lfs install`;
                      # it conflicts with the repo's Husky-managed hooks)
-bash setup-uv.sh    # Creates .venv/ and installs Python dependencies
+bash setup-uv.sh    # Creates .venv/ and installs the PEP 735 dev group
 npm install          # Installs Node.js dependencies
 npm run build        # Compiles TypeScript to dist/
 ```
 
-The default environment is the lightweight core. Before working on document
-processing or running the complete Python suite, install all optional tiers:
+The source bootstrap installs contributor tools while keeping document processing
+optional. Before working on the RAG pipeline or running the complete Python suite,
+install all optional tiers:
 
 ```bash
 uv sync --all-extras
@@ -370,8 +371,8 @@ curl http://localhost:8000/health
 
 The RAG pipeline processes downloaded documents (EPUB, PDF, TXT) into clean text files for use in retrieval-augmented generation workflows.
 
-PDF and EPUB processing require `uv sync --extra rag`. Scholarly analysis and OCR
-require `uv sync --extra scholar`, which includes the RAG tier. If a required tier is
+PDF and EPUB processing require `uv sync --no-dev --extra rag`. Scholarly analysis and OCR
+require `uv sync --no-dev --extra scholar`, which includes the RAG tier. If a required tier is
 missing, the operation returns the exact `uv sync` command to install it.
 
 - **Output location:** Processed text files are saved to `./processed_rag_output/`

@@ -21,7 +21,7 @@ def require_optional_dependency(
     if not available:
         raise OptionalDependencyError(
             f"{dependency} is required for this operation. Install the `{extra}` "
-            f"extra with `uv sync --extra {extra}`."
+            f"extra with `uv sync --no-dev --extra {extra}`."
         )
 
 # OCR Dependencies (Optional)

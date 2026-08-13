@@ -41,6 +41,7 @@ zlibrary = { path = "./zlibrary", editable = true }
 rag = [
     "pymupdf>=1.26.0",
     "ebooklib>=0.20",
+    "nltk>=3.8.1",
 ]
 
 # Complete scholarly document processing, including the RAG tier
@@ -155,4 +156,4 @@ index-url = "https://pypi.org/simple"
 # - All transitive dependencies handled automatically
 # - uv.lock will be generated on first: uv sync
 # - To add deps: uv add package-name
-# - To install document processing: uv sync --extra rag (or --extra scholar)
+# - End-user document processing: uv sync --no-dev --extra rag (or --extra scholar)

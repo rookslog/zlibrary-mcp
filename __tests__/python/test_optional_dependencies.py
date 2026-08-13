@@ -48,9 +48,8 @@ def test_pyproject_keeps_heavy_dependencies_out_of_core_and_in_named_extras():
         for name, values in project["optional-dependencies"].items()
     }
 
-    rag = {"pymupdf", "ebooklib"}
+    rag = {"pymupdf", "ebooklib", "nltk"}
     scholar_only = {
-        "nltk",
         "opencv-python-headless",
         "ocrmypdf",
         "pytesseract",
@@ -236,7 +235,7 @@ async def test_rag_operation_without_rag_extra_names_install_command(
     document.write_bytes(b"")
     monkeypatch.setattr(facade, availability_flag, False)
 
-    with pytest.raises(RuntimeError, match=r"uv sync --extra rag"):
+    with pytest.raises(RuntimeError, match=r"uv sync --no-dev --extra rag"):
         await process_document(str(document))
 
 
@@ -256,7 +255,7 @@ def test_rag_tier_processes_real_pdf_without_scholar_dependencies(lfs_fixture):
         import time
 
         SCHOLAR_ONLY = {
-            "PIL", "cv2", "nltk", "ocrmypdf", "pdf2image", "pytesseract"
+            "PIL", "cv2", "ocrmypdf", "pdf2image", "pytesseract"
         }
 
         class BlockScholar(importlib.abc.MetaPathFinder):

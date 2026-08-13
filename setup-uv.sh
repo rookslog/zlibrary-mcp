@@ -60,16 +60,36 @@ if [ -n "$UV_NUMBER" ] && \
 fi
 echo ""
 
-# Initialize UV project (creates .venv and installs deps)
+# npm/end-user setup passes --no-dev. Source contributors use the default,
+# which explicitly names the PEP 735 development group instead of relying on
+# uv's implicit default-group behavior.
+case "${1:-}" in
+    "")
+        SYNC_ARGS=(sync --group dev)
+        SETUP_TIER="core plus contributor development tools"
+        ;;
+    --no-dev)
+        SYNC_ARGS=(sync --no-dev)
+        SETUP_TIER="lightweight end-user core"
+        ;;
+    *)
+        echo "Usage: $0 [--no-dev]"
+        echo "  no argument  Source/contributor setup with the PEP 735 dev group"
+        echo "  --no-dev     End-user core setup without development tools"
+        exit 2
+        ;;
+esac
+
+# Initialize UV project (creates .venv and installs the selected tier)
 echo "📦 Installing Python dependencies with UV..."
 echo "   This will:"
 echo "   - Create .venv/ directory"
-echo "   - Install all dependencies from pyproject.toml"
+echo "   - Install $SETUP_TIER from pyproject.toml"
 echo "   - Install vendored zlibrary as editable"
 echo "   - Generate uv.lock for reproducibility"
 echo ""
 
-uv sync
+uv "${SYNC_ARGS[@]}"
 
 echo ""
 echo "✅ Dependencies installed"

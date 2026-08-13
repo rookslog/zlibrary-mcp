@@ -360,6 +360,104 @@ class TestAnnasArchiveFastDownload:
 
         await adapter.close()
 
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("payload", [[], None], ids=["array", "null"])
+    async def test_get_download_url_rejects_non_object_json(self, payload):
+        """A 2xx JSON body must be an object before fields are inspected."""
+        from lib.sources.annas import AnnasArchiveAdapter
+        from lib.sources.config import SourceConfig
+
+        adapter = AnnasArchiveAdapter(
+            SourceConfig(
+                annas_secret_key="test-secret-key",
+                annas_base_url="https://annas-archive.gl",
+            )
+        )
+        mock_response = MagicMock()
+        mock_response.json.return_value = payload
+        mock_response.raise_for_status = MagicMock()
+
+        with patch.object(adapter, "_get_client") as mock_get_client:
+            mock_client = AsyncMock()
+            mock_client.get.return_value = mock_response
+            mock_get_client.return_value = mock_client
+
+            with pytest.raises(ProviderResponseError) as exc_info:
+                await adapter.get_download_url("abc123def456")
+
+        assert exc_info.value.provider == "annas"
+        assert exc_info.value.host == "annas-archive.gl"
+        assert exc_info.value.reason == "protocol_error"
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        "download_url",
+        ["", "   ", 42, ["https://partner.example/book.pdf"]],
+        ids=["empty", "whitespace", "number", "array"],
+    )
+    async def test_get_download_url_requires_non_empty_string(self, download_url):
+        """Truthy non-string values cannot cross the DownloadResult boundary."""
+        from lib.sources.annas import AnnasArchiveAdapter
+        from lib.sources.config import SourceConfig
+
+        adapter = AnnasArchiveAdapter(
+            SourceConfig(
+                annas_secret_key="test-secret-key",
+                annas_base_url="https://annas-archive.gl",
+            )
+        )
+        mock_response = MagicMock()
+        mock_response.json.return_value = {"download_url": download_url}
+        mock_response.raise_for_status = MagicMock()
+
+        with patch.object(adapter, "_get_client") as mock_get_client:
+            mock_client = AsyncMock()
+            mock_client.get.return_value = mock_response
+            mock_get_client.return_value = mock_client
+
+            with pytest.raises(ProviderResponseError) as exc_info:
+                await adapter.get_download_url("abc123def456")
+
+        assert exc_info.value.provider == "annas"
+        assert exc_info.value.host == "annas-archive.gl"
+        assert exc_info.value.reason == "protocol_error"
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        "account_info",
+        [None, [], "invalid"],
+        ids=["null", "array", "string"],
+    )
+    async def test_get_download_url_rejects_non_object_account_info(self, account_info):
+        """Present quota metadata must be an object before fields are read."""
+        from lib.sources.annas import AnnasArchiveAdapter
+        from lib.sources.config import SourceConfig
+
+        adapter = AnnasArchiveAdapter(
+            SourceConfig(
+                annas_secret_key="test-secret-key",
+                annas_base_url="https://annas-archive.gl",
+            )
+        )
+        mock_response = MagicMock()
+        mock_response.json.return_value = {
+            "download_url": "https://partner.example/book.pdf",
+            "account_fast_download_info": account_info,
+        }
+        mock_response.raise_for_status = MagicMock()
+
+        with patch.object(adapter, "_get_client") as mock_get_client:
+            mock_client = AsyncMock()
+            mock_client.get.return_value = mock_response
+            mock_get_client.return_value = mock_client
+
+            with pytest.raises(ProviderResponseError) as exc_info:
+                await adapter.get_download_url("abc123def456")
+
+        assert exc_info.value.provider == "annas"
+        assert exc_info.value.host == "annas-archive.gl"
+        assert exc_info.value.reason == "protocol_error"
+
 
 class TestAnnasArchiveAdapterInterface:
     """Test that AnnasArchiveAdapter properly implements SourceAdapter interface."""

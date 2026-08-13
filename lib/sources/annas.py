@@ -421,6 +421,14 @@ class AnnasArchiveAdapter(SourceAdapter):
         except Exception as exc:
             raise self._as_source_error(exc) from exc
 
+        if not isinstance(data, dict):
+            raise ProviderResponseError(
+                PROVIDER,
+                self.host,
+                f"Expected JSON object, received {type(data).__name__}",
+                reason="protocol_error",
+            )
+
         # Check for API error
         if data.get("error"):
             raise ProviderResponseError(
@@ -432,18 +440,25 @@ class AnnasArchiveAdapter(SourceAdapter):
 
         # Extract download URL
         download_url = data.get("download_url")
-        if not download_url:
+        if not isinstance(download_url, str) or not download_url.strip():
             raise ProviderResponseError(
                 PROVIDER,
                 self.host,
-                "No download_url in response",
+                "download_url must be a non-empty string",
                 reason="protocol_error",
             )
 
         # Extract quota info if available
         quota_info = None
-        account_info = data.get("account_fast_download_info")
-        if account_info:
+        if "account_fast_download_info" in data:
+            account_info = data["account_fast_download_info"]
+            if not isinstance(account_info, dict):
+                raise ProviderResponseError(
+                    PROVIDER,
+                    self.host,
+                    "account_fast_download_info must be an object",
+                    reason="protocol_error",
+                )
             quota_info = QuotaInfo(
                 downloads_left=account_info.get("downloads_left", 0),
                 downloads_per_day=account_info.get("downloads_per_day", 0),

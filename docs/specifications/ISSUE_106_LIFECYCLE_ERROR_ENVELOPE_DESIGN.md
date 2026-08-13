@@ -1,7 +1,7 @@
 # ISSUE-106 Lifecycle and Error-Envelope Design Correction
 
 Date: 2026-08-12
-Status: Proposed for owner review
+Status: Approved for PR #106; native Windows hard ownership deferred to #116
 Scope: PR #106, `fix/ISSUE-NET-001-multi-source-timeouts`
 
 ## Decision
@@ -39,11 +39,26 @@ A per-operation subprocess would make DNS and third-party library hangs killable
 
 Rejected for now: it adds serialization, startup, cleanup, and platform complexity to every provider operation. Use it only if the bounded event-loop resolver cannot close actual HTTP resolution without private-library hooks.
 
-### C. Split or defer the remaining findings
+### C. Split or defer contract-critical lifecycle and envelope findings
 
 Move lifecycle and envelope work into follow-up PRs while leaving #106 open or merging a smaller subset.
 
-Rejected: splitting does not reduce the cross-layer dependencies, and merging would publish guarantees the code does not meet. #101 and #107 would then build on an unstable vocabulary and failure model.
+Rejected: splitting the POSIX lifecycle, cooperative cleanup, DNS classification,
+or envelope work does not reduce the cross-layer dependencies, and merging would
+publish guarantees the code does not meet. #101 and #107 would then build on an
+unstable vocabulary and failure model. Native Windows hard ownership is a separate
+platform boundary and is deferred below.
+
+### D. Defer native Windows hard ownership — selected platform boundary
+
+Keep the existing best-effort `taskkill /T /F` path in #106, but do not claim that
+it retains ownership after the direct Python parent exits. Native Windows Job Object
+ownership, packaging, and real Windows-host lifecycle tests move to #116.
+
+Selected because v1.5 does not promise equal cross-platform process-lifecycle
+containment, while the POSIX lifecycle and provider error contracts remain on the
+critical path for #101 and #107. Issue #116 stays unslotted until a later release map
+explicitly takes ownership of the Windows guarantee.
 
 ## Lifecycle Architecture
 
@@ -57,7 +72,10 @@ Replace direct-`PythonShell` lifecycle state with a process-tree record whose id
 - After the grace period, a live group receives SIGKILL.
 - A lightweight unref'd liveness check removes the record only after the group is gone.
 - Shutdown retries termination for every still-live record.
-- Windows retains the `taskkill /T /F` strategy with direct-child fallback. It remains a Linux-host-unverified boundary and must not be described as host-tested.
+- Windows retains the best-effort `taskkill /T /F` strategy with direct-child
+  fallback. It does not provide hard descendant ownership after direct-parent exit,
+  remains Linux-host-uncorroborated, and must not be described as host-tested. Native
+  Job Object ownership is tracked by #116.
 
 ### Managed-Python validation
 
@@ -194,11 +212,12 @@ The correction is complete only when:
 Stop and return to design if:
 
 - installed httpx/AnyIO bypasses the bounded loop resolver;
-- Windows requires a native job-object dependency to meet the contract;
 - the next Codex pass reports another instance of either structural class.
 
 ## Residual Boundaries
 
-- Windows process-tree behavior requires Windows-host corroboration.
+- Windows hard process-tree ownership is outside #106 and tracked by #116. The
+  retained `taskkill /T /F` fallback is best-effort and lacks Windows-host
+  corroboration.
 - Unit tests mock third-party provider responses by repository policy; live drift remains covered by `npm run doctor` and the upstream workflow.
 - No history rewrite, merge, or auto-merge is part of this design correction.

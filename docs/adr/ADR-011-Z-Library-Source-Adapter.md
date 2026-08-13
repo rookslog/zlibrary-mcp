@@ -182,6 +182,15 @@ file; only a completed raw file is atomically promoted to the path returned in
 `RawAcquisitionResult`. This prevents a failed attempt or retry from leaving a
 truncated artifact that a later stage could mistake for an acquisition.
 
+File-writing acquisition must not rely on an abandoned `run_bounded` worker to
+perform that cleanup. If an adapter must place blocking acquisition work behind
+that boundary, the parent creates and owns the attempt path plus a completion
+lease. Timeout or cancellation invalidates the lease and removes the path;
+after invalidation the worker may neither create nor promote a result. The
+implementation must join or cooperatively cancel file-writing workers where the
+underlying API permits it. Contract tests hold a worker past its deadline and
+prove that a late completion cannot recreate or promote the temporary file.
+
 An adapter may use an internal `resolve_download` step, but a resolved URL is
 not part of the required cross-source contract and is never returned as the
 MCP acquisition result.
@@ -210,11 +219,17 @@ not change adapter dispatch.
 The compatibility facade normalises a full pre-migration Z-Library
 `bookDetails` search result before router validation: it adds
 `source=zlibrary` and constructs `source_ref={id, hash}` from the legacy
-identifier fields. This conversion applies only to the existing
-search-result-shaped `bookDetails` input, not to a naked direct-ID request.
-Contract tests must distinguish the accepted legacy result shape from raw
-`id`/`hash` parameters so the compatibility interval does not recreate a
-generic direct-ID path.
+identifier fields. The exact legacy predicate is an object containing non-empty
+`id` and `hash`/`book_hash` values plus the search-result display keys
+`title`/`name` and `url` (key presence is required even when an upstream value
+is empty). That is the stable shape emitted by
+`normalize_eapi_book`; `{id, hash}` alone is not sufficient. This structural
+predicate preserves existing stateless callers but is not a claim of
+unforgeable provenance. It applies only inside the existing `bookDetails`
+compatibility facade; raw `bookId`/`bookHash` parameters and identifier-only
+objects remain rejected. Contract tests accept a representative legacy result
+and reject both raw parameter and identifier-only forms so the interval does
+not recreate a generic direct-ID path.
 
 Acquisition is bound to the source that produced the selected result. Ordered
 fallback applies to discovery and other operations that do not consume a
@@ -232,8 +247,11 @@ not create a generic direct-ID route.
 
 ### 3. Capability protocols, not fake universal methods
 
-`SourceCapabilities` declares locally knowable support and routes. Optional
-protocols cover:
+`SourceCapabilities` declares static, locally knowable implementation support;
+it does not change when credentials, quota, or an upstream host are
+unavailable. A separate per-operation availability check reports whether the
+current user can invoke a supported operation and, when not, the stable reason
+such as `credentials_missing` or `quota_exhausted`. Optional protocols cover:
 
 - general, full-text, author, term, and advanced search modes;
 - metadata lookup from a search result;
@@ -244,13 +262,16 @@ protocols cover:
 
 `SourceRouter` exposes typed entry points for the existing tool operations. It
 selects only adapters declaring the required capability. An explicit request
-for an unsupported source returns `unsupported_operation`. A fallback request
-skips an incapable adapter and reports that decision in routing metadata; it
-does not ask an adapter to fabricate a response. If every source in an ordered
-request is skipped as incapable, the router returns an aggregate
-`unsupported_operation` with no top-level `source` and with the ordered skipped
-attempts in routing metadata. It does not return an empty result or require an
-invented child failure.
+for an unsupported source returns `unsupported_operation`; a supported but
+currently unavailable explicit source returns its attributed availability
+reason, for example Z-Library without credentials returns
+`credentials_missing`. A fallback request skips statically incapable adapters
+in routing metadata. It records a supported but unavailable adapter as an
+attributed failed attempt without making a network call, then may continue in
+the supplied order. If every source in an ordered request is skipped as
+incapable, the router returns an aggregate `unsupported_operation` with no
+top-level `source` and with the ordered skipped attempts in routing metadata.
+It does not return an empty result or require an invented child failure.
 
 The existing Z-Library helper modules become implementation details of
 `ZLibraryAdapter` or thin query-shaping helpers called by it. They must receive
@@ -286,8 +307,12 @@ at its compatibility façade. That is a property of the legacy tool contract,
 not a default inside the generic router.
 
 `source="auto"` has an explicit migration path. A new optional
-`BOOK_SOURCE_ORDER` is a validated, non-empty ordered list of registered source
-names and controls `auto` only when set. Until an operator sets it, the router
+`BOOK_SOURCE_ORDER` is a validated, non-empty ordered list of canonical
+`SourceType` values (`annas_archive`, `libgen`, or `zlibrary`) and controls
+`auto` only when set. Selector aliases are normalised before validation:
+legacy `annas` becomes `annas_archive`, while canonical values pass unchanged;
+unknown values fail rather than becoming registry keys. Until an operator sets
+the new order, the router
 normalises the legacy `BOOK_SOURCE_DEFAULT` and
 `BOOK_SOURCE_FALLBACK_ENABLED` scalars into an Anna's/LibGen-only order: a
 concrete legacy default starts the order and `auto`/unset preserves the current
@@ -295,7 +320,7 @@ key-dependent primary. Legacy fallback is one-way: when Anna's Archive is the
 primary and fallback is enabled, LibGen is appended; LibGen never implicitly
 falls through to Anna's Archive. Therefore an unkeyed `auto`/unset default
 normalises to `[libgen]` even when fallback is enabled, while a keyed default
-normalises to `[annas, libgen]` when fallback is enabled. An operator may opt
+normalises to `[annas_archive, libgen]` when fallback is enabled. An operator may opt
 into another order only through `BOOK_SOURCE_ORDER`. Z-Library is not added to
 the derived legacy order merely by registration; its named compatibility tools
 remain explicit. Invalid legacy or new order values fail configuration
@@ -311,10 +336,12 @@ factored equivalent; it never logs in once per adapter method. `close()` owns
 client cleanup and remains reachable from `python_bridge.py::main`'s `finally`
 path.
 
-Missing credentials are represented as local capability unavailability or a
-structured credential error when Z-Library is explicitly requested. They are
-not a startup failure. Quota comes from the authenticated user's profile and
-is never treated as global.
+Missing credentials leave Z-Library's static support declarations intact but
+make its credentialed operations dynamically unavailable. An explicit request
+returns `credentials_missing`; an ordered request records that attributed
+failure without attempting login and continues to the next source. Missing
+credentials are not a startup failure. Quota comes from the authenticated
+user's profile and is never treated as global.
 
 ## Error vocabulary
 
@@ -345,6 +372,10 @@ The transport and upstream reason codes introduced by PR #106 are retained:
 - `credentials_missing`, `authentication_failed`, `unsupported_operation`,
   `invalid_book_ref`, `not_found`, `dependency_unavailable`, `aborted`, and
   `partial_failure`.
+
+Aggregates also use `all_sources_failed` when every attempted capable source
+failed. The aggregate keeps each child reason in order; it never copies one
+child reason to the top level or uses `partial_failure` when nothing answered.
 
 An aggregate error retains each source failure in attempted order. A complete
 empty search result means every attempted capable source answered and none
@@ -381,7 +412,7 @@ landing substantially as reviewed.
 | Network budgets | Reuse `SourceConfig` connect/read/total/preflight budgets and apply the same bounded policy to Z-Library operations. |
 | Cancellation | Preserve `CallOptions`, MCP `AbortSignal` forwarding, `runPythonBridge`, and child cleanup while changing handlers or registration. |
 | Adapter registry | Replace #106's two-source `_adapter_for` conditional with the registry; do not add a third branch. |
-| Process lifetime | Keep the one-shot Python bridge boundary. #106's `run_bounded` may abandon a daemon thread that is tolerable only because the process exits after the MCP call; it is not a long-lived adapter-runtime primitive. |
+| Process lifetime | Keep the one-shot Python bridge boundary. #106's `run_bounded` may abandon a daemon thread for non-file-writing calls; it is not a long-lived adapter-runtime primitive and must not own acquisition cleanup or promotion without the parent-owned lease defined above. |
 
 This ADR does **not** depend on #106's current two-source primary order or on
 `provider` being the permanent wire term. If #106 does not land, the #40
@@ -420,6 +451,8 @@ until parity is demonstrated.
 - Rebase on merged #106, #103, #101, and #107 as applicable.
 - Record contract tests for current Z-Library search, metadata, limits,
   history, recent books, booklist degradation, and acquisition.
+- Record failing privacy regressions for the current raw bridge payload and
+  query logging, using sentinel values rather than credentials or live URLs.
 - Record the existing credential-free LibGen startup/search path and the
   current acquisition failure caused by eager EAPI initialisation.
 - Confirm test counts before and after every stage; a lower count is a failure
@@ -439,6 +472,9 @@ until parity is demonstrated.
 - Make bridge EAPI initialisation lazy and source-specific: a LibGen result
   reaches router acquisition without Z-Library credentials, while legacy
   Z-Library operations still initialise the shared client when selected.
+- Remove raw bridge-payload, copied-argument, query-text, and secret-bearing URL
+  logging before routing production traffic through adapters; retain only the
+  bounded structured fields in the observability plan.
 - Wrap the existing shared EAPI lifecycle; do not introduce another login
   path.
 - Implement general search and raw acquisition first.
@@ -492,11 +528,13 @@ until parity is demonstrated.
 - One shared adapter-contract suite runs against Anna's Archive, LibGen, and
   Z-Library fakes: source attribution, capability declarations, search result
   shape, source/ref matching, raw file output, atomic promotion/failed-attempt
-  cleanup, and close semantics.
+  cleanup, late-worker lease invalidation, and close semantics.
 - Router tests cover explicit-source no-fallback, caller-ordered fallback,
-  unsupported-capability skipping, aggregate failure order, source-bound
-  acquisition quota exhaustion, and the rule that a mixed empty/failure search
-  is a `partial_failure`, not an empty result.
+  canonical source-order values and legacy alias normalisation, static support
+  versus dynamic availability, unsupported-capability skipping, aggregate
+  failure order and `all_sources_failed`, source-bound acquisition quota
+  exhaustion, and the rule that a mixed empty/failure search is a
+  `partial_failure`, not an empty result.
 - Z-Library adapter tests use a fake EAPI client and assert exactly one login
   lifecycle per bridge call, no credentials in errors/logs, and per-user quota
   reporting.
@@ -504,6 +542,8 @@ until parity is demonstrated.
   durable file paths plus nested provenance. No test may introduce a raw-ID
   download path.
 - Bridge tests assert structured error envelopes and stderr-only diagnostics.
+  Sentinel credentials, queries, raw payloads, full `bookDetails`, and
+  secret-bearing URLs must be absent from captured stderr as well as stdout.
   `__tests__/stdio-purity.test.js` remains unchanged.
 - Node tests assert all registered handlers preserve #106 cancellation and
   that the README/tool registry check still reports 13 tools.
@@ -518,9 +558,15 @@ until parity is demonstrated.
 Unit tests mock third-party calls and cannot establish upstream compatibility.
 Before flipping the default, run the existing doctor/upstream probes and one
 credentialed Z-Library search-to-file acquisition in an isolated test account,
-plus credential-free LibGen search-to-file acquisition. Do not record
-credentials, cookies, query text, document content, or downloaded files in
-test artifacts.
+one keyed Anna's Archive `fast_download` search-to-file acquisition using an
+isolated key, plus credential-free LibGen search-to-file acquisition. The
+Anna's check is an owner-authorised, quota-consuming release gate, not an
+unauthenticated doctor or routine CI probe. Use a bounded temporary directory,
+assert a non-empty expected file signature, and remove the downloaded artifact
+after the check. If the isolated key or approval is unavailable, the migration
+does not flip; fake-adapter coverage is not a substitute. Do not record
+credentials, API keys, cookies, query text, document content, download URLs, or
+downloaded files in test artifacts.
 
 If a Z-Library adapter method exercises an EAPI endpoint not covered by the
 current probe, extend the probe or record why an existing field assertion
@@ -538,9 +584,14 @@ fields remain readable while `source_ref` becomes authoritative. If a caller
 breaks on the new response, restore the old serializer while leaving internal
 adapter routing enabled; do not restore direct-ID acquisition.
 
-After the legacy branch is removed, rollback is a normal revert of the
-adapter-routing stage. The shared file pipeline and search-result-first input
-remain unchanged on both sides of the rollback.
+After the legacy branch is removed, rollback restores a known pre-migration
+revision or reverts the migration stages in reverse dependency order: restore
+Stage 6's removed legacy initialisation/direct branch first, then revert the
+dependent registration, capability-routing, acquisition-routing, adapter, and
+model stages as needed. Reverting only the earlier adapter-routing change after
+Stage 6 is not a valid rollback because that path depends on code Stage 6
+removed. The shared file pipeline and search-result-first input remain
+unchanged on both sides of the rollback.
 
 ## Observability plan
 
@@ -590,17 +641,19 @@ tool nor treats passive failure reporting as a decided replacement.
 
 ## Remaining uncertainty
 
-- #109 has not decided whether passive reporting is sufficient or a separate
-  active health tool remains useful.
+- #109 retained a narrow active-liveness tool rather than a broad health
+  surface. Its implementation remains separate from this adapter migration;
+  #40 must not duplicate routing, quota, or request-failure reporting there.
 - The final public spelling and deprecation window for ordered source input
   must be coordinated with the implementation of #101/#107 and the README
   contract.
 - PR #106 was not merged when this ADR was written; conflict resolution may
   change exact class or function names. The semantic dependencies above remain
   required and must be rechecked against its merged form.
-- #103 is unslotted even though its sequencing constraint is binding. If it is
-  deferred, #40 can proceed through Python stages but must stop before changing
-  TypeScript registration.
+- #103 is now slotted in v1.5 because its sequencing constraint is binding.
+  #40 must still stop before changing TypeScript registration until #103 lands;
+  milestone membership records the dependency but does not make unfinished
+  registration work safe to build against.
 - The EAPI is undocumented. Adapter parity under fake-client tests does not
   predict endpoint drift, domain rotation, authentication throttling, or live
   quota behaviour.
@@ -634,4 +687,4 @@ source-specific conditional to the common path.
 - #101 and #107, implementation of the #96 reporting contract
 - #103, optional dependency packaging and registration sequencing
 - PR #106, bounded source calls, cancellation, and structured failures
-- #109, unresolved health-tool boundary
+- #109, narrow active-liveness health-tool verdict

@@ -356,7 +356,7 @@ class AnnasArchiveAdapter(SourceAdapter):
                 or if the configured
                 base URL's host is not a known Anna's Archive domain (the key is
                 never sent to unverified hosts)
-            Exception: If API returns error or no download_url
+            ProviderResponseError: If the API returns an error or omits download_url
         """
         host = (urlsplit(self.base_url).hostname or "").lower()
         if not self.secret_key:
@@ -400,7 +400,17 @@ class AnnasArchiveAdapter(SourceAdapter):
             )
             data = response.json()
         except httpx.HTTPStatusError as exc:
-            if exc.response.status_code in (401, 403):
+            final_url = urlsplit(str(exc.response.url))
+            final_host = (final_url.hostname or "").lower()
+            is_configured_fast_download_endpoint = (
+                final_host == self.host
+                and final_host in ANNAS_TRUSTED_HOSTS
+                and final_url.path == "/dyn/api/fast_download.json"
+            )
+            if (
+                exc.response.status_code in (401, 403)
+                and is_configured_fast_download_endpoint
+            ):
                 raise ProviderConfigurationError(
                     PROVIDER,
                     self.host,
@@ -413,12 +423,22 @@ class AnnasArchiveAdapter(SourceAdapter):
 
         # Check for API error
         if data.get("error"):
-            raise Exception(f"Anna's Archive API error: {data['error']}")
+            raise ProviderResponseError(
+                PROVIDER,
+                self.host,
+                f"Anna's Archive API error: {data['error']}",
+                reason="http_error",
+            )
 
         # Extract download URL
         download_url = data.get("download_url")
         if not download_url:
-            raise Exception("No download_url in response")
+            raise ProviderResponseError(
+                PROVIDER,
+                self.host,
+                "No download_url in response",
+                reason="protocol_error",
+            )
 
         # Extract quota info if available
         quota_info = None

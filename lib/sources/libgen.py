@@ -214,6 +214,12 @@ class LibgenAdapter(SourceAdapter):
         if isinstance(exc, SourceError):
             return exc
         if isinstance(exc, httpx.HTTPError):
+            try:
+                host = exc.request.url.host or host
+            except RuntimeError:
+                # Some callers construct an httpx error without attaching a
+                # request. Retain the mirror origin as the safe attribution.
+                pass
             reason, detail = classify_httpx_error(exc)
         else:
             reason, detail = classify_requests_error(exc)
@@ -270,6 +276,8 @@ class LibgenAdapter(SourceAdapter):
         ) as response:
             if "/ads.php" in str(response.url):
                 return False, "key expired (bounced to ads.php)"
+            if response.status_code >= 400:
+                response.raise_for_status()
             if response.status_code not in (200, 206):
                 return False, f"HTTP {response.status_code}"
             if "text/html" in response.headers.get("content-type", ""):

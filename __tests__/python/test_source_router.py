@@ -7,6 +7,7 @@ import pytest
 from unittest.mock import AsyncMock, patch
 
 from lib.sources.router import SourceRouter
+from lib.sources.base import SourceAdapter
 from lib.sources.config import SourceConfig
 from lib.sources.models import DownloadResult, QuotaInfo, SourceType, UnifiedBookResult
 from lib.sources.annas import QuotaExhaustedError
@@ -234,6 +235,96 @@ class TestRouterDownload:
 
             assert result.source == SourceType.ANNAS_ARCHIVE
             assert result.quota_info.downloads_left == 24
+
+    @pytest.mark.asyncio
+    async def test_base_candidate_iteration_yields_the_existing_single_result(self):
+        """A single-URL adapter remains compatible with the candidate contract."""
+
+        class SingleAdapter(SourceAdapter):
+            async def search(self, query, **kwargs):
+                return []
+
+            async def get_download_url(self, md5):
+                return DownloadResult(
+                    url=f"https://single.example/{md5}", source=SourceType.LIBGEN
+                )
+
+            async def close(self):
+                pass
+
+        candidates = SingleAdapter().iter_download_candidates("abc")
+
+        assert (await anext(candidates)).url == "https://single.example/abc"
+        with pytest.raises(StopAsyncIteration):
+            await anext(candidates)
+
+    @pytest.mark.asyncio
+    async def test_router_flattens_provider_candidate_streams_in_order(
+        self, config_with_annas
+    ):
+        """Stopping after the first provider candidate would hide later mirrors."""
+        router = SourceRouter(config_with_annas)
+
+        async def annas_candidates(_md5):
+            yield DownloadResult(
+                url="https://annas.example/book", source=SourceType.ANNAS_ARCHIVE
+            )
+
+        async def libgen_candidates(_md5):
+            yield DownloadResult(url="https://libgen.li/book", source=SourceType.LIBGEN)
+            yield DownloadResult(url="https://libgen.vg/book", source=SourceType.LIBGEN)
+
+        router._annas = AsyncMock()
+        router._annas.iter_download_candidates = annas_candidates
+        router._libgen = AsyncMock()
+        router._libgen.iter_download_candidates = libgen_candidates
+
+        results = [
+            candidate
+            async for candidate in router.iter_download_candidates("abc", source="auto")
+        ]
+
+        assert [result.url for result in results] == [
+            "https://annas.example/book",
+            "https://libgen.li/book",
+            "https://libgen.vg/book",
+        ]
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        ("source", "expected_url"),
+        [
+            ("annas", "https://annas.example/book"),
+            ("libgen", "https://libgen.example/book"),
+        ],
+    )
+    async def test_explicit_candidate_iteration_never_crosses_providers(
+        self, config_with_annas, source, expected_url
+    ):
+        """An explicit source selection must never invoke the other adapter."""
+        router = SourceRouter(config_with_annas)
+
+        async def annas_candidates(_md5):
+            yield DownloadResult(
+                url="https://annas.example/book", source=SourceType.ANNAS_ARCHIVE
+            )
+
+        async def libgen_candidates(_md5):
+            yield DownloadResult(
+                url="https://libgen.example/book", source=SourceType.LIBGEN
+            )
+
+        router._annas = AsyncMock()
+        router._annas.iter_download_candidates = annas_candidates
+        router._libgen = AsyncMock()
+        router._libgen.iter_download_candidates = libgen_candidates
+
+        results = [
+            candidate
+            async for candidate in router.iter_download_candidates("abc", source=source)
+        ]
+
+        assert [result.url for result in results] == [expected_url]
 
     @pytest.mark.asyncio
     async def test_fallback_on_quota_exhausted(self, config_with_annas):

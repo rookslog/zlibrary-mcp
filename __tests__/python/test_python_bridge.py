@@ -1,6 +1,7 @@
 # Tests for lib/python_bridge.py (EAPI-based)
 
 import json
+import hashlib
 import pytest
 import os
 import signal
@@ -21,7 +22,13 @@ sys.path.insert(
 )
 
 import python_bridge  # Import the module itself
-from lib.sources.errors import ProviderTimeoutError
+from lib.sources.errors import (
+    AllSourcesFailedError,
+    ProviderResponseError,
+    ProviderTimeoutError,
+    ProviderUnreachableError,
+)
+from lib.sources.models import DownloadResult, SourceType
 
 # Import functions from the module under test
 from python_bridge import (
@@ -471,6 +478,530 @@ class TestBridgeFunctions:
 
 
 class TestDownloadBook:
+    @pytest.mark.asyncio
+    async def test_acquisition_rejects_li_digest_then_accepts_vg_once(
+        self, tmp_path, mocker
+    ):
+        """Probe success cannot make a corrupt li body final or restart li."""
+        good_body = b"%PDF-1.7 matching body"
+        expected_md5 = hashlib.md5(good_body).hexdigest()
+        yielded = []
+
+        async def candidates(_md5, source):
+            for host in ("li", "vg"):
+                yielded.append(host)
+                yield DownloadResult(
+                    url=f"https://libgen.{host}/book", source=SourceType.LIBGEN
+                )
+
+        class Response:
+            headers = {"content-type": "application/pdf"}
+
+            def __init__(self, url):
+                self.url = httpx.URL(url)
+
+            def raise_for_status(self):
+                pass
+
+            async def aiter_bytes(self, _chunk_size):
+                yield b"wrong body" if self.url.host == "libgen.li" else good_body
+
+        class Stream:
+            def __init__(self, url):
+                self.response = Response(url)
+
+            async def __aenter__(self):
+                return self.response
+
+            async def __aexit__(self, *_args):
+                return False
+
+        class Client:
+            def __init__(self, **_kwargs):
+                pass
+
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, *_args):
+                return False
+
+            def stream(self, _method, url):
+                return Stream(url)
+
+        preexisting = tmp_path / f"{expected_md5}.download"
+        preexisting.write_bytes(b"keep")
+        unrelated = tmp_path / "unrelated.bin"
+        unrelated.write_bytes(b"also keep")
+        router = SimpleNamespace(iter_download_candidates=candidates)
+        mocker.patch(
+            "python_bridge.get_source_router", new=AsyncMock(return_value=router)
+        )
+        mocker.patch("httpx.AsyncClient", Client)
+
+        result = await python_bridge._fetch_from_source(
+            {"md5": expected_md5.upper(), "source": "libgen"}, str(tmp_path)
+        )
+
+        assert Path(result).read_bytes() == good_body
+        assert Path(result).suffix == ".pdf"
+        assert yielded == ["li", "vg"]
+        assert preexisting.read_bytes() == b"keep"
+        assert unrelated.read_bytes() == b"also keep"
+        assert not [path for path in tmp_path.iterdir() if path.suffix == ".part"]
+
+    @pytest.mark.asyncio
+    async def test_integrity_mismatch_names_expected_actual_and_final_cdn_host(
+        self, tmp_path, mocker
+    ):
+        """Changing digest comparison or redirect attribution breaks the envelope."""
+        body = b"not the requested book"
+        expected = "0" * 32
+
+        class Response:
+            url = httpx.URL("https://cdn-vg.booksdl.test/book")
+            headers = {"content-type": "application/pdf"}
+
+            def raise_for_status(self):
+                pass
+
+            async def aiter_bytes(self, _chunk_size):
+                yield body
+
+        class Stream:
+            async def __aenter__(self):
+                return Response()
+
+            async def __aexit__(self, *_args):
+                return False
+
+        class Client:
+            def __init__(self, **_kwargs):
+                pass
+
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, *_args):
+                return False
+
+            def stream(self, *_args):
+                return Stream()
+
+        mocker.patch("httpx.AsyncClient", Client)
+
+        with pytest.raises(Exception) as excinfo:
+            await python_bridge._download_url_to_file(
+                "https://libgen.vg/get", str(tmp_path), expected, "libgen"
+            )
+
+        failure = excinfo.value
+        assert failure.reason == "integrity_mismatch"
+        assert failure.host == "cdn-vg.booksdl.test"
+        assert f"expected={expected}" in failure.detail
+        assert f"actual={hashlib.md5(body).hexdigest()}" in failure.detail
+        assert list(tmp_path.iterdir()) == []
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        ("headers", "final_url", "body", "expected_suffix"),
+        [
+            (
+                {"content-disposition": 'attachment; filename="safe-book.epub"'},
+                "https://cdn.example/get",
+                b"PK\x03\x04mimetypeapplication/epub+zip",
+                ".epub",
+            ),
+            (
+                {"content-type": "application/octet-stream"},
+                "https://cdn.example/redirected-book.pdf?token=1",
+                b"%PDF-1.7 url evidence",
+                ".pdf",
+            ),
+            (
+                {"content-type": "application/pdf"},
+                "https://cdn.example/get",
+                b"not a signature but declared pdf",
+                ".pdf",
+            ),
+            (
+                {"content-type": "text/plain; charset=utf-8"},
+                "https://cdn.example/get",
+                b"plain text evidence",
+                ".txt",
+            ),
+            (
+                {"content-type": "application/octet-stream"},
+                "https://cdn.example/get.download",
+                b"%PDF-1.7 signature evidence",
+                ".pdf",
+            ),
+            (
+                {"content-type": "application/octet-stream"},
+                "https://cdn.example/get.part",
+                b"\x00\x01unknown binary",
+                "",
+            ),
+        ],
+    )
+    async def test_transfer_recovers_safe_extension_from_response_evidence(
+        self, headers, final_url, body, expected_suffix, tmp_path, mocker
+    ):
+        """Dropping response evidence would hand RAG a .part/.download path."""
+        digest = hashlib.md5(body).hexdigest()
+
+        class Response:
+            url = httpx.URL(final_url)
+
+            def raise_for_status(self):
+                pass
+
+            async def aiter_bytes(self, _chunk_size):
+                yield body
+
+        Response.headers = headers
+
+        class Stream:
+            async def __aenter__(self):
+                return Response()
+
+            async def __aexit__(self, *_args):
+                return False
+
+        class Client:
+            def __init__(self, **_kwargs):
+                pass
+
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, *_args):
+                return False
+
+            def stream(self, *_args):
+                return Stream()
+
+        mocker.patch("httpx.AsyncClient", Client)
+
+        result = await python_bridge._download_url_to_file(
+            "https://mirror.example/get", str(tmp_path), digest, "libgen"
+        )
+
+        assert Path(result).suffix == expected_suffix
+        assert Path(result).read_bytes() == body
+
+    @pytest.mark.asyncio
+    async def test_all_candidate_transfer_failures_are_ordered_and_unique(
+        self, tmp_path, mocker
+    ):
+        """A failed candidate walk must retain one envelope per definitive attempt."""
+
+        async def candidates(_md5, source):
+            for host in ("li", "vg", "la"):
+                yield DownloadResult(
+                    url=f"https://cdn-{host}.example/book", source=SourceType.LIBGEN
+                )
+
+        class Stream:
+            def __init__(self, url):
+                self.url = url
+
+            async def __aenter__(self):
+                request = httpx.Request("GET", self.url)
+                raise httpx.ConnectError("offline", request=request)
+
+            async def __aexit__(self, *_args):
+                return False
+
+        class Client:
+            def __init__(self, **_kwargs):
+                pass
+
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, *_args):
+                return False
+
+            def stream(self, _method, url):
+                return Stream(url)
+
+        mocker.patch(
+            "python_bridge.get_source_router",
+            new=AsyncMock(
+                return_value=SimpleNamespace(iter_download_candidates=candidates)
+            ),
+        )
+        mocker.patch("httpx.AsyncClient", Client)
+
+        with pytest.raises(AllSourcesFailedError) as excinfo:
+            await python_bridge._fetch_from_source(
+                {"md5": "0" * 32, "source": "libgen"}, str(tmp_path)
+            )
+
+        assert [failure.host for failure in excinfo.value.failures] == [
+            "cdn-li.example",
+            "cdn-vg.example",
+            "cdn-la.example",
+        ]
+        assert len({str(failure) for failure in excinfo.value.failures}) == 3
+
+    @pytest.mark.asyncio
+    async def test_transfer_and_resolution_failures_share_ordered_aggregate(
+        self, tmp_path, mocker
+    ):
+        """Resolution failures after a transfer attempt cannot disappear."""
+
+        async def candidates(_md5, source):
+            yield DownloadResult(
+                url="https://cdn-li.example/book", source=SourceType.LIBGEN
+            )
+            raise AllSourcesFailedError(
+                "download resolution",
+                [
+                    ProviderResponseError(
+                        "libgen", "libgen.vg", "no GET link", reason="protocol_error"
+                    ),
+                    ProviderUnreachableError(
+                        "libgen", "libgen.la", "offline", reason="connect_error"
+                    ),
+                ],
+            )
+
+        class Stream:
+            async def __aenter__(self):
+                request = httpx.Request("GET", "https://cdn-li.example/book")
+                raise httpx.ConnectError("offline", request=request)
+
+            async def __aexit__(self, *_args):
+                return False
+
+        class Client:
+            def __init__(self, **_kwargs):
+                pass
+
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, *_args):
+                return False
+
+            def stream(self, *_args):
+                return Stream()
+
+        mocker.patch(
+            "python_bridge.get_source_router",
+            new=AsyncMock(
+                return_value=SimpleNamespace(iter_download_candidates=candidates)
+            ),
+        )
+        mocker.patch("httpx.AsyncClient", Client)
+
+        with pytest.raises(AllSourcesFailedError) as excinfo:
+            await python_bridge._fetch_from_source(
+                {"md5": "0" * 32, "source": "libgen"}, str(tmp_path)
+            )
+
+        assert [failure.host for failure in excinfo.value.failures] == [
+            "cdn-li.example",
+            "libgen.vg",
+            "libgen.la",
+        ]
+
+    @pytest.mark.asyncio
+    async def test_auto_advances_provider_after_libgen_transfer_failure(
+        self, tmp_path, mocker
+    ):
+        """Only auto may continue from exhausted LibGen candidates to Anna's."""
+        good_body = b"%PDF-1.7 Anna fallback"
+        digest = hashlib.md5(good_body).hexdigest()
+        attempted = []
+
+        async def candidates(_md5, source):
+            assert source == "auto"
+            yield DownloadResult(
+                url="https://libgen.example/book", source=SourceType.LIBGEN
+            )
+            yield DownloadResult(
+                url="https://annas.example/book", source=SourceType.ANNAS_ARCHIVE
+            )
+
+        class Response:
+            headers = {"content-type": "application/pdf"}
+
+            def __init__(self, url):
+                self.url = httpx.URL(url)
+                attempted.append(self.url.host)
+
+            def raise_for_status(self):
+                pass
+
+            async def aiter_bytes(self, _chunk_size):
+                yield b"wrong" if self.url.host == "libgen.example" else good_body
+
+        class Stream:
+            def __init__(self, url):
+                self.url = url
+
+            async def __aenter__(self):
+                return Response(self.url)
+
+            async def __aexit__(self, *_args):
+                return False
+
+        class Client:
+            def __init__(self, **_kwargs):
+                pass
+
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, *_args):
+                return False
+
+            def stream(self, _method, url):
+                return Stream(url)
+
+        mocker.patch(
+            "python_bridge.get_source_router",
+            new=AsyncMock(
+                return_value=SimpleNamespace(iter_download_candidates=candidates)
+            ),
+        )
+        mocker.patch("httpx.AsyncClient", Client)
+
+        result = await python_bridge._fetch_from_source(
+            {"md5": digest, "source": "auto"}, str(tmp_path)
+        )
+
+        assert Path(result).read_bytes() == good_body
+        assert attempted == ["libgen.example", "annas.example"]
+
+    @pytest.mark.asyncio
+    async def test_one_outer_budget_stops_before_later_candidates(
+        self, tmp_path, mocker
+    ):
+        """A fresh full timeout per mirror would start vg after li consumed the budget."""
+        started = []
+
+        async def candidates(_md5, source):
+            for host in ("li", "vg"):
+                started.append(host)
+                yield DownloadResult(
+                    url=f"https://{host}.example/book", source=SourceType.LIBGEN
+                )
+
+        class Response:
+            url = httpx.URL("https://li.example/book")
+            headers = {"content-type": "application/pdf"}
+
+            def raise_for_status(self):
+                pass
+
+            async def aiter_bytes(self, _chunk_size):
+                yield b"partial"
+                await asyncio.sleep(1)
+
+        class Stream:
+            async def __aenter__(self):
+                return Response()
+
+            async def __aexit__(self, *_args):
+                return False
+
+        class Client:
+            def __init__(self, **_kwargs):
+                pass
+
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, *_args):
+                return False
+
+            def stream(self, *_args):
+                return Stream()
+
+        config = python_bridge.get_source_config()
+        config.download_timeout = 0.03
+        mocker.patch("python_bridge.get_source_config", return_value=config)
+        mocker.patch(
+            "python_bridge.get_source_router",
+            new=AsyncMock(
+                return_value=SimpleNamespace(iter_download_candidates=candidates)
+            ),
+        )
+        mocker.patch("httpx.AsyncClient", Client)
+
+        with pytest.raises(ProviderTimeoutError):
+            await python_bridge._fetch_from_source(
+                {"md5": "0" * 32, "source": "libgen"}, str(tmp_path)
+            )
+
+        assert started == ["li"]
+        assert not [path for path in tmp_path.iterdir() if path.suffix == ".part"]
+
+    @pytest.mark.asyncio
+    async def test_cancelled_transfer_removes_only_its_unique_attempt(
+        self, tmp_path, mocker
+    ):
+        """Cancellation cannot delete fixed-name or unrelated artifacts."""
+        started = asyncio.Event()
+        expected = "0" * 32
+        preexisting = tmp_path / f"{expected}.download"
+        preexisting.write_bytes(b"preexisting")
+        unrelated = tmp_path / "other.part"
+        unrelated.write_bytes(b"other attempt")
+
+        class Response:
+            url = httpx.URL("https://cdn.example/book")
+            headers = {"content-type": "application/pdf"}
+
+            def raise_for_status(self):
+                pass
+
+            async def aiter_bytes(self, _chunk_size):
+                yield b"partial"
+                started.set()
+                await asyncio.sleep(30)
+
+        class Stream:
+            async def __aenter__(self):
+                return Response()
+
+            async def __aexit__(self, *_args):
+                return False
+
+        class Client:
+            def __init__(self, **_kwargs):
+                pass
+
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, *_args):
+                return False
+
+            def stream(self, *_args):
+                return Stream()
+
+        mocker.patch("httpx.AsyncClient", Client)
+        task = asyncio.create_task(
+            python_bridge._download_url_to_file(
+                "https://mirror.example/book", str(tmp_path), expected, "libgen"
+            )
+        )
+        await started.wait()
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+
+        assert preexisting.read_bytes() == b"preexisting"
+        assert unrelated.read_bytes() == b"other attempt"
+        assert sorted(path.name for path in tmp_path.iterdir()) == sorted(
+            [preexisting.name, unrelated.name]
+        )
+
     @pytest.mark.skipif(os.name == "nt", reason="POSIX signal semantics")
     def test_sigterm_cancels_dispatch_and_removes_partial_download(self, tmp_path):
         """SIGTERM must unwind cleanup in the production EAPI download method."""
@@ -580,14 +1111,14 @@ asyncio.run(python_bridge.main())
     @pytest.mark.asyncio
     async def test_annas_transfer_uses_canonical_provider_name(self, tmp_path, mocker):
         """Transfer failures use `annas`, while success models retain their enum."""
-        router = SimpleNamespace(
-            get_download_url=AsyncMock(
-                return_value=SimpleNamespace(
-                    url="https://cdn.example/book",
-                    source=SimpleNamespace(value="annas_archive"),
-                )
+
+        async def candidates(_md5, source):
+            yield SimpleNamespace(
+                url="https://cdn.example/book",
+                source=SimpleNamespace(value="annas_archive"),
             )
-        )
+
+        router = SimpleNamespace(iter_download_candidates=candidates)
         transfer = mocker.patch(
             "python_bridge._download_url_to_file",
             new=AsyncMock(return_value="book.pdf"),
@@ -646,11 +1177,14 @@ asyncio.run(python_bridge.main())
         mocker.patch("python_bridge.get_source_config", return_value=config)
         mocker.patch("httpx.AsyncClient", SlowClient)
 
+        body = b"%PDF slow but valid"
+        digest = hashlib.md5(body).hexdigest()
+
         result = await python_bridge._download_url_to_file(
-            "https://mirror.example/get", str(tmp_path), "slow-valid", "libgen"
+            "https://mirror.example/get", str(tmp_path), digest, "libgen"
         )
 
-        assert Path(result).read_bytes() == b"%PDF slow but valid"
+        assert Path(result).read_bytes() == body
 
     @pytest.mark.asyncio
     async def test_transfer_exceeding_download_budget_is_typed_and_cleans_partial(
@@ -700,13 +1234,13 @@ asyncio.run(python_bridge.main())
             await python_bridge._download_url_to_file(
                 "https://mirror.example/get",
                 str(tmp_path),
-                "over-budget",
+                "0" * 32,
                 "libgen",
             )
 
         assert excinfo.value.reason == "read_timeout"
         assert excinfo.value.host == "cdn.example"
-        assert not (tmp_path / "over-budget.download").exists()
+        assert not [path for path in tmp_path.iterdir() if path.suffix == ".part"]
 
     @pytest.mark.asyncio
     @pytest.mark.parametrize(
@@ -768,14 +1302,10 @@ asyncio.run(python_bridge.main())
             def stream(self, *_args, **_kwargs):
                 return FakeStream()
 
-        router = SimpleNamespace(
-            get_download_url=AsyncMock(
-                return_value=SimpleNamespace(
-                    url="https://cdn.example/book", source="libgen"
-                )
-            ),
-            close=AsyncMock(),
-        )
+        async def candidates(_md5, source):
+            yield SimpleNamespace(url="https://cdn.example/book", source="libgen")
+
+        router = SimpleNamespace(iter_download_candidates=candidates, close=AsyncMock())
         config = python_bridge.get_source_config()
         config.total_timeout = 0.03
         config.download_timeout = 0.03
@@ -807,11 +1337,98 @@ asyncio.run(python_bridge.main())
             await main()
 
         envelope = json.loads(capsys.readouterr().err.strip().splitlines()[-1])
-        assert envelope["details"]["provider"] == "libgen"
-        assert envelope["details"]["host"] == "cdn.example"
-        assert envelope["details"]["reason"] == expected_reason
+        failure_envelope = (
+            envelope["details"]
+            if failure == "trickle"
+            else envelope["details"]["failures"][0]
+        )
+        assert failure_envelope["provider"] == "libgen"
+        assert failure_envelope["host"] == "cdn.example"
+        assert failure_envelope["reason"] == expected_reason
         assert envelope["details"]["operation"] == "download"
         assert not (tmp_path / "0123456789abcdef0123456789abcdef.download").exists()
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        ("headers", "declared_extension", "expected_extension"),
+        [
+            (
+                {"content-disposition": 'attachment; filename="actual.epub"'},
+                "pdf",
+                ".epub",
+            ),
+            ({"content-type": "application/pdf"}, "epub", ".epub"),
+        ],
+    )
+    async def test_extension_evidence_precedence_reaches_final_boundary(
+        self,
+        headers,
+        declared_extension,
+        expected_extension,
+        tmp_path,
+        mocker,
+    ):
+        """Strong response names outrank metadata; metadata outranks MIME inference."""
+        body = b"%PDF-1.7 extension precedence"
+        digest = hashlib.md5(body).hexdigest()
+
+        async def candidates(_md5, source):
+            yield DownloadResult(
+                url="https://mirror.example/get", source=SourceType.LIBGEN
+            )
+
+        class Response:
+            url = httpx.URL("https://cdn.example/get")
+
+            def raise_for_status(self):
+                pass
+
+            async def aiter_bytes(self, _chunk_size):
+                yield body
+
+        Response.headers = headers
+
+        class Stream:
+            async def __aenter__(self):
+                return Response()
+
+            async def __aexit__(self, *_args):
+                return False
+
+        class Client:
+            def __init__(self, **_kwargs):
+                pass
+
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, *_args):
+                return False
+
+            def stream(self, *_args):
+                return Stream()
+
+        mocker.patch(
+            "python_bridge.get_source_router",
+            new=AsyncMock(
+                return_value=SimpleNamespace(iter_download_candidates=candidates)
+            ),
+        )
+        mocker.patch("httpx.AsyncClient", Client)
+
+        result = await download_book(
+            book_details={
+                "md5": digest,
+                "source": "libgen",
+                "title": "Evidence",
+                "extension": declared_extension,
+            },
+            output_dir=str(tmp_path),
+        )
+
+        final_path = Path(result["file_path"])
+        assert final_path.exists()
+        assert final_path.suffix == expected_extension
 
     @pytest.mark.asyncio
     async def test_redirected_partial_read_timeout_attributes_the_cdn_host(
@@ -851,14 +1468,10 @@ asyncio.run(python_bridge.main())
             def stream(self, *_args, **_kwargs):
                 return FakeStream()
 
-        router = SimpleNamespace(
-            get_download_url=AsyncMock(
-                return_value=SimpleNamespace(
-                    url="https://mirror.example/get", source="libgen"
-                )
-            ),
-            close=AsyncMock(),
-        )
+        async def candidates(_md5, source):
+            yield SimpleNamespace(url="https://mirror.example/get", source="libgen")
+
+        router = SimpleNamespace(iter_download_candidates=candidates, close=AsyncMock())
         mocker.patch(
             "python_bridge.get_source_router", new=AsyncMock(return_value=router)
         )
@@ -885,8 +1498,9 @@ asyncio.run(python_bridge.main())
             await main()
 
         envelope = json.loads(capsys.readouterr().err.strip().splitlines()[-1])
-        assert envelope["details"]["host"] == "cdn.example"
-        assert envelope["details"]["reason"] == "read_timeout"
+        failure_envelope = envelope["details"]["failures"][0]
+        assert failure_envelope["host"] == "cdn.example"
+        assert failure_envelope["reason"] == "read_timeout"
         assert envelope["details"]["operation"] == "download"
         assert not (tmp_path / "0123456789abcdef0123456789abcdef.download").exists()
 
@@ -953,6 +1567,45 @@ asyncio.run(python_bridge.main())
         initialize.assert_not_awaited()
         fetch.assert_awaited_once()
         assert result["file_path"].endswith("libgen-book.pdf")
+
+    @pytest.mark.asyncio
+    async def test_empty_declared_extension_uses_recovered_path_at_rag_boundary(
+        self, tmp_path, mocker
+    ):
+        """Whitespace metadata cannot erase a response-supported EPUB suffix."""
+        raw_path = tmp_path / ".source-attempt.epub"
+        raw_path.write_bytes(b"PK\x03\x04mimetypeapplication/epub+zip")
+        mocker.patch(
+            "python_bridge._fetch_from_source",
+            new=AsyncMock(return_value=str(raw_path)),
+        )
+
+        async def process_real_boundary(file_path_str, **_kwargs):
+            boundary_path = Path(file_path_str)
+            assert boundary_path.exists()
+            assert boundary_path.suffix == ".epub"
+            return {"processed_file_path": str(boundary_path) + ".processed.txt"}
+
+        mocker.patch(
+            "python_bridge.process_document", side_effect=process_real_boundary
+        )
+
+        result = await download_book(
+            book_details={
+                "md5": "a" * 32,
+                "source": "annas_archive",
+                "author": "Test Author",
+                "title": "Recovered Extension",
+                "extension": "   ",
+            },
+            output_dir=str(tmp_path),
+            process_for_rag=True,
+        )
+
+        final_path = Path(result["file_path"])
+        assert final_path.exists()
+        assert final_path.suffix == ".epub"
+        assert final_path.name.endswith(f"_{'a' * 32}.epub")
 
     @pytest.mark.asyncio
     async def test_download_book_success(

@@ -8,7 +8,7 @@ to avoid being blocked.
 import asyncio
 import logging
 import time
-from typing import List, Optional
+from typing import AsyncIterator, List, Optional
 from urllib.parse import parse_qs, urljoin, urlparse
 
 import httpx
@@ -294,11 +294,12 @@ class LibgenAdapter(SourceAdapter):
             cdn = urlparse(str(response.url)).hostname or "?"
             return True, cdn
 
-    async def get_download_url(self, md5: str) -> DownloadResult:
-        """Resolve a clearnet download URL for a book by MD5 hash.
+    async def iter_download_candidates(self, md5: str) -> AsyncIterator[DownloadResult]:
+        """Yield one working clearnet candidate per unique mirror.
 
-        Walks `_mirror_candidates()` and returns the first mirror that yields a
-        key. The previous implementation looked the book up with
+        Walks `_mirror_candidates()` and yields each mirror that resolves and
+        serves probe bytes, resuming at the next mirror when the consumer asks
+        again. The previous implementation looked the book up with
         `search_title(md5)`, but LibGen's title index contains no md5 strings,
         so that returned nothing and this method raised for every input — it
         had never worked against the live service (the unit suite mocks
@@ -311,11 +312,9 @@ class LibgenAdapter(SourceAdapter):
         Args:
             md5: MD5 hash identifying the book
 
-        Returns:
-            DownloadResult with URL and no quota_info (LibGen has no quota)
-
         Raises:
-            AllSourcesFailedError: If no mirror yields a working download URL
+            AllSourcesFailedError: With the ordered mirror-resolution failures
+                after all candidates have been consumed
         """
         failures: List[SourceError] = []
 
@@ -375,13 +374,22 @@ class LibgenAdapter(SourceAdapter):
                 logger.info(
                     f"LibGen download resolved on mirror {mirror} via {detail} for {md5}"
                 )
-                return DownloadResult(
+                yield DownloadResult(
                     url=url,
                     source=SourceType.LIBGEN,
                     quota_info=None,  # LibGen has no quota
                 )
 
-        raise AllSourcesFailedError("download", failures)
+        if failures:
+            raise AllSourcesFailedError("download resolution", failures)
+
+    async def get_download_url(self, md5: str) -> DownloadResult:
+        """Return the first candidate for compatibility with existing callers."""
+        candidates = self.iter_download_candidates(md5)
+        try:
+            return await anext(candidates)
+        finally:
+            await candidates.aclose()
 
     async def close(self) -> None:
         """Clean up resources.

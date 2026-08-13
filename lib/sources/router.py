@@ -10,7 +10,8 @@ Key decisions:
 """
 
 import logging
-from typing import List, Literal, Optional
+import inspect
+from typing import AsyncIterator, List, Literal, Optional
 
 from .annas import AnnasArchiveAdapter, QuotaExhaustedError
 from .config import SourceConfig, get_source_config
@@ -228,21 +229,47 @@ class SourceRouter:
             SourceError: If the only candidate's quota is exhausted
             AllSourcesFailedError: If every candidate provider failed
         """
+        stream = self.iter_download_candidates(md5, source=source)
+        try:
+            try:
+                return await anext(stream)
+            except AllSourcesFailedError as exc:
+                if (
+                    len(exc.failures) == 1
+                    and exc.failures[0].reason == "quota_exhausted"
+                ):
+                    raise exc.failures[0] from exc
+                raise
+        finally:
+            await stream.aclose()
+
+    async def iter_download_candidates(
+        self,
+        md5: str,
+        source: SourceSelection = "auto",
+    ) -> AsyncIterator[DownloadResult]:
+        """Flatten candidate streams, crossing providers only for ``auto``."""
         candidates = self._download_candidates(source)
         failures: List[SourceError] = []
-        quota_error: Optional[QuotaExhaustedError] = None
 
         for name in candidates:
             try:
-                result = await self._adapter_for(name).get_download_url(md5)
-                # A response that reports zero downloads left is a failure to
-                # act on, not a result to return: the URL it carries will not
-                # serve bytes.
-                if result.quota_info and result.quota_info.downloads_left == 0:
-                    raise QuotaExhaustedError(f"{name} quota exhausted")
-                return result
+                adapter = self._adapter_for(name)
+                candidate_method = getattr(adapter, "iter_download_candidates", None)
+                if candidate_method and inspect.isasyncgenfunction(candidate_method):
+                    provider_stream = candidate_method(md5)
+                else:
+
+                    async def single_candidate():
+                        yield await adapter.get_download_url(md5)
+
+                    provider_stream = single_candidate()
+
+                async for result in provider_stream:
+                    if result.quota_info and result.quota_info.downloads_left == 0:
+                        raise QuotaExhaustedError(f"{name} quota exhausted")
+                    yield result
             except QuotaExhaustedError as exc:
-                quota_error = exc
                 failures.append(
                     SourceError(name, detail=str(exc), reason="quota_exhausted")
                 )
@@ -259,13 +286,8 @@ class SourceRouter:
                 )
                 logger.warning(f"{name} download failed: {exc}")
 
-        # With a single candidate, quota exhaustion is the whole story. Keep
-        # the recorded SourceError so the canonical bridge envelope retains
-        # provider and reason instead of rethrowing the adapter-only exception.
-        if quota_error is not None and len(candidates) == 1:
-            raise failures[0]
-
-        raise AllSourcesFailedError("download", failures)
+        if failures:
+            raise AllSourcesFailedError("download", failures)
 
     async def close(self) -> None:
         """Clean up all adapter resources."""

@@ -192,6 +192,44 @@ class TestCreateUnifiedFilename:
         # Should truncate to fit within max_total_length + extension
         assert len(result) <= 110  # 100 + ".pdf" + some buffer
 
+    @pytest.mark.parametrize(
+        ("book_details", "identity"),
+        [
+            ({"id": "42", "md5": "a" * 32}, "42"),
+            ({"id": "", "md5": "b" * 32}, "b" * 32),
+            ({"id": "   ", "md5": "c" * 32}, "c" * 32),
+            ({"id": "", "md5": ""}, "NoID"),
+        ],
+    )
+    def test_filename_identity_prefers_id_then_md5_then_noid(
+        self, book_details, identity
+    ):
+        """Removing identity precedence would collide source search results."""
+        details = {"author": "Same Author", "title": "Same Title", **book_details}
+
+        result = create_unified_filename(details)
+
+        assert result == f"AuthorSame_SameTitle_{identity}"
+
+    def test_distinct_md5_values_disambiguate_identical_metadata(self):
+        """Two source records with equal metadata but different content stay distinct."""
+        common = {"author": "Same Author", "title": "Same Title", "id": ""}
+
+        first = create_unified_filename({**common, "md5": "a" * 32})
+        second = create_unified_filename({**common, "md5": "b" * 32})
+
+        assert first != second
+
+    @pytest.mark.parametrize("extension", ["", "   ", ".  "])
+    def test_empty_extension_does_not_add_trailing_dot(self, extension):
+        """Whitespace-only metadata is missing extension evidence, not a suffix."""
+        result = create_unified_filename(
+            {"author": "Test Author", "title": "Book", "id": "7"},
+            extension=extension,
+        )
+
+        assert result == "AuthorTest_Book_7"
+
 
 class TestCreateMetadataFilename:
     """Test metadata filename generation."""

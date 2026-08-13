@@ -230,6 +230,31 @@ class TestLibgenAdapterDownload:
         assert result.quota_info is None  # LibGen has no quota
 
     @pytest.mark.asyncio
+    async def test_candidate_iteration_resumes_at_the_next_unique_mirror(self, adapter):
+        """Restarting the mirror walk would retry li after its full transfer failed."""
+        ads_hosts = []
+
+        def handler(request):
+            if "ads.php" in request.url.path:
+                ads_hosts.append(request.url.host)
+                return httpx.Response(200, text=ADS_PAGE_WITH_KEY)
+            return httpx.Response(
+                206,
+                content=PDF_BYTES,
+                headers={"content-type": "application/octet-stream"},
+            )
+
+        with self._patched_client(handler):
+            candidates = adapter.iter_download_candidates(MD5)
+            first = await anext(candidates)
+            second = await anext(candidates)
+            await candidates.aclose()
+
+        assert first.url.startswith("https://libgen.li/")
+        assert second.url.startswith("https://libgen.vg/")
+        assert ads_hosts == ["libgen.li", "libgen.vg"]
+
+    @pytest.mark.asyncio
     async def test_falls_over_when_a_mirror_errors(self, adapter):
         """A mirror that fails at the network level is skipped, not fatal."""
         seen = []

@@ -885,6 +885,24 @@ describe('python-runner Linux procfs liveness', () => {
     ).toBe(false);
   });
 
+  test('does not let an unrelated denied stat pin a readable zombie-only group', async () => {
+    const mod = await import('../lib/python-runner.js');
+    const denied = Object.assign(new Error('EACCES: permission denied, open stat'), {
+      code: 'EACCES',
+    });
+
+    expect(
+      mod.linuxProcessGroupPossiblyAlive(
+        processGroup,
+        () => ['99', '100'],
+        (entry) => {
+          if (entry === '99') throw denied;
+          return procStat(100, 'Z');
+        },
+      ),
+    ).toBe(false);
+  });
+
   test('ignores a proc entry that exits during an otherwise readable zombie-only scan', async () => {
     const mod = await import('../lib/python-runner.js');
     const disappeared = Object.assign(new Error('ENOENT: process exited'), { code: 'ENOENT' });

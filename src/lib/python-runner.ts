@@ -144,7 +144,8 @@ export function linuxProcessGroupPossiblyAlive(
   readStat: (entry: string) => string = (entry) => readFileSync(`/proc/${entry}/stat`, 'utf8'),
 ): boolean {
   try {
-    let scanUncertain = false;
+    let sawUnreadableEntry = false;
+    let sawTargetGroupMember = false;
     for (const entry of listEntries()) {
       if (!/^\d+$/.test(entry)) continue;
       try {
@@ -152,15 +153,22 @@ export function linuxProcessGroupPossiblyAlive(
         const fields = stat.slice(stat.lastIndexOf(')') + 2).split(' ');
         const state = fields[0];
         const processGroup = Number(fields[2]);
-        if (processGroup === pid && state !== 'Z') return true;
+        if (processGroup === pid) {
+          sawTargetGroupMember = true;
+          if (state !== 'Z') return true;
+        }
       } catch (error) {
         // A vanished entry is the ordinary list/stat race. Other failures may
         // be permission denial, so preserve ownership until a later readable
         // scan can show the group is gone or zombie-only.
-        if ((error as NodeJS.ErrnoException).code !== 'ENOENT') scanUncertain = true;
+        if ((error as NodeJS.ErrnoException).code !== 'ENOENT') sawUnreadableEntry = true;
       }
     }
-    return scanUncertain;
+    // procfs cannot reveal the group of an unreadable entry. Treat that as
+    // possibly hiding this group only when no target member was readable at
+    // all; otherwise one unrelated restricted entry would pin a group whose
+    // readable members are all zombies forever.
+    return sawUnreadableEntry && !sawTargetGroupMember;
   } catch {
     // kill(0) already established that the group may exist. Unavailable or
     // unreadable procfs cannot safely contradict that kernel liveness result.

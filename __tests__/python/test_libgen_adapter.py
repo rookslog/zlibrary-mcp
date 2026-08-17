@@ -230,6 +230,31 @@ class TestLibgenAdapterDownload:
         assert result.quota_info is None  # LibGen has no quota
 
     @pytest.mark.asyncio
+    async def test_candidate_iteration_resumes_at_the_next_unique_mirror(self, adapter):
+        """Restarting the mirror walk would retry li after its full transfer failed."""
+        ads_hosts = []
+
+        def handler(request):
+            if "ads.php" in request.url.path:
+                ads_hosts.append(request.url.host)
+                return httpx.Response(200, text=ADS_PAGE_WITH_KEY)
+            return httpx.Response(
+                206,
+                content=PDF_BYTES,
+                headers={"content-type": "application/octet-stream"},
+            )
+
+        with self._patched_client(handler):
+            candidates = adapter.iter_download_candidates(MD5)
+            first = await anext(candidates)
+            second = await anext(candidates)
+            await candidates.aclose()
+
+        assert first.url.startswith("https://libgen.li/")
+        assert second.url.startswith("https://libgen.vg/")
+        assert ads_hosts == ["libgen.li", "libgen.vg"]
+
+    @pytest.mark.asyncio
     async def test_falls_over_when_a_mirror_errors(self, adapter):
         """A mirror that fails at the network level is skipped, not fatal."""
         seen = []
@@ -290,12 +315,16 @@ class TestLibgenAdapterDownload:
         class LargeBookStream(httpx.AsyncByteStream):
             def __init__(self):
                 self.chunks_read = 0
+                self.closed = False
 
             async def __aiter__(self):
                 for index in range(64):
                     self.chunks_read += 1
                     prefix = b"%PDF" if index == 0 else b"xxxx"
                     yield prefix + (b"x" * 1020)
+
+            async def aclose(self):
+                self.closed = True
 
         body = LargeBookStream()
 
@@ -313,6 +342,85 @@ class TestLibgenAdapterDownload:
 
         assert result.url.startswith("https://libgen.li/")
         assert body.chunks_read <= 3
+        assert body.closed is True
+
+    @pytest.mark.asyncio
+    async def test_redirected_http_error_retains_cdn_host_and_closes_stream(
+        self, adapter
+    ):
+        """An HTTP response from a redirected CDN is typed and closed early."""
+
+        class ErrorStream(httpx.AsyncByteStream):
+            def __init__(self):
+                self.closed = False
+
+            async def __aiter__(self):
+                yield b"upstream unavailable"
+
+            async def aclose(self):
+                self.closed = True
+
+        streams = []
+
+        def handler(request):
+            host = request.url.host
+            if "ads.php" in request.url.path:
+                return httpx.Response(200, text=ADS_PAGE_WITH_KEY)
+            if host.startswith("libgen."):
+                mirror = host.rsplit(".", 1)[-1]
+                return httpx.Response(
+                    307,
+                    headers={"location": f"https://cdn-{mirror}.booksdl.test/book.pdf"},
+                )
+            stream = ErrorStream()
+            streams.append(stream)
+            return httpx.Response(
+                503,
+                stream=stream,
+                headers={"content-type": "text/plain"},
+            )
+
+        with self._patched_client(handler):
+            with pytest.raises(AllSourcesFailedError) as excinfo:
+                await adapter.get_download_url(MD5)
+
+        assert [failure.host for failure in excinfo.value.failures] == [
+            "cdn-li.booksdl.test",
+            "cdn-vg.booksdl.test",
+            "cdn-la.booksdl.test",
+        ]
+        assert {failure.reason for failure in excinfo.value.failures} == {"http_error"}
+        assert len(streams) == 3
+        assert all(stream.closed for stream in streams)
+
+    @pytest.mark.asyncio
+    async def test_redirected_transport_failure_retains_cdn_host(self, adapter):
+        """A redirect target, not its mirror origin, owns transport failure."""
+
+        def handler(request):
+            host = request.url.host
+            if "ads.php" in request.url.path:
+                return httpx.Response(200, text=ADS_PAGE_WITH_KEY)
+            if host.startswith("libgen."):
+                mirror = host.rsplit(".", 1)[-1]
+                return httpx.Response(
+                    307,
+                    headers={"location": f"https://cdn-{mirror}.booksdl.test/book.pdf"},
+                )
+            raise httpx.ConnectTimeout("redirected CDN stalled", request=request)
+
+        with self._patched_client(handler):
+            with pytest.raises(AllSourcesFailedError) as excinfo:
+                await adapter.get_download_url(MD5)
+
+        assert [failure.host for failure in excinfo.value.failures] == [
+            "cdn-li.booksdl.test",
+            "cdn-vg.booksdl.test",
+            "cdn-la.booksdl.test",
+        ]
+        assert {failure.reason for failure in excinfo.value.failures} == {
+            "connect_timeout"
+        }
 
     @pytest.mark.asyncio
     async def test_cdn_transport_failure_retains_its_host_and_reason(self, adapter):
@@ -340,8 +448,29 @@ class TestLibgenAdapterDownload:
     async def test_expired_key_bounce_is_treated_as_failure(self, adapter):
         """An expired key 307s back to ads.php rather than erroring."""
 
+        class BounceStream(httpx.AsyncByteStream):
+            def __init__(self):
+                self.closed = False
+
+            async def __aiter__(self):
+                yield ADS_PAGE_WITH_KEY.encode()
+
+            async def aclose(self):
+                self.closed = True
+
+        bounce_stream = BounceStream()
+        ads_visits = 0
+
         def handler(request):
+            nonlocal ads_visits
             if "ads.php" in request.url.path:
+                ads_visits += 1
+                if ads_visits == 2:
+                    return httpx.Response(
+                        200,
+                        stream=bounce_stream,
+                        headers={"content-type": "text/html"},
+                    )
                 return httpx.Response(200, text=ADS_PAGE_WITH_KEY)
             if request.url.host == "libgen.li":
                 return httpx.Response(
@@ -357,6 +486,7 @@ class TestLibgenAdapterDownload:
             result = await adapter.get_download_url(MD5)
 
         assert result.url.startswith("https://libgen.vg/")
+        assert bounce_stream.closed is True
 
     @pytest.mark.asyncio
     async def test_raises_when_no_mirror_yields_a_key(self, adapter):

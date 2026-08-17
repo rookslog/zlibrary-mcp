@@ -14,8 +14,8 @@ import pytest
 from bs4 import BeautifulSoup
 from unittest.mock import AsyncMock, MagicMock, patch
 
-from lib.sources.models import SourceType
-from lib.sources.errors import ProviderConfigurationError
+from lib.sources.models import QuotaInfo, SourceType
+from lib.sources.errors import ProviderConfigurationError, ProviderResponseError
 
 pytestmark = pytest.mark.unit
 
@@ -278,7 +278,7 @@ class TestAnnasArchiveFastDownload:
 
     @pytest.mark.asyncio
     async def test_get_download_url_raises_on_api_error(self):
-        """get_download_url should raise exception on API error."""
+        """A JSON API error retains Anna's provider, host, and response reason."""
         from lib.sources.annas import AnnasArchiveAdapter
         from lib.sources.config import SourceConfig
 
@@ -298,10 +298,13 @@ class TestAnnasArchiveFastDownload:
             mock_client.get.return_value = mock_response
             mock_get_client.return_value = mock_client
 
-            with pytest.raises(Exception) as exc_info:
+            with pytest.raises(ProviderResponseError) as exc_info:
                 await adapter.get_download_url("invalid_md5")
 
-            assert "Invalid MD5 hash" in str(exc_info.value)
+            assert exc_info.value.provider == "annas"
+            assert exc_info.value.host == "annas-archive.gl"
+            assert exc_info.value.reason == "http_error"
+            assert "Invalid MD5 hash" in exc_info.value.detail
 
         await adapter.close()
 
@@ -326,7 +329,7 @@ class TestAnnasArchiveFastDownload:
 
     @pytest.mark.asyncio
     async def test_get_download_url_raises_on_missing_url(self):
-        """get_download_url should raise exception if no download_url in response."""
+        """A malformed success response retains typed protocol attribution."""
         from lib.sources.annas import AnnasArchiveAdapter
         from lib.sources.config import SourceConfig
 
@@ -347,12 +350,163 @@ class TestAnnasArchiveFastDownload:
             mock_client.get.return_value = mock_response
             mock_get_client.return_value = mock_client
 
-            with pytest.raises(Exception) as exc_info:
+            with pytest.raises(ProviderResponseError) as exc_info:
                 await adapter.get_download_url("abc123def456")
 
-            assert "download_url" in str(exc_info.value).lower()
+            assert exc_info.value.provider == "annas"
+            assert exc_info.value.host == "annas-archive.gl"
+            assert exc_info.value.reason == "protocol_error"
+            assert "download_url" in exc_info.value.detail.lower()
 
         await adapter.close()
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("payload", [[], None], ids=["array", "null"])
+    async def test_get_download_url_rejects_non_object_json(self, payload):
+        """A 2xx JSON body must be an object before fields are inspected."""
+        from lib.sources.annas import AnnasArchiveAdapter
+        from lib.sources.config import SourceConfig
+
+        adapter = AnnasArchiveAdapter(
+            SourceConfig(
+                annas_secret_key="test-secret-key",
+                annas_base_url="https://annas-archive.gl",
+            )
+        )
+        mock_response = MagicMock()
+        mock_response.json.return_value = payload
+        mock_response.raise_for_status = MagicMock()
+
+        with patch.object(adapter, "_get_client") as mock_get_client:
+            mock_client = AsyncMock()
+            mock_client.get.return_value = mock_response
+            mock_get_client.return_value = mock_client
+
+            with pytest.raises(ProviderResponseError) as exc_info:
+                await adapter.get_download_url("abc123def456")
+
+        assert exc_info.value.provider == "annas"
+        assert exc_info.value.host == "annas-archive.gl"
+        assert exc_info.value.reason == "protocol_error"
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        "download_url",
+        ["", "   ", 42, ["https://partner.example/book.pdf"]],
+        ids=["empty", "whitespace", "number", "array"],
+    )
+    async def test_get_download_url_requires_non_empty_string(self, download_url):
+        """Truthy non-string values cannot cross the DownloadResult boundary."""
+        from lib.sources.annas import AnnasArchiveAdapter
+        from lib.sources.config import SourceConfig
+
+        adapter = AnnasArchiveAdapter(
+            SourceConfig(
+                annas_secret_key="test-secret-key",
+                annas_base_url="https://annas-archive.gl",
+            )
+        )
+        mock_response = MagicMock()
+        mock_response.json.return_value = {"download_url": download_url}
+        mock_response.raise_for_status = MagicMock()
+
+        with patch.object(adapter, "_get_client") as mock_get_client:
+            mock_client = AsyncMock()
+            mock_client.get.return_value = mock_response
+            mock_get_client.return_value = mock_client
+
+            with pytest.raises(ProviderResponseError) as exc_info:
+                await adapter.get_download_url("abc123def456")
+
+        assert exc_info.value.provider == "annas"
+        assert exc_info.value.host == "annas-archive.gl"
+        assert exc_info.value.reason == "protocol_error"
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        "account_info",
+        [None, [], "invalid"],
+        ids=["null", "array", "string"],
+    )
+    async def test_get_download_url_rejects_non_object_account_info(self, account_info):
+        """Present quota metadata must be an object before fields are read."""
+        from lib.sources.annas import AnnasArchiveAdapter
+        from lib.sources.config import SourceConfig
+
+        adapter = AnnasArchiveAdapter(
+            SourceConfig(
+                annas_secret_key="test-secret-key",
+                annas_base_url="https://annas-archive.gl",
+            )
+        )
+        mock_response = MagicMock()
+        mock_response.json.return_value = {
+            "download_url": "https://partner.example/book.pdf",
+            "account_fast_download_info": account_info,
+        }
+        mock_response.raise_for_status = MagicMock()
+
+        with patch.object(adapter, "_get_client") as mock_get_client:
+            mock_client = AsyncMock()
+            mock_client.get.return_value = mock_response
+            mock_get_client.return_value = mock_client
+
+            with pytest.raises(ProviderResponseError) as exc_info:
+                await adapter.get_download_url("abc123def456")
+
+        assert exc_info.value.provider == "annas"
+        assert exc_info.value.host == "annas-archive.gl"
+        assert exc_info.value.reason == "protocol_error"
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        "account_info,expected_quota",
+        [
+            ({}, None),
+            ({"downloads_done_today": 2}, None),
+            ({"downloads_per_day": 25, "downloads_done_today": 2}, None),
+            (
+                {"downloads_left": 5, "downloads_per_day": 25, "downloads_done_today": 20},
+                QuotaInfo(downloads_left=5, downloads_per_day=25, downloads_done_today=20),
+            ),
+            (
+                {"downloads_left": 0, "downloads_per_day": 25, "downloads_done_today": 25},
+                QuotaInfo(downloads_left=0, downloads_per_day=25, downloads_done_today=25),
+            ),
+        ],
+        ids=["empty_dict", "partial_done_today", "partial_per_day_and_done", "full_quota_positive", "full_quota_zero"],
+    )
+    async def test_get_download_url_handles_empty_or_partial_quota_info(
+        self, account_info, expected_quota
+    ):
+        """Empty or partial quota info with valid download_url should not default to 0."""
+        from lib.sources.annas import AnnasArchiveAdapter
+        from lib.sources.config import SourceConfig
+        from lib.sources.models import QuotaInfo, SourceType
+
+        adapter = AnnasArchiveAdapter(
+            SourceConfig(
+                annas_secret_key="test-secret-key",
+                annas_base_url="https://annas-archive.gl",
+            )
+        )
+        mock_response = MagicMock()
+        mock_response.json.return_value = {
+            "download_url": "https://partner.example/book.pdf",
+            "account_fast_download_info": account_info,
+        }
+        mock_response.raise_for_status = MagicMock()
+
+        with patch.object(adapter, "_get_client") as mock_get_client:
+            mock_client = AsyncMock()
+            mock_client.get.return_value = mock_response
+            mock_get_client.return_value = mock_client
+
+            result = await adapter.get_download_url("abc123def456")
+
+        assert result.url == "https://partner.example/book.pdf"
+        assert result.source == SourceType.ANNAS_ARCHIVE
+        assert result.quota_info == expected_quota
 
 
 class TestAnnasArchiveAdapterInterface:
@@ -520,7 +674,47 @@ class TestSecretKeyHostAllowlist:
                 await adapter.get_download_url("abc123def456")
 
         assert excinfo.value.provider == "annas"
+        assert excinfo.value.host == "annas-archive.gl"
         assert excinfo.value.reason == "configuration_error"
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        ("status", "location"),
+        [
+            (401, "https://edge.example/challenge"),
+            (403, "https://annas-archive.gl/login"),
+        ],
+    )
+    async def test_redirected_off_endpoint_auth_status_is_not_key_rejection(
+        self, status, location
+    ):
+        """Only the configured keyed endpoint can reject ANNAS_SECRET_KEY."""
+        import httpx
+
+        from lib.sources.annas import AnnasArchiveAdapter
+        from lib.sources.config import SourceConfig
+
+        adapter = AnnasArchiveAdapter(
+            SourceConfig(
+                annas_secret_key="test-key",
+                annas_base_url="https://annas-archive.gl",
+            )
+        )
+
+        def handler(request):
+            if request.url.path == "/dyn/api/fast_download.json":
+                return httpx.Response(302, headers={"location": location})
+            return httpx.Response(status)
+
+        async with httpx.AsyncClient(
+            transport=httpx.MockTransport(handler), follow_redirects=True
+        ) as client:
+            with patch.object(adapter, "_get_client", return_value=client):
+                with pytest.raises(ProviderResponseError) as excinfo:
+                    await adapter.get_download_url("abc123def456")
+
+        assert excinfo.value.provider == "annas"
+        assert excinfo.value.reason == "http_error"
 
     @pytest.mark.asyncio
     async def test_non_auth_fast_download_status_keeps_http_classification(self):

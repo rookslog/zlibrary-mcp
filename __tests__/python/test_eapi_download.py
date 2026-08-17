@@ -89,16 +89,131 @@ class TestDownloadFile:
             assert f.read() == b"fake epub content here"
 
     @pytest.mark.asyncio
+    async def test_download_file_replaces_final_only_after_success(
+        self, eapi_client, tmp_download_dir
+    ):
+        """A completed staging file atomically replaces the existing artifact."""
+        eapi_client.get_download_link = AsyncMock(
+            return_value={
+                "file": {"downloadLink": "https://dl.z-library.sk/file/book123.epub"}
+            }
+        )
+        os.makedirs(tmp_download_dir)
+        output_path = os.path.join(tmp_download_dir, "atomic.epub")
+        with open(output_path, "wb") as existing:
+            existing.write(b"known good artifact")
+        first_chunk_written = asyncio.Event()
+        release_stream = asyncio.Event()
+
+        mock_response = AsyncMock()
+        mock_response.raise_for_status = MagicMock()
+        mock_response.headers = {
+            "content-disposition": 'attachment; filename="atomic.epub"'
+        }
+        mock_response.url = "https://dl.z-library.sk/file/book123.epub"
+
+        async def paused_bytes():
+            yield b"replacement content"
+            first_chunk_written.set()
+            await release_stream.wait()
+
+        mock_response.aiter_bytes = paused_bytes
+        mock_stream_cm = AsyncMock()
+        mock_stream_cm.__aenter__ = AsyncMock(return_value=mock_response)
+        mock_stream_cm.__aexit__ = AsyncMock(return_value=False)
+        mock_client_instance = AsyncMock()
+        mock_client_instance.stream = MagicMock(return_value=mock_stream_cm)
+        mock_client_cm = AsyncMock()
+        mock_client_cm.__aenter__ = AsyncMock(return_value=mock_client_instance)
+        mock_client_cm.__aexit__ = AsyncMock(return_value=False)
+
+        with patch("zlibrary.eapi.httpx.AsyncClient", return_value=mock_client_cm):
+            task = asyncio.create_task(
+                eapi_client.download_file(
+                    book_id=123,
+                    book_hash="abc123",
+                    output_dir=tmp_download_dir,
+                )
+            )
+            await asyncio.wait_for(first_chunk_written.wait(), timeout=1)
+
+            with open(output_path, "rb") as visible_during_transfer:
+                assert visible_during_transfer.read() == b"known good artifact"
+
+            release_stream.set()
+            result = await task
+
+        assert result == os.path.abspath(output_path)
+        with open(output_path, "rb") as replaced:
+            assert replaced.read() == b"replacement content"
+        assert os.listdir(tmp_download_dir) == ["atomic.epub"]
+
+    @pytest.mark.asyncio
+    async def test_download_file_replaces_near_name_max_filename(
+        self, eapi_client, tmp_download_dir
+    ):
+        """Staging supports a valid final basename at the filesystem name limit."""
+        os.makedirs(tmp_download_dir)
+        try:
+            name_max = os.pathconf(tmp_download_dir, "PC_NAME_MAX")
+        except (AttributeError, OSError, ValueError):
+            pytest.skip("filesystem does not expose a component-name limit")
+
+        extension = ".epub"
+        assert name_max > len(extension)
+        filename = "n" * (name_max - len(extension)) + extension
+        output_path = os.path.join(tmp_download_dir, filename)
+        with open(output_path, "wb") as existing:
+            existing.write(b"known good artifact")
+
+        eapi_client.get_download_link = AsyncMock(
+            return_value={"file": {"downloadLink": "https://download.example/book"}}
+        )
+        mock_response = AsyncMock()
+        mock_response.raise_for_status = MagicMock()
+        mock_response.headers = {}
+        mock_response.url = "https://download.example/book"
+
+        async def replacement_bytes():
+            yield b"replacement content"
+
+        mock_response.aiter_bytes = replacement_bytes
+        mock_stream_cm = AsyncMock()
+        mock_stream_cm.__aenter__ = AsyncMock(return_value=mock_response)
+        mock_stream_cm.__aexit__ = AsyncMock(return_value=False)
+        mock_client_instance = AsyncMock()
+        mock_client_instance.stream = MagicMock(return_value=mock_stream_cm)
+        mock_client_cm = AsyncMock()
+        mock_client_cm.__aenter__ = AsyncMock(return_value=mock_client_instance)
+        mock_client_cm.__aexit__ = AsyncMock(return_value=False)
+
+        with patch("zlibrary.eapi.httpx.AsyncClient", return_value=mock_client_cm):
+            result = await eapi_client.download_file(
+                book_id=123,
+                book_hash="abc123",
+                output_dir=tmp_download_dir,
+                filename=filename,
+            )
+
+        assert result == os.path.abspath(output_path)
+        with open(output_path, "rb") as replaced:
+            assert replaced.read() == b"replacement content"
+        assert os.listdir(tmp_download_dir) == [filename]
+
+    @pytest.mark.asyncio
     async def test_download_file_cancellation_removes_partial_output(
         self, eapi_client, tmp_download_dir
     ):
-        """Cancellation after a written chunk removes the incomplete final path."""
+        """Cancellation preserves an existing final file and removes staging."""
         eapi_client.get_download_link = AsyncMock(
             return_value={
                 "file": {"downloadLink": "https://dl.z-library.sk/file/book123.epub"}
             }
         )
         output_path = os.path.join(tmp_download_dir, "partial.epub")
+        os.makedirs(tmp_download_dir)
+        with open(output_path, "wb") as existing:
+            existing.write(b"known good artifact")
         first_chunk_written = asyncio.Event()
         release_stream = asyncio.Event()
         lifecycle = {
@@ -158,13 +273,109 @@ class TestDownloadFile:
             with pytest.raises(asyncio.CancelledError):
                 await task
 
-        assert not os.path.exists(output_path)
+        with open(output_path, "rb") as preserved:
+            assert preserved.read() == b"known good artifact"
+        assert os.listdir(tmp_download_dir) == ["partial.epub"]
         assert lifecycle == {
             "client_entered": True,
             "client_exited": True,
             "stream_entered": True,
             "stream_exited": True,
         }
+
+    @pytest.mark.asyncio
+    async def test_download_file_stream_error_preserves_existing_final(
+        self, eapi_client, tmp_download_dir
+    ):
+        """A stream exception removes staging without replacing the final file."""
+        eapi_client.get_download_link = AsyncMock(
+            return_value={"file": {"downloadLink": "https://download.example/book"}}
+        )
+        os.makedirs(tmp_download_dir)
+        output_path = os.path.join(tmp_download_dir, "error.epub")
+        with open(output_path, "wb") as existing:
+            existing.write(b"known good artifact")
+        stream_error = RuntimeError("stream interrupted")
+
+        mock_response = AsyncMock()
+        mock_response.raise_for_status = MagicMock()
+        mock_response.headers = {
+            "content-disposition": 'attachment; filename="error.epub"'
+        }
+        mock_response.url = "https://download.example/book"
+
+        async def failing_bytes():
+            yield b"partial replacement"
+            raise stream_error
+
+        mock_response.aiter_bytes = failing_bytes
+        mock_stream_cm = AsyncMock()
+        mock_stream_cm.__aenter__ = AsyncMock(return_value=mock_response)
+        mock_stream_cm.__aexit__ = AsyncMock(return_value=False)
+        mock_client_instance = AsyncMock()
+        mock_client_instance.stream = MagicMock(return_value=mock_stream_cm)
+        mock_client_cm = AsyncMock()
+        mock_client_cm.__aenter__ = AsyncMock(return_value=mock_client_instance)
+        mock_client_cm.__aexit__ = AsyncMock(return_value=False)
+
+        with patch("zlibrary.eapi.httpx.AsyncClient", return_value=mock_client_cm):
+            with pytest.raises(RuntimeError) as exc_info:
+                await eapi_client.download_file(
+                    book_id=123,
+                    book_hash="abc123",
+                    output_dir=tmp_download_dir,
+                )
+
+        assert exc_info.value is stream_error
+        with open(output_path, "rb") as preserved:
+            assert preserved.read() == b"known good artifact"
+        assert os.listdir(tmp_download_dir) == ["error.epub"]
+
+    @pytest.mark.asyncio
+    async def test_download_file_empty_response_preserves_existing_final(
+        self, eapi_client, tmp_download_dir
+    ):
+        """An empty staged response is rejected without replacing the final file."""
+        eapi_client.get_download_link = AsyncMock(
+            return_value={"file": {"downloadLink": "https://download.example/book"}}
+        )
+        os.makedirs(tmp_download_dir)
+        output_path = os.path.join(tmp_download_dir, "empty.epub")
+        with open(output_path, "wb") as existing:
+            existing.write(b"known good artifact")
+
+        mock_response = AsyncMock()
+        mock_response.raise_for_status = MagicMock()
+        mock_response.headers = {
+            "content-disposition": 'attachment; filename="empty.epub"'
+        }
+        mock_response.url = "https://download.example/book"
+
+        async def empty_bytes():
+            for chunk in ():
+                yield chunk
+
+        mock_response.aiter_bytes = empty_bytes
+        mock_stream_cm = AsyncMock()
+        mock_stream_cm.__aenter__ = AsyncMock(return_value=mock_response)
+        mock_stream_cm.__aexit__ = AsyncMock(return_value=False)
+        mock_client_instance = AsyncMock()
+        mock_client_instance.stream = MagicMock(return_value=mock_stream_cm)
+        mock_client_cm = AsyncMock()
+        mock_client_cm.__aenter__ = AsyncMock(return_value=mock_client_instance)
+        mock_client_cm.__aexit__ = AsyncMock(return_value=False)
+
+        with patch("zlibrary.eapi.httpx.AsyncClient", return_value=mock_client_cm):
+            with pytest.raises(RuntimeError, match="Download produced empty file"):
+                await eapi_client.download_file(
+                    book_id=123,
+                    book_hash="abc123",
+                    output_dir=tmp_download_dir,
+                )
+
+        with open(output_path, "rb") as preserved:
+            assert preserved.read() == b"known good artifact"
+        assert os.listdir(tmp_download_dir) == ["empty.epub"]
 
     @pytest.mark.asyncio
     async def test_download_file_with_explicit_filename(

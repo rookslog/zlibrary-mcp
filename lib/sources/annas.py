@@ -356,7 +356,7 @@ class AnnasArchiveAdapter(SourceAdapter):
                 or if the configured
                 base URL's host is not a known Anna's Archive domain (the key is
                 never sent to unverified hosts)
-            Exception: If API returns error or no download_url
+            ProviderResponseError: If the API returns an error or omits download_url
         """
         host = (urlsplit(self.base_url).hostname or "").lower()
         if not self.secret_key:
@@ -400,7 +400,17 @@ class AnnasArchiveAdapter(SourceAdapter):
             )
             data = response.json()
         except httpx.HTTPStatusError as exc:
-            if exc.response.status_code in (401, 403):
+            final_url = urlsplit(str(exc.response.url))
+            final_host = (final_url.hostname or "").lower()
+            is_configured_fast_download_endpoint = (
+                final_host == self.host
+                and final_host in ANNAS_TRUSTED_HOSTS
+                and final_url.path == "/dyn/api/fast_download.json"
+            )
+            if (
+                exc.response.status_code in (401, 403)
+                and is_configured_fast_download_endpoint
+            ):
                 raise ProviderConfigurationError(
                     PROVIDER,
                     self.host,
@@ -411,24 +421,50 @@ class AnnasArchiveAdapter(SourceAdapter):
         except Exception as exc:
             raise self._as_source_error(exc) from exc
 
+        if not isinstance(data, dict):
+            raise ProviderResponseError(
+                PROVIDER,
+                self.host,
+                f"Expected JSON object, received {type(data).__name__}",
+                reason="protocol_error",
+            )
+
         # Check for API error
         if data.get("error"):
-            raise Exception(f"Anna's Archive API error: {data['error']}")
+            raise ProviderResponseError(
+                PROVIDER,
+                self.host,
+                f"Anna's Archive API error: {data['error']}",
+                reason="http_error",
+            )
 
         # Extract download URL
         download_url = data.get("download_url")
-        if not download_url:
-            raise Exception("No download_url in response")
+        if not isinstance(download_url, str) or not download_url.strip():
+            raise ProviderResponseError(
+                PROVIDER,
+                self.host,
+                "download_url must be a non-empty string",
+                reason="protocol_error",
+            )
 
         # Extract quota info if available
         quota_info = None
-        account_info = data.get("account_fast_download_info")
-        if account_info:
-            quota_info = QuotaInfo(
-                downloads_left=account_info.get("downloads_left", 0),
-                downloads_per_day=account_info.get("downloads_per_day", 0),
-                downloads_done_today=account_info.get("downloads_done_today", 0),
-            )
+        if "account_fast_download_info" in data:
+            account_info = data["account_fast_download_info"]
+            if not isinstance(account_info, dict):
+                raise ProviderResponseError(
+                    PROVIDER,
+                    self.host,
+                    "account_fast_download_info must be an object",
+                    reason="protocol_error",
+                )
+            if "downloads_left" in account_info and account_info["downloads_left"] is not None:
+                quota_info = QuotaInfo(
+                    downloads_left=account_info["downloads_left"],
+                    downloads_per_day=account_info.get("downloads_per_day", 0),
+                    downloads_done_today=account_info.get("downloads_done_today", 0),
+                )
 
         return DownloadResult(
             url=download_url,

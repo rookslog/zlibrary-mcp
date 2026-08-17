@@ -28,6 +28,7 @@ REASON_TEXT = {
     "http_error": "returned an HTTP error",
     "quota_exhausted": "has no downloads left on this account today",
     "protocol_error": "returned a malformed response",
+    "integrity_mismatch": "returned bytes that did not match the requested digest",
     "configuration_error": "cannot run with the supplied configuration",
     "unknown": "failed for an unclassified reason",
 }

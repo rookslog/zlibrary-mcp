@@ -2,8 +2,12 @@
 import sys
 import os
 import json
+import hashlib
+import re
+import tempfile
 import traceback
-from urllib.parse import urlsplit
+from email.message import Message
+from urllib.parse import unquote, urlsplit
 
 # Add project root to sys.path to allow importing 'lib'
 project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -13,7 +17,7 @@ import asyncio
 import signal
 
 from pathlib import Path
-from filename_utils import create_unified_filename
+from filename_utils import create_unified_filename, normalize_document_extension
 import logging
 
 # Import the new RAG processing functions
@@ -739,10 +743,171 @@ async def process_document(
 
 # --- download_book function needs to be async ---
 SOURCE_ALIASES = {"libgen", "annas", "annas_archive"}
+_MD5_RE = re.compile(r"^[0-9a-f]{32}$")
+_DOCUMENT_EXTENSIONS = {"pdf", "epub", "txt"}
+
+
+class _DownloadedPath(str):
+    """String-compatible path carrying response-extension evidence strength."""
+
+    def __new__(cls, value: str, extension_evidence: str = ""):
+        instance = super().__new__(cls, value)
+        instance.extension_evidence = extension_evidence
+        return instance
+
+
+def _response_extension(
+    headers, response_url: str, signature: bytes
+) -> tuple[str, str]:
+    """Infer a safe document extension from strongest to weakest evidence."""
+    signature_extension, signature_evidence = _signature_extension(signature)
+    if signature_extension:
+        return signature_extension, signature_evidence
+
+    disposition = headers.get("content-disposition", "")
+    if disposition:
+        message = Message()
+        message["content-disposition"] = disposition
+        filename = message.get_filename() or ""
+        suffix = Path(filename.replace("\\", "/")).suffix.lower().lstrip(".")
+        if suffix in _DOCUMENT_EXTENSIONS:
+            return suffix, "content_disposition"
+
+    url_name = Path(unquote(urlsplit(response_url).path)).name
+    suffix = Path(url_name).suffix.lower().lstrip(".")
+    if suffix in _DOCUMENT_EXTENSIONS:
+        return suffix, "response_url"
+
+    content_type = headers.get("content-type", "").split(";", 1)[0].strip().lower()
+    by_content_type = {
+        "application/pdf": "pdf",
+        "application/epub+zip": "epub",
+        "text/plain": "txt",
+    }
+    if content_type in by_content_type:
+        return by_content_type[content_type], "content_type"
+
+    return "", ""
+
+
+def _signature_probe(signature: bytes) -> bytes:
+    """Strip a UTF-8 BOM and leading whitespace for content classification."""
+    return signature.removeprefix(b"\xef\xbb\xbf").lstrip()
+
+
+def _looks_like_html(signature: bytes) -> bool:
+    """Recognize common leading HTML shapes independent of response headers."""
+    probe = _signature_probe(signature).lower()
+    return bool(
+        re.match(
+            rb"^(?:<!doctype\s+html|<html(?:\s|>)|<head(?:\s|>)|<body(?:\s|>)|<script(?:\s|>)|<!--)",
+            probe,
+        )
+    )
+
+
+def _signature_extension(signature: bytes) -> tuple[str, str]:
+    """Classify supported document bytes without trusting names or MIME.
+
+    Returns the extension and how strong the classification is. A magic-byte
+    match is ``signature`` evidence and outranks a declared extension; a merely
+    printable prefix is ``printable_text`` — every text-based container (RTF,
+    FB2, HTML-ish TXT) looks the same at that level, so it must never override
+    the extension the search result declared.
+    """
+    probe = _signature_probe(signature)
+    if probe.startswith(b"%PDF"):
+        return "pdf", "signature"
+    if probe.startswith(b"PK\x03\x04") and b"application/epub+zip" in signature:
+        return "epub", "signature"
+    if probe.startswith(b"{\\rtf"):
+        return "rtf", "signature"
+    if not probe or b"\x00" in probe:
+        return "", ""
+    if b"<FictionBook" in probe:
+        return "fb2", "signature"
+    try:
+        text = probe.decode("utf-8")
+    except UnicodeDecodeError:
+        return "", ""
+    if all(character.isprintable() or character in "\r\n\t" for character in text):
+        return "txt", "printable_text"
+    return "", ""
+
+
+def _md5_digest():
+    """Build an MD5 hasher usable on FIPS-enforcing builds.
+
+    These digests only ever compare against a provider's catalog identifier, so
+    they are not a security control. Without the flag `hashlib.md5()` raises
+    `ValueError` under FIPS policy — an exception no candidate-walk handler
+    classifies, which would abort the whole walk instead of trying a mirror.
+    """
+    try:
+        return hashlib.md5(usedforsecurity=False)
+    except TypeError:  # pragma: no cover - builds without the keyword
+        return hashlib.md5()
+
+
+def _publish_no_replace(source: Path, destination: Path) -> None:
+    """Atomically publish one owned file without replacing an existing path."""
+    os.link(source, destination)
+    source.unlink()
+
+
+def _file_md5(path: Path) -> str:
+    """Digest a published artifact for catalog-identity comparison."""
+    digest = _md5_digest()
+    with open(path, "rb") as handle:
+        for chunk in iter(lambda: handle.read(65536), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def _artifacts_match(source: Path, destination: Path, expected_md5: str) -> bool:
+    """Decide whether an existing destination already holds this acquisition."""
+    if source.stat().st_size != destination.stat().st_size:
+        return False
+    if expected_md5:
+        return _file_md5(destination) == expected_md5
+    return _file_md5(source) == _file_md5(destination)
+
+
+def _publish_or_reuse(source: Path, destination: Path, expected_md5: str = "") -> bool:
+    """Publish a staged artifact, reusing an identical existing destination.
+
+    Acquisition is idempotent: re-downloading the same result into the same
+    directory resolves to the same deterministic name, and finding our own
+    prior artifact there is success, not a collision. A destination that does
+    not match is still never replaced. The staged file is consumed on every
+    path so no orphan temp survives the call.
+    """
+    if source.resolve() == destination.resolve():
+        return False
+    try:
+        _publish_no_replace(source, destination)
+        return False
+    except FileExistsError:
+        pass
+    try:
+        if _artifacts_match(source, destination, expected_md5):
+            return True
+        raise FileExistsError(
+            f"Refusing to replace {destination}: the existing file differs from the "
+            f"freshly downloaded artifact staged at {source}"
+        )
+    finally:
+        source.unlink(missing_ok=True)
 
 
 async def _download_url_to_file(
-    url: str, output_dir: str, md5: str, provider: str
+    url: str,
+    output_dir: str,
+    md5: str,
+    provider: str,
+    *,
+    enforce_timeout: bool = True,
+    host_observer=None,
 ) -> str:
     """Stream a resolved source URL to disk and return the raw path.
 
@@ -758,14 +923,23 @@ async def _download_url_to_file(
 
     from lib.sources.libgen import USER_AGENT
 
-    Path(output_dir).mkdir(parents=True, exist_ok=True)
-    raw_path = Path(output_dir) / f"{md5}.download"
+    expected_md5 = md5.strip().lower()
+    if not _MD5_RE.fullmatch(expected_md5):
+        raise ValueError("Source downloads require a normalized 32-hex MD5")
+
+    output_path = Path(output_dir)
+    output_path.mkdir(parents=True, exist_ok=True)
+    descriptor, attempt_name = tempfile.mkstemp(
+        prefix=".source-", suffix=".part", dir=output_path
+    )
+    os.close(descriptor)
+    attempt_path = Path(attempt_name)
 
     original_host = (urlsplit(url).hostname or "").lower()
     active_host = original_host
     config = get_source_config()
 
-    async def stream_to_disk() -> int:
+    async def stream_to_disk() -> tuple[int, str]:
         nonlocal active_host
         try:
             # The identifying UA is load-bearing: libgen's hosts serve an HTML
@@ -784,6 +958,8 @@ async def _download_url_to_file(
                         active_host = (
                             urlsplit(str(response_url)).hostname or active_host
                         ).lower()
+                    if host_observer is not None:
+                        host_observer(active_host)
                     response.raise_for_status()
 
                     content_type = response.headers.get("content-type", "")
@@ -796,25 +972,58 @@ async def _download_url_to_file(
                         )
 
                     written = 0
-                    with open(raw_path, "wb") as handle:
+                    digest = _md5_digest()
+                    signature = bytearray()
+                    with open(attempt_path, "wb") as handle:
                         async for chunk in response.aiter_bytes(65536):
                             handle.write(chunk)
+                            digest.update(chunk)
+                            if len(signature) < 4096:
+                                signature.extend(chunk[: 4096 - len(signature)])
                             written += len(chunk)
-                    return written
+                    if _looks_like_html(bytes(signature)):
+                        raise ProviderResponseError(
+                            provider,
+                            active_host,
+                            f"HTML body for {md5}; download key may have expired",
+                            reason="protocol_error",
+                        )
+                    actual_md5 = digest.hexdigest()
+                    if actual_md5 != expected_md5:
+                        raise ProviderResponseError(
+                            provider,
+                            active_host,
+                            f"expected={expected_md5} actual={actual_md5}",
+                            reason="integrity_mismatch",
+                        )
+
+                    extension, extension_evidence = _response_extension(
+                        response.headers, str(response_url or url), bytes(signature)
+                    )
+                    completed_path = attempt_path.with_suffix(
+                        f".{extension}" if extension else ""
+                    )
+                    _publish_no_replace(attempt_path, completed_path)
+                    return written, _DownloadedPath(
+                        str(completed_path), extension_evidence
+                    )
         except BaseException:
             # Cancellation and every classified failure must leave no partial
             # artifact for a later retry to mistake for a completed download.
-            raw_path.unlink(missing_ok=True)
+            attempt_path.unlink(missing_ok=True)
             raise
 
     try:
-        written = await bounded_await(
-            stream_to_disk(),
-            config.download_timeout,
-            provider=provider,
-            host=original_host,
-            operation="download",
-        )
+        if enforce_timeout:
+            written, completed_path = await bounded_await(
+                stream_to_disk(),
+                config.download_timeout,
+                provider=provider,
+                host=original_host,
+                operation="download",
+            )
+        else:
+            written, completed_path = await stream_to_disk()
     except SourceError as exc:
         if isinstance(exc, ProviderTimeoutError) and exc.reason == "search_timeout":
             raise ProviderTimeoutError(
@@ -855,18 +1064,18 @@ async def _download_url_to_file(
         raise error_type(provider, failure_host, detail, reason=reason) from exc
 
     if written == 0:
-        raw_path.unlink(missing_ok=True)
+        Path(completed_path).unlink(missing_ok=True)
         raise ProviderResponseError(
             provider, active_host, f"empty body for {md5}", reason="protocol_error"
         )
 
-    logger.info(f"Downloaded {written} bytes from source to {raw_path}")
-    return str(raw_path)
+    logger.info(f"Downloaded {written} bytes from source to {completed_path}")
+    return completed_path
 
 
 async def _fetch_from_source(book_details: dict, output_dir: str) -> str:
     """Resolve and fetch a non-Z-Library book. Returns the raw file path."""
-    md5 = (book_details.get("md5") or "").strip()
+    md5 = (book_details.get("md5") or "").strip().lower()
     source = (book_details.get("source") or "auto").lower()
     if not md5:
         raise ValueError(
@@ -878,13 +1087,78 @@ async def _fetch_from_source(book_details: dict, output_dir: str) -> str:
     selection = (
         "libgen" if source == "libgen" else "annas" if "annas" in source else "auto"
     )
-    result = await router.get_download_url(md5, source=selection)
-    logger.info(f"Resolved {source} download for {md5} via {result.source}")
+    if not _MD5_RE.fullmatch(md5):
+        raise ValueError("Source downloads require a normalized 32-hex MD5")
 
-    provider = getattr(result.source, "value", result.source) or selection
-    if provider == "annas_archive":
-        provider = "annas"
-    return await _download_url_to_file(result.url, output_dir, md5, str(provider))
+    config = get_source_config()
+    active_host = ""
+    failures = []
+    seen_failure_ids = set()
+
+    def record(failure):
+        identity = id(failure)
+        if identity not in seen_failure_ids:
+            seen_failure_ids.add(identity)
+            failures.append(failure)
+
+    async def acquire() -> str:
+        nonlocal active_host
+
+        candidate_stream = router.iter_download_candidates(md5, source=selection)
+        try:
+            async for result in candidate_stream:
+                provider = getattr(result.source, "value", result.source) or selection
+                if provider == "annas_archive":
+                    provider = "annas"
+                active_host = (urlsplit(result.url).hostname or "").lower()
+                try:
+                    return await _download_url_to_file(
+                        result.url,
+                        output_dir,
+                        md5,
+                        str(provider),
+                        enforce_timeout=False,
+                        host_observer=lambda host: _set_active_host(host),
+                    )
+                except AllSourcesFailedError as exc:
+                    for failure in exc.failures:
+                        record(failure)
+                except SourceError as exc:
+                    record(exc)
+        except AllSourcesFailedError as exc:
+            for failure in exc.failures:
+                record(failure)
+        except SourceError as exc:
+            record(exc)
+        finally:
+            close = getattr(candidate_stream, "aclose", None)
+            if close is not None:
+                await close()
+
+        raise AllSourcesFailedError("download", failures)
+
+    def _set_active_host(host: str) -> None:
+        nonlocal active_host
+        active_host = host
+
+    try:
+        return await bounded_await(
+            acquire(),
+            config.download_timeout,
+            provider=selection,
+            host=active_host,
+            operation="download",
+        )
+    except ProviderTimeoutError as exc:
+        if exc.reason == "search_timeout":
+            terminal_timeout = ProviderTimeoutError(
+                selection, active_host or exc.host, exc.detail, reason="read_timeout"
+            )
+            if failures:
+                record(terminal_timeout)
+                raise AllSourcesFailedError("download", failures) from exc
+            raise terminal_timeout from exc
+        raise
 
 
 async def download_book(
@@ -961,7 +1235,13 @@ async def download_book(
             )
 
         # Step 2: Create the unified filename.
-        if "extension" not in book_details and original_download_path_str:
+        declared_extension = normalize_document_extension(book_details.get("extension"))
+        strong_response_extension = getattr(
+            original_download_path_str, "extension_evidence", ""
+        ) in {"signature", "content_disposition", "response_url"}
+        if original_download_path_str and (
+            not declared_extension or strong_response_extension
+        ):
             _, ext_from_path = os.path.splitext(original_download_path_str)
             book_details["extension"] = ext_from_path.lstrip(".")
 
@@ -974,12 +1254,32 @@ async def download_book(
         final_file_path = Path(output_dir) / unified_filename
         final_file_path_str = str(final_file_path)
 
-        # Step 3: Rename the downloaded file to the enhanced filename.
+        if process_for_rag and final_file_path.suffix.lower() not in {
+            ".pdf",
+            ".epub",
+            ".txt",
+        }:
+            raise ValueError("RAG processing supports only PDF, EPUB, and TXT files")
+
+        # Step 3: Rename the downloaded file to the enhanced filename, or adopt
+        # an identical artifact a previous acquisition of this book already
+        # published under the same deterministic name.
         Path(output_dir).mkdir(parents=True, exist_ok=True)
-        os.rename(original_download_path_str, final_file_path_str)
-        logger.info(
-            f"Renamed downloaded file from {original_download_path_str} to {final_file_path_str}"
+        catalog_md5 = str(book_details.get("md5") or "").strip().lower()
+        reused = _publish_or_reuse(
+            Path(original_download_path_str),
+            final_file_path,
+            catalog_md5 if _MD5_RE.fullmatch(catalog_md5) else "",
         )
+        if reused:
+            logger.info(
+                f"Reused existing matching artifact at {final_file_path_str}; "
+                f"discarded redundant download {original_download_path_str}"
+            )
+        else:
+            logger.info(
+                f"Published downloaded file from {original_download_path_str} to {final_file_path_str}"
+            )
         downloaded_file_path_str = final_file_path_str
 
         # Step 4: Optionally process for RAG.

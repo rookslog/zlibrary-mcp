@@ -39,7 +39,7 @@ the outer Node budget must remain larger than the worst-case inner provider walk
 | `BOOK_SOURCE_CONNECT_TIMEOUT` | `10` | TCP/TLS connect budget per phase, in seconds |
 | `BOOK_SOURCE_READ_TIMEOUT` | `30` | Response-read budget per phase, in seconds |
 | `BOOK_SOURCE_TOTAL_TIMEOUT` | `45` | Wall-clock budget for one provider operation, in seconds |
-| `BOOK_SOURCE_DOWNLOAD_TIMEOUT` | `1500` | Wall-clock budget for a complete source-file transfer, in seconds |
+| `BOOK_SOURCE_DOWNLOAD_TIMEOUT` | `1500` | One wall-clock budget for the complete source candidate walk (resolution plus full-transfer attempts), in seconds |
 | `BOOK_SOURCE_PREFLIGHT` | `true` | Probe DNS and TCP before a provider request |
 | `BOOK_SOURCE_PREFLIGHT_TIMEOUT` | `5` | Budget per DNS or TCP probe phase, in seconds |
 | `PYTHON_BRIDGE_TIMEOUT` | `240000` | Ordinary Python bridge wall-clock budget, in milliseconds |
@@ -117,6 +117,8 @@ These errors trigger retry logic:
 - Server errors (`SERVER_ERROR`, `5xx` status codes)
 - Domain errors (`DOMAIN_ERROR`)
 - Transient Python errors (connection/network related)
+- Source integrity failures (`integrity_mismatch`), because a later mirror can
+  serve the requested digest even when one CDN returned the wrong bytes
 
 ### Non-Retryable Errors
 

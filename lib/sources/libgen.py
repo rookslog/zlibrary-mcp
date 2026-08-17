@@ -7,11 +7,14 @@ to avoid being blocked.
 
 import asyncio
 import logging
+import re
+import threading
 import time
 from typing import AsyncIterator, List, Optional
 from urllib.parse import parse_qs, urljoin, urlparse
 
 import httpx
+import requests
 from bs4 import BeautifulSoup
 
 from .base import SourceAdapter
@@ -34,10 +37,63 @@ from .net import (
 
 # CRITICAL: Import is libgen_api_enhanced, NOT libgen_api
 from libgen_api_enhanced import LibgenSearch
+from libgen_api_enhanced import search_request as _lge_search_request
 
 logger = logging.getLogger("zlibrary.sources")
 
 PROVIDER = "libgen"
+
+# libgen.li serves its default-nginx stub (HTTP 200, ~640 bytes, no results
+# table) to blocklisted tool User-Agents — python-requests' default, python-httpx's
+# default, and curl among them — while any identifying UA gets the real page
+# (measured 2026-08-17, issue #124). An honest self-identifying UA is admitted,
+# so no browser string is needed. Used by BOTH the search path (via the shim
+# below) and the download path (ads.php serves the same stub to blocked UAs).
+USER_AGENT = "zlibrary-mcp (+https://github.com/rookslog/zlibrary-mcp)"
+
+
+class _RequestsWithUA:
+    """Stand-in for the `requests` module inside libgen-api-enhanced.
+
+    libgen-api-enhanced 1.3 calls the module-level ``requests.get`` with no
+    headers hook, which sends the blocklisted default UA (see USER_AGENT note
+    above). This shim is swapped in for the ``requests`` reference inside its
+    ``search_request`` module: same ``.get``/``.exceptions`` surface, the
+    identifying UA added, and the last search response recorded so
+    ``LibgenAdapter.search`` can tell "no matches" from "served a page with no
+    results table".
+
+    ``last_response`` is **thread-local**. The search runs under
+    `net.run_bounded`, which abandons its daemon thread when the budget
+    elapses; an abandoned `requests.get` that completes minutes later would
+    otherwise overwrite the slot a *later* mirror attempt is about to read,
+    and the adapter would attribute one mirror's stub page to another. Each
+    bounded attempt gets its own thread, so each gets its own slot.
+    """
+
+    exceptions = requests.exceptions
+
+    def __init__(self) -> None:
+        self._state = threading.local()
+
+    @property
+    def last_response(self) -> Optional[requests.Response]:
+        return getattr(self._state, "last_response", None)
+
+    @last_response.setter
+    def last_response(self, response: Optional[requests.Response]) -> None:
+        self._state.last_response = response
+
+    def get(self, url: str, **kwargs) -> requests.Response:
+        headers = kwargs.pop("headers", None) or {}
+        headers.setdefault("User-Agent", USER_AGENT)
+        response = requests.get(url, headers=headers, **kwargs)
+        self.last_response = response
+        return response
+
+
+_search_requests = _RequestsWithUA()
+_lge_search_request.requests = _search_requests
 
 # Mirrors tried in order when resolving a download. Different mirrors hand off
 # to different CDN nodes (cdn3/cdn4/... .booksdl.lc) and those nodes fail
@@ -50,6 +106,42 @@ FALLBACK_MIRRORS = ("li", "vg", "la")
 def mirror_host(mirror: str) -> str:
     """Hostname for a mirror suffix, matching what LibgenSearch builds."""
     return f"libgen.{mirror}"
+
+
+def _unparseable_search_page(page) -> Optional[str]:
+    """Detail text when a zero-result page is a parse failure, else None.
+
+    A genuinely-empty search still renders the (empty) results table (verified
+    2026-08-17), so a page WITHOUT `tablelibgen` means the mirror served
+    something else entirely — a UA-block stub or a layout change — and "no
+    results" would be a false report (#124).
+
+    This is #124's `SourceParseError` folded into the #106 error taxonomy: the
+    caller raises it as a `ProviderResponseError`/`protocol_error` attributed
+    to the mirror host, so one stubbed mirror fails over to the next instead
+    of aborting the whole search. The status, byte count, and page title are
+    retained because they are what distinguishes a stub from a redesign.
+
+    Args:
+        page: The recorded `requests.Response`, or None if nothing was fetched
+
+    Returns:
+        A detail string for the error envelope, or None if the page is fine
+        (or absent — a fully-mocked search records no page and must stay an
+        ordinary empty result).
+    """
+    if page is None:
+        return None
+    text = getattr(page, "text", "") or ""
+    if "tablelibgen" in text:
+        return None
+    title_match = re.search(r"<title>([^<]*)</title>", text, re.I)
+    page_title = title_match.group(1).strip() if title_match else ""
+    return (
+        f"search page had no results table (HTTP "
+        f"{getattr(page, 'status_code', '?')}, {len(text)} bytes, title "
+        f"{page_title!r}) — parse failure, not an empty result"
+    )
 
 
 class LibgenAdapter(SourceAdapter):
@@ -100,6 +192,10 @@ class LibgenAdapter(SourceAdapter):
           already walked `_mirror_candidates()`. It now walks the same list, so
           one dead mirror no longer means no results.
 
+        A mirror that answers with a page carrying no results table is a third
+        hazard (#124): it is a parse failure, not an empty result, and it is
+        recorded as a typed per-mirror failure so the walk continues.
+
         Args:
             query: Search string (title, author, ISBN, etc.)
             **kwargs: Ignored (for interface compatibility)
@@ -110,7 +206,7 @@ class LibgenAdapter(SourceAdapter):
         Raises:
             AllSourcesFailedError: If no mirror could complete the search
         """
-        failures = []
+        failures: List[SourceError] = []
 
         for mirror in self._mirror_candidates():
             host = mirror_host(mirror)
@@ -124,10 +220,16 @@ class LibgenAdapter(SourceAdapter):
             await self._rate_limit()
 
             def _search_sync(mirror=mirror):
-                return LibgenSearch(mirror=mirror).search_title(query)
+                # The fetched page is read back on the SAME thread that
+                # fetched it — `_search_requests.last_response` is
+                # thread-local precisely so an abandoned earlier attempt
+                # cannot supply it.
+                _search_requests.last_response = None
+                results = LibgenSearch(mirror=mirror).search_title(query)
+                return results, _search_requests.last_response
 
             try:
-                results = await run_bounded(
+                results, page = await run_bounded(
                     _search_sync,
                     self.config.total_timeout,
                     provider=PROVIDER,
@@ -139,6 +241,16 @@ class LibgenAdapter(SourceAdapter):
                 logger.warning("LibGen search failed on %s: %s", mirror, failure)
                 failures.append(failure)
                 continue
+
+            if not results:
+                unparseable = _unparseable_search_page(page)
+                if unparseable:
+                    failure = ProviderResponseError(
+                        PROVIDER, host, unparseable, reason="protocol_error"
+                    )
+                    logger.warning("LibGen search unusable on %s: %s", mirror, failure)
+                    failures.append(failure)
+                    continue
 
             return self._to_unified(results or [])
 
@@ -318,8 +430,15 @@ class LibgenAdapter(SourceAdapter):
         """
         failures: List[SourceError] = []
 
+        # The identifying UA matters here too: ads.php serves the same
+        # UA-blocklist stub to python-httpx's default UA (measured
+        # 2026-08-17, #124), which surfaces as "no GET link" on every mirror.
+        # The timeout stays on the configured per-phase budget rather than a
+        # bare 30s — bounding these calls is what #106 exists for.
         async with httpx.AsyncClient(
-            timeout=build_timeout(self.config), follow_redirects=True
+            timeout=build_timeout(self.config),
+            follow_redirects=True,
+            headers={"User-Agent": USER_AGENT},
         ) as client:
             for mirror in self._mirror_candidates():
                 try:

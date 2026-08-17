@@ -672,10 +672,21 @@ async def _download_url_to_file(url: str, output_dir: str, md5: str) -> str:
     """
     import httpx
 
+    from lib.sources.libgen import USER_AGENT
+
     Path(output_dir).mkdir(parents=True, exist_ok=True)
     raw_path = Path(output_dir) / f"{md5}.download"
 
-    async with httpx.AsyncClient(timeout=180, follow_redirects=True) as client:
+    # The identifying UA is load-bearing: libgen's hosts serve an HTML stub
+    # to blocklisted tool UAs including python-httpx's default (#124), which
+    # this function's HTML guard then misreads as an expired key — the
+    # adapter verifies the URL with the right UA and the download dies here
+    # with the wrong one.
+    async with httpx.AsyncClient(
+        timeout=180,
+        follow_redirects=True,
+        headers={"User-Agent": USER_AGENT},
+    ) as client:
         async with client.stream("GET", url) as response:
             response.raise_for_status()
 

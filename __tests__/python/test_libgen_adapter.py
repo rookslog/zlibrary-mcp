@@ -359,3 +359,132 @@ class TestLibgenAdapterInterface:
 
         adapter = LibgenAdapter(config)
         await adapter.close()  # Should not raise
+
+
+class TestLibgenAdapterUserAgent:
+    """The mirror UA-blocklists tool defaults (#124): python-requests' and
+    python-httpx's default UAs get the default-nginx stub (HTTP 200, ~640
+    bytes, no results table) while an identifying UA gets the real page.
+    These tests pin the shim that carries the identifying UA into
+    libgen-api-enhanced, which exposes no headers hook of its own.
+    """
+
+    def test_shim_is_installed_in_library_module(self):
+        """libgen_api_enhanced.search_request must resolve `requests` to our shim."""
+        from libgen_api_enhanced import search_request as lge_search_request
+
+        from lib.sources import libgen as libgen_mod
+
+        assert lge_search_request.requests is libgen_mod._search_requests
+
+    def test_shim_get_sends_identifying_user_agent(self, monkeypatch):
+        """Shim .get() must add USER_AGENT (and never the requests default)."""
+        from lib.sources import libgen as libgen_mod
+
+        captured = {}
+
+        def fake_get(url, headers=None, **kwargs):
+            captured["headers"] = headers
+            response = MagicMock()
+            response.status_code = 200
+            response.text = '<table id="tablelibgen"></table>'
+            return response
+
+        monkeypatch.setattr(libgen_mod.requests, "get", fake_get)
+        libgen_mod._search_requests.get("https://libgen.li/index.php")
+
+        assert captured["headers"]["User-Agent"] == libgen_mod.USER_AGENT
+        assert "python-requests" not in captured["headers"]["User-Agent"]
+
+    def test_shim_preserves_caller_supplied_user_agent(self, monkeypatch):
+        """An explicit UA from the library must not be overwritten."""
+        from lib.sources import libgen as libgen_mod
+
+        captured = {}
+
+        def fake_get(url, headers=None, **kwargs):
+            captured["headers"] = headers
+            return MagicMock(status_code=200, text="")
+
+        monkeypatch.setattr(libgen_mod.requests, "get", fake_get)
+        libgen_mod._search_requests.get(
+            "https://libgen.li/index.php", headers={"User-Agent": "custom"}
+        )
+
+        assert captured["headers"]["User-Agent"] == "custom"
+
+
+class TestLibgenAdapterParseFailure:
+    """Empty result vs unparseable page must be distinguishable (#124):
+    a genuinely-empty search still renders the (empty) results table, so a
+    page WITHOUT `tablelibgen` is a parse failure, never "no matches".
+    """
+
+    @pytest.fixture
+    def config(self):
+        return SourceConfig(
+            libgen_mirror="li",
+            default_source="libgen",
+            fallback_enabled=False,
+        )
+
+    @pytest.mark.asyncio
+    async def test_stub_page_raises_parse_error(self, config):
+        """Zero results + a page without the results table must raise."""
+        from lib.sources import libgen as libgen_mod
+        from lib.sources.libgen import LibgenAdapter, SourceParseError
+
+        adapter = LibgenAdapter(config)
+        stub_page = MagicMock()
+        stub_page.status_code = 200
+        stub_page.text = (
+            "<!DOCTYPE html><html><head><title>Welcome to nginx!</title>"
+            "</head><body><h1>Welcome to nginx!</h1></body></html>"
+        )
+
+        def fake_search_title(query):
+            # Mirror reality: the library fetches through the shim (setting
+            # last_response) and parses no table from the stub.
+            libgen_mod._search_requests.last_response = stub_page
+            return []
+
+        with patch("lib.sources.libgen.LibgenSearch") as mock_search_class:
+            mock_search_class.return_value.search_title.side_effect = fake_search_title
+            with pytest.raises(SourceParseError) as excinfo:
+                await adapter.search("anything")
+
+        assert "Welcome to nginx!" in str(excinfo.value)
+        assert "no results table" in str(excinfo.value)
+
+    @pytest.mark.asyncio
+    async def test_empty_table_returns_empty_list(self, config):
+        """Zero results + a page WITH the results table is a real empty result."""
+        from lib.sources import libgen as libgen_mod
+        from lib.sources.libgen import LibgenAdapter
+
+        adapter = LibgenAdapter(config)
+        empty_results_page = MagicMock()
+        empty_results_page.status_code = 200
+        empty_results_page.text = '<html><table id="tablelibgen"></table></html>'
+
+        def fake_search_title(query):
+            libgen_mod._search_requests.last_response = empty_results_page
+            return []
+
+        with patch("lib.sources.libgen.LibgenSearch") as mock_search_class:
+            mock_search_class.return_value.search_title.side_effect = fake_search_title
+            results = await adapter.search("xqzv nonexistent qqqzzz")
+
+        assert results == []
+
+    @pytest.mark.asyncio
+    async def test_no_fetch_recorded_returns_empty_list(self, config):
+        """If no page was fetched (fully mocked library), [] stays []."""
+        from lib.sources.libgen import LibgenAdapter
+
+        adapter = LibgenAdapter(config)
+        with patch("lib.sources.libgen.LibgenSearch") as mock_search_class:
+            mock_search_class.return_value.search_title.return_value = []
+            results = await adapter.search("anything")
+
+        assert results == []

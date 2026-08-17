@@ -537,14 +537,77 @@ class TestLibgenSearchProbeUsesProductionAdapter:
 
         return asyncio.run(go())
 
+    @staticmethod
+    def _book(md5="a" * 32, title="Pride and Prejudice"):
+        from types import SimpleNamespace
+
+        return SimpleNamespace(md5=md5, title=title)
+
     def test_parsed_results_report_ok(self, check_upstream):
         async def fake_search(self, query, **kwargs):
-            return [object(), object()]
+            return [self_or_none._book(), self_or_none._book(md5="b" * 32)]
 
+        self_or_none = self
         result = self._run(check_upstream, fake_search)
         assert result.ok is True
-        assert "2 result(s)" in result.detail
+        assert "2 usable result(s)" in result.detail
         assert result.required is False
+
+    def test_nonempty_but_unusable_rows_fail(self, check_upstream):
+        """A parser regression that emits rows with empty md5/title (the #132
+        column-shift shape) must not pass the canary (Codex on #128)."""
+
+        async def fake_search(self, query, **kwargs):
+            return [
+                self_or_none._book(md5="", title=""),
+                self_or_none._book(md5="", title="some citation text"),
+            ]
+
+        self_or_none = self
+        result = self._run(check_upstream, fake_search)
+        assert result.ok is False
+        assert "NONE usable" in result.detail
+
+    def test_mixed_rows_count_only_usable(self, check_upstream):
+        async def fake_search(self, query, **kwargs):
+            return [
+                self_or_none._book(),
+                self_or_none._book(md5="", title=""),
+            ]
+
+        self_or_none = self
+        result = self._run(check_upstream, fake_search)
+        assert result.ok is True
+        assert "1 usable result(s) (md5+title) of 2 parsed" in result.detail
+
+    def test_canary_carries_its_own_deadline(self, check_upstream):
+        """A hung adapter search must fail the probe, not hang the doctor
+        (Codex on #128). Patch the probe's timeout down so the test is fast."""
+        import asyncio as _asyncio
+
+        async def hung_search(self, query, **kwargs):
+            await _asyncio.sleep(30)
+
+        real_wait_for = _asyncio.wait_for
+
+        def short_wait_for(awaitable, timeout):
+            return real_wait_for(awaitable, timeout=0.05)
+
+        from unittest.mock import patch
+
+        async def go():
+            with (
+                patch("lib.sources.libgen.LibgenAdapter.search", new=hung_search),
+                patch.object(check_upstream.asyncio, "wait_for", short_wait_for),
+            ):
+                async with httpx.AsyncClient(
+                    transport=httpx.MockTransport(lambda request: httpx.Response(500))
+                ) as client:
+                    return await check_upstream.probe_libgen(client)
+
+        result = _asyncio.run(go())
+        assert result.ok is False
+        assert "TimeoutError" in result.detail or "CancelledError" in result.detail
 
     def test_zero_parsed_results_fail_even_on_http_200(self, check_upstream):
         """The old byte-count threshold admitted the 639-byte failure stub;

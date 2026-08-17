@@ -675,3 +675,35 @@ class TestLibgenAdapterParseFailure:
             results = await adapter.search("anything")
 
         assert results == []
+
+
+class TestShimDefaultTimeout:
+    """The shim must default a timeout on library calls that omit one — a
+    mirror that accepts and never responds must not hold the search thread
+    forever (Codex on #128)."""
+
+    def test_default_timeout_applied(self, monkeypatch):
+        from lib.sources import libgen as libgen_mod
+
+        captured = {}
+
+        def fake_get(url, headers=None, **kwargs):
+            captured.update(kwargs)
+            return MagicMock(status_code=200, text='<table id="tablelibgen"></table>')
+
+        monkeypatch.setattr(libgen_mod.requests, "get", fake_get)
+        libgen_mod._search_requests.get("https://libgen.li/index.php")
+        assert captured["timeout"] == 30
+
+    def test_caller_timeout_preserved(self, monkeypatch):
+        from lib.sources import libgen as libgen_mod
+
+        captured = {}
+
+        def fake_get(url, headers=None, **kwargs):
+            captured.update(kwargs)
+            return MagicMock(status_code=200, text="")
+
+        monkeypatch.setattr(libgen_mod.requests, "get", fake_get)
+        libgen_mod._search_requests.get("https://libgen.li/index.php", timeout=5)
+        assert captured["timeout"] == 5

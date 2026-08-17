@@ -87,6 +87,10 @@ class _RequestsWithUA:
     def get(self, url: str, **kwargs) -> requests.Response:
         headers = kwargs.pop("headers", None) or {}
         headers.setdefault("User-Agent", USER_AGENT)
+        # libgen-api-enhanced omits the timeout on some calls; a mirror that
+        # accepts the connection and never responds would otherwise hold the
+        # search thread past every outer budget (Codex on #128).
+        kwargs.setdefault("timeout", 30)
         response = requests.get(url, headers=headers, **kwargs)
         self.last_response = response
         return response

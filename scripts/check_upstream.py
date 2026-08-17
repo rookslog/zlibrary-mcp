@@ -295,7 +295,12 @@ async def probe_libgen(client: httpx.AsyncClient) -> ProbeResult:
 
     canary = "Pride and Prejudice"
     try:
-        results = await LibgenAdapter(get_source_config()).search(canary)
+        # #106's budgets bound the adapter internally, but the canary carries
+        # its own deadline too: a canary that can hang has the exact defect
+        # it exists to detect (Codex on #128).
+        results = await asyncio.wait_for(
+            LibgenAdapter(get_source_config()).search(canary), timeout=90
+        )
     except Exception as exc:  # noqa: BLE001
         return ProbeResult(
             name="libgen:search",
@@ -303,13 +308,30 @@ async def probe_libgen(client: httpx.AsyncClient) -> ProbeResult:
             detail=f"adapter search failed: {type(exc).__name__}: {exc}",
             required=False,
         )
-    if results:
+    # A nonempty list of unusable rows is a parser regression, not a pass:
+    # the adapter maps missing fields to empty strings, and a result without
+    # an md5 can never be downloaded (Codex on #128; the article-row
+    # column-shift in #132 is exactly this shape).
+    usable = [r for r in results if r.md5 and r.title]
+    if usable:
         return ProbeResult(
             name="libgen:search",
             ok=True,
             detail=(
-                f"{len(results)} result(s) parsed by the production adapter "
+                f"{len(usable)} usable result(s) (md5+title) of "
+                f"{len(results)} parsed by the production adapter "
                 f"for canary {canary!r}"
+            ),
+            required=False,
+        )
+    if results:
+        return ProbeResult(
+            name="libgen:search",
+            ok=False,
+            detail=(
+                f"{len(results)} parsed result(s) but NONE usable "
+                f"(md5+title both present) for canary {canary!r} — "
+                "row-markup drift"
             ),
             required=False,
         )

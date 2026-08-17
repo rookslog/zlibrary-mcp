@@ -1294,7 +1294,7 @@ class TestDownloadBook:
             new=AsyncMock(return_value=str(owned)),
         )
 
-        with pytest.raises(FileExistsError):
+        with pytest.raises(FileExistsError) as excinfo:
             await download_book(
                 book_details={
                     "md5": digest,
@@ -1306,7 +1306,128 @@ class TestDownloadBook:
             )
 
         assert final_path.read_bytes() == b"existing artifact"
-        assert owned.read_bytes() == b"newly acquired"
+        # The mismatching destination survives; the staged artifact never
+        # outlives the call that created it (PR #131).
+        assert not owned.exists()
+        assert str(final_path) in str(excinfo.value)
+        assert str(owned) in str(excinfo.value)
+
+    @pytest.mark.asyncio
+    async def test_repeat_acquisition_reuses_matching_destination(
+        self, tmp_path, mocker
+    ):
+        """Downloading the same result twice is idempotent, not a collision."""
+        body = b"%PDF-1.7 the very same book"
+        digest = hashlib.md5(body).hexdigest()
+        owned = tmp_path / ".source-owned.pdf"
+        owned.write_bytes(body)
+        final_path = tmp_path / f"UnknownAuthor_Repeat_{digest}.pdf"
+        final_path.write_bytes(body)
+        mocker.patch(
+            "python_bridge._fetch_from_source",
+            new=AsyncMock(return_value=str(owned)),
+        )
+
+        result = await download_book(
+            book_details={
+                "md5": digest,
+                "source": "libgen",
+                "title": "Repeat",
+                "extension": "pdf",
+            },
+            output_dir=str(tmp_path),
+        )
+
+        assert result["file_path"] == str(final_path)
+        assert final_path.read_bytes() == body
+        assert not owned.exists()
+        assert sorted(path.name for path in tmp_path.iterdir()) == [final_path.name]
+
+    @pytest.mark.asyncio
+    async def test_repeat_acquisition_rejects_same_size_different_content(
+        self, tmp_path, mocker
+    ):
+        """Idempotent reuse compares the catalog MD5, not just the byte count."""
+        body = b"%PDF-1.7 freshly acquired"
+        digest = hashlib.md5(body).hexdigest()
+        owned = tmp_path / ".source-owned.pdf"
+        owned.write_bytes(body)
+        final_path = tmp_path / f"UnknownAuthor_Impostor_{digest}.pdf"
+        final_path.write_bytes(b"%PDF-1.8 freshly acquired")
+        assert final_path.stat().st_size == owned.stat().st_size
+        mocker.patch(
+            "python_bridge._fetch_from_source",
+            new=AsyncMock(return_value=str(owned)),
+        )
+
+        with pytest.raises(FileExistsError):
+            await download_book(
+                book_details={
+                    "md5": digest,
+                    "source": "libgen",
+                    "title": "Impostor",
+                    "extension": "pdf",
+                },
+                output_dir=str(tmp_path),
+            )
+
+        assert final_path.read_bytes() == b"%PDF-1.8 freshly acquired"
+        assert not owned.exists()
+
+    @pytest.mark.asyncio
+    async def test_transfer_digest_survives_fips_enforcing_builds(
+        self, tmp_path, mocker
+    ):
+        """A FIPS ValueError from md5() would abort the whole candidate walk."""
+        body = b"%PDF-1.7 fips body"
+        digest = hashlib.md5(body).hexdigest()
+        real_md5 = hashlib.md5
+
+        def fips_md5(*args, **kwargs):
+            if kwargs.get("usedforsecurity", True):
+                raise ValueError("[digital envelope routines] unsupported")
+            kwargs.pop("usedforsecurity", None)
+            return real_md5(*args, **kwargs)
+
+        mocker.patch("python_bridge.hashlib.md5", side_effect=fips_md5)
+
+        class Response:
+            url = httpx.URL("https://cdn.example/get")
+            headers = {"content-type": "application/pdf"}
+
+            def raise_for_status(self):
+                pass
+
+            async def aiter_bytes(self, _chunk_size):
+                yield body
+
+        class Stream:
+            async def __aenter__(self):
+                return Response()
+
+            async def __aexit__(self, *_args):
+                return False
+
+        class Client:
+            def __init__(self, **_kwargs):
+                pass
+
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, *_args):
+                return False
+
+            def stream(self, *_args):
+                return Stream()
+
+        mocker.patch("httpx.AsyncClient", Client)
+
+        result = await python_bridge._download_url_to_file(
+            "https://mirror.example/get", str(tmp_path), digest, "libgen"
+        )
+
+        assert Path(result).read_bytes() == body
 
     @pytest.mark.skipif(os.name == "nt", reason="POSIX signal semantics")
     def test_sigterm_cancels_dispatch_and_removes_partial_download(self, tmp_path):
@@ -1671,16 +1792,37 @@ asyncio.run(python_bridge.main())
                 ".epub",
             ),
             (
+                # Printable bytes are the weakest evidence there is: every
+                # text-based container looks identical at that level, so a
+                # declared extension outranks them (PR #131).
                 {"content-type": "application/epub+zip"},
                 "epub",
                 b"plain text signature",
-                ".txt",
+                ".epub",
+            ),
+            (
+                {"content-type": "application/epub+zip"},
+                "txt",
+                b"{\\rtf1\\ansi printable but not plain text}",
+                ".rtf",
+            ),
+            (
+                {"content-type": "application/epub+zip"},
+                "txt",
+                b'<?xml version="1.0"?><FictionBook xmlns="http://x"><body/></FictionBook>',
+                ".fb2",
             ),
             (
                 {"content-type": "application/pdf"},
                 "../escape.exe",
                 b"\x00\x01unknown binary",
                 ".pdf",
+            ),
+            (
+                {"content-type": "application/octet-stream"},
+                "../escape.exe",
+                b"plain text with no declared extension",
+                ".txt",
             ),
         ],
     )

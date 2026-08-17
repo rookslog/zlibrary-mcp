@@ -760,9 +760,9 @@ def _response_extension(
     headers, response_url: str, signature: bytes
 ) -> tuple[str, str]:
     """Infer a safe document extension from strongest to weakest evidence."""
-    signature_extension = _signature_extension(signature)
+    signature_extension, signature_evidence = _signature_extension(signature)
     if signature_extension:
-        return signature_extension, "signature"
+        return signature_extension, signature_evidence
 
     disposition = headers.get("content-disposition", "")
     if disposition:
@@ -806,28 +806,96 @@ def _looks_like_html(signature: bytes) -> bool:
     )
 
 
-def _signature_extension(signature: bytes) -> str:
-    """Classify supported document bytes without trusting names or MIME."""
+def _signature_extension(signature: bytes) -> tuple[str, str]:
+    """Classify supported document bytes without trusting names or MIME.
+
+    Returns the extension and how strong the classification is. A magic-byte
+    match is ``signature`` evidence and outranks a declared extension; a merely
+    printable prefix is ``printable_text`` — every text-based container (RTF,
+    FB2, HTML-ish TXT) looks the same at that level, so it must never override
+    the extension the search result declared.
+    """
     probe = _signature_probe(signature)
     if probe.startswith(b"%PDF"):
-        return "pdf"
+        return "pdf", "signature"
     if probe.startswith(b"PK\x03\x04") and b"application/epub+zip" in signature:
-        return "epub"
+        return "epub", "signature"
+    if probe.startswith(b"{\\rtf"):
+        return "rtf", "signature"
     if not probe or b"\x00" in probe:
-        return ""
+        return "", ""
+    if b"<FictionBook" in probe:
+        return "fb2", "signature"
     try:
         text = probe.decode("utf-8")
     except UnicodeDecodeError:
-        return ""
+        return "", ""
     if all(character.isprintable() or character in "\r\n\t" for character in text):
-        return "txt"
-    return ""
+        return "txt", "printable_text"
+    return "", ""
+
+
+def _md5_digest():
+    """Build an MD5 hasher usable on FIPS-enforcing builds.
+
+    These digests only ever compare against a provider's catalog identifier, so
+    they are not a security control. Without the flag `hashlib.md5()` raises
+    `ValueError` under FIPS policy — an exception no candidate-walk handler
+    classifies, which would abort the whole walk instead of trying a mirror.
+    """
+    try:
+        return hashlib.md5(usedforsecurity=False)
+    except TypeError:  # pragma: no cover - builds without the keyword
+        return hashlib.md5()
 
 
 def _publish_no_replace(source: Path, destination: Path) -> None:
     """Atomically publish one owned file without replacing an existing path."""
     os.link(source, destination)
     source.unlink()
+
+
+def _file_md5(path: Path) -> str:
+    """Digest a published artifact for catalog-identity comparison."""
+    digest = _md5_digest()
+    with open(path, "rb") as handle:
+        for chunk in iter(lambda: handle.read(65536), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def _artifacts_match(source: Path, destination: Path, expected_md5: str) -> bool:
+    """Decide whether an existing destination already holds this acquisition."""
+    if source.stat().st_size != destination.stat().st_size:
+        return False
+    if expected_md5:
+        return _file_md5(destination) == expected_md5
+    return True
+
+
+def _publish_or_reuse(source: Path, destination: Path, expected_md5: str = "") -> bool:
+    """Publish a staged artifact, reusing an identical existing destination.
+
+    Acquisition is idempotent: re-downloading the same result into the same
+    directory resolves to the same deterministic name, and finding our own
+    prior artifact there is success, not a collision. A destination that does
+    not match is still never replaced. The staged file is consumed on every
+    path so no orphan temp survives the call.
+    """
+    try:
+        _publish_no_replace(source, destination)
+        return False
+    except FileExistsError:
+        pass
+    try:
+        if _artifacts_match(source, destination, expected_md5):
+            return True
+        raise FileExistsError(
+            f"Refusing to replace {destination}: the existing file differs from the "
+            f"freshly downloaded artifact staged at {source}"
+        )
+    finally:
+        source.unlink(missing_ok=True)
 
 
 async def _download_url_to_file(
@@ -902,7 +970,7 @@ async def _download_url_to_file(
                         )
 
                     written = 0
-                    digest = hashlib.md5()
+                    digest = _md5_digest()
                     signature = bytearray()
                     with open(attempt_path, "wb") as handle:
                         async for chunk in response.aiter_bytes(65536):
@@ -1191,12 +1259,25 @@ async def download_book(
         }:
             raise ValueError("RAG processing supports only PDF, EPUB, and TXT files")
 
-        # Step 3: Rename the downloaded file to the enhanced filename.
+        # Step 3: Rename the downloaded file to the enhanced filename, or adopt
+        # an identical artifact a previous acquisition of this book already
+        # published under the same deterministic name.
         Path(output_dir).mkdir(parents=True, exist_ok=True)
-        _publish_no_replace(Path(original_download_path_str), final_file_path)
-        logger.info(
-            f"Published downloaded file from {original_download_path_str} to {final_file_path_str}"
+        catalog_md5 = str(book_details.get("md5") or "").strip().lower()
+        reused = _publish_or_reuse(
+            Path(original_download_path_str),
+            final_file_path,
+            catalog_md5 if _MD5_RE.fullmatch(catalog_md5) else "",
         )
+        if reused:
+            logger.info(
+                f"Reused existing matching artifact at {final_file_path_str}; "
+                f"discarded redundant download {original_download_path_str}"
+            )
+        else:
+            logger.info(
+                f"Published downloaded file from {original_download_path_str} to {final_file_path_str}"
+            )
         downloaded_file_path_str = final_file_path_str
 
         # Step 4: Optionally process for RAG.

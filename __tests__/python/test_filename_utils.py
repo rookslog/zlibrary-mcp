@@ -17,6 +17,7 @@ from filename_utils import (
     format_author_camelcase,
     create_unified_filename,
     create_metadata_filename,
+    normalize_document_extension,
     parse_filename,
 )
 
@@ -263,6 +264,20 @@ class TestCreateUnifiedFilename:
         )
 
         assert result.rsplit(".", 1)[1] == extension.strip().lstrip(".").lower()
+
+    def test_every_zlibrary_extension_survives_normalization(self):
+        """A format search can return must never publish extensionless (PR #131)."""
+        from zlibrary.const import Extension
+
+        for member in Extension:
+            extension = member.value.lower()
+            result = create_unified_filename(
+                {"author": "Test Author", "title": "Book", "id": "7"},
+                extension=extension,
+            )
+
+            assert normalize_document_extension(member.value) == extension
+            assert result.rsplit(".", 1)[1] == extension
 
 
 class TestCreateMetadataFilename:

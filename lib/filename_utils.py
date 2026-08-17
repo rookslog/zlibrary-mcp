@@ -16,24 +16,17 @@ import re
 import unicodedata
 from pathlib import Path
 
+from zlibrary.const import Extension
 
+
+# Formats reachable through the multi-source adapters (LibGen, Anna's Archive)
+# that Z-Library's own extension vocabulary does not carry.
+_MULTI_SOURCE_EXTENSIONS = frozenset({"cbr", "cbz", "doc", "docx", "odt"})
+
+# Single source of truth for the Z-Library half: a format the search layer can
+# return must survive normalization, or the published artifact loses its suffix.
 SAFE_DOCUMENT_EXTENSIONS = frozenset(
-    {
-        "azw",
-        "azw3",
-        "cbr",
-        "cbz",
-        "djvu",
-        "doc",
-        "docx",
-        "epub",
-        "fb2",
-        "mobi",
-        "odt",
-        "pdf",
-        "rtf",
-        "txt",
-    }
+    {member.value.lower() for member in Extension} | _MULTI_SOURCE_EXTENSIONS
 )
 
 

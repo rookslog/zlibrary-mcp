@@ -11,6 +11,7 @@ import re
 import httpx
 import aiofiles
 import os
+import tempfile
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Sequence, Union
 from urllib.parse import unquote
@@ -194,6 +195,7 @@ async def select_advertised_domain(
 _CD_EXTENDED = re.compile(r"filename\*\s*=\s*UTF-8''([^;\s]+)", re.IGNORECASE)
 _CD_QUOTED = re.compile(r'filename\s*=\s*"([^"]*)"', re.IGNORECASE)
 _CD_BARE = re.compile(r'filename\s*=\s*([^;"\s]+)', re.IGNORECASE)
+_DOWNLOAD_STAGING_PREFIX = ".zlibrary-eapi-"
 
 
 def filename_from_content_disposition(header: str) -> Optional[str]:
@@ -433,41 +435,61 @@ class EAPIClient:
         # Ensure output directory exists
         os.makedirs(output_dir, exist_ok=True)
 
-        # Stream download
-        async with httpx.AsyncClient(
-            cookies=self._cookies,
-            follow_redirects=True,
-            timeout=httpx.Timeout(60.0, connect=10.0),
-        ) as dl_client:
-            async with dl_client.stream("GET", download_url) as response:
-                response.raise_for_status()
+        output_path: Optional[Path] = None
+        staging_path: Optional[Path] = None
+        try:
+            # Stream download
+            async with httpx.AsyncClient(
+                cookies=self._cookies,
+                follow_redirects=True,
+                timeout=httpx.Timeout(60.0, connect=10.0),
+            ) as dl_client:
+                async with dl_client.stream("GET", download_url) as response:
+                    response.raise_for_status()
 
-                # Determine filename
-                if not filename:
-                    cd = response.headers.get("content-disposition", "")
-                    filename = filename_from_content_disposition(cd)
+                    # Determine filename
                     if not filename:
-                        # Derive from URL path
-                        url_path = str(response.url).split("?")[0]
-                        filename = url_path.split("/")[-1] or f"{book_id}.bin"
+                        cd = response.headers.get("content-disposition", "")
+                        filename = filename_from_content_disposition(cd)
+                        if not filename:
+                            # Derive from URL path
+                            url_path = str(response.url).split("?")[0]
+                            filename = url_path.split("/")[-1] or f"{book_id}.bin"
 
-                # The filename may come from a server-controlled header, so reduce
-                # it to a bare basename before joining. Without this,
-                # `filename="../../x"` escapes output_dir entirely, since
-                # Path("/downloads") / "../../x" resolves outside the directory.
-                filename = sanitize_download_filename(filename) or f"{book_id}.bin"
+                    # The filename may come from a server-controlled header, so reduce
+                    # it to a bare basename before joining. Without this,
+                    # `filename="../../x"` escapes output_dir entirely, since
+                    # Path("/downloads") / "../../x" resolves outside the directory.
+                    filename = sanitize_download_filename(filename) or f"{book_id}.bin"
 
-                output_path = Path(output_dir) / filename
+                    output_path = Path(output_dir) / filename
+                    staging_fd, staging_name = tempfile.mkstemp(
+                        dir=output_dir,
+                        prefix=_DOWNLOAD_STAGING_PREFIX,
+                        suffix=".part",
+                    )
+                    staging_path = Path(staging_name)
+                    os.close(staging_fd)
 
-                async with aiofiles.open(output_path, "wb") as f:
-                    async for chunk in response.aiter_bytes():
-                        await f.write(chunk)
+                    async with aiofiles.open(staging_path, "wb") as f:
+                        async for chunk in response.aiter_bytes():
+                            await f.write(chunk)
 
-        # Verify non-empty
-        if not output_path.exists() or output_path.stat().st_size == 0:
-            if output_path.exists():
-                output_path.unlink()
-            raise RuntimeError(f"Download produced empty file for book {book_id}")
+            if staging_path.stat().st_size == 0:
+                raise RuntimeError(f"Download produced empty file for book {book_id}")
+
+            os.replace(staging_path, output_path)
+            staging_path = None
+        finally:
+            if staging_path is not None:
+                try:
+                    staging_path.unlink(missing_ok=True)
+                except OSError as exc:
+                    # Cleanup must not replace the transfer's original exception or
+                    # cancellation with an unlink failure.
+                    logger.warning(
+                        f"Failed to remove incomplete EAPI download {staging_path}: {exc}"
+                    )
 
         return str(output_path.resolve())
 

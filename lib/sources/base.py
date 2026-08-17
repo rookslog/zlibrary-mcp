@@ -5,7 +5,7 @@ to provide consistent search and download behavior.
 """
 
 from abc import ABC, abstractmethod
-from typing import List
+from typing import AsyncIterator, List
 
 from .models import DownloadResult, UnifiedBookResult
 
@@ -16,6 +16,7 @@ class SourceAdapter(ABC):
     Implementations must provide:
         search: Find books matching a query
         get_download_url: Get download URL for a specific book
+        iter_download_candidates: Override when a source has independent routes
         close: Clean up resources (httpx clients, etc.)
     """
 
@@ -43,6 +44,14 @@ class SourceAdapter(ABC):
             DownloadResult with URL and optional quota info
         """
         pass
+
+    async def iter_download_candidates(self, md5: str) -> AsyncIterator[DownloadResult]:
+        """Yield source-neutral download candidates for one book.
+
+        Adapters with a single resolution path inherit this compatibility
+        implementation. Providers with independent mirrors override it.
+        """
+        yield await self.get_download_url(md5)
 
     @abstractmethod
     async def close(self) -> None:

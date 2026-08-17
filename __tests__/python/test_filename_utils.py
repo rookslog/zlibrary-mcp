@@ -17,6 +17,7 @@ from filename_utils import (
     format_author_camelcase,
     create_unified_filename,
     create_metadata_filename,
+    normalize_document_extension,
     parse_filename,
 )
 
@@ -191,6 +192,92 @@ class TestCreateUnifiedFilename:
         result = create_unified_filename(book_details, max_total_length=100)
         # Should truncate to fit within max_total_length + extension
         assert len(result) <= 110  # 100 + ".pdf" + some buffer
+
+    @pytest.mark.parametrize(
+        ("book_details", "identity"),
+        [
+            ({"id": "42", "md5": "a" * 32}, "42"),
+            ({"id": "", "md5": "b" * 32}, "b" * 32),
+            ({"id": "   ", "md5": "c" * 32}, "c" * 32),
+            ({"id": "", "md5": ""}, "NoID"),
+        ],
+    )
+    def test_filename_identity_prefers_id_then_md5_then_noid(
+        self, book_details, identity
+    ):
+        """Removing identity precedence would collide source search results."""
+        details = {"author": "Same Author", "title": "Same Title", **book_details}
+
+        result = create_unified_filename(details)
+
+        assert result == f"AuthorSame_SameTitle_{identity}"
+
+    def test_distinct_md5_values_disambiguate_identical_metadata(self):
+        """Two source records with equal metadata but different content stay distinct."""
+        common = {"author": "Same Author", "title": "Same Title", "id": ""}
+
+        first = create_unified_filename({**common, "md5": "a" * 32})
+        second = create_unified_filename({**common, "md5": "b" * 32})
+
+        assert first != second
+
+    @pytest.mark.parametrize("extension", ["", "   ", ".  "])
+    def test_empty_extension_does_not_add_trailing_dot(self, extension):
+        """Whitespace-only metadata is missing extension evidence, not a suffix."""
+        result = create_unified_filename(
+            {"author": "Test Author", "title": "Book", "id": "7"},
+            extension=extension,
+        )
+
+        assert result == "AuthorTest_Book_7"
+
+    @pytest.mark.parametrize(
+        "extension",
+        [
+            "../pdf",
+            "pdf/../../escape",
+            "pdf\\escape",
+            "pdf\x00.exe",
+            "pdf\nexe",
+            "exe",
+            "sh",
+            "unknown",
+            "a" * 64,
+        ],
+    )
+    def test_unsafe_or_unknown_extension_cannot_alter_the_output_path(self, extension):
+        """Untrusted metadata must not become a path or executable suffix."""
+        result = create_unified_filename(
+            {"author": "Test Author", "title": "Book", "id": "7"},
+            extension=extension,
+        )
+
+        assert result == "AuthorTest_Book_7"
+        assert Path(result).name == result
+
+    @pytest.mark.parametrize("extension", ["pdf", ".EPUB", " txt ", "mobi", "azw3"])
+    def test_safe_document_extensions_are_normalized(self, extension):
+        """Non-RAG acquisition retains a conservative document vocabulary."""
+        result = create_unified_filename(
+            {"author": "Test Author", "title": "Book", "id": "7"},
+            extension=extension,
+        )
+
+        assert result.rsplit(".", 1)[1] == extension.strip().lstrip(".").lower()
+
+    def test_every_zlibrary_extension_survives_normalization(self):
+        """A format search can return must never publish extensionless (PR #131)."""
+        from zlibrary.const import Extension
+
+        for member in Extension:
+            extension = member.value.lower()
+            result = create_unified_filename(
+                {"author": "Test Author", "title": "Book", "id": "7"},
+                extension=extension,
+            )
+
+            assert normalize_document_extension(member.value) == extension
+            assert result.rsplit(".", 1)[1] == extension
 
 
 class TestCreateMetadataFilename:

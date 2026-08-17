@@ -7,11 +7,13 @@ to avoid being blocked.
 
 import asyncio
 import logging
+import re
 import time
 from typing import List, Optional
 from urllib.parse import parse_qs, urljoin, urlparse
 
 import httpx
+import requests
 from bs4 import BeautifulSoup
 
 from .base import SourceAdapter
@@ -20,8 +22,54 @@ from .models import DownloadResult, SourceType, UnifiedBookResult
 
 # CRITICAL: Import is libgen_api_enhanced, NOT libgen_api
 from libgen_api_enhanced import LibgenSearch
+from libgen_api_enhanced import search_request as _lge_search_request
 
 logger = logging.getLogger("zlibrary.sources")
+
+# libgen.li serves its default-nginx stub (HTTP 200, ~640 bytes, no results
+# table) to blocklisted tool User-Agents — python-requests' default, python-httpx's
+# default, and curl among them — while any identifying UA gets the real page
+# (measured 2026-08-17, issue #124). An honest self-identifying UA is admitted,
+# so no browser string is needed. Used by BOTH the search path (via the shim
+# below) and the download path (ads.php serves the same stub to blocked UAs).
+USER_AGENT = "zlibrary-mcp (+https://github.com/rookslog/zlibrary-mcp)"
+
+
+class SourceParseError(Exception):
+    """A source served a page the adapter could not parse.
+
+    Distinct from an empty result: the page did not contain the structure
+    results live in, so reporting "no matches" would be false (#124).
+    """
+
+
+class _RequestsWithUA:
+    """Stand-in for the `requests` module inside libgen-api-enhanced.
+
+    libgen-api-enhanced 1.3 calls the module-level ``requests.get`` with no
+    headers hook, which sends the blocklisted default UA (see USER_AGENT note
+    above). This shim is swapped in for the ``requests`` reference inside its
+    ``search_request`` module: same ``.get``/``.exceptions`` surface, the
+    identifying UA added, and the last search response recorded so
+    ``LibgenAdapter.search`` can tell "no matches" from "served a page with no
+    results table".
+    """
+
+    exceptions = requests.exceptions
+
+    def __init__(self) -> None:
+        self.last_response: Optional[requests.Response] = None
+
+    def get(self, url: str, **kwargs) -> requests.Response:
+        headers = kwargs.pop("headers", None) or {}
+        headers.setdefault("User-Agent", USER_AGENT)
+        response = requests.get(url, headers=headers, **kwargs)
+        self.last_response = response
+        return response
+
+
+_search_requests = _RequestsWithUA()
+_lge_search_request.requests = _search_requests
 
 # Mirrors tried in order when resolving a download. Different mirrors hand off
 # to different CDN nodes (cdn3/cdn4/... .booksdl.lc) and those nodes fail
@@ -77,6 +125,7 @@ class LibgenAdapter(SourceAdapter):
             List of UnifiedBookResult with source=LIBGEN
         """
         await self._rate_limit()
+        _search_requests.last_response = None
 
         def _search_sync():
             s = LibgenSearch(mirror=self.mirror)
@@ -85,6 +134,19 @@ class LibgenAdapter(SourceAdapter):
         results = await asyncio.to_thread(_search_sync)
 
         if not results:
+            # A genuinely-empty search still renders the (empty) results
+            # table (verified 2026-08-17), so a page WITHOUT the table means
+            # the mirror served something else entirely — a UA-block stub or
+            # a layout change — and "no results" would be a false report.
+            page = _search_requests.last_response
+            if page is not None and "tablelibgen" not in page.text:
+                title_match = re.search(r"<title>([^<]*)</title>", page.text, re.I)
+                page_title = title_match.group(1).strip() if title_match else ""
+                raise SourceParseError(
+                    f"LibGen search page had no results table (HTTP "
+                    f"{page.status_code}, {len(page.text)} bytes, title "
+                    f"{page_title!r}) — parse failure, not an empty result"
+                )
             return []
 
         return [
@@ -197,7 +259,14 @@ class LibgenAdapter(SourceAdapter):
         """
         attempts = []
 
-        async with httpx.AsyncClient(timeout=30, follow_redirects=True) as client:
+        # The identifying UA matters here too: ads.php serves the same
+        # UA-blocklist stub to python-httpx's default UA (measured
+        # 2026-08-17, #124), which surfaces as "no GET link" on every mirror.
+        async with httpx.AsyncClient(
+            timeout=30,
+            follow_redirects=True,
+            headers={"User-Agent": USER_AGENT},
+        ) as client:
             for mirror in self._mirror_candidates():
                 await self._rate_limit()
                 try:

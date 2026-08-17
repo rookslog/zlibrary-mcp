@@ -672,10 +672,21 @@ async def _download_url_to_file(url: str, output_dir: str, md5: str) -> str:
     """
     import httpx
 
+    from lib.sources.libgen import USER_AGENT
+
     Path(output_dir).mkdir(parents=True, exist_ok=True)
     raw_path = Path(output_dir) / f"{md5}.download"
 
-    async with httpx.AsyncClient(timeout=180, follow_redirects=True) as client:
+    # The identifying UA is load-bearing: libgen's hosts serve an HTML stub
+    # to blocklisted tool UAs including python-httpx's default (#124), which
+    # this function's HTML guard then misreads as an expired key — the
+    # adapter verifies the URL with the right UA and the download dies here
+    # with the wrong one.
+    async with httpx.AsyncClient(
+        timeout=180,
+        follow_redirects=True,
+        headers={"User-Agent": USER_AGENT},
+    ) as client:
         async with client.stream("GET", url) as response:
             response.raise_for_status()
 
@@ -1079,6 +1090,23 @@ async def search_multi_source(
     }
 
 
+def _requires_eapi_client(function_name: str, args_dict: dict) -> bool:
+    """Whether this invocation needs an authenticated Z-Library EAPI client.
+
+    Local document processing and multi-source search never do. Neither does
+    a download whose bookDetails came from search_multi_source (source in
+    SOURCE_ALIASES): download_book only acquires the EAPI client on its
+    Z-Library branch, and logging in up front took LibGen — the
+    credential-free fallback — down with every Z-Library auth outage (#129).
+    """
+    if function_name in ("process_document", "search_multi_source"):
+        return False
+    if function_name == "download_book":
+        source = str((args_dict.get("book_details") or {}).get("source") or "").lower()
+        return source not in SOURCE_ALIASES
+    return True
+
+
 async def main():
     parser = argparse.ArgumentParser(description="Z-Library Python Bridge")
     parser.add_argument("function_name", help="Name of the function to call")
@@ -1106,8 +1134,9 @@ async def main():
         sys.exit(1)
 
     try:
-        # Initialize EAPI client for all functions except local file processing and multi-source search
-        if function_name not in ["process_document", "search_multi_source"]:
+        # Initialize the EAPI client only where it is actually needed —
+        # see _requires_eapi_client for the routing (#129).
+        if _requires_eapi_client(function_name, args_dict):
             await initialize_eapi_client()
 
         # Standardize 'language' key to 'languages' if present for search functions

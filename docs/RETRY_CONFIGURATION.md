@@ -46,8 +46,10 @@ the outer Node budget must remain larger than the worst-case inner provider walk
 | `PYTHON_BRIDGE_LONG_TIMEOUT` | `2400000` | Download and document-processing bridge budget, in milliseconds |
 | `PYTHON_BRIDGE_KILL_GRACE` | `3000` | Grace between process-tree termination and forced kill, in milliseconds |
 
-Malformed, non-positive, and non-finite values fall back to their defaults rather
-than disabling a deadline.
+Malformed, non-positive, non-finite, and oversized values fall back to their
+defaults rather than disabling or accidentally shortening a deadline. Node timers
+accept at most `2,147,483,647` milliseconds; that exact value is valid, while any
+larger bridge timeout or kill-grace setting uses its documented default.
 
 Preflight is skipped when `HTTP_PROXY` or `HTTPS_PROXY` covers the target, with
 `NO_PROXY` honored. A direct DNS/TCP socket cannot represent a proxied request;

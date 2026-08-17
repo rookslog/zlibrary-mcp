@@ -29,19 +29,27 @@ import { logger } from './logger.js';
 import { BridgeTimeoutError } from './errors.js';
 
 /**
- * Read a positive-integer millisecond budget from the environment.
+ * Read a positive-integer millisecond budget within Node's timer range.
  *
  * A malformed value must not shorten the budget: `setTimeout(fn, NaN)` fires on
  * the next tick, so a typo would kill every bridge call instantly rather than
  * loosen anything. `parseInt` is not enough of a guard on its own — it stops at
  * the first character it cannot use, so `'1.5'` and `'1e6'` both yield 1 (a 1ms
  * deadline) and `'240000abc'` yields 240000. The whole string must therefore be
- * a plain positive integer, or we fall back to the default. Mirrors
+ * a plain positive integer no larger than 2,147,483,647, or we fall back to
+ * the default. Mirrors
  * `_positive_float` on the Python side (lib/sources/config.py), which is
  * already safe here because it parses a float.
  */
+const MAX_TIMER_DELAY_MS = 2_147_483_647;
+const MAX_STDERR_LINES = 200;
+
 function positiveIntOrFallback(value: unknown, fallback: number): number {
-  return Number.isSafeInteger(value) && (value as number) > 0 ? (value as number) : fallback;
+  return Number.isSafeInteger(value) &&
+    (value as number) > 0 &&
+    (value as number) <= MAX_TIMER_DELAY_MS
+    ? (value as number)
+    : fallback;
 }
 
 function positiveIntEnv(name: string, fallback: number): number {
@@ -78,6 +86,13 @@ interface ProcessTreeRecord {
   livenessTimer?: NodeJS.Timeout;
   killTimer?: NodeJS.Timeout;
   terminationStarted?: boolean;
+  /**
+   * Whether SIGKILL has already been aimed at the whole group. Once it has,
+   * an unreadable procfs entry can no longer justify holding the record: the
+   * strongest signal this process can send has been sent, and holding on
+   * would block shutdown forever instead of killing anything.
+   */
+  killDelivered?: boolean;
 }
 
 const liveTrees = new Set<ProcessTreeRecord>();
@@ -95,6 +110,12 @@ let shutdownObservationTimer: NodeJS.Timeout | undefined;
  */
 function signalProcessTree(tree: ProcessTreeRecord, signal: NodeJS.Signals): boolean {
   const { shell, pid } = tree;
+
+  // Recorded on the attempt, not on success. A SIGKILL that cannot be
+  // delivered means either the group is already gone or this process will
+  // never have the privilege to kill it; retaining ownership changes neither
+  // and would deadlock `observeShutdownUntilGone`.
+  if (signal === 'SIGKILL') tree.killDelivered = true;
 
   if (process.platform === 'win32') {
     const result = spawnSync('taskkill', ['/PID', String(pid), '/T', '/F'], {
@@ -124,6 +145,61 @@ function signalProcessTree(tree: ProcessTreeRecord, signal: NodeJS.Signals): boo
   }
 }
 
+/**
+ * Whether procfs shows an executable member of a Linux process group.
+ *
+ * Ownership is released only when the scan positively accounts for every
+ * entry: `kill(-pid, 0)` has already said the group exists, so an entry whose
+ * stat cannot be read is an unanswered question, not a negative answer. A
+ * descendant that changed credentials under a restricted /proc mount reads as
+ * exactly that, and a readable zombie sibling is no evidence about it — a
+ * scan that saw one readable zombie member and one denied entry must still
+ * report the group as possibly alive so the SIGTERM -> SIGKILL path runs.
+ *
+ * `killDelivered` is the bound on that conservatism for per-entry read failures.
+ * Holding the record only buys the kill path, so once SIGKILL has been aimed at
+ * the whole group, an entry whose stat remains permanently unreadable no longer
+ * pins the record. However, when the /proc listing itself is completely unavailable,
+ * a missing listing is not evidence of death — ownership is retained until
+ * `kill(-pid, 0)` reports the group gone (ESRCH).
+ *
+ * The readers are injectable so permission and availability failures can be
+ * exercised deterministically without weakening the real process-tree tests.
+ */
+export function linuxProcessGroupPossiblyAlive(
+  pid: number,
+  listEntries: () => string[] = () => readdirSync('/proc'),
+  readStat: (entry: string) => string = (entry) => readFileSync(`/proc/${entry}/stat`, 'utf8'),
+  { killDelivered = false }: { killDelivered?: boolean } = {},
+): boolean {
+  try {
+    let sawUnreadableEntry = false;
+    for (const entry of listEntries()) {
+      if (!/^\d+$/.test(entry)) continue;
+      try {
+        const stat = readStat(entry);
+        const fields = stat.slice(stat.lastIndexOf(')') + 2).split(' ');
+        const state = fields[0];
+        const processGroup = Number(fields[2]);
+        // A zombie cannot execute or hold resources, so it alone does not keep
+        // the group alive; it is simply not evidence either way.
+        if (processGroup === pid && state !== 'Z') return true;
+      } catch (error) {
+        // A vanished entry is the ordinary list/stat race and answers itself.
+        // Any other failure may be permission denial hiding a live member of
+        // this very group.
+        if ((error as NodeJS.ErrnoException).code !== 'ENOENT') sawUnreadableEntry = true;
+      }
+    }
+    return sawUnreadableEntry && !killDelivered;
+  } catch {
+    // kill(0) already established that the group may exist. An unavailable
+    // or unreadable procfs listing cannot safely contradict that kernel
+    // liveness result; ownership is released only when kill(-pid, 0) reports ESRCH.
+    return true;
+  }
+}
+
 /** Whether any member of the isolated POSIX process group still exists. */
 function processTreeIsAlive(tree: ProcessTreeRecord): boolean {
   const { shell, pid } = tree;
@@ -137,19 +213,9 @@ function processTreeIsAlive(tree: ProcessTreeRecord): boolean {
     // a task cannot execute or hold resources and must not pin the ownership
     // record forever. Inspect the Linux process-group field and require at
     // least one non-zombie member. Other POSIX hosts retain kill(0) semantics.
-    for (const entry of readdirSync('/proc')) {
-      if (!/^\d+$/.test(entry)) continue;
-      try {
-        const stat = readFileSync(`/proc/${entry}/stat`, 'utf8');
-        const fields = stat.slice(stat.lastIndexOf(')') + 2).split(' ');
-        const state = fields[0];
-        const processGroup = Number(fields[2]);
-        if (processGroup === pid && state !== 'Z') return true;
-      } catch {
-        // Process exited between directory listing and stat read.
-      }
-    }
-    return false;
+    return linuxProcessGroupPossiblyAlive(pid, undefined, undefined, {
+      killDelivered: tree.killDelivered,
+    });
   } catch {
     return false;
   }
@@ -407,8 +473,10 @@ export function runPythonBridge(
     });
 
     shell.on('stderr', (line: string) => {
-      // Bounded: a runaway child must not be able to grow this without limit.
-      if (stderrLines.length < 200) stderrLines.push(line);
+      // Keep a bounded tail: provider envelopes are written last, after any
+      // diagnostics, and downstream error classification needs that envelope.
+      stderrLines.push(line);
+      if (stderrLines.length > MAX_STDERR_LINES) stderrLines.shift();
     });
 
     shell.end((err: any) => {

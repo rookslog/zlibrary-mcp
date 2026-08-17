@@ -149,6 +149,10 @@ _lge_search_request.requests = _search_requests
 # a dead CDN node, which is why this list exists rather than a single default.
 FALLBACK_MIRRORS = ("li", "vg", "la")
 
+# A usable search row carries a real md5; anything else (empty, ISBN,
+# citation text from a column-shifted article row) cannot be downloaded.
+_MD5_HEX_RE = re.compile(r"[0-9a-fA-F]{32}")
+
 
 def mirror_host(mirror: str) -> str:
     """Hostname for a mirror suffix, matching what LibgenSearch builds."""
@@ -309,15 +313,25 @@ class LibgenAdapter(SourceAdapter):
     def _to_unified(self, results) -> List[UnifiedBookResult]:
         """Convert libgen-api-enhanced books into UnifiedBookResult.
 
-        Rows without an md5 are dropped: journal-article rows come back
-        column-shifted from the parser (empty md5/title, citation text in
-        author — #132) and an md5-less row can never be downloaded. The
-        full per-object-type parse is #132's job; this filter is the
-        minimal slice that keeps #134's wider search results usable.
+        Rows whose md5 is not a full 32-hex digest are dropped:
+        journal-article rows come back column-shifted from the parser
+        (empty md5, or another column's value — an ISBN, a citation — in
+        the md5 field, #132), and anything short of a real md5 cannot be
+        resolved by ads.php. Same rule as the production canary's
+        usable-row check. The full per-object-type parse is #132's job;
+        this filter is the minimal slice that keeps #134's wider search
+        results usable.
         """
-        dropped = sum(1 for book in results if not (getattr(book, "md5", "") or ""))
+        dropped = sum(
+            1
+            for book in results
+            if not _MD5_HEX_RE.fullmatch(getattr(book, "md5", "") or "")
+        )
         if dropped:
-            logger.debug("LibGen search: dropped %d md5-less row(s)", dropped)
+            logger.debug(
+                "LibGen search: dropped %d row(s) without a valid 32-hex md5",
+                dropped,
+            )
         return [
             UnifiedBookResult(
                 md5=getattr(book, "md5", "") or "",
@@ -340,7 +354,7 @@ class LibgenAdapter(SourceAdapter):
                 },
             )
             for book in results
-            if getattr(book, "md5", "") or ""
+            if _MD5_HEX_RE.fullmatch(getattr(book, "md5", "") or "")
         ]
 
     def _mirror_candidates(self) -> List[str]:

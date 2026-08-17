@@ -154,7 +154,7 @@ class TestLibgenSearchIsBounded:
             if host == "libgen.li":
                 raise ProviderUnreachableError(provider, host, reason="connect_timeout")
 
-        book = MagicMock(md5="abc", title="Phenomenology", author="Hegel")
+        book = MagicMock(md5="a" * 32, title="Phenomenology", author="Hegel")
 
         with (
             patch("lib.sources.libgen.probe_host", side_effect=_first_mirror_dead),

@@ -33,7 +33,7 @@ class TestLibgenAdapterSearch:
     def mock_book(self):
         """Create a mock book result from LibgenSearch."""
         book = MagicMock()
-        book.md5 = "abc123def456"
+        book.md5 = "abc123def45600000000000000000000"
         book.title = "Python Programming"
         book.author = "John Doe"
         book.year = "2023"
@@ -60,7 +60,7 @@ class TestLibgenAdapterSearch:
             results = await adapter.search("python")
 
             assert len(results) == 1
-            assert results[0].md5 == "abc123def456"
+            assert results[0].md5 == "abc123def45600000000000000000000"
             assert results[0].title == "Python Programming"
             assert results[0].author == "John Doe"
             assert results[0].source == SourceType.LIBGEN
@@ -755,7 +755,7 @@ class TestLibgenAdapterParseFailure:
         good_page.text = '<html><table id="tablelibgen">...</table></html>'
 
         book = MagicMock()
-        book.md5 = "abc123def456"
+        book.md5 = "abc123def45600000000000000000000"
         book.title = "Found On The Second Mirror"
 
         def search_for(mirror):
@@ -900,7 +900,7 @@ class TestMd5lessRowsFiltered:
     @pytest.fixture
     def mock_book(self):
         book = MagicMock()
-        book.md5 = "abc123def456"
+        book.md5 = "abc123def45600000000000000000000"
         book.title = "Python Programming"
         book.author = "John Doe"
         book.year = "2023"

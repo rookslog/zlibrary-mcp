@@ -926,4 +926,25 @@ describe('python-runner Linux procfs liveness', () => {
       ),
     ).toBe(false);
   });
+
+  test('retains ownership when procfs listing throws even after SIGKILL delivered', async () => {
+    const mod = await import('../lib/python-runner.js');
+    const unavailable = () => {
+      throw new Error('EACCES: permission denied, scandir /proc');
+    };
+
+    // A failed/unavailable procfs listing is not evidence of death:
+    // killDelivered may bound retention only when individual entries are unreadable,
+    // not when the entire listing is absent and the kernel signal says alive.
+    expect(
+      mod.linuxProcessGroupPossiblyAlive(processGroup, unavailable, undefined, {
+        killDelivered: false,
+      }),
+    ).toBe(true);
+    expect(
+      mod.linuxProcessGroupPossiblyAlive(processGroup, unavailable, undefined, {
+        killDelivered: true,
+      }),
+    ).toBe(true);
+  });
 });

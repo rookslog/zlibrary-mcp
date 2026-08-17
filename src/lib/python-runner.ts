@@ -156,10 +156,12 @@ function signalProcessTree(tree: ProcessTreeRecord, signal: NodeJS.Signals): boo
  * scan that saw one readable zombie member and one denied entry must still
  * report the group as possibly alive so the SIGTERM -> SIGKILL path runs.
  *
- * `killDelivered` is the bound on that conservatism. Holding the record only
- * buys the kill path, so once SIGKILL has been aimed at the whole group there
- * is nothing left to buy, and an entry that stays permanently unreadable must
- * not pin the record forever — `observeShutdownUntilGone` waits on it.
+ * `killDelivered` is the bound on that conservatism for per-entry read failures.
+ * Holding the record only buys the kill path, so once SIGKILL has been aimed at
+ * the whole group, an entry whose stat remains permanently unreadable no longer
+ * pins the record. However, when the /proc listing itself is completely unavailable,
+ * a missing listing is not evidence of death — ownership is retained until
+ * `kill(-pid, 0)` reports the group gone (ESRCH).
  *
  * The readers are injectable so permission and availability failures can be
  * exercised deterministically without weakening the real process-tree tests.
@@ -191,8 +193,9 @@ export function linuxProcessGroupPossiblyAlive(
     }
     return sawUnreadableEntry && !killDelivered;
   } catch {
-    // kill(0) already established that the group may exist. Unavailable or
-    // unreadable procfs cannot safely contradict that kernel liveness result.
+    // kill(0) already established that the group may exist. An unavailable
+    // or unreadable procfs listing cannot safely contradict that kernel
+    // liveness result; ownership is released only when kill(-pid, 0) reports ESRCH.
     return true;
   }
 }

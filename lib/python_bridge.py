@@ -756,6 +756,8 @@ async def _download_url_to_file(
     """
     import httpx
 
+    from lib.sources.libgen import USER_AGENT
+
     Path(output_dir).mkdir(parents=True, exist_ok=True)
     raw_path = Path(output_dir) / f"{md5}.download"
 
@@ -766,8 +768,15 @@ async def _download_url_to_file(
     async def stream_to_disk() -> int:
         nonlocal active_host
         try:
+            # The identifying UA is load-bearing: libgen's hosts serve an HTML
+            # stub to blocklisted tool UAs including python-httpx's default
+            # (#124), which the HTML guard below then misreads as an expired
+            # key — the adapter verifies the URL with the right UA and the
+            # transfer dies here with the wrong one.
             async with httpx.AsyncClient(
-                timeout=build_timeout(config), follow_redirects=True
+                timeout=build_timeout(config),
+                follow_redirects=True,
+                headers={"User-Agent": USER_AGENT},
             ) as client:
                 async with client.stream("GET", url) as response:
                     response_url = getattr(response, "url", None)
@@ -1237,6 +1246,23 @@ async def search_multi_source(
     }
 
 
+def _requires_eapi_client(function_name: str, args_dict: dict) -> bool:
+    """Whether this invocation needs an authenticated Z-Library EAPI client.
+
+    Local document processing and multi-source search never do. Neither does
+    a download whose bookDetails came from search_multi_source (source in
+    SOURCE_ALIASES): download_book only acquires the EAPI client on its
+    Z-Library branch, and logging in up front took LibGen — the
+    credential-free fallback — down with every Z-Library auth outage (#129).
+    """
+    if function_name in ("process_document", "search_multi_source"):
+        return False
+    if function_name == "download_book":
+        source = str((args_dict.get("book_details") or {}).get("source") or "").lower()
+        return source not in SOURCE_ALIASES
+    return True
+
+
 async def main():
     parser = argparse.ArgumentParser(description="Z-Library Python Bridge")
     parser.add_argument("function_name", help="Name of the function to call")
@@ -1265,14 +1291,9 @@ async def main():
         sys.exit(1)
 
     try:
-        book_source = ""
-        if function_name == "download_book":
-            book_source = (
-                (args_dict.get("book_details") or {}).get("source") or ""
-            ).lower()
-        needs_eapi = function_name not in ["process_document", "search_multi_source"]
-        if function_name == "download_book" and book_source in SOURCE_ALIASES:
-            needs_eapi = False
+        # Decide before dispatch whether this call needs Z-Library
+        # authentication at all — see _requires_eapi_client (#106, #129).
+        needs_eapi = _requires_eapi_client(function_name, args_dict)
 
         # Install before authentication and dispatch: httpx/AnyIO resolves
         # again even after source preflight, and its default executor is joined

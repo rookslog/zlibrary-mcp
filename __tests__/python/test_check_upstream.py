@@ -516,3 +516,51 @@ def test_annas_parking_page_is_reported_as_parked(check_upstream):
     # The markers list is what probe_annas scans the body with; keep them
     # lowercase because the body is lowercased before matching.
     assert all(m == m.lower() for m in check_upstream.PARKING_MARKERS)
+
+
+class TestLibgenSearchProbeUsesProductionAdapter:
+    """The search probe must exercise the production adapter, not a
+    hand-rolled fetch: on 2026-08-17 (#124) a transport-level probe passed
+    (admitted UA, 200, >500 bytes) while production parsed nothing.
+    """
+
+    def _run(self, check_upstream, search_impl):
+        import asyncio
+        from unittest.mock import patch
+
+        async def go():
+            with patch("lib.sources.libgen.LibgenAdapter.search", new=search_impl):
+                async with httpx.AsyncClient(
+                    transport=httpx.MockTransport(lambda request: httpx.Response(500))
+                ) as client:
+                    return await check_upstream.probe_libgen(client)
+
+        return asyncio.run(go())
+
+    def test_parsed_results_report_ok(self, check_upstream):
+        async def fake_search(self, query, **kwargs):
+            return [object(), object()]
+
+        result = self._run(check_upstream, fake_search)
+        assert result.ok is True
+        assert "2 result(s)" in result.detail
+        assert result.required is False
+
+    def test_zero_parsed_results_fail_even_on_http_200(self, check_upstream):
+        """The old byte-count threshold admitted the 639-byte failure stub;
+        zero parsed results for the canary must never report ok."""
+
+        async def fake_search(self, query, **kwargs):
+            return []
+
+        result = self._run(check_upstream, fake_search)
+        assert result.ok is False
+        assert "0 parsed results" in result.detail
+
+    def test_adapter_exception_reports_failure_detail(self, check_upstream):
+        async def fake_search(self, query, **kwargs):
+            raise RuntimeError("no results table (title 'Welcome to nginx!')")
+
+        result = self._run(check_upstream, fake_search)
+        assert result.ok is False
+        assert "Welcome to nginx!" in result.detail

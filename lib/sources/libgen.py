@@ -272,7 +272,10 @@ class LibgenAdapter(SourceAdapter):
                 # thread-local precisely so an abandoned earlier attempt
                 # cannot supply it.
                 _search_requests.last_response = None
-                results = LibgenSearch(mirror=mirror).search_title(query)
+                # search_default covers title+author+series+publisher —
+                # search_title made author-bearing queries return nothing
+                # and got swamped on generic titles (#134).
+                results = LibgenSearch(mirror=mirror).search_default(query)
                 return results, _search_requests.last_response
 
             try:
@@ -304,7 +307,17 @@ class LibgenAdapter(SourceAdapter):
         raise AllSourcesFailedError(f"LibGen search for {query!r}", failures)
 
     def _to_unified(self, results) -> List[UnifiedBookResult]:
-        """Convert libgen-api-enhanced books into UnifiedBookResult."""
+        """Convert libgen-api-enhanced books into UnifiedBookResult.
+
+        Rows without an md5 are dropped: journal-article rows come back
+        column-shifted from the parser (empty md5/title, citation text in
+        author — #132) and an md5-less row can never be downloaded. The
+        full per-object-type parse is #132's job; this filter is the
+        minimal slice that keeps #134's wider search results usable.
+        """
+        dropped = sum(1 for book in results if not (getattr(book, "md5", "") or ""))
+        if dropped:
+            logger.debug("LibGen search: dropped %d md5-less row(s)", dropped)
         return [
             UnifiedBookResult(
                 md5=getattr(book, "md5", "") or "",
@@ -327,6 +340,7 @@ class LibgenAdapter(SourceAdapter):
                 },
             )
             for book in results
+            if getattr(book, "md5", "") or ""
         ]
 
     def _mirror_candidates(self) -> List[str]:

@@ -54,7 +54,7 @@ class TestLibgenAdapterSearch:
 
         with patch("lib.sources.libgen.LibgenSearch") as mock_search_class:
             mock_instance = MagicMock()
-            mock_instance.search_title.return_value = [mock_book]
+            mock_instance.search_default.return_value = [mock_book]
             mock_search_class.return_value = mock_instance
 
             results = await adapter.search("python")
@@ -78,7 +78,7 @@ class TestLibgenAdapterSearch:
 
         with patch("lib.sources.libgen.LibgenSearch") as mock_search_class:
             mock_instance = MagicMock()
-            mock_instance.search_title.return_value = []
+            mock_instance.search_default.return_value = []
             mock_search_class.return_value = mock_instance
 
             results = await adapter.search("nonexistent_book_xyz123")
@@ -100,7 +100,7 @@ class TestLibgenAdapterSearch:
 
         with patch("lib.sources.libgen.LibgenSearch") as mock_search_class:
             mock_instance = MagicMock()
-            mock_instance.search_title.return_value = [mock_book]
+            mock_instance.search_default.return_value = [mock_book]
             mock_search_class.return_value = mock_instance
 
             with patch("lib.sources.libgen.run_bounded") as mock_run_bounded:
@@ -129,7 +129,7 @@ class TestLibgenAdapterSearch:
 
         with patch("lib.sources.libgen.LibgenSearch") as mock_search_class:
             mock_instance = MagicMock()
-            mock_instance.search_title.return_value = [mock_book]
+            mock_instance.search_default.return_value = [mock_book]
             mock_search_class.return_value = mock_instance
 
             with patch("asyncio.to_thread") as mock_to_thread:
@@ -144,20 +144,22 @@ class TestLibgenAdapterSearch:
 
         adapter = LibgenAdapter(config)
 
-        # Book with minimal attributes
-        minimal_book = MagicMock(spec=[])  # Empty spec means no attributes
-        minimal_book.configure_mock(**{})
+        # Book with only an md5 (an md5-less book is dropped, not defaulted —
+        # see TestMd5lessRowsFiltered); every OTHER missing attribute still
+        # maps to an empty default rather than raising.
+        minimal_book = MagicMock(spec=["md5"])
+        minimal_book.md5 = "a" * 32
 
         with patch("lib.sources.libgen.LibgenSearch") as mock_search_class:
             mock_instance = MagicMock()
-            mock_instance.search_title.return_value = [minimal_book]
+            mock_instance.search_default.return_value = [minimal_book]
             mock_search_class.return_value = mock_instance
 
             results = await adapter.search("python")
 
             # Should not raise, should use empty defaults
             assert len(results) == 1
-            assert results[0].md5 == ""
+            assert results[0].md5 == "a" * 32
             assert results[0].title == ""
             assert results[0].source == SourceType.LIBGEN
 
@@ -568,7 +570,7 @@ class TestLibgenAdapterRateLimiting:
 
         with patch("lib.sources.libgen.LibgenSearch") as mock_search_class:
             mock_instance = MagicMock()
-            mock_instance.search_title.return_value = []
+            mock_instance.search_default.return_value = []
             mock_search_class.return_value = mock_instance
 
             with patch("lib.sources.libgen.asyncio.sleep") as mock_sleep:
@@ -712,14 +714,16 @@ class TestLibgenAdapterParseFailure:
         adapter.MIN_REQUEST_INTERVAL = 0
         stub_page = self._stub_page()
 
-        def fake_search_title(query):
+        def fake_search_default(query):
             # Mirror reality: the library fetches through the shim (setting
             # last_response) and parses no table from the stub.
             libgen_mod._search_requests.last_response = stub_page
             return []
 
         with patch("lib.sources.libgen.LibgenSearch") as mock_search_class:
-            mock_search_class.return_value.search_title.side_effect = fake_search_title
+            mock_search_class.return_value.search_default.side_effect = (
+                fake_search_default
+            )
             with pytest.raises(AllSourcesFailedError) as excinfo:
                 await adapter.search("anything")
 
@@ -755,7 +759,7 @@ class TestLibgenAdapterParseFailure:
         book.title = "Found On The Second Mirror"
 
         def search_for(mirror):
-            def _search_title(query):
+            def _search_default(query):
                 if mirror == "li":
                     libgen_mod._search_requests.last_response = stub_page
                     return []
@@ -763,7 +767,7 @@ class TestLibgenAdapterParseFailure:
                 return [book]
 
             instance = MagicMock()
-            instance.search_title.side_effect = _search_title
+            instance.search_default.side_effect = _search_default
             return instance
 
         with patch("lib.sources.libgen.LibgenSearch") as mock_search_class:
@@ -784,12 +788,14 @@ class TestLibgenAdapterParseFailure:
         empty_results_page.status_code = 200
         empty_results_page.text = '<html><table id="tablelibgen"></table></html>'
 
-        def fake_search_title(query):
+        def fake_search_default(query):
             libgen_mod._search_requests.last_response = empty_results_page
             return []
 
         with patch("lib.sources.libgen.LibgenSearch") as mock_search_class:
-            mock_search_class.return_value.search_title.side_effect = fake_search_title
+            mock_search_class.return_value.search_default.side_effect = (
+                fake_search_default
+            )
             results = await adapter.search("xqzv nonexistent qqqzzz")
 
         assert results == []
@@ -801,7 +807,7 @@ class TestLibgenAdapterParseFailure:
 
         adapter = LibgenAdapter(config)
         with patch("lib.sources.libgen.LibgenSearch") as mock_search_class:
-            mock_search_class.return_value.search_title.return_value = []
+            mock_search_class.return_value.search_default.return_value = []
             results = await adapter.search("anything")
 
         assert results == []
@@ -876,3 +882,51 @@ class TestShimDefaultTimeout:
         monkeypatch.setattr(libgen_mod.requests, "get", fake_get)
         libgen_mod._search_requests.get("https://libgen.li/index.php", timeout=5)
         assert captured["timeout"] == 5
+
+
+class TestMd5lessRowsFiltered:
+    """Column-shifted journal-article rows (#132) arrive with an empty md5
+    and can never be downloaded; _to_unified drops them so #134's wider
+    search_default results stay usable."""
+
+    @pytest.fixture
+    def config(self):
+        return SourceConfig(
+            libgen_mirror="li",
+            default_source="libgen",
+            fallback_enabled=False,
+        )
+
+    @pytest.fixture
+    def mock_book(self):
+        book = MagicMock()
+        book.md5 = "abc123def456"
+        book.title = "Python Programming"
+        book.author = "John Doe"
+        book.year = "2023"
+        book.extension = "pdf"
+        book.size = "5 MB"
+        book.id = "12345"
+        book.language = "English"
+        book.pages = "500"
+        return book
+
+    def test_md5less_rows_dropped_books_kept(self, config, mock_book):
+        from lib.sources.libgen import LibgenAdapter
+
+        shifted = MagicMock()
+        shifted.md5 = ""
+        shifted.title = ""
+        shifted.author = "Journal of X pp.193-224 Some citation aa 62395571"
+        shifted.year = ""
+        shifted.extension = "389 kB"
+        shifted.size = "0"
+        shifted.id = "68653542"
+        shifted.language = "2003"
+        shifted.pages = "English"
+
+        adapter = LibgenAdapter(config)
+        unified = adapter._to_unified([mock_book, shifted])
+
+        assert len(unified) == 1
+        assert unified[0].md5 == mock_book.md5

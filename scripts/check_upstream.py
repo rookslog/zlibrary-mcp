@@ -38,6 +38,7 @@ from bs4 import BeautifulSoup
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "zlibrary" / "src"))
 from lib.sources.config import get_source_config  # noqa: E402
+from lib.sources.libgen import USER_AGENT as LIBGEN_PRODUCTION_UA  # noqa: E402
 from zlibrary.eapi import DEFAULT_EAPI_DOMAINS, WALLED_STATUS_CODES  # noqa: E402
 
 TIMEOUT = httpx.Timeout(20.0, connect=10.0)
@@ -277,26 +278,50 @@ async def probe_annas(client: httpx.AsyncClient) -> ProbeResult:
 
 
 async def probe_libgen(client: httpx.AsyncClient) -> ProbeResult:
-    """LibGen is the router's fallback source; mirrors rotate frequently."""
+    """LibGen is the router's fallback source; mirrors rotate frequently.
+
+    The probe goes through the PRODUCTION adapter, not a hand-rolled fetch.
+    On 2026-08-17 (#124) the mirror served its UA-blocklist stub (default
+    nginx page, HTTP 200, 639 bytes) to the search library's default UA
+    while this script's own UA was admitted — so a transport-level probe
+    reported OK across a fully broken production search path, and the
+    stub's 639 bytes would have passed the old ``> 500`` byte threshold
+    even with the right UA. ``ok`` therefore means "the adapter parsed at
+    least one result for a canary query that cannot plausibly be empty",
+    never a status code or byte count. ``client`` is unused by design: the
+    adapter builds production's own HTTP stack.
+    """
+    from lib.sources.libgen import LibgenAdapter  # noqa: PLC0415
+
+    canary = "Pride and Prejudice"
     try:
-        # The li-family mirrors serve search at /index.php (search.php 404s).
-        resp = await client.get(
-            f"{LIBGEN_BASE_URL}/index.php", params={"req": "python"}
-        )
-        resp.raise_for_status()
-        return ProbeResult(
-            name="libgen:search",
-            ok=resp.status_code == 200 and len(resp.text) > 500,
-            detail=f"HTTP {resp.status_code}, {len(resp.text)} bytes",
-            required=False,
-        )
+        results = await LibgenAdapter(get_source_config()).search(canary)
     except Exception as exc:  # noqa: BLE001
         return ProbeResult(
             name="libgen:search",
             ok=False,
-            detail=f"{type(exc).__name__}: {exc}",
+            detail=f"adapter search failed: {type(exc).__name__}: {exc}",
             required=False,
         )
+    if results:
+        return ProbeResult(
+            name="libgen:search",
+            ok=True,
+            detail=(
+                f"{len(results)} result(s) parsed by the production adapter "
+                f"for canary {canary!r}"
+            ),
+            required=False,
+        )
+    return ProbeResult(
+        name="libgen:search",
+        ok=False,
+        detail=(
+            f"0 parsed results for canary {canary!r} — page had a results "
+            "table but nothing parsed from it (row-markup drift?)"
+        ),
+        required=False,
+    )
 
 
 def _extract_libgen_key(
@@ -348,7 +373,15 @@ async def _probe_libgen_download_mirror(
     base = f"https://libgen.{mirror}"
     ads_url = f"{base}/ads.php"
     try:
-        resp = await client.get(ads_url, params={"md5": LIBGEN_PROBE_MD5})
+        # Present the production adapter's UA, not this script's: the mirror
+        # UA-blocklists tool defaults (#124), so probing with a different
+        # identity than production is exactly the blindness this probe exists
+        # to avoid.
+        resp = await client.get(
+            ads_url,
+            params={"md5": LIBGEN_PROBE_MD5},
+            headers={"User-Agent": LIBGEN_PRODUCTION_UA},
+        )
         blocked = _libgen_block_detail(mirror, resp)
         if blocked:
             return False, blocked, True
@@ -373,7 +406,10 @@ async def _probe_libgen_download_mirror(
         # first 2 KiB is requested — enough to see the magic bytes.
         resp = await client.get(
             get_url,
-            headers={"Range": f"bytes=0-{LIBGEN_PROBE_RANGE_BYTES - 1}"},
+            headers={
+                "Range": f"bytes=0-{LIBGEN_PROBE_RANGE_BYTES - 1}",
+                "User-Agent": LIBGEN_PRODUCTION_UA,
+            },
         )
     except Exception as exc:  # noqa: BLE001
         # A dead CDN node lands here (cdn4.booksdl.lc failed TLS on

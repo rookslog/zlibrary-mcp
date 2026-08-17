@@ -1184,3 +1184,83 @@ async def test_process_document_pdf_encrypted(
     ):
         await process_document(str(pdf_path), book_id=None, author=None, title=None)
     mock_rag_process_document.assert_called_once()
+
+
+class TestRequiresEapiClient:
+    """EAPI login must happen only where the EAPI is actually used (#129):
+    forcing it on every call took LibGen — the credential-free fallback —
+    down with every Z-Library auth outage.
+    """
+
+    def test_zlibrary_functions_require_eapi(self):
+        from lib import python_bridge
+
+        for fn in ("search", "full_text_search", "get_download_limits"):
+            assert python_bridge._requires_eapi_client(fn, {}) is True
+
+    def test_local_and_multi_source_functions_do_not(self):
+        from lib import python_bridge
+
+        assert python_bridge._requires_eapi_client("process_document", {}) is False
+        assert python_bridge._requires_eapi_client("search_multi_source", {}) is False
+
+    def test_download_of_zlibrary_result_requires_eapi(self):
+        from lib import python_bridge
+
+        args = {"book_details": {"id": "123", "hash": "abc"}}
+        assert python_bridge._requires_eapi_client("download_book", args) is True
+
+    def test_download_of_multi_source_result_does_not(self):
+        from lib import python_bridge
+
+        for source in ("libgen", "annas", "annas_archive", "LIBGEN"):
+            args = {"book_details": {"md5": "f" * 32, "source": source}}
+            assert (
+                python_bridge._requires_eapi_client("download_book", args) is False
+            ), source
+
+    def test_download_with_missing_details_defaults_to_requiring_eapi(self):
+        from lib import python_bridge
+
+        assert python_bridge._requires_eapi_client("download_book", {}) is True
+
+
+class TestLibgenDownloadNeedsNoZlibraryLogin:
+    """A source-routed download must succeed while the EAPI client is
+    unavailable — the exact co-failure observed 2026-08-17 (#129).
+    """
+
+    @pytest.mark.asyncio
+    async def test_download_book_libgen_source_never_touches_eapi(
+        self, tmp_path, monkeypatch
+    ):
+        from lib import python_bridge
+
+        raw = tmp_path / "ffff.download"
+        raw.write_bytes(b"%PDF-1.4 fake body")
+
+        async def fake_fetch(book_details, output_dir):
+            return str(raw)
+
+        async def dead_eapi(*args, **kwargs):
+            raise RuntimeError("EAPI client must not be touched on this path")
+
+        monkeypatch.setattr(python_bridge, "_fetch_from_source", fake_fetch)
+        monkeypatch.setattr(python_bridge, "get_eapi_client", dead_eapi)
+        monkeypatch.setattr(python_bridge, "initialize_eapi_client", dead_eapi)
+
+        result = await python_bridge.download_book(
+            book_details={
+                "md5": "f" * 32,
+                "source": "libgen",
+                "title": "Fake Book",
+                "author": "Nobody",
+                "extension": "pdf",
+            },
+            output_dir=str(tmp_path),
+        )
+
+        assert result["file_path"]
+        from pathlib import Path as _P
+
+        assert _P(result["file_path"]).exists()

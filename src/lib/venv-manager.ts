@@ -15,10 +15,8 @@
  */
 
 import * as path from 'path';
-import { existsSync } from 'fs';
-import { execSync } from 'child_process';
+import { accessSync, constants, existsSync } from 'fs';
 import { fileURLToPath } from 'url';
-import { logger } from './logger.js';
 
 // Recreate __dirname for ESM
 const __filename = fileURLToPath(import.meta.url);
@@ -86,15 +84,11 @@ export async function getManagedPythonPath(): Promise<string> {
     );
   }
 
-  // Verify Python is executable and working
+  // Validate only filesystem state here. Executing `python --version` created
+  // a second, synchronous and unbounded subprocess path outside the bridge
+  // lifecycle owner. The first real bridge invocation is the execution check.
   try {
-    const version = execSync(`"${uvVenvPython}" --version`, {
-      stdio: 'pipe',
-      encoding: 'utf8'
-    }).trim();
-
-    // Log Python version for debugging (optional, can be removed)
-    logger.debug(`[venv-manager] Using Python: ${version} from .venv`);
+    accessSync(uvVenvPython, process.platform === 'win32' ? constants.F_OK : constants.X_OK);
   } catch (error) {
     throw new Error(
       `Python at ${uvVenvPython} is not executable.\n` +

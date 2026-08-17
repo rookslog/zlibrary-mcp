@@ -257,24 +257,40 @@ const toolAnnotations: Record<string, ToolAnnotations> = {
 // Tool handler implementations
 // ============================================================================
 
+/**
+ * Cancellation context for a tool call.
+ *
+ * Every handler takes it, not just the multi-source ones: the subprocess
+ * budget bounds a hung call, but only the client's own signal ends one the
+ * client has already stopped waiting for. Without it a cancelled download
+ * keeps running for up to PYTHON_BRIDGE_LONG_TIMEOUT with nobody to receive
+ * the result.
+ */
+interface HandlerOptions {
+  signal?: AbortSignal;
+}
+
 interface HandlerMap {
-  [key: string]: (args: any) => Promise<any>;
-  searchBooks: (args: any) => Promise<any>;
-  fullTextSearch: (args: any) => Promise<any>;
-  getDownloadHistory: (args: any) => Promise<any>;
-  getDownloadLimits: (args: any) => Promise<any>;
-  downloadBookToFile: (args: any) => Promise<any>;
-  processDocumentForRag: (args: any) => Promise<any>;
-  getBookMetadata: (args: any) => Promise<any>;
-  searchByTerm: (args: any) => Promise<any>;
-  searchByAuthor: (args: any) => Promise<any>;
-  fetchBooklist: (args: any) => Promise<any>;
-  searchAdvanced: (args: any) => Promise<any>;
-  searchMultiSource: (args: any) => Promise<any>;
+  [key: string]: (args: any, options?: HandlerOptions) => Promise<any>;
+  searchBooks: (args: any, options?: HandlerOptions) => Promise<any>;
+  fullTextSearch: (args: any, options?: HandlerOptions) => Promise<any>;
+  getDownloadHistory: (args: any, options?: HandlerOptions) => Promise<any>;
+  getDownloadLimits: (args: any, options?: HandlerOptions) => Promise<any>;
+  downloadBookToFile: (args: any, options?: HandlerOptions) => Promise<any>;
+  processDocumentForRag: (args: any, options?: HandlerOptions) => Promise<any>;
+  getBookMetadata: (args: any, options?: HandlerOptions) => Promise<any>;
+  searchByTerm: (args: any, options?: HandlerOptions) => Promise<any>;
+  searchByAuthor: (args: any, options?: HandlerOptions) => Promise<any>;
+  fetchBooklist: (args: any, options?: HandlerOptions) => Promise<any>;
+  searchAdvanced: (args: any, options?: HandlerOptions) => Promise<any>;
+  searchMultiSource: (args: any, options?: HandlerOptions) => Promise<any>;
 }
 
 const handlers: HandlerMap = {
-  searchBooks: async (args: z.infer<typeof SearchBooksParamsSchema>) => {
+  searchBooks: async (
+    args: z.infer<typeof SearchBooksParamsSchema>,
+    options: HandlerOptions = {},
+  ) => {
     try {
       const searchBooksReceivedArgsLog = `[${new Date().toISOString()}] [src/index.ts] searchBooks handler received Zod-parsed args: ${JSON.stringify(args)}\n`;
       logger.debug(searchBooksReceivedArgsLog.trim());
@@ -303,13 +319,16 @@ const handlers: HandlerMap = {
       } catch (e) {
         console.error('Failed to write to logs/nodejs_debug.log', e);
       }
-      return await zlibraryApi.searchBooks(apiArgs);
+      return await zlibraryApi.searchBooks(apiArgs, options);
     } catch (error: any) {
       return { error: { message: error.message || 'Failed to search books' } };
     }
   },
 
-  fullTextSearch: async (args: z.infer<typeof FullTextSearchParamsSchema>) => {
+  fullTextSearch: async (
+    args: z.infer<typeof FullTextSearchParamsSchema>,
+    options: HandlerOptions = {},
+  ) => {
     try {
       const ftsReceivedArgsLog = `[${new Date().toISOString()}] [src/index.ts] fullTextSearch handler received Zod-parsed args: ${JSON.stringify(args)}\n`;
       logger.debug(ftsReceivedArgsLog.trim());
@@ -338,122 +357,183 @@ const handlers: HandlerMap = {
       } catch (e) {
         console.error('Failed to write to logs/nodejs_debug.log', e);
       }
-      return await zlibraryApi.fullTextSearch(apiArgsFTS);
+      return await zlibraryApi.fullTextSearch(apiArgsFTS, options);
     } catch (error: any) {
       return { error: { message: error.message || 'Failed to perform full text search' } };
     }
   },
 
-  getDownloadHistory: async (args: z.infer<typeof GetDownloadHistoryParamsSchema>) => {
+  getDownloadHistory: async (
+    args: z.infer<typeof GetDownloadHistoryParamsSchema>,
+    options: HandlerOptions = {},
+  ) => {
     try {
-      return await zlibraryApi.getDownloadHistory(args);
+      return await zlibraryApi.getDownloadHistory(args, options);
     } catch (error: any) {
       return { error: { message: error.message || 'Failed to get download history' } };
     }
   },
 
-  getDownloadLimits: async () => {
+  getDownloadLimits: async (_args: unknown, options: HandlerOptions = {}) => {
     try {
-      return await zlibraryApi.getDownloadLimits();
+      return await zlibraryApi.getDownloadLimits(options);
     } catch (error: any) {
       return { error: { message: error.message || 'Failed to get download limits' } };
     }
   },
 
-  downloadBookToFile: async (args: z.infer<typeof DownloadBookToFileParamsSchema>) => {
+  downloadBookToFile: async (
+    args: z.infer<typeof DownloadBookToFileParamsSchema>,
+    options: HandlerOptions = {},
+  ) => {
     try {
-      return await zlibraryApi.downloadBookToFile(args);
+      return await zlibraryApi.downloadBookToFile(args, options);
     } catch (error: any) {
-      return { error: { message: error.message || 'Failed to download book' } };
+      const details = error?.context?.details;
+      return {
+        error: {
+          message: error.message || 'Failed to download book',
+          ...(details === undefined ? {} : { details }),
+        },
+      };
     }
   },
 
-  processDocumentForRag: async (args: z.infer<typeof ProcessDocumentForRagParamsSchema>) => {
+  processDocumentForRag: async (
+    args: z.infer<typeof ProcessDocumentForRagParamsSchema>,
+    options: HandlerOptions = {},
+  ) => {
     try {
-      return await zlibraryApi.processDocumentForRag({
-        filePath: args.file_path,
-        outputFormat: args.output_format,
-      });
+      return await zlibraryApi.processDocumentForRag(
+        {
+          filePath: args.file_path,
+          outputFormat: args.output_format,
+        },
+        options,
+      );
     } catch (error: any) {
       return { error: { message: error.message || 'Failed to process document for RAG' } };
     }
   },
 
-  getBookMetadata: async (args: z.infer<typeof GetBookMetadataParamsSchema>) => {
+  getBookMetadata: async (
+    args: z.infer<typeof GetBookMetadataParamsSchema>,
+    options: HandlerOptions = {},
+  ) => {
     try {
-      return await zlibraryApi.getBookMetadata(args.bookId, args.bookHash, args.include);
+      return await zlibraryApi.getBookMetadata(args.bookId, args.bookHash, args.include, options);
     } catch (error: any) {
       return { error: { message: error.message || 'Failed to get book metadata' } };
     }
   },
 
-  searchByTerm: async (args: z.infer<typeof SearchByTermParamsSchema>) => {
+  searchByTerm: async (
+    args: z.infer<typeof SearchByTermParamsSchema>,
+    options: HandlerOptions = {},
+  ) => {
     try {
-      return await zlibraryApi.searchByTerm({
-        term: args.term,
-        yearFrom: args.yearFrom,
-        yearTo: args.yearTo,
-        languages: args.languages,
-        extensions: args.extensions,
-        limit: args.count,
-      });
+      return await zlibraryApi.searchByTerm(
+        {
+          term: args.term,
+          yearFrom: args.yearFrom,
+          yearTo: args.yearTo,
+          languages: args.languages,
+          extensions: args.extensions,
+          limit: args.count,
+        },
+        options,
+      );
     } catch (error: any) {
       return { error: { message: error.message || 'Failed to search by term' } };
     }
   },
 
-  searchByAuthor: async (args: z.infer<typeof SearchByAuthorParamsSchema>) => {
+  searchByAuthor: async (
+    args: z.infer<typeof SearchByAuthorParamsSchema>,
+    options: HandlerOptions = {},
+  ) => {
     try {
-      return await zlibraryApi.searchByAuthor({
-        author: args.author,
-        exact: args.exact,
-        yearFrom: args.yearFrom,
-        yearTo: args.yearTo,
-        languages: args.languages,
-        extensions: args.extensions,
-        limit: args.count,
-      });
+      return await zlibraryApi.searchByAuthor(
+        {
+          author: args.author,
+          exact: args.exact,
+          yearFrom: args.yearFrom,
+          yearTo: args.yearTo,
+          languages: args.languages,
+          extensions: args.extensions,
+          limit: args.count,
+        },
+        options,
+      );
     } catch (error: any) {
       return { error: { message: error.message || 'Failed to search by author' } };
     }
   },
 
-  fetchBooklist: async (args: z.infer<typeof FetchBooklistParamsSchema>) => {
+  fetchBooklist: async (
+    args: z.infer<typeof FetchBooklistParamsSchema>,
+    options: HandlerOptions = {},
+  ) => {
     try {
-      return await zlibraryApi.fetchBooklist({
-        booklistId: args.booklistId,
-        booklistHash: args.booklistHash,
-        topic: args.topic,
-        page: args.page,
-      });
+      return await zlibraryApi.fetchBooklist(
+        {
+          booklistId: args.booklistId,
+          booklistHash: args.booklistHash,
+          topic: args.topic,
+          page: args.page,
+        },
+        options,
+      );
     } catch (error: any) {
       return { error: { message: error.message || 'Failed to fetch booklist' } };
     }
   },
 
-  searchAdvanced: async (args: z.infer<typeof SearchAdvancedParamsSchema>) => {
+  searchAdvanced: async (
+    args: z.infer<typeof SearchAdvancedParamsSchema>,
+    options: HandlerOptions = {},
+  ) => {
     try {
-      return await zlibraryApi.searchAdvanced({
-        query: args.query,
-        exact: args.exact,
-        yearFrom: args.yearFrom,
-        yearTo: args.yearTo,
-        count: args.count,
-      });
+      return await zlibraryApi.searchAdvanced(
+        {
+          query: args.query,
+          exact: args.exact,
+          yearFrom: args.yearFrom,
+          yearTo: args.yearTo,
+          count: args.count,
+        },
+        options,
+      );
     } catch (error: any) {
       return { error: { message: error.message || 'Failed to perform advanced search' } };
     }
   },
 
-  searchMultiSource: async (args: z.infer<typeof SearchMultiSourceParamsSchema>) => {
+  searchMultiSource: async (
+    args: z.infer<typeof SearchMultiSourceParamsSchema>,
+    options: HandlerOptions = {},
+  ) => {
     try {
-      return await zlibraryApi.searchMultiSource({
-        query: args.query,
-        source: args.source,
-        count: args.count,
-      });
+      return await zlibraryApi.searchMultiSource(
+        {
+          query: args.query,
+          source: args.source,
+          count: args.count,
+        },
+        { signal: options.signal },
+      );
     } catch (error: any) {
-      return { error: { message: error.message || 'Failed to search multi-source' } };
+      // Provider failures name which source failed and why. The Python bridge
+      // puts that on stderr as `details`; surface it rather than flattening
+      // everything to one sentence, because "annas could not be resolved" and
+      // "libgen did not accept a connection" call for different responses.
+      const details = error?.context?.details;
+      return {
+        error: {
+          message: error.message || 'Failed to search multi-source',
+          ...(details === undefined ? {} : { details }),
+        },
+      };
     }
   },
 };
@@ -559,6 +639,7 @@ function wrapResult(result: any, toolName: string) {
           text: `Error from tool "${toolName}": ${result.error.message || result.error}`,
         },
       ],
+      structuredContent: result,
       isError: true as const,
     };
   }
@@ -636,13 +717,22 @@ async function start(
     // Helper to get annotations with proper typing
     const ann = (name: string) => toolAnnotations[name] as ToolAnnotations;
 
+    // Every handler below receives `extra.signal`, which aborts when the client
+    // cancels or times out the request. Passing it down is what turns that
+    // cancellation into a killed subprocess instead of one still running
+    // against a dead provider with nobody left to receive the result.
+
     // 1. search_books
     server.tool(
       'search_books',
       'Search for books in Z-Library by title, author, or keywords. Returns matching books with metadata including title (string), author (string), name, authors (array), year, format, and file size. Use exact=true for precise title matching. Filter results by year range, language, or file format.',
       SearchBooksParamsSchema.shape,
       ann('search_books'),
-      async (args) => wrapResult(await handlers.searchBooks(args as any), 'search_books'),
+      async (args, extra) =>
+        wrapResult(
+          await handlers.searchBooks(args as any, { signal: extra?.signal }),
+          'search_books',
+        ),
     );
 
     // 2. full_text_search
@@ -651,7 +741,11 @@ async function start(
       'Search for books containing specific text within their content. Returns books with title (string), author (string), name, authors (array), and other metadata. Useful for finding books that discuss particular topics, quotes, or concepts.',
       FullTextSearchParamsSchema.shape,
       ann('full_text_search'),
-      async (args) => wrapResult(await handlers.fullTextSearch(args as any), 'full_text_search'),
+      async (args, extra) =>
+        wrapResult(
+          await handlers.fullTextSearch(args as any, { signal: extra?.signal }),
+          'full_text_search',
+        ),
     );
 
     // 3. get_download_history
@@ -660,8 +754,11 @@ async function start(
       "Get the user's Z-Library download history. Returns a list of previously downloaded books with their metadata.",
       GetDownloadHistoryParamsSchema.shape,
       ann('get_download_history'),
-      async (args) =>
-        wrapResult(await handlers.getDownloadHistory(args as any), 'get_download_history'),
+      async (args, extra) =>
+        wrapResult(
+          await handlers.getDownloadHistory(args as any, { signal: extra?.signal }),
+          'get_download_history',
+        ),
     );
 
     // 4. get_download_limits
@@ -670,7 +767,11 @@ async function start(
       "Get the user's current Z-Library download limits. Shows daily download quota, downloads used today, and remaining downloads.",
       GetDownloadLimitsParamsSchema.shape,
       ann('get_download_limits'),
-      async (_args) => wrapResult(await handlers.getDownloadLimits(_args), 'get_download_limits'),
+      async (_args, extra) =>
+        wrapResult(
+          await handlers.getDownloadLimits(_args, { signal: extra?.signal }),
+          'get_download_limits',
+        ),
     );
 
     // 5. get_recent_books
@@ -679,9 +780,11 @@ async function start(
       'Get recently added books to Z-Library. Optionally filter by file format.',
       GetRecentBooksParamsSchema.shape,
       ann('search_books'),
-      async (args) => {
+      async (args, extra) => {
         try {
-          const result = await (zlibraryApi as any).getRecentBooks(args);
+          const result = await (zlibraryApi as any).getRecentBooks(args, {
+            signal: extra?.signal,
+          });
           return wrapResult(result, 'get_recent_books');
         } catch (error: any) {
           return {
@@ -698,8 +801,11 @@ async function start(
       'Download a book to a local file. Pass the full bookDetails object from search_books results. Optionally process the document for RAG (text extraction) after download. Returns file paths for both the original book and processed text.',
       DownloadBookToFileParamsSchema.shape,
       ann('download_book_to_file'),
-      async (args) =>
-        wrapResult(await handlers.downloadBookToFile(args as any), 'download_book_to_file'),
+      async (args, extra) =>
+        wrapResult(
+          await handlers.downloadBookToFile(args as any, { signal: extra?.signal }),
+          'download_book_to_file',
+        ),
     );
 
     // 7. process_document_for_rag
@@ -708,8 +814,11 @@ async function start(
       'Process a downloaded document (EPUB, TXT, PDF) to extract clean text content for RAG (Retrieval-Augmented Generation). Extracts text, preserves structure, detects footnotes, and outputs a text file.',
       ProcessDocumentForRagParamsSchema.shape,
       ann('process_document_for_rag'),
-      async (args) =>
-        wrapResult(await handlers.processDocumentForRag(args as any), 'process_document_for_rag'),
+      async (args, extra) =>
+        wrapResult(
+          await handlers.processDocumentForRag(args as any, { signal: extra?.signal }),
+          'process_document_for_rag',
+        ),
     );
 
     // 8. get_book_metadata
@@ -718,7 +827,11 @@ async function start(
       'Get metadata for a book. By default returns core fields (title, author, year, publisher, language, pages, isbn, rating, cover, categories). Use the include parameter to add optional field groups: terms (60+ conceptual keywords), booklists (11+ curated collections), ipfs (IPFS CIDs), ratings (quality score), description (full text). Requires bookId and bookHash from search results.',
       GetBookMetadataParamsSchema.shape,
       ann('get_book_metadata'),
-      async (args) => wrapResult(await handlers.getBookMetadata(args as any), 'get_book_metadata'),
+      async (args, extra) =>
+        wrapResult(
+          await handlers.getBookMetadata(args as any, { signal: extra?.signal }),
+          'get_book_metadata',
+        ),
     );
 
     // 9. search_by_term
@@ -727,7 +840,11 @@ async function start(
       'Search for books by conceptual term (e.g., "phenomenology", "dialectic", "epistemology"). Returns books with title (string), author (string), and other metadata. Books in Z-Library are tagged with 60+ conceptual terms.',
       SearchByTermParamsSchema.shape,
       ann('search_by_term'),
-      async (args) => wrapResult(await handlers.searchByTerm(args as any), 'search_by_term'),
+      async (args, extra) =>
+        wrapResult(
+          await handlers.searchByTerm(args as any, { signal: extra?.signal }),
+          'search_by_term',
+        ),
     );
 
     // 10. search_by_author
@@ -736,7 +853,11 @@ async function start(
       'Advanced author search with support for various name formats. Returns books with title (string), author (string), and other metadata. Use exact=true for precise matching. Filter by publication year, language, or file format.',
       SearchByAuthorParamsSchema.shape,
       ann('search_by_author'),
-      async (args) => wrapResult(await handlers.searchByAuthor(args as any), 'search_by_author'),
+      async (args, extra) =>
+        wrapResult(
+          await handlers.searchByAuthor(args as any, { signal: extra?.signal }),
+          'search_by_author',
+        ),
     );
 
     // 11. fetch_booklist
@@ -745,7 +866,11 @@ async function start(
       'Fetch books from an expert-curated booklist. Z-Library books belong to 11+ booklists with up to 954 books per list. Get booklist IDs from get_book_metadata.',
       FetchBooklistParamsSchema.shape,
       ann('fetch_booklist'),
-      async (args) => wrapResult(await handlers.fetchBooklist(args as any), 'fetch_booklist'),
+      async (args, extra) =>
+        wrapResult(
+          await handlers.fetchBooklist(args as any, { signal: extra?.signal }),
+          'fetch_booklist',
+        ),
     );
 
     // 12. search_advanced
@@ -754,7 +879,11 @@ async function start(
       'Advanced search with automatic separation of exact matches from fuzzy/approximate matches. Returns two arrays: exact_matches and fuzzy_matches, each containing books with title (string), author (string), and other metadata.',
       SearchAdvancedParamsSchema.shape,
       ann('search_advanced'),
-      async (args) => wrapResult(await handlers.searchAdvanced(args as any), 'search_advanced'),
+      async (args, extra) =>
+        wrapResult(
+          await handlers.searchAdvanced(args as any, { signal: extra?.signal }),
+          'search_advanced',
+        ),
     );
 
     // 13. search_multi_source
@@ -763,8 +892,11 @@ async function start(
       "Search for books across Anna's Archive and LibGen. Alternative to Z-Library EAPI. Returns books with md5, title, author, year, extension, size, source, download_url. Use source=auto to prefer Anna's Archive with LibGen fallback, or force a specific source.",
       SearchMultiSourceParamsSchema.shape,
       ann('search_multi_source'),
-      async (args) =>
-        wrapResult(await handlers.searchMultiSource(args as any), 'search_multi_source'),
+      async (args, extra) =>
+        wrapResult(
+          await handlers.searchMultiSource(args as any, { signal: extra?.signal }),
+          'search_multi_source',
+        ),
     );
 
     // Create and connect the Stdio transport

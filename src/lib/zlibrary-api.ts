@@ -1,5 +1,4 @@
 import type { Options as PythonShellOptions } from 'python-shell';
-import { PythonShell } from 'python-shell';
 import * as path from 'path';
 import { getManagedPythonPath } from './venv-manager.js'; // Import ESM style
 import { appendFile as appendFileAsyncFS, mkdir as mkdirAsyncFS } from 'fs/promises'; // Import fs/promises for async file operations, aliased
@@ -10,6 +9,12 @@ import { withRetry, isRetryableError } from './retry-manager.js';
 import { CircuitBreaker } from './circuit-breaker.js';
 import { ZLibraryError, PythonBridgeError } from './errors.js';
 import { logger } from './logger.js';
+import { runPythonBridge, LONG_BRIDGE_TIMEOUT_MS } from './python-runner.js';
+import {
+  isBridgeDetailRetryable,
+  isPermanentBridgeDetail,
+  parseBridgeErrorEnvelope,
+} from './python-bridge.js';
 
 // Recreate __dirname for ESM
 const __filename = fileURLToPath(import.meta.url);
@@ -27,17 +32,63 @@ const pythonBridgeCircuitBreaker = new CircuitBreaker({
   timeout: parseInt(process.env.CIRCUIT_BREAKER_TIMEOUT || '60000'),
   onStateChange: (oldState, newState) => {
     logger.info(`Python bridge circuit breaker: ${oldState} -> ${newState}`);
-  }
+  },
+  // A client that cancels its own request has told us nothing about the
+  // bridge's health. Counting cancellations would mean five aborted searches
+  // open the breaker and fail every unrelated tool for the timeout window —
+  // turning a user's own impatience into an outage.
+  isFailure: (error) =>
+    error?.context?.reason !== 'aborted' &&
+    !isPermanentBridgeDetail(error?.context?.details),
 });
+
+/**
+ * Bridge functions whose work is bounded by file size and CPU, not by a
+ * network round trip. Downloading a large book and OCR-ing a scanned one both
+ * routinely outrun the ordinary budget, and killing them would turn a slow
+ * success into a hard failure — the opposite of what the budget is for. They
+ * are still bounded (PYTHON_BRIDGE_LONG_TIMEOUT), just far more generously.
+ */
+const LONG_RUNNING_FUNCTIONS = new Set(['download_book', 'process_document']);
+
+/**
+ * Default wall-clock budget for a bridge function, in ms.
+ *
+ * @param functionName - Bridge function being called
+ * @returns Budget in ms
+ */
+function defaultTimeoutFor(functionName: string): number | undefined {
+  return LONG_RUNNING_FUNCTIONS.has(functionName) ? LONG_BRIDGE_TIMEOUT_MS : undefined;
+}
+
+/**
+ * Per-call options for the Python bridge.
+ */
+export interface CallOptions {
+  /**
+   * Wall-clock budget in ms. Defaults to PYTHON_BRIDGE_TIMEOUT, or
+   * PYTHON_BRIDGE_LONG_TIMEOUT for download/processing calls.
+   */
+  timeoutMs?: number;
+  /** Abort signal from the MCP request, so a cancelled call kills the child. */
+  signal?: AbortSignal;
+}
 
 /**
  * Execute a Python function from the Z-Library repository
  * @param functionName - Name of the Python function to call
  * @param args - Arguments to pass to the function
+ * @param callOptions - Timeout and abort signal for the subprocess
  * @returns Promise resolving with the result from the Python function
  * @throws {ZLibraryError} If the Python process fails or returns an error.
+ * @throws {BridgeTimeoutError} If the subprocess exceeds its budget; the child
+ *   is killed rather than abandoned.
  */
-async function callPythonFunction(functionName: string, args: Record<string, any> = {}): Promise<any> {
+async function callPythonFunction(
+  functionName: string,
+  args: Record<string, any> = {},
+  callOptions: CallOptions = {},
+): Promise<any> {
   // Wrap the entire operation with retry logic and circuit breaker
   return withRetry(
     async () => {
@@ -54,11 +105,15 @@ async function callPythonFunction(functionName: string, args: Record<string, any
             args: [functionName, serializedArgs] // Pass serialized string directly
           };
 
-          // PythonShell.run call is already inside the try block (from line 33 in original)
-          // PythonShell.run returns Promise<string[] | undefined>
-          // We expect JSON, so results[0] should be the JSON string if successful
-          // PythonShell with mode: 'json' should return an array of parsed JSON objects (or throw an error)
-          const results = await PythonShell.run(BRIDGE_SCRIPT_NAME, options); // results will be string[] | undefined
+          // runPythonBridge, not PythonShell.run: the latter hands back a
+          // promise with no deadline and no handle on the child, so a hung
+          // call can only be abandoned — which leaves the Python process
+          // running forever (see src/lib/python-runner.ts).
+          const results = await runPythonBridge(BRIDGE_SCRIPT_NAME, options, {
+            timeoutMs: callOptions.timeoutMs ?? defaultTimeoutFor(functionName),
+            signal: callOptions.signal,
+            label: `python_bridge.${functionName}`,
+          });
 
           // Check if results exist and contain at least one element
           if (!results || results.length === 0) {
@@ -123,8 +178,32 @@ async function callPythonFunction(functionName: string, args: Record<string, any
             throw err;
           }
 
-          // Capture stderr if available
+          // The bridge writes a JSON envelope to stderr on failure. When the
+          // failure is a provider outage that envelope carries `details`
+          // naming the provider, host and reason (dns_failure vs
+          // connect_timeout vs http_error); lead with that instead of a
+          // traceback, so the caller can tell "this domain is gone" from
+          // "this mirror is dropping packets".
+          const bridgeError = parseBridgeErrorEnvelope(err.stderr);
           const stderrOutput = err.stderr ? ` Stderr: ${err.stderr}` : '';
+
+          if (bridgeError) {
+            throw new PythonBridgeError(
+              `${functionName} failed: ${bridgeError.error}`,
+              {
+                functionName,
+                args,
+                details: bridgeError.details,
+                pythonErrorType: bridgeError.type,
+                stderr: err.stderr,
+                originalError: err
+              },
+              // A provider that is not reachable at all will not become
+              // reachable inside the retry window; retrying just re-pays the
+              // probe. Response-level failures may be transient.
+              isBridgeDetailRetryable(bridgeError.details)
+            );
+          }
 
           // Wrap in PythonBridgeError with context
           throw new PythonBridgeError(
@@ -276,7 +355,7 @@ export async function searchBooks({
   extensions = [],
   content_types = [],
   count = 10
-}: SearchBooksArgs): Promise<any> {
+}: SearchBooksArgs, options: CallOptions = {}): Promise<any> {
   // Pass arguments as an object matching Python function signature
   // Python bridge main() expects 'language' (singular) and 'content_types'
   const pythonArgs = {
@@ -297,7 +376,7 @@ export async function searchBooks({
     await mkdirAsyncFS(path.dirname(logFilePath), { recursive: true });
     await appendFileAsyncFS(logFilePath, searchBooksPythonArgsLog);
   } catch (e) { console.error('Failed to write to logs/nodejs_debug.log', e); }
-  return await callPythonFunction('search', pythonArgs);
+  return await callPythonFunction('search', pythonArgs, options);
 }
 /**
  * Perform full text search
@@ -311,7 +390,7 @@ export async function fullTextSearch({
   extensions = [],
   content_types = [],
   count = 10
-}: FullTextSearchArgs): Promise<any> {
+}: FullTextSearchArgs, options: CallOptions = {}): Promise<any> {
   // Pass arguments as an object matching Python function signature
   // Python bridge main() expects 'language' (singular) and 'content_types'
   const pythonArgsFTS = {
@@ -332,23 +411,23 @@ export async function fullTextSearch({
     await mkdirAsyncFS(path.dirname(logFilePath), { recursive: true });
     await appendFileAsyncFS(logFilePath, ftsPythonArgsLog);
   } catch (e) { console.error('Failed to write to logs/nodejs_debug.log', e); }
-  return await callPythonFunction('full_text_search', pythonArgsFTS);
+  return await callPythonFunction('full_text_search', pythonArgsFTS, options);
 }
 
 /**
  * Get user's download history
  */
-export async function getDownloadHistory({ count = 10 }: GetDownloadHistoryArgs): Promise<any> {
+export async function getDownloadHistory({ count = 10 }: GetDownloadHistoryArgs, options: CallOptions = {}): Promise<any> {
   // Pass arguments as an object matching Python function signature
-  return await callPythonFunction('get_download_history', { count });
+  return await callPythonFunction('get_download_history', { count }, options);
 }
 
 /**
  * Get user's download limits
  */
-export async function getDownloadLimits(): Promise<any> {
+export async function getDownloadLimits(options: CallOptions = {}): Promise<any> {
   // Pass arguments as an object matching Python function signature
-  return await callPythonFunction('get_download_limits', {});
+  return await callPythonFunction('get_download_limits', {}, options);
 }
 
 
@@ -358,7 +437,7 @@ export async function getDownloadLimits(): Promise<any> {
 export async function processDocumentForRag({
   filePath,
   outputFormat = 'txt',
-}: ProcessDocumentForRagArgs): Promise<ProcessedDocumentBundle> {
+}: ProcessDocumentForRagArgs, options: CallOptions = {}): Promise<ProcessedDocumentBundle> {
   if (!filePath) {
     throw new Error("Missing required argument: filePath");
   }
@@ -366,7 +445,7 @@ export async function processDocumentForRag({
   // Ensure the file path is absolute or correctly relative for the Python script
   const absoluteFilePath = path.resolve(filePath);
   // Pass arguments as an object matching Python function signature
-  const result = await callPythonFunction('process_document', { file_path_str: absoluteFilePath, output_format: outputFormat });
+  const result = await callPythonFunction('process_document', { file_path_str: absoluteFilePath, output_format: outputFormat }, options);
 
   // Check if the Python script returned an error structure
   if (result && result.error) {
@@ -389,7 +468,7 @@ export async function downloadBookToFile({
     outputDir = './downloads',
     process_for_rag = false,
     processed_output_format = 'txt'
-}: DownloadBookToFileArgs): Promise<DownloadBookResult> {
+}: DownloadBookToFileArgs, options: CallOptions = {}): Promise<DownloadBookResult> {
   try {
     // Call the Python function, passing the bookDetails object
     const result = await callPythonFunction('download_book', {
@@ -399,7 +478,7 @@ export async function downloadBookToFile({
         output_dir: outputDir,
         process_for_rag: process_for_rag,
         processed_output_format: processed_output_format
-    });
+    }, options);
 
     // Check if the Python script returned an error structure
     if (result && result.error) {
@@ -430,8 +509,20 @@ export async function downloadBookToFile({
     return result as DownloadBookResult;
 
   } catch (error: any) {
-    // Re-throw errors from callPythonFunction or validation checks
-    throw new Error(`Failed to download book: ${error.message || 'Unknown error'}`, { cause: error });
+    // Keep the normalized bridge context on the public error itself. A generic
+    // Error with details hidden under cause made every direct consumer invent
+    // its own traversal rule and dropped structuredContent at the handler.
+    if (error instanceof ZLibraryError) {
+      throw new PythonBridgeError(
+        `Failed to download book: ${error.message || 'Unknown error'}`,
+        error.context,
+        error.retryable,
+      );
+    }
+    throw new Error(
+      `Failed to download book: ${error.message || 'Unknown error'}`,
+      { cause: error },
+    );
   }
 }
 
@@ -485,11 +576,11 @@ function filterMetadataResponse(fullMetadata: any, include?: string[]): any {
   return result;
 }
 
-export async function getBookMetadata(bookId: string, bookHash: string, include?: string[]): Promise<any> {
+export async function getBookMetadata(bookId: string, bookHash: string, include?: string[], options: CallOptions = {}): Promise<any> {
   const fullMetadata = await callPythonFunction('get_book_metadata_complete', {
     book_id: bookId,
     book_hash: bookHash
-  });
+  }, options);
   return filterMetadataResponse(fullMetadata, include);
 }
 
@@ -500,7 +591,7 @@ export async function searchByTerm(args: {
   languages?: string[];
   extensions?: string[];
   limit?: number;
-}): Promise<any> {
+}, options: CallOptions = {}): Promise<any> {
   return callPythonFunction('search_by_term_bridge', {
     term: args.term,
     year_from: args.yearFrom,
@@ -508,7 +599,7 @@ export async function searchByTerm(args: {
     languages: args.languages,
     extensions: args.extensions,
     limit: args.limit || 25
-  });
+  }, options);
 }
 
 export async function searchByAuthor(args: {
@@ -519,7 +610,7 @@ export async function searchByAuthor(args: {
   languages?: string[];
   extensions?: string[];
   limit?: number;
-}): Promise<any> {
+}, options: CallOptions = {}): Promise<any> {
   return callPythonFunction('search_by_author_bridge', {
     author: args.author,
     exact: args.exact || false,
@@ -528,7 +619,7 @@ export async function searchByAuthor(args: {
     languages: args.languages,
     extensions: args.extensions,
     limit: args.limit || 25
-  });
+  }, options);
 }
 
 export async function fetchBooklist(args: {
@@ -536,13 +627,13 @@ export async function fetchBooklist(args: {
   booklistHash: string;
   topic: string;
   page?: number;
-}): Promise<any> {
+}, options: CallOptions = {}): Promise<any> {
   return callPythonFunction('fetch_booklist_bridge', {
     booklist_id: args.booklistId,
     booklist_hash: args.booklistHash,
     topic: args.topic,
     page: args.page || 1
-  });
+  }, options);
 }
 
 export async function searchAdvanced(args: {
@@ -551,26 +642,41 @@ export async function searchAdvanced(args: {
   yearFrom?: number;
   yearTo?: number;
   count?: number;
-}): Promise<any> {
+}, options: CallOptions = {}): Promise<any> {
   return callPythonFunction('search_advanced', {
     query: args.query,
     exact: args.exact || false,
     from_year: args.yearFrom,
     to_year: args.yearTo,
     count: args.count || 10
-  });
+  }, options);
 }
 
-export async function searchMultiSource(args: {
-  query: string;
-  source?: 'auto' | 'annas' | 'libgen';
-  count?: number;
-}): Promise<any> {
-  return callPythonFunction('search_multi_source', {
-    query: args.query,
-    source: args.source || 'auto',
-    count: args.count || 10
-  });
+/**
+ * Search Anna's Archive / LibGen through the multi-source router.
+ *
+ * @param args - Query, source selection, and result count
+ * @param options - Timeout and abort signal. Passing the MCP request's signal
+ *   is what makes a client-side cancellation actually kill the subprocess
+ *   instead of leaving it running against an unreachable provider.
+ */
+export async function searchMultiSource(
+  args: {
+    query: string;
+    source?: 'auto' | 'annas' | 'libgen';
+    count?: number;
+  },
+  options: CallOptions = {},
+): Promise<any> {
+  return callPythonFunction(
+    'search_multi_source',
+    {
+      query: args.query,
+      source: args.source || 'auto',
+      count: args.count || 10,
+    },
+    options,
+  );
 }
 
 // Removed unused downloadFile helper function

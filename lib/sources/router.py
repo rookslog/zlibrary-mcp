@@ -14,6 +14,7 @@ from typing import List, Literal, Optional
 
 from .annas import AnnasArchiveAdapter, QuotaExhaustedError
 from .config import SourceConfig, get_source_config
+from .errors import AllSourcesFailedError, SourceError
 from .libgen import LibgenAdapter
 from .models import DownloadResult, UnifiedBookResult
 
@@ -37,6 +38,11 @@ class SourceRouter:
     search needs no credentials. 'auto' deliberately stays LibGen-first when no
     key is set: LibGen returns a resolvable download link, whereas an Anna's
     result without a key still needs a route the caller may not have.
+
+    Fallback is tied to source='auto'. An explicitly named provider is the
+    whole request, so its failure is raised with the provider, host and reason
+    named rather than papered over with another provider's results — and no
+    caller ends up waiting on a provider it did not ask for.
 
     Usage:
         config = get_source_config()
@@ -94,13 +100,38 @@ class SourceRouter:
             return "annas" if self.config.has_annas_key else "libgen"
         return source
 
+    def _search_candidates(self, source: SourceSelection) -> List[SourceSelection]:
+        """Ordered providers to try for a search.
+
+        `auto` means "give me results from wherever", so it gets the full list
+        and the router walks it. An EXPLICIT source is a single-element list:
+        asking for Anna's and silently receiving LibGen results is the bug #74
+        fixed for the empty-result case, and quietly rerouting on a network
+        failure reintroduces it — worse, it is how a request tagged
+        `source="annas"` ended up hanging inside LibGen's search (2026-08-11).
+
+        Args:
+            source: Requested source
+
+        Returns:
+            Provider names in the order they should be attempted
+        """
+        primary = self._determine_source(source)
+        if source != "auto" or not self.config.fallback_enabled:
+            return [primary]
+        return [primary] + [s for s in ("annas", "libgen") if s != primary]
+
+    def _adapter_for(self, name: SourceSelection):
+        """Get the adapter for a provider name."""
+        return self._get_annas() if name == "annas" else self._get_libgen()
+
     async def search(
         self,
         query: str,
         source: SourceSelection = "auto",
         **kwargs,
     ) -> List[UnifiedBookResult]:
-        """Search for books with automatic fallback.
+        """Search for books, falling back between providers when `source=auto`.
 
         Args:
             query: Search query string
@@ -108,34 +139,83 @@ class SourceRouter:
             **kwargs: Additional arguments passed to adapters
 
         Returns:
-            List of UnifiedBookResult with source field indicating origin
+            List of UnifiedBookResult with source field indicating origin.
+            An empty list means every attempted provider answered and none had
+            a match — never that a provider was unreachable, and never that
+            only some of them answered.
+
+        Raises:
+            AllSourcesFailedError: If any candidate provider failed without a
+                later one producing results. That includes the partial case —
+                one provider answering empty while another is unreachable — so
+                a missing provider is never silently reported as "no matches".
+                For an explicit source the failure set names just that
+                provider, so the caller still learns which one broke and why.
         """
-        actual_source = self._determine_source(source)
+        candidates = self._search_candidates(source)
+        failures: List[SourceError] = []
+        answered = False
 
-        if actual_source == "annas":
+        for name in candidates:
             try:
-                results = await self._get_annas().search(query, **kwargs)
-                if results:
-                    return results
-                logger.info("Anna's Archive returned no results")
-            except Exception as e:
-                logger.warning(f"Anna's Archive search failed: {e}")
+                results = await self._adapter_for(name).search(query, **kwargs)
+            except AllSourcesFailedError as exc:
+                # A provider that walks its own mirrors (LibGen) reports a set.
+                failures.extend(exc.failures)
+                logger.warning(f"{name} search failed: {exc}")
+                continue
+            except SourceError as exc:
+                failures.append(exc)
+                logger.warning(f"{name} search failed: {exc}")
+                continue
+            except Exception as exc:
+                failures.append(
+                    SourceError(name, detail=f"{type(exc).__name__}: {exc}")
+                )
+                logger.warning(f"{name} search failed: {exc}")
+                continue
 
-            # Fallback to LibGen if enabled
-            if self.config.fallback_enabled:
-                logger.info("Falling back to LibGen")
-                return await self._get_libgen().search(query, **kwargs)
+            answered = True
+            if results:
+                return results
+            logger.info(f"{name} returned no results")
+
+        # An empty list is only honest when EVERY attempted provider answered.
+        # A partial walk — LibGen returns no matches, then Anna's fails DNS —
+        # would otherwise be reported as "no such book", when the truth is that
+        # the provider most likely to have it was never successfully searched.
+        # `answered` alone is not the test; the absence of failures is.
+        if answered and not failures:
             return []
 
-        # Direct LibGen search
-        return await self._get_libgen().search(query, **kwargs)
+        raise AllSourcesFailedError("search", failures)
+
+    def _download_candidates(self, source: SourceSelection) -> List[SourceSelection]:
+        """Ordered providers to try for a download.
+
+        Narrower than `_search_candidates`: Anna's fast-download API needs
+        ANNAS_SECRET_KEY, so without one it is not a usable download fallback
+        even though its search is.
+
+        Args:
+            source: Requested source
+
+        Returns:
+            Provider names in the order they should be attempted
+        """
+        primary = self._determine_source(source)
+        if source != "auto" or not self.config.fallback_enabled:
+            return [primary]
+        if primary == "annas":
+            return ["annas", "libgen"]
+        return ["libgen"] + (["annas"] if self.config.has_annas_key else [])
 
     async def get_download_url(
         self,
         md5: str,
         source: SourceSelection = "auto",
     ) -> DownloadResult:
-        """Get download URL with automatic fallback on quota exhaustion.
+        """Get download URL, falling back between providers when `source=auto`.
 
         Args:
             md5: Book MD5 hash
@@ -145,36 +225,47 @@ class SourceRouter:
             DownloadResult with URL and quota info (if Anna's)
 
         Raises:
-            QuotaExhaustedError: If Anna's quota exhausted and fallback disabled
-            ValueError: If book not found in any source
+            SourceError: If the only candidate's quota is exhausted
+            AllSourcesFailedError: If every candidate provider failed
         """
-        actual_source = self._determine_source(source)
+        candidates = self._download_candidates(source)
+        failures: List[SourceError] = []
+        quota_error: Optional[QuotaExhaustedError] = None
 
-        if actual_source == "annas":
-            annas = self._get_annas()
-            if annas:
-                try:
-                    result = await annas.get_download_url(md5)
-                    # Check quota - if 0 left, raise for fallback
-                    if result.quota_info and result.quota_info.downloads_left == 0:
-                        raise QuotaExhaustedError("Anna's Archive quota exhausted")
-                    return result
-                except QuotaExhaustedError:
-                    if self.config.fallback_enabled:
-                        logger.warning(
-                            "Anna's Archive quota exhausted, falling back to LibGen"
-                        )
-                        return await self._get_libgen().get_download_url(md5)
-                    raise
-                except Exception as e:
-                    if self.config.fallback_enabled:
-                        logger.warning(
-                            f"Anna's Archive download failed: {e}, falling back to LibGen"
-                        )
-                        return await self._get_libgen().get_download_url(md5)
-                    raise
+        for name in candidates:
+            try:
+                result = await self._adapter_for(name).get_download_url(md5)
+                # A response that reports zero downloads left is a failure to
+                # act on, not a result to return: the URL it carries will not
+                # serve bytes.
+                if result.quota_info and result.quota_info.downloads_left == 0:
+                    raise QuotaExhaustedError(f"{name} quota exhausted")
+                return result
+            except QuotaExhaustedError as exc:
+                quota_error = exc
+                failures.append(
+                    SourceError(name, detail=str(exc), reason="quota_exhausted")
+                )
+                logger.warning(f"{name} quota exhausted for {md5}")
+            except AllSourcesFailedError as exc:
+                failures.extend(exc.failures)
+                logger.warning(f"{name} download failed: {exc}")
+            except SourceError as exc:
+                failures.append(exc)
+                logger.warning(f"{name} download failed: {exc}")
+            except Exception as exc:
+                failures.append(
+                    SourceError(name, detail=f"{type(exc).__name__}: {exc}")
+                )
+                logger.warning(f"{name} download failed: {exc}")
 
-        return await self._get_libgen().get_download_url(md5)
+        # With a single candidate, quota exhaustion is the whole story. Keep
+        # the recorded SourceError so the canonical bridge envelope retains
+        # provider and reason instead of rethrowing the adapter-only exception.
+        if quota_error is not None and len(candidates) == 1:
+            raise failures[0]
+
+        raise AllSourcesFailedError("download", failures)
 
     async def close(self) -> None:
         """Clean up all adapter resources."""

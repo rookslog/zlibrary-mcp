@@ -5,11 +5,13 @@ returning UnifiedBookResult with source=LIBGEN and wrapping sync
 LibgenSearch calls in asyncio.to_thread().
 """
 
-from unittest.mock import MagicMock, patch
+import asyncio
+from unittest.mock import AsyncMock, MagicMock, patch
 import httpx
 import pytest
 
 from lib.sources.config import SourceConfig
+from lib.sources.errors import AllSourcesFailedError, ProviderUnreachableError
 from lib.sources.models import SourceType
 
 pytestmark = pytest.mark.unit
@@ -84,8 +86,14 @@ class TestLibgenAdapterSearch:
             assert results == []
 
     @pytest.mark.asyncio
-    async def test_search_uses_asyncio_to_thread(self, config, mock_book):
-        """Search should wrap sync call in asyncio.to_thread()."""
+    async def test_search_runs_under_a_wall_clock_budget(self, config, mock_book):
+        """Search must go through run_bounded, not asyncio.to_thread.
+
+        libgen_api_enhanced calls requests.get with no timeout, and
+        asyncio.to_thread's workers are joined at interpreter exit — together
+        that kept whole bridge processes alive for hours after their MCP call
+        was gone. The blocking call has to run somewhere it can be abandoned.
+        """
         from lib.sources.libgen import LibgenAdapter
 
         adapter = LibgenAdapter(config)
@@ -95,17 +103,39 @@ class TestLibgenAdapterSearch:
             mock_instance.search_title.return_value = [mock_book]
             mock_search_class.return_value = mock_instance
 
-            with patch("lib.sources.libgen.asyncio.to_thread") as mock_to_thread:
-                # Make to_thread actually call the function
-                async def call_func(func, *args, **kwargs):
-                    return func(*args, **kwargs)
+            with patch("lib.sources.libgen.run_bounded") as mock_run_bounded:
 
-                mock_to_thread.side_effect = call_func
+                async def call_func(func, timeout, **kwargs):
+                    call_func.timeout = timeout
+                    return func()
+
+                mock_run_bounded.side_effect = call_func
 
                 await adapter.search("python")
 
-                # Verify to_thread was called
-                mock_to_thread.assert_called_once()
+                mock_run_bounded.assert_called_once()
+                assert call_func.timeout == config.total_timeout
+
+    @pytest.mark.asyncio
+    async def test_search_does_not_use_asyncio_to_thread(self, config, mock_book):
+        """asyncio.to_thread must not reappear in the search path.
+
+        Regression guard for the orphaned-process bug: to_thread's pool threads
+        are non-daemon, so an abandoned request keeps the interpreter alive.
+        """
+        from lib.sources.libgen import LibgenAdapter
+
+        adapter = LibgenAdapter(config)
+
+        with patch("lib.sources.libgen.LibgenSearch") as mock_search_class:
+            mock_instance = MagicMock()
+            mock_instance.search_title.return_value = [mock_book]
+            mock_search_class.return_value = mock_instance
+
+            with patch("asyncio.to_thread") as mock_to_thread:
+                await adapter.search("python")
+
+            mock_to_thread.assert_not_called()
 
     @pytest.mark.asyncio
     async def test_search_handles_missing_attributes(self, config):
@@ -252,6 +282,61 @@ class TestLibgenAdapterDownload:
         assert result.url.startswith("https://libgen.vg/")
 
     @pytest.mark.asyncio
+    async def test_range_ignoring_probe_stops_after_the_inspection_window(
+        self, adapter
+    ):
+        """A 200 probe must not buffer the complete book before accepting it."""
+
+        class LargeBookStream(httpx.AsyncByteStream):
+            def __init__(self):
+                self.chunks_read = 0
+
+            async def __aiter__(self):
+                for index in range(64):
+                    self.chunks_read += 1
+                    prefix = b"%PDF" if index == 0 else b"xxxx"
+                    yield prefix + (b"x" * 1020)
+
+        body = LargeBookStream()
+
+        def handler(request):
+            if "ads.php" in request.url.path:
+                return httpx.Response(200, text=ADS_PAGE_WITH_KEY)
+            return httpx.Response(
+                200,
+                stream=body,
+                headers={"content-type": "application/pdf"},
+            )
+
+        with self._patched_client(handler):
+            result = await adapter.get_download_url(MD5)
+
+        assert result.url.startswith("https://libgen.li/")
+        assert body.chunks_read <= 3
+
+    @pytest.mark.asyncio
+    async def test_cdn_transport_failure_retains_its_host_and_reason(self, adapter):
+        """A failed byte probe is transport evidence, not a protocol response."""
+
+        def handler(request):
+            if "ads.php" in request.url.path:
+                return httpx.Response(200, text=ADS_PAGE_WITH_KEY)
+            raise httpx.ConnectTimeout("cdn stalled", request=request)
+
+        with self._patched_client(handler):
+            with pytest.raises(AllSourcesFailedError) as excinfo:
+                await adapter.get_download_url(MD5)
+
+        assert [failure.host for failure in excinfo.value.failures] == [
+            "libgen.li",
+            "libgen.vg",
+            "libgen.la",
+        ]
+        assert {failure.reason for failure in excinfo.value.failures} == {
+            "connect_timeout"
+        }
+
+    @pytest.mark.asyncio
     async def test_expired_key_bounce_is_treated_as_failure(self, adapter):
         """An expired key 307s back to ads.php rather than erroring."""
 
@@ -281,8 +366,31 @@ class TestLibgenAdapterDownload:
             return httpx.Response(200, text=ADS_PAGE_NO_KEY)
 
         with self._patched_client(handler):
-            with pytest.raises(ValueError, match="No LibGen mirror"):
+            with pytest.raises(AllSourcesFailedError, match="every source"):
                 await adapter.get_download_url(MD5)
+
+    @pytest.mark.asyncio
+    async def test_retains_each_unreachable_mirror_as_a_structured_failure(
+        self, adapter
+    ):
+        """A failed mirror walk must keep the host and stable reason per attempt."""
+
+        async def unreachable(mirror):
+            host = f"libgen.{mirror}"
+            raise ProviderUnreachableError("libgen", host, reason="connect_timeout")
+
+        with patch.object(adapter, "_preflight", side_effect=unreachable):
+            with pytest.raises(AllSourcesFailedError) as excinfo:
+                await adapter.get_download_url(MD5)
+
+        assert [failure.host for failure in excinfo.value.failures] == [
+            "libgen.li",
+            "libgen.vg",
+            "libgen.la",
+        ]
+        assert {failure.reason for failure in excinfo.value.failures} == {
+            "connect_timeout"
+        }
 
     @pytest.mark.asyncio
     async def test_tries_configured_mirror_first_without_duplicates(self, adapter):
@@ -290,6 +398,23 @@ class TestLibgenAdapterDownload:
         adapter.mirror = "vg"
 
         assert adapter._mirror_candidates() == ["vg", "li", "la"]
+
+    @pytest.mark.asyncio
+    async def test_resolution_walk_obeys_each_mirrors_total_deadline(self, adapter):
+        """A trickling CDN must not defer failure to the outer bridge budget."""
+        adapter.config.total_timeout = 0.02
+
+        async def trickle(*_args, **_kwargs):
+            await asyncio.sleep(30)
+
+        with (
+            patch.object(adapter, "_preflight", new=AsyncMock(return_value=None)),
+            patch.object(adapter, "_rate_limit", new=AsyncMock(return_value=None)),
+            patch.object(adapter, "_resolve_key", new=AsyncMock(return_value="KEY")),
+            patch.object(adapter, "_serves_bytes", side_effect=trickle),
+        ):
+            with pytest.raises(AllSourcesFailedError, match="every source"):
+                await asyncio.wait_for(adapter.get_download_url(MD5), timeout=0.2)
 
 
 class TestLibgenAdapterRateLimiting:
@@ -414,10 +539,21 @@ class TestLibgenAdapterUserAgent:
         assert captured["headers"]["User-Agent"] == "custom"
 
 
+STUB_PAGE_HTML = (
+    "<!DOCTYPE html><html><head><title>Welcome to nginx!</title>"
+    "</head><body><h1>Welcome to nginx!</h1></body></html>"
+)
+
+
 class TestLibgenAdapterParseFailure:
     """Empty result vs unparseable page must be distinguishable (#124):
     a genuinely-empty search still renders the (empty) results table, so a
     page WITHOUT `tablelibgen` is a parse failure, never "no matches".
+
+    #124 signalled this with a standalone `SourceParseError`. Folded into
+    #106's taxonomy it is a typed per-mirror `ProviderResponseError`
+    (`protocol_error`), which is strictly more useful: the mirror walk can
+    route around one stubbed mirror, and only an all-mirror stub is fatal.
     """
 
     @pytest.fixture
@@ -428,19 +564,23 @@ class TestLibgenAdapterParseFailure:
             fallback_enabled=False,
         )
 
+    @staticmethod
+    def _stub_page():
+        page = MagicMock()
+        page.status_code = 200
+        page.text = STUB_PAGE_HTML
+        return page
+
     @pytest.mark.asyncio
-    async def test_stub_page_raises_parse_error(self, config):
-        """Zero results + a page without the results table must raise."""
+    async def test_stub_page_on_every_mirror_raises_typed_parse_failure(self, config):
+        """Zero results + no results table anywhere must raise, not return []."""
         from lib.sources import libgen as libgen_mod
-        from lib.sources.libgen import LibgenAdapter, SourceParseError
+        from lib.sources.errors import ProviderResponseError
+        from lib.sources.libgen import LibgenAdapter
 
         adapter = LibgenAdapter(config)
-        stub_page = MagicMock()
-        stub_page.status_code = 200
-        stub_page.text = (
-            "<!DOCTYPE html><html><head><title>Welcome to nginx!</title>"
-            "</head><body><h1>Welcome to nginx!</h1></body></html>"
-        )
+        adapter.MIN_REQUEST_INTERVAL = 0
+        stub_page = self._stub_page()
 
         def fake_search_title(query):
             # Mirror reality: the library fetches through the shim (setting
@@ -450,11 +590,58 @@ class TestLibgenAdapterParseFailure:
 
         with patch("lib.sources.libgen.LibgenSearch") as mock_search_class:
             mock_search_class.return_value.search_title.side_effect = fake_search_title
-            with pytest.raises(SourceParseError) as excinfo:
+            with pytest.raises(AllSourcesFailedError) as excinfo:
                 await adapter.search("anything")
 
+        # #124's message content survives the fold: title, status, byte count.
         assert "Welcome to nginx!" in str(excinfo.value)
         assert "no results table" in str(excinfo.value)
+        assert f"{len(STUB_PAGE_HTML)} bytes" in str(excinfo.value)
+        assert "HTTP 200" in str(excinfo.value)
+
+        failures = excinfo.value.failures
+        assert failures, "the stub must be recorded as a typed failure"
+        assert all(isinstance(f, ProviderResponseError) for f in failures)
+        assert all(f.reason == "protocol_error" for f in failures)
+        # Attribution is per mirror, which the untyped SourceParseError lost.
+        assert {f.host for f in failures} == {"libgen.li", "libgen.vg", "libgen.la"}
+
+    @pytest.mark.asyncio
+    async def test_stub_on_one_mirror_fails_over_to_a_working_mirror(self, config):
+        """A stubbed mirror is not fatal — that is what the typed fold buys."""
+        from lib.sources import libgen as libgen_mod
+        from lib.sources.libgen import LibgenAdapter
+
+        adapter = LibgenAdapter(config)
+        adapter.MIN_REQUEST_INTERVAL = 0
+        stub_page = self._stub_page()
+
+        good_page = MagicMock()
+        good_page.status_code = 200
+        good_page.text = '<html><table id="tablelibgen">...</table></html>'
+
+        book = MagicMock()
+        book.md5 = "abc123def456"
+        book.title = "Found On The Second Mirror"
+
+        def search_for(mirror):
+            def _search_title(query):
+                if mirror == "li":
+                    libgen_mod._search_requests.last_response = stub_page
+                    return []
+                libgen_mod._search_requests.last_response = good_page
+                return [book]
+
+            instance = MagicMock()
+            instance.search_title.side_effect = _search_title
+            return instance
+
+        with patch("lib.sources.libgen.LibgenSearch") as mock_search_class:
+            mock_search_class.side_effect = lambda mirror: search_for(mirror)
+            results = await adapter.search("anything")
+
+        assert len(results) == 1
+        assert results[0].title == "Found On The Second Mirror"
 
     @pytest.mark.asyncio
     async def test_empty_table_returns_empty_list(self, config):

@@ -418,6 +418,12 @@ All API operations include automatic retry with exponential backoff and circuit 
 
 See [docs/RETRY_CONFIGURATION.md](docs/RETRY_CONFIGURATION.md) for details.
 
+Multi-source search, URL resolution, and complete file transfers have separate
+finite wall-clock budgets. On POSIX, aborting a bridge call cooperatively cancels
+Python cleanup before process-group escalation, so partial download artifacts are
+removed. Permanent Anna credential and quota errors fail immediately without
+consuming retry or shared circuit-breaker health budgets.
+
 ## Development
 
 ### Running Tests

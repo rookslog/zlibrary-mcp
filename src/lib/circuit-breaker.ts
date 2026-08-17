@@ -12,6 +12,13 @@ export interface CircuitBreakerOptions {
   threshold?: number;
   timeout?: number;
   onStateChange?: (oldState: CircuitState, newState: CircuitState) => void;
+  /**
+   * Whether a rejection counts toward opening the circuit. Defaults to
+   * counting everything. Override to exclude rejections that say nothing
+   * about the dependency's health — a caller cancelling its own request,
+   * for instance.
+   */
+  isFailure?: (error: any) => boolean;
 }
 
 export class CircuitBreaker {
@@ -21,11 +28,13 @@ export class CircuitBreaker {
   private readonly threshold: number;
   private readonly timeout: number;
   private readonly onStateChange?: (oldState: CircuitState, newState: CircuitState) => void;
+  private readonly isFailure: (error: any) => boolean;
 
   constructor(options: CircuitBreakerOptions = {}) {
     this.threshold = options.threshold ?? 5;
     this.timeout = options.timeout ?? 60000;
     this.onStateChange = options.onStateChange;
+    this.isFailure = options.isFailure ?? (() => true);
   }
 
   /**
@@ -48,7 +57,13 @@ export class CircuitBreaker {
       this.onSuccess();
       return result;
     } catch (error) {
-      this.onFailure();
+      // Not every rejection is evidence the dependency is unhealthy. A caller
+      // that cancelled its own request tells us nothing about the far side, and
+      // counting those would let a user who aborts five searches trip the
+      // breaker and fail unrelated tools for the whole timeout window.
+      if (this.isFailure(error)) {
+        this.onFailure();
+      }
       throw error;
     }
   }

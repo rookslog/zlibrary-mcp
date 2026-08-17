@@ -173,6 +173,34 @@ describe('Retry Manager', () => {
       expect(retryManager.isRetryableError(error)).toBe(true);
     });
 
+    test('should honor an explicit retryable=true before Python message heuristics', () => {
+      const error = {
+        code: 'PYTHON_ERROR',
+        message: 'Provider returned HTTP 503',
+        retryable: true,
+        context: {
+          details: {
+            operation: 'download',
+            provider: 'libgen',
+            host: 'cdn.example',
+            reason: 'http_error',
+          },
+        },
+      };
+
+      expect(retryManager.isRetryableError(error)).toBe(true);
+    });
+
+    test('should honor an explicit retryable=false before retryable code heuristics', () => {
+      const error = {
+        code: 'NETWORK_ERROR',
+        message: 'Connection failed',
+        retryable: false,
+      };
+
+      expect(retryManager.isRetryableError(error)).toBe(false);
+    });
+
     test('should return false for non-transient Python errors', () => {
       const error = {
         code: 'PYTHON_ERROR',

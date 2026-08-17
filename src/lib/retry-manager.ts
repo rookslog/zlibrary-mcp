@@ -83,6 +83,21 @@ export function isRetryableError(error: any): boolean {
     return false;
   }
 
+  // An explicit verdict from whoever built the error beats the heuristics
+  // below. Those heuristics match on message text, so a provider error like
+  // "resolved but did not accept a connection before the deadline" would
+  // otherwise be retried on the strength of the word "connection" — even
+  // though the caller already established the host is not answering.
+  if (error.retryable === false) {
+    return false;
+  }
+  if (
+    error.retryable === true &&
+    (error.code !== 'PYTHON_ERROR' || error.context?.details)
+  ) {
+    return true;
+  }
+
   // Authentication/authorization errors are not retryable
   if (error.code === 'AUTH_ERROR' || error.code === 'FORBIDDEN') {
     return false;

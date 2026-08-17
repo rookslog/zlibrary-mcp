@@ -16,6 +16,14 @@ Usage:
 from .annas import AnnasArchiveAdapter, QuotaExhaustedError
 from .base import SourceAdapter
 from .config import SourceConfig, get_source_config
+from .errors import (
+    AllSourcesFailedError,
+    ProviderConfigurationError,
+    ProviderResponseError,
+    ProviderTimeoutError,
+    ProviderUnreachableError,
+    SourceError,
+)
 from .libgen import LibgenAdapter
 from .models import DownloadResult, QuotaInfo, SourceType, UnifiedBookResult
 from .router import SourceRouter
@@ -32,4 +40,10 @@ __all__ = [
     "QuotaExhaustedError",
     "LibgenAdapter",
     "SourceRouter",
+    "SourceError",
+    "ProviderUnreachableError",
+    "ProviderTimeoutError",
+    "ProviderConfigurationError",
+    "ProviderResponseError",
+    "AllSourcesFailedError",
 ]

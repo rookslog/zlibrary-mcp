@@ -15,6 +15,7 @@ from bs4 import BeautifulSoup
 from unittest.mock import AsyncMock, MagicMock, patch
 
 from lib.sources.models import SourceType
+from lib.sources.errors import ProviderConfigurationError
 
 pytestmark = pytest.mark.unit
 
@@ -492,6 +493,61 @@ class TestSecretKeyHostAllowlist:
             result = await adapter.get_download_url("abc123def456")
 
         assert result.url == MOCK_FAST_DOWNLOAD_RESPONSE["download_url"]
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("status", [401, 403])
+    async def test_rejected_key_is_a_permanent_configuration_error(self, status):
+        """Only auth failures from the trusted keyed endpoint are permanent."""
+        import httpx
+
+        from lib.sources.annas import AnnasArchiveAdapter
+        from lib.sources.config import SourceConfig
+
+        adapter = AnnasArchiveAdapter(
+            SourceConfig(
+                annas_secret_key="rejected-key",
+                annas_base_url="https://annas-archive.gl",
+            )
+        )
+        request = httpx.Request(
+            "GET", "https://annas-archive.gl/dyn/api/fast_download.json"
+        )
+        mock_client = AsyncMock()
+        mock_client.get.return_value = httpx.Response(status, request=request)
+
+        with patch.object(adapter, "_get_client", return_value=mock_client):
+            with pytest.raises(ProviderConfigurationError) as excinfo:
+                await adapter.get_download_url("abc123def456")
+
+        assert excinfo.value.provider == "annas"
+        assert excinfo.value.reason == "configuration_error"
+
+    @pytest.mark.asyncio
+    async def test_non_auth_fast_download_status_keeps_http_classification(self):
+        """A 503 is provider health evidence, not a rejected credential."""
+        import httpx
+
+        from lib.sources.annas import AnnasArchiveAdapter
+        from lib.sources.config import SourceConfig
+        from lib.sources.errors import ProviderResponseError
+
+        adapter = AnnasArchiveAdapter(
+            SourceConfig(
+                annas_secret_key="test-key",
+                annas_base_url="https://annas-archive.gl",
+            )
+        )
+        request = httpx.Request(
+            "GET", "https://annas-archive.gl/dyn/api/fast_download.json"
+        )
+        mock_client = AsyncMock()
+        mock_client.get.return_value = httpx.Response(503, request=request)
+
+        with patch.object(adapter, "_get_client", return_value=mock_client):
+            with pytest.raises(ProviderResponseError) as excinfo:
+                await adapter.get_download_url("abc123def456")
+
+        assert excinfo.value.reason == "http_error"
 
     @pytest.mark.asyncio
     async def test_search_still_allowed_on_unknown_host(self):

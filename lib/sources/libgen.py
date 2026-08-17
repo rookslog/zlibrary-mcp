@@ -8,6 +8,7 @@ to avoid being blocked.
 import asyncio
 import logging
 import re
+import threading
 import time
 from typing import List, Optional
 from urllib.parse import parse_qs, urljoin, urlparse
@@ -18,13 +19,29 @@ from bs4 import BeautifulSoup
 
 from .base import SourceAdapter
 from .config import SourceConfig
+from .errors import (
+    AllSourcesFailedError,
+    ProviderResponseError,
+    ProviderUnreachableError,
+    SourceError,
+)
 from .models import DownloadResult, SourceType, UnifiedBookResult
+from .net import (
+    bounded_await,
+    build_timeout,
+    classify_httpx_error,
+    classify_requests_error,
+    probe_host,
+    run_bounded,
+)
 
 # CRITICAL: Import is libgen_api_enhanced, NOT libgen_api
 from libgen_api_enhanced import LibgenSearch
 from libgen_api_enhanced import search_request as _lge_search_request
 
 logger = logging.getLogger("zlibrary.sources")
+
+PROVIDER = "libgen"
 
 # libgen.li serves its default-nginx stub (HTTP 200, ~640 bytes, no results
 # table) to blocklisted tool User-Agents — python-requests' default, python-httpx's
@@ -33,14 +50,6 @@ logger = logging.getLogger("zlibrary.sources")
 # so no browser string is needed. Used by BOTH the search path (via the shim
 # below) and the download path (ads.php serves the same stub to blocked UAs).
 USER_AGENT = "zlibrary-mcp (+https://github.com/rookslog/zlibrary-mcp)"
-
-
-class SourceParseError(Exception):
-    """A source served a page the adapter could not parse.
-
-    Distinct from an empty result: the page did not contain the structure
-    results live in, so reporting "no matches" would be false (#124).
-    """
 
 
 class _RequestsWithUA:
@@ -53,12 +62,27 @@ class _RequestsWithUA:
     identifying UA added, and the last search response recorded so
     ``LibgenAdapter.search`` can tell "no matches" from "served a page with no
     results table".
+
+    ``last_response`` is **thread-local**. The search runs under
+    `net.run_bounded`, which abandons its daemon thread when the budget
+    elapses; an abandoned `requests.get` that completes minutes later would
+    otherwise overwrite the slot a *later* mirror attempt is about to read,
+    and the adapter would attribute one mirror's stub page to another. Each
+    bounded attempt gets its own thread, so each gets its own slot.
     """
 
     exceptions = requests.exceptions
 
     def __init__(self) -> None:
-        self.last_response: Optional[requests.Response] = None
+        self._state = threading.local()
+
+    @property
+    def last_response(self) -> Optional[requests.Response]:
+        return getattr(self._state, "last_response", None)
+
+    @last_response.setter
+    def last_response(self, response: Optional[requests.Response]) -> None:
+        self._state.last_response = response
 
     def get(self, url: str, **kwargs) -> requests.Response:
         headers = kwargs.pop("headers", None) or {}
@@ -77,6 +101,47 @@ _lge_search_request.requests = _search_requests
 # served real bytes. Failing over between mirrors therefore also routes around
 # a dead CDN node, which is why this list exists rather than a single default.
 FALLBACK_MIRRORS = ("li", "vg", "la")
+
+
+def mirror_host(mirror: str) -> str:
+    """Hostname for a mirror suffix, matching what LibgenSearch builds."""
+    return f"libgen.{mirror}"
+
+
+def _unparseable_search_page(page) -> Optional[str]:
+    """Detail text when a zero-result page is a parse failure, else None.
+
+    A genuinely-empty search still renders the (empty) results table (verified
+    2026-08-17), so a page WITHOUT `tablelibgen` means the mirror served
+    something else entirely — a UA-block stub or a layout change — and "no
+    results" would be a false report (#124).
+
+    This is #124's `SourceParseError` folded into the #106 error taxonomy: the
+    caller raises it as a `ProviderResponseError`/`protocol_error` attributed
+    to the mirror host, so one stubbed mirror fails over to the next instead
+    of aborting the whole search. The status, byte count, and page title are
+    retained because they are what distinguishes a stub from a redesign.
+
+    Args:
+        page: The recorded `requests.Response`, or None if nothing was fetched
+
+    Returns:
+        A detail string for the error envelope, or None if the page is fine
+        (or absent — a fully-mocked search records no page and must stay an
+        ordinary empty result).
+    """
+    if page is None:
+        return None
+    text = getattr(page, "text", "") or ""
+    if "tablelibgen" in text:
+        return None
+    title_match = re.search(r"<title>([^<]*)</title>", text, re.I)
+    page_title = title_match.group(1).strip() if title_match else ""
+    return (
+        f"search page had no results table (HTTP "
+        f"{getattr(page, 'status_code', '?')}, {len(text)} bytes, title "
+        f"{page_title!r}) — parse failure, not an empty result"
+    )
 
 
 class LibgenAdapter(SourceAdapter):
@@ -112,10 +177,24 @@ class LibgenAdapter(SourceAdapter):
         self._last_request = time.time()
 
     async def search(self, query: str, **kwargs) -> List[UnifiedBookResult]:
-        """Search for books matching query.
+        """Search for books matching query, failing over between mirrors.
 
-        Uses libgen-api-enhanced LibgenSearch.search_title() wrapped in
-        asyncio.to_thread() to avoid blocking the event loop.
+        Two hazards are handled here that the previous implementation was not
+        bounded against:
+
+        - `libgen_api_enhanced` issues `requests.get(...)` with **no timeout**
+          (search_request.py:177), so a mirror that drops SYNs blocks forever.
+          It runs under `run_bounded` on a daemon thread: the await is capped
+          at `config.total_timeout` and an abandoned call cannot outlive the
+          process. Under `asyncio.to_thread` it did exactly that — three
+          orphaned bridge processes, the oldest 9h10m old, on 2026-08-11.
+        - Search used only the configured mirror while `get_download_url`
+          already walked `_mirror_candidates()`. It now walks the same list, so
+          one dead mirror no longer means no results.
+
+        A mirror that answers with a page carrying no results table is a third
+        hazard (#124): it is a parse failure, not an empty result, and it is
+        recorded as a typed per-mirror failure so the walk continues.
 
         Args:
             query: Search string (title, author, ISBN, etc.)
@@ -123,32 +202,62 @@ class LibgenAdapter(SourceAdapter):
 
         Returns:
             List of UnifiedBookResult with source=LIBGEN
+
+        Raises:
+            AllSourcesFailedError: If no mirror could complete the search
         """
-        await self._rate_limit()
-        _search_requests.last_response = None
+        failures: List[SourceError] = []
 
-        def _search_sync():
-            s = LibgenSearch(mirror=self.mirror)
-            return s.search_title(query)
+        for mirror in self._mirror_candidates():
+            host = mirror_host(mirror)
+            try:
+                await self._preflight(mirror)
+            except ProviderUnreachableError as exc:
+                logger.warning("LibGen mirror %s unreachable: %s", mirror, exc)
+                failures.append(exc)
+                continue
 
-        results = await asyncio.to_thread(_search_sync)
+            await self._rate_limit()
 
-        if not results:
-            # A genuinely-empty search still renders the (empty) results
-            # table (verified 2026-08-17), so a page WITHOUT the table means
-            # the mirror served something else entirely — a UA-block stub or
-            # a layout change — and "no results" would be a false report.
-            page = _search_requests.last_response
-            if page is not None and "tablelibgen" not in page.text:
-                title_match = re.search(r"<title>([^<]*)</title>", page.text, re.I)
-                page_title = title_match.group(1).strip() if title_match else ""
-                raise SourceParseError(
-                    f"LibGen search page had no results table (HTTP "
-                    f"{page.status_code}, {len(page.text)} bytes, title "
-                    f"{page_title!r}) — parse failure, not an empty result"
+            def _search_sync(mirror=mirror):
+                # The fetched page is read back on the SAME thread that
+                # fetched it — `_search_requests.last_response` is
+                # thread-local precisely so an abandoned earlier attempt
+                # cannot supply it.
+                _search_requests.last_response = None
+                results = LibgenSearch(mirror=mirror).search_title(query)
+                return results, _search_requests.last_response
+
+            try:
+                results, page = await run_bounded(
+                    _search_sync,
+                    self.config.total_timeout,
+                    provider=PROVIDER,
+                    host=host,
+                    operation="search",
                 )
-            return []
+            except Exception as exc:
+                failure = self._as_source_error(exc, host)
+                logger.warning("LibGen search failed on %s: %s", mirror, failure)
+                failures.append(failure)
+                continue
 
+            if not results:
+                unparseable = _unparseable_search_page(page)
+                if unparseable:
+                    failure = ProviderResponseError(
+                        PROVIDER, host, unparseable, reason="protocol_error"
+                    )
+                    logger.warning("LibGen search unusable on %s: %s", mirror, failure)
+                    failures.append(failure)
+                    continue
+
+            return self._to_unified(results or [])
+
+        raise AllSourcesFailedError(f"LibGen search for {query!r}", failures)
+
+    def _to_unified(self, results) -> List[UnifiedBookResult]:
+        """Convert libgen-api-enhanced books into UnifiedBookResult."""
         return [
             UnifiedBookResult(
                 md5=getattr(book, "md5", "") or "",
@@ -176,6 +285,53 @@ class LibgenAdapter(SourceAdapter):
     def _mirror_candidates(self) -> List[str]:
         """Mirrors to try, configured one first, without duplicates."""
         return [self.mirror] + [m for m in FALLBACK_MIRRORS if m != self.mirror]
+
+    async def _preflight(self, mirror: str) -> None:
+        """Fail fast if a mirror is not reachable.
+
+        This matters more for LibGen than for Anna's: once the third-party
+        search call starts it cannot be interrupted, only abandoned. Probing
+        first means an unroutable mirror (libgen.is resolves to
+        193.218.118.42 but drops every SYN, measured 2026-08-11) costs one
+        bounded probe and never enters that call.
+
+        Args:
+            mirror: Mirror suffix, e.g. 'li'
+
+        Raises:
+            ProviderUnreachableError: If the mirror does not resolve or connect
+        """
+        if not self.config.preflight_enabled:
+            return
+        await probe_host(
+            PROVIDER,
+            mirror_host(mirror),
+            timeout=self.config.preflight_timeout,
+        )
+
+    def _as_source_error(self, exc: BaseException, host: str) -> Exception:
+        """Convert a failure into a provider-attributed error.
+
+        Handles both httpx exceptions (our own `get_download_url` requests) and
+        the `requests`-based exceptions that surface from the LibGen library.
+
+        Args:
+            exc: Exception raised while talking to a mirror
+            host: Mirror hostname for attribution
+
+        Returns:
+            An already-attributed error unchanged, otherwise a
+            ProviderResponseError or ProviderUnreachableError.
+        """
+        if isinstance(exc, SourceError):
+            return exc
+        if isinstance(exc, httpx.HTTPError):
+            reason, detail = classify_httpx_error(exc)
+        else:
+            reason, detail = classify_requests_error(exc)
+        if reason in ("http_error", "protocol_error"):
+            return ProviderResponseError(PROVIDER, host, detail, reason=reason)
+        return ProviderUnreachableError(PROVIDER, host, detail, reason=reason)
 
     async def _resolve_key(
         self, client: httpx.AsyncClient, mirror: str, md5: str
@@ -217,22 +373,30 @@ class LibgenAdapter(SourceAdapter):
         an expired key silently redirects back to `/ads.php`, and a dead node
         can answer 200 with an HTML error page.
         """
-        try:
-            response = await client.get(url, headers={"Range": "bytes=0-2047"})
-        except Exception as exc:
-            return False, type(exc).__name__
+        # Transport exceptions must reach the normal classifier. Returning
+        # their class name as a semantic non-byte result reclassified DNS/TLS
+        # and timeout failures as protocol_error at the mirror aggregate.
+        inspected = bytearray()
+        async with client.stream(
+            "GET", url, headers={"Range": "bytes=0-2047"}
+        ) as response:
+            if "/ads.php" in str(response.url):
+                return False, "key expired (bounced to ads.php)"
+            if response.status_code not in (200, 206):
+                return False, f"HTTP {response.status_code}"
+            if "text/html" in response.headers.get("content-type", ""):
+                return False, "served HTML, not a file"
 
-        if "/ads.php" in str(response.url):
-            return False, "key expired (bounced to ads.php)"
-        if response.status_code not in (200, 206):
-            return False, f"HTTP {response.status_code}"
-        if "text/html" in response.headers.get("content-type", ""):
-            return False, "served HTML, not a file"
-        if not response.content[:4] == b"%PDF" and len(response.content) < 512:
-            return False, "response too small to be a file"
+            async for chunk in response.aiter_bytes():
+                inspected.extend(chunk[: 2048 - len(inspected)])
+                if len(inspected) >= 2048:
+                    break
 
-        cdn = urlparse(str(response.url)).hostname or "?"
-        return True, cdn
+            if not inspected[:4] == b"%PDF" and len(inspected) < 512:
+                return False, "response too small to be a file"
+
+            cdn = urlparse(str(response.url)).hostname or "?"
+            return True, cdn
 
     async def get_download_url(self, md5: str) -> DownloadResult:
         """Resolve a clearnet download URL for a book by MD5 hash.
@@ -255,37 +419,67 @@ class LibgenAdapter(SourceAdapter):
             DownloadResult with URL and no quota_info (LibGen has no quota)
 
         Raises:
-            ValueError: If no mirror yields a download key
+            AllSourcesFailedError: If no mirror yields a working download URL
         """
-        attempts = []
+        failures: List[SourceError] = []
 
         # The identifying UA matters here too: ads.php serves the same
         # UA-blocklist stub to python-httpx's default UA (measured
         # 2026-08-17, #124), which surfaces as "no GET link" on every mirror.
+        # The timeout stays on the configured per-phase budget rather than a
+        # bare 30s — bounding these calls is what #106 exists for.
         async with httpx.AsyncClient(
-            timeout=30,
+            timeout=build_timeout(self.config),
             follow_redirects=True,
             headers={"User-Agent": USER_AGENT},
         ) as client:
             for mirror in self._mirror_candidates():
-                await self._rate_limit()
                 try:
+                    await self._preflight(mirror)
+                except ProviderUnreachableError as exc:
+                    failures.append(exc)
+                    logger.warning(f"LibGen mirror {mirror} unreachable: {exc}")
+                    continue
+
+                await self._rate_limit()
+
+                async def resolve_attempt() -> tuple[Optional[str], str]:
+                    """Resolve and validate one mirror under one total budget."""
                     key = await self._resolve_key(client, mirror, md5)
+                    if not key:
+                        return None, "no GET link"
+
+                    candidate = f"https://libgen.{mirror}/get.php?md5={md5}&key={key}"
+                    ok, detail = await self._serves_bytes(client, candidate)
+                    return (candidate if ok else None), detail
+
+                try:
+                    url, detail = await bounded_await(
+                        resolve_attempt(),
+                        self.config.total_timeout,
+                        provider=PROVIDER,
+                        host=mirror_host(mirror),
+                        operation="download resolution",
+                    )
                 except Exception as exc:  # network, TLS, HTTP error
-                    attempts.append(f"{mirror}: {type(exc).__name__}")
-                    logger.warning(f"LibGen mirror {mirror} failed for {md5}: {exc}")
-                    continue
-
-                if not key:
-                    attempts.append(f"{mirror}: no GET link")
-                    continue
-
-                url = f"https://libgen.{mirror}/get.php?md5={md5}&key={key}"
-                ok, detail = await self._serves_bytes(client, url)
-                if not ok:
-                    attempts.append(f"{mirror}: {detail}")
+                    failure = self._as_source_error(exc, mirror_host(mirror))
+                    failures.append(failure)
                     logger.warning(
-                        f"LibGen mirror {mirror} resolved but cannot serve {md5}: {detail}"
+                        f"LibGen mirror {mirror} failed for {md5}: {failure}"
+                    )
+                    continue
+
+                if not url:
+                    failures.append(
+                        ProviderResponseError(
+                            PROVIDER,
+                            mirror_host(mirror),
+                            detail,
+                            reason="protocol_error",
+                        )
+                    )
+                    logger.warning(
+                        f"LibGen mirror {mirror} could not serve {md5}: {detail}"
                     )
                     continue
 
@@ -298,10 +492,7 @@ class LibgenAdapter(SourceAdapter):
                     quota_info=None,  # LibGen has no quota
                 )
 
-        raise ValueError(
-            f"No LibGen mirror could resolve a download for {md5} "
-            f"(tried {', '.join(attempts)})"
-        )
+        raise AllSourcesFailedError("download", failures)
 
     async def close(self) -> None:
         """Clean up resources.

@@ -29,6 +29,57 @@ The Z-Library MCP server implements comprehensive retry logic with exponential b
 | `CIRCUIT_BREAKER_THRESHOLD` | `5` | Number of failures before opening circuit |
 | `CIRCUIT_BREAKER_TIMEOUT` | `60000` | Time in ms before attempting to close circuit (1 minute) |
 
+### Multi-Source Timeout Configuration
+
+Nothing in the multi-source path may run unbounded. Two layers cooperate, and
+the outer Node budget must remain larger than the worst-case inner provider walk.
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `BOOK_SOURCE_CONNECT_TIMEOUT` | `10` | TCP/TLS connect budget per phase, in seconds |
+| `BOOK_SOURCE_READ_TIMEOUT` | `30` | Response-read budget per phase, in seconds |
+| `BOOK_SOURCE_TOTAL_TIMEOUT` | `45` | Wall-clock budget for one provider operation, in seconds |
+| `BOOK_SOURCE_DOWNLOAD_TIMEOUT` | `1500` | Wall-clock budget for a complete source-file transfer, in seconds |
+| `BOOK_SOURCE_PREFLIGHT` | `true` | Probe DNS and TCP before a provider request |
+| `BOOK_SOURCE_PREFLIGHT_TIMEOUT` | `5` | Budget per DNS or TCP probe phase, in seconds |
+| `PYTHON_BRIDGE_TIMEOUT` | `240000` | Ordinary Python bridge wall-clock budget, in milliseconds |
+| `PYTHON_BRIDGE_LONG_TIMEOUT` | `2400000` | Download and document-processing bridge budget, in milliseconds |
+| `PYTHON_BRIDGE_KILL_GRACE` | `3000` | Grace between process-tree termination and forced kill, in milliseconds |
+
+Malformed, non-positive, and non-finite values fall back to their defaults rather
+than disabling a deadline.
+
+Preflight is skipped when `HTTP_PROXY` or `HTTPS_PROXY` covers the target, with
+`NO_PROXY` honored. A direct DNS/TCP socket cannot represent a proxied request;
+letting that probe veto the real client would create a false outage.
+
+The preflight budget applies to two phases (DNS, then TCP). At the defaults, one
+provider attempt can cost at most `2 × 5s + 45s = 55s`. LibGen can walk three
+mirrors and `auto` can add Anna's Archive, so the worst-case search budget is
+`4 × 55s = 220s`, below the 240-second ordinary bridge budget. Raise
+`PYTHON_BRIDGE_TIMEOUT` whenever provider budgets make that composition larger;
+otherwise the outer process-tree kill can preempt legitimate fallback work.
+
+Source-file transfer has a separate 1,500-second default because a valid large
+book can exceed the 45-second search and URL-resolution budget. The 2,400-second
+long bridge default composes worst-case LibGen resolution
+(`3 × (2 × 5s + 45s) = 165s`), transfer (`1,500s`), the OCR subprocess default
+(`600s`), and finalization headroom (`135s`). If any component is overridden,
+keep `PYTHON_BRIDGE_LONG_TIMEOUT` at least as large as their sum after converting
+milliseconds to seconds.
+
+LibGen download resolution inspects at most the first 2 KiB of a candidate
+response. Some CDNs ignore `Range` and answer `200`; the probe streams and closes
+that response after the inspection window instead of buffering the complete book
+inside the 45-second resolution budget.
+
+On POSIX, bridge timeout, MCP abort, and server shutdown first send `SIGTERM` so
+Python can cancel the active coroutine and remove partial `.download` artifacts.
+After `PYTHON_BRIDGE_KILL_GRACE`, any live process group receives `SIGKILL`; the
+server rejects new bridge work during shutdown and does not re-raise its shutdown
+signal until owned groups are observed gone. A second shutdown signal skips the
+remaining grace period. Native Windows hard ownership remains tracked by #116.
+
 ## How It Works
 
 ### Exponential Backoff
@@ -72,6 +123,12 @@ These errors fail immediately without retry:
 - Validation errors (`INVALID_INPUT`, `VALIDATION_ERROR`)
 - Fatal errors (marked with `fatal: true`)
 - Parse errors (malformed responses)
+- Permanent provider state (`configuration_error`, `quota_exhausted`), including
+  rejected Anna fast-download credentials and exhausted Anna quota
+
+Only aggregates whose every child is permanent caller state bypass retry and
+circuit-breaker accounting. Mixed permanent/transient aggregates remain health
+evidence and retain normal retry classification.
 
 ## Usage Examples
 

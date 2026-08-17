@@ -1,6 +1,6 @@
 # Z-Library MCP - Issues & Technical Debt
 
-<!-- Last Verified: 2026-07-24 -->
+<!-- Last Verified: 2026-08-11 -->
 
 > **Contributing?** This file is the maintainer's internal issue ledger (history,
 > evidence, resolutions). For anything you want to report or pick up, use
@@ -106,6 +106,67 @@ tests then failed with assertions resembling detection regressions
 (`assert 'ERROR' == 'MIXED'`) rather than naming the real cause.
 **Resolution** (2026-07-24): `require_real_fixture()` in `__tests__/python/conftest.py`
 skips with the cause and the fix (`git lfs pull`).
+
+### ISSUE-NET-001: Multi-Source Search Hung Forever on an Unreachable Provider [RESOLVED]
+**Severity**: Was High
+**Discovered**: 2026-08-11, on dionysus
+**Impact**: `search_multi_source` had no network deadline anywhere in its path.
+When a provider was unreachable the call never returned and never errored; the
+MCP client eventually abandoned it, and the Python subprocess kept running with
+nothing waiting on it. Three `python_bridge.py search...` processes were found
+alive simultaneously — elapsed 9h10m, 8h43m and 30m, the two long ones left over
+from a session that had already exited. A `source=libgen` call was aborted by the
+client at its 1800s idle timeout with no response and no progress.
+**Root cause** (three defects, each independently sufficient):
+1. `libgen_api_enhanced/search_request.py:177` calls `requests.get(...)` with no
+   `timeout=`, and catches a `requests.exceptions.Timeout` that can therefore
+   never fire. A host that drops SYNs blocks it forever.
+2. `LibgenAdapter.search` ran that call through `asyncio.to_thread`, whose worker
+   threads are non-daemon and are joined at interpreter shutdown — so an
+   abandoned request kept the entire process alive.
+3. `PythonShell.run` in `src/lib/zlibrary-api.ts` returned a promise with no
+   timeout and no handle on the child, so a client-side cancellation could only
+   abandon the promise, never kill the process.
+An explicit `source="annas"` also fell back to LibGen on failure, which is how a
+request tagged `annas` came to hang inside LibGen's un-timed search.
+**Provider state at the time** (measured, this host): `annas-archive.org` had no
+DNS record at all and `.se`/`.li` failed DNS in ~15ms; `libgen.is` resolved to
+193.218.118.42 but every TCP connect timed out, as did `libgen.rs` and
+`libgen.st`. General egress was fine (example.com and archive.org both 200), and
+the Z-Library EAPI path was unaffected.
+**Resolution**: `lib/sources/net.py` adds a pre-flight DNS+TCP probe that
+distinguishes `dns_failure` from `connect_timeout`, an httpx timeout builder
+covering every phase, and `run_bounded`, which runs uncancellable third-party
+calls on a **daemon** thread under a wall-clock budget. `lib/sources/errors.py`
+attributes every failure to a provider, host and stable reason code, surfaced to
+the MCP caller as `details` in the error envelope. LibGen search now walks the
+same mirror list as `get_download_url`. Router fallback is tied to
+`source=auto`; an explicit source raises rather than silently rerouting, and a
+reachable provider with no matches still returns `[]`. On the Node side,
+`src/lib/python-runner.ts` replaces `PythonShell.run` with a runner that enforces
+`PYTHON_BRIDGE_TIMEOUT`, escalates SIGTERM to SIGKILL, honours the MCP request's
+AbortSignal, and reaps any surviving child at server exit.
+**Tests**: `__tests__/python/test_source_net.py`,
+`__tests__/python/test_multi_source_timeouts.py`,
+`__tests__/python-runner.test.js` (spawns real subprocesses and asserts the pid
+is gone, since a mock cannot show what happens to an OS process).
+
+### ISSUE-API-003: get_download_limits Always Returned "unknown" [RESOLVED]
+**Severity**: Was Medium
+**Discovered**: 2026-08-11
+**Impact**: The tool returned `{"daily_limit": "unknown", "daily_remaining":
+"unknown"}` on every call, so callers could not tell whether quota remained
+before spending it — the only question the tool exists to answer.
+**Root cause**: `get_download_limits` read `downloads_today_limit` and
+`downloads_today_left` from `/eapi/user/profile`. The endpoint has never sent
+those names; it sends `downloads_limit` and `downloads_today` (verified against a
+live response 2026-08-11). Both lookups fell through to the `"unknown"` default.
+The unit test passed throughout because its fixture had been written to match the
+code rather than the service.
+**Resolution**: read the real field names, derive `daily_remaining` clamped at
+zero (the server counts a download when issued and can report `downloads_today`
+above the cap), and log a warning naming the response keys if `downloads_limit`
+disappears again. The test fixture now mirrors a captured live response.
 
 ### ISSUE-API-001: Z-Library Cloudflare Bot Protection [RESOLVED]
 **Severity**: Was CRITICAL

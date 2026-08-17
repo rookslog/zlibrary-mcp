@@ -94,9 +94,10 @@ Two behavioural decisions that are easy to reverse by accident:
 
 The full tool list lives in `README.md` and is checked against the code by
 `scripts/validate-readme-tools.sh` in CI — add a tool, update the README in the same
-commit or `docs-check` fails. Retry and circuit-breaker tuning is in
+commit or `docs-check` fails. Retry, timeout, and circuit-breaker tuning is in
 [docs/RETRY_CONFIGURATION.md](docs/RETRY_CONFIGURATION.md); the implementations are
-`src/lib/retry-manager.ts` and `src/lib/circuit-breaker.ts`.
+`src/lib/retry-manager.ts`, `src/lib/circuit-breaker.ts`,
+`src/lib/python-runner.ts`, `lib/sources/config.py`, and `lib/sources/net.py`.
 
 Z-Library publishes no public API. Since the Phase 7 EAPI migration (Feb 2026), access
 goes through undocumented **JSON** endpoints (`/eapi/book/search`, `/eapi/user/login`,

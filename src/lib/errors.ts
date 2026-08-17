@@ -120,3 +120,20 @@ export class TimeoutError extends ZLibraryError {
     this.name = 'TimeoutError';
   }
 }
+
+/**
+ * Error thrown when the Python bridge subprocess exceeded its wall-clock
+ * budget (or the caller aborted) and was killed.
+ *
+ * Deliberately fatal, unlike TimeoutError. The bridge budget is minutes long
+ * and the Python side has already exhausted its own per-provider retries and
+ * mirror failover by the time it fires, so retrying multiplies a wait the
+ * caller is plainly not getting value from. `isRetryableError` short-circuits
+ * on `fatal`, so this stops the retry loop before the code-based rules.
+ */
+export class BridgeTimeoutError extends ZLibraryError {
+  constructor(message: string, context?: ErrorContext) {
+    super(message, 'TIMEOUT', context, false, true);
+    this.name = 'BridgeTimeoutError';
+  }
+}

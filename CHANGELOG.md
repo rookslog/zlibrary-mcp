@@ -25,9 +25,59 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   that version's CHANGELOG section, and fails the release if the section is absent.
   Previously a tag published to npm and GHCR while the Releases page silently fell
   behind — v1.4.0 shipped that way, and v1.2.0 had gone four months unnoticed (#108).
+- **Provider-attributed failures.** An unreachable source now returns a prompt
+  error naming the provider, the host, and a reason code — `dns_failure` and
+  `connect_timeout` are distinguished, because they call for different fixes
+  (update the mirror list vs. try another mirror). Reachability failures are
+  marked non-retryable, so the retry layer stops multiplying a wait against a
+  host that is not answering.
+- **A DNS + TCP pre-flight probe** before each provider request, so a dead host
+  costs one bounded probe instead of a full request budget. Cached per
+  (host, port) for the life of the call, so LibGen's three-mirror walk probes
+  each host once. It targets the port and scheme the real request will use, and
+  **skips itself entirely when `HTTP_PROXY`/`HTTPS_PROXY` applies** (honouring
+  `NO_PROXY`) — a direct socket cannot represent a proxied request, and a probe
+  that vetoes a request the real client could have completed is worse than no
+  probe. Disable with `BOOK_SOURCE_PREFLIGHT=false`.
+- `BOOK_SOURCE_TOTAL_TIMEOUT` is now genuinely enforced for Anna's, not just
+  LibGen. `httpx.Timeout` bounds each phase separately and restarts its read
+  deadline on every chunk, so a host trickling bytes never tripped it; a
+  wall-clock deadline now covers the whole operation.
+- **LibGen search now walks all three mirrors** (`li → vg → la`), matching what
+  `download_book_to_file` already did.
+- Timeout configuration: `BOOK_SOURCE_CONNECT_TIMEOUT`,
+  `BOOK_SOURCE_READ_TIMEOUT`, `BOOK_SOURCE_TOTAL_TIMEOUT`,
+  `BOOK_SOURCE_PREFLIGHT`, `BOOK_SOURCE_PREFLIGHT_TIMEOUT`,
+  `PYTHON_BRIDGE_TIMEOUT`, `PYTHON_BRIDGE_LONG_TIMEOUT`,
+  `PYTHON_BRIDGE_KILL_GRACE`. A malformed value falls back to its default
+  rather than disabling the timeout. See
+  [docs/RETRY_CONFIGURATION.md](docs/RETRY_CONFIGURATION.md) for how the Python
+  and Node budgets compose.
 
 ### Fixed
 
+- **`search_multi_source` could hang forever, and leave the Python process
+  behind when it did.** Three defects compounded: the vendored
+  `libgen_api_enhanced` calls `requests.get` with no `timeout=` (and catches a
+  `Timeout` that therefore can never fire), the LibGen adapter ran that through
+  `asyncio.to_thread` — whose worker threads are non-daemon and joined at
+  interpreter shutdown, so an abandoned request kept the whole process alive —
+  and the Node side used `PythonShell.run`, which returns a promise with no
+  deadline and no handle on the child, so a cancelled MCP call could only
+  abandon it. Observed on 2026-08-11 as three `python_bridge.py search…`
+  processes still running, the oldest 9h10m old, belonging to a session that
+  had already exited. Every outbound call in `lib/sources/` is now bounded, and
+  the subprocess tree is killed on timeout, client cancellation, and server
+  shutdown.
+- **Cancelling a tool call now ends the work.** Every tool forwards the MCP
+  request's abort signal down to the subprocess, so a client that gives up
+  stops the Python process rather than leaving it to run out its budget with
+  nobody waiting for the result.
+- **`get_download_limits` reported `"unknown"` instead of real numbers.** It
+  read `downloads_today_limit` / `downloads_today_left` from the EAPI profile;
+  the endpoint sends `downloads_limit` / `downloads_today`. The unit test
+  passed throughout because its fixture had been written to match the code
+  rather than the service. The response now also carries `downloads_today`.
 - `SourceRouter` honours an explicit `source="annas"` and Anna's search extracts full
   metadata — authors, publisher, year, language, format, size, and upstream provenance —
   parsed by pattern rather than position, since year is absent from roughly 9% of
@@ -53,6 +103,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Dependency bumps: `@modelcontextprotocol/sdk` 1.25.3 → 1.30.0, `opencv-python-headless`
   4.13 → 5.0, `libgen-api-enhanced` 1.2.4 → 1.3, `cffi` 2.0.0 → 2.1.1, `yarl` 1.22.0 →
   1.24.5, `pytest-benchmark` 5.1.0 → 5.2.3, plus dev-tooling and CI action updates.
+- **An explicit `source` is no longer silently rerouted.** `source="annas"` that
+  fails now raises with the provider and reason named, instead of returning
+  LibGen's results. Fallback remains the behaviour of `source="auto"`, which is
+  what asks for it. This extends the fix in #74 from the empty-result case to
+  the network-failure case — silent rerouting is how a request tagged
+  `source="annas"` came to hang inside LibGen's search.
+- An empty result from `search_multi_source` now means every provider answered
+  and none matched. Previously a network failure with fallback disabled also
+  returned an empty list, making an outage indistinguishable from no results.
+  This holds for partial walks too: one provider answering empty while another
+  is unreachable raises, rather than reporting "no matches" about a provider
+  that was never successfully searched.
+- Client cancellations no longer count toward the Python bridge circuit
+  breaker. Five aborted searches would otherwise open the shared breaker and
+  fail every unrelated tool for `CIRCUIT_BREAKER_TIMEOUT` — turning a user's
+  own impatience into an outage. `CircuitBreaker` gained an `isFailure` option
+  for this.
 
 ## [1.4.0] - 2026-08-10
 

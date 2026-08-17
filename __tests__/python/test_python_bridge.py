@@ -1375,6 +1375,104 @@ class TestDownloadBook:
         assert not owned.exists()
 
     @pytest.mark.asyncio
+    async def test_repeat_acquisition_without_catalog_md5_rejects_same_size_different_content(
+        self, tmp_path, mocker, mock_eapi_download, patch_eapi_client
+    ):
+        """When no catalog MD5 is available, same-size different-content is rejected."""
+        staged = tmp_path / "downloads" / "staged.pdf"
+        final_path = tmp_path / "downloads" / "Author_Title_123.pdf"
+        tmp_path.joinpath("downloads").mkdir(parents=True)
+        staged.write_bytes(b"freshly downloaded content")
+        final_path.write_bytes(b"stale corrupted content!!!")
+        assert staged.stat().st_size == final_path.stat().st_size
+
+        mock_eapi_download.download_file.return_value = str(staged)
+        mocker.patch(
+            "python_bridge.create_unified_filename", return_value="Author_Title_123.pdf"
+        )
+
+        with pytest.raises(FileExistsError) as excinfo:
+            await download_book(
+                book_details={
+                    "id": "123",
+                    "title": "Title",
+                    "author": "Author",
+                    "extension": "pdf",
+                    "hash": "hash123",
+                },
+                output_dir=str(tmp_path / "downloads"),
+            )
+
+        assert str(final_path) in str(excinfo.value)
+        assert str(staged) in str(excinfo.value)
+        assert final_path.read_bytes() == b"stale corrupted content!!!"
+        assert not staged.exists()
+
+    @pytest.mark.asyncio
+    async def test_repeat_acquisition_without_catalog_md5_reuses_matching_content(
+        self, tmp_path, mocker, mock_eapi_download, patch_eapi_client
+    ):
+        """When no catalog MD5 is available, identical content is reused."""
+        staged = tmp_path / "downloads" / "staged.pdf"
+        final_path = tmp_path / "downloads" / "Author_Title_123.pdf"
+        tmp_path.joinpath("downloads").mkdir(parents=True)
+        content = b"%PDF-1.7 identical content"
+        staged.write_bytes(content)
+        final_path.write_bytes(content)
+
+        mock_eapi_download.download_file.return_value = str(staged)
+        mocker.patch(
+            "python_bridge.create_unified_filename", return_value="Author_Title_123.pdf"
+        )
+
+        result = await download_book(
+            book_details={
+                "id": "123",
+                "title": "Title",
+                "author": "Author",
+                "extension": "pdf",
+                "hash": "hash123",
+            },
+            output_dir=str(tmp_path / "downloads"),
+        )
+
+        assert result["file_path"] == str(final_path)
+        assert final_path.read_bytes() == content
+        assert not staged.exists()
+
+    @pytest.mark.asyncio
+    async def test_download_book_when_download_path_equals_unified_filename(
+        self, tmp_path, mocker, mock_eapi_download, patch_eapi_client
+    ):
+        """When EAPI saves directly to the unified filename, artifact is not unlinked."""
+        output_dir = tmp_path / "downloads"
+        output_dir.mkdir(parents=True)
+        filename = "Author_Title_123.pdf"
+        file_path = output_dir / filename
+        content = b"%PDF-1.7 eapi direct body"
+        file_path.write_bytes(content)
+
+        mock_eapi_download.download_file.return_value = str(file_path)
+        mocker.patch(
+            "python_bridge.create_unified_filename", return_value=filename
+        )
+
+        result = await download_book(
+            book_details={
+                "id": "123",
+                "title": "Title",
+                "author": "Author",
+                "extension": "pdf",
+                "hash": "hash123",
+            },
+            output_dir=str(output_dir),
+        )
+
+        assert result["file_path"] == str(file_path)
+        assert file_path.exists()
+        assert file_path.read_bytes() == content
+
+    @pytest.mark.asyncio
     async def test_transfer_digest_survives_fips_enforcing_builds(
         self, tmp_path, mocker
     ):

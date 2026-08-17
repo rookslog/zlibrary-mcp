@@ -459,11 +459,12 @@ class AnnasArchiveAdapter(SourceAdapter):
                     "account_fast_download_info must be an object",
                     reason="protocol_error",
                 )
-            quota_info = QuotaInfo(
-                downloads_left=account_info.get("downloads_left", 0),
-                downloads_per_day=account_info.get("downloads_per_day", 0),
-                downloads_done_today=account_info.get("downloads_done_today", 0),
-            )
+            if "downloads_left" in account_info and account_info["downloads_left"] is not None:
+                quota_info = QuotaInfo(
+                    downloads_left=account_info["downloads_left"],
+                    downloads_per_day=account_info.get("downloads_per_day", 0),
+                    downloads_done_today=account_info.get("downloads_done_today", 0),
+                )
 
         return DownloadResult(
             url=download_url,

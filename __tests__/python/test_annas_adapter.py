@@ -14,7 +14,7 @@ import pytest
 from bs4 import BeautifulSoup
 from unittest.mock import AsyncMock, MagicMock, patch
 
-from lib.sources.models import SourceType
+from lib.sources.models import QuotaInfo, SourceType
 from lib.sources.errors import ProviderConfigurationError, ProviderResponseError
 
 pytestmark = pytest.mark.unit
@@ -457,6 +457,56 @@ class TestAnnasArchiveFastDownload:
         assert exc_info.value.provider == "annas"
         assert exc_info.value.host == "annas-archive.gl"
         assert exc_info.value.reason == "protocol_error"
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        "account_info,expected_quota",
+        [
+            ({}, None),
+            ({"downloads_done_today": 2}, None),
+            ({"downloads_per_day": 25, "downloads_done_today": 2}, None),
+            (
+                {"downloads_left": 5, "downloads_per_day": 25, "downloads_done_today": 20},
+                QuotaInfo(downloads_left=5, downloads_per_day=25, downloads_done_today=20),
+            ),
+            (
+                {"downloads_left": 0, "downloads_per_day": 25, "downloads_done_today": 25},
+                QuotaInfo(downloads_left=0, downloads_per_day=25, downloads_done_today=25),
+            ),
+        ],
+        ids=["empty_dict", "partial_done_today", "partial_per_day_and_done", "full_quota_positive", "full_quota_zero"],
+    )
+    async def test_get_download_url_handles_empty_or_partial_quota_info(
+        self, account_info, expected_quota
+    ):
+        """Empty or partial quota info with valid download_url should not default to 0."""
+        from lib.sources.annas import AnnasArchiveAdapter
+        from lib.sources.config import SourceConfig
+        from lib.sources.models import QuotaInfo, SourceType
+
+        adapter = AnnasArchiveAdapter(
+            SourceConfig(
+                annas_secret_key="test-secret-key",
+                annas_base_url="https://annas-archive.gl",
+            )
+        )
+        mock_response = MagicMock()
+        mock_response.json.return_value = {
+            "download_url": "https://partner.example/book.pdf",
+            "account_fast_download_info": account_info,
+        }
+        mock_response.raise_for_status = MagicMock()
+
+        with patch.object(adapter, "_get_client") as mock_get_client:
+            mock_client = AsyncMock()
+            mock_client.get.return_value = mock_response
+            mock_get_client.return_value = mock_client
+
+            result = await adapter.get_download_url("abc123def456")
+
+        assert result.url == "https://partner.example/book.pdf"
+        assert result.source == SourceType.ANNAS_ARCHIVE
+        assert result.quota_info == expected_quota
 
 
 class TestAnnasArchiveAdapterInterface:

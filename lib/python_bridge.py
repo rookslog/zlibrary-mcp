@@ -870,7 +870,7 @@ def _artifacts_match(source: Path, destination: Path, expected_md5: str) -> bool
         return False
     if expected_md5:
         return _file_md5(destination) == expected_md5
-    return True
+    return _file_md5(source) == _file_md5(destination)
 
 
 def _publish_or_reuse(source: Path, destination: Path, expected_md5: str = "") -> bool:
@@ -882,6 +882,8 @@ def _publish_or_reuse(source: Path, destination: Path, expected_md5: str = "") -
     not match is still never replaced. The staged file is consumed on every
     path so no orphan temp survives the call.
     """
+    if source.resolve() == destination.resolve():
+        return False
     try:
         _publish_no_replace(source, destination)
         return False

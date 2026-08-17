@@ -154,13 +154,13 @@ class TestLibgenSearchIsBounded:
             if host == "libgen.li":
                 raise ProviderUnreachableError(provider, host, reason="connect_timeout")
 
-        book = MagicMock(md5="abc", title="Phenomenology", author="Hegel")
+        book = MagicMock(md5="a" * 32, title="Phenomenology", author="Hegel")
 
         with (
             patch("lib.sources.libgen.probe_host", side_effect=_first_mirror_dead),
             patch("lib.sources.libgen.LibgenSearch") as mock_search_class,
         ):
-            mock_search_class.return_value.search_title.return_value = [book]
+            mock_search_class.return_value.search_default.return_value = [book]
             results = await adapter.search("hegel")
 
         assert len(results) == 1
@@ -179,7 +179,7 @@ class TestLibgenSearchIsBounded:
             patch("lib.sources.libgen.probe_host", new=AsyncMock(return_value=None)),
             patch("lib.sources.libgen.LibgenSearch") as mock_search_class,
         ):
-            mock_search_class.return_value.search_title.side_effect = _hang
+            mock_search_class.return_value.search_default.side_effect = _hang
 
             began = time.monotonic()
             with pytest.raises(AllSourcesFailedError) as excinfo:
@@ -198,7 +198,7 @@ class TestLibgenSearchIsBounded:
             patch("lib.sources.libgen.probe_host", new=AsyncMock(return_value=None)),
             patch("lib.sources.libgen.LibgenSearch") as mock_search_class,
         ):
-            mock_search_class.return_value.search_title.return_value = []
+            mock_search_class.return_value.search_default.return_value = []
             assert await adapter.search("nothing matches this") == []
 
 

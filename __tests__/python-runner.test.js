@@ -885,13 +885,15 @@ describe('python-runner Linux procfs liveness', () => {
     ).toBe(false);
   });
 
-  test('does not let an unrelated denied stat pin a readable zombie-only group', async () => {
+  test('keeps ownership when a denied stat accompanies a readable zombie member', async () => {
     const mod = await import('../lib/python-runner.js');
     const denied = Object.assign(new Error('EACCES: permission denied, open stat'), {
       code: 'EACCES',
     });
-
-    expect(
+    // The denied entry may be a still-running descendant of this very group
+    // that changed credentials; a readable zombie sibling says nothing about
+    // it, so the group must stay owned and reachable by the SIGKILL path.
+    const scan = (options) =>
       mod.linuxProcessGroupPossiblyAlive(
         processGroup,
         () => ['99', '100'],
@@ -899,8 +901,14 @@ describe('python-runner Linux procfs liveness', () => {
           if (entry === '99') throw denied;
           return procStat(100, 'Z');
         },
-      ),
-    ).toBe(false);
+        options,
+      );
+
+    expect(scan()).toBe(true);
+    expect(scan({ killDelivered: false })).toBe(true);
+    // Bound: once SIGKILL has gone to the whole group, holding the record can
+    // no longer kill anything and would block shutdown forever.
+    expect(scan({ killDelivered: true })).toBe(false);
   });
 
   test('ignores a proc entry that exits during an otherwise readable zombie-only scan', async () => {

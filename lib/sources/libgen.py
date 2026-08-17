@@ -52,6 +52,49 @@ PROVIDER = "libgen"
 USER_AGENT = "zlibrary-mcp (+https://github.com/rookslog/zlibrary-mcp)"
 
 
+# Used only when the configuration cannot be read at all. Any real config
+# supplies its own budgets; this exists so a broken environment still gets a
+# finite timeout rather than none (the failure the shim default prevents).
+SHIM_FALLBACK_TIMEOUT = 30.0
+
+
+def _shim_default_timeout():
+    """Default `requests` timeout for library calls that omit one.
+
+    Derived from the same `SourceConfig` the adapter uses, so raising
+    `BOOK_SOURCE_READ_TIMEOUT` / `BOOK_SOURCE_TOTAL_TIMEOUT` for a slow
+    network actually reaches the LibGen search path — a hard-coded 30s
+    silently capped it and defeated supported tuning (Codex on #133).
+
+    Shaped like `net.build_timeout`: a (connect, read) pair with the same two
+    config fields behind it. Both are clamped to `total_timeout`, because the
+    call runs under `run_bounded(..., config.total_timeout)` — a per-request
+    budget above the wall-clock budget could never be reached and would only
+    misreport which deadline fired.
+
+    Returns:
+        (connect, read) seconds, or SHIM_FALLBACK_TIMEOUT if config is unreadable
+    """
+    try:
+        # Imported at call time, not module scope: the value must follow
+        # environment changes (get_source_config is deliberately uncached).
+        from .config import get_source_config  # noqa: PLC0415
+
+        config = get_source_config()
+        total = float(config.total_timeout)
+        return (
+            min(float(config.connect_timeout), total),
+            min(float(config.read_timeout), total),
+        )
+    except Exception:  # noqa: BLE001 - a config fault must not remove the bound
+        logger.warning(
+            "LibGen shim could not read the source config; "
+            "falling back to a %.0fs request timeout",
+            SHIM_FALLBACK_TIMEOUT,
+        )
+        return SHIM_FALLBACK_TIMEOUT
+
+
 class _RequestsWithUA:
     """Stand-in for the `requests` module inside libgen-api-enhanced.
 
@@ -90,7 +133,7 @@ class _RequestsWithUA:
         # libgen-api-enhanced omits the timeout on some calls; a mirror that
         # accepts the connection and never responds would otherwise hold the
         # search thread past every outer budget (Codex on #128).
-        kwargs.setdefault("timeout", 30)
+        kwargs.setdefault("timeout", _shim_default_timeout())
         response = requests.get(url, headers=headers, **kwargs)
         self.last_response = response
         return response

@@ -682,7 +682,7 @@ class TestShimDefaultTimeout:
     mirror that accepts and never responds must not hold the search thread
     forever (Codex on #128)."""
 
-    def test_default_timeout_applied(self, monkeypatch):
+    def _capture(self, monkeypatch):
         from lib.sources import libgen as libgen_mod
 
         captured = {}
@@ -692,8 +692,47 @@ class TestShimDefaultTimeout:
             return MagicMock(status_code=200, text='<table id="tablelibgen"></table>')
 
         monkeypatch.setattr(libgen_mod.requests, "get", fake_get)
+        return libgen_mod, captured
+
+    def test_default_timeout_applied(self, monkeypatch):
+        libgen_mod, captured = self._capture(monkeypatch)
         libgen_mod._search_requests.get("https://libgen.li/index.php")
-        assert captured["timeout"] == 30
+        # (connect, read) from the defaults in lib/sources/config.py
+        assert captured["timeout"] == (10.0, 30.0)
+
+    def test_configured_timeout_respected(self, monkeypatch):
+        """An operator who raises the read budget must actually get it: the
+        hard-coded 30s defeated BOOK_SOURCE_READ_TIMEOUT tuning (Codex #133)."""
+        monkeypatch.setenv("BOOK_SOURCE_CONNECT_TIMEOUT", "20")
+        monkeypatch.setenv("BOOK_SOURCE_READ_TIMEOUT", "120")
+        monkeypatch.setenv("BOOK_SOURCE_TOTAL_TIMEOUT", "200")
+        libgen_mod, captured = self._capture(monkeypatch)
+        libgen_mod._search_requests.get("https://libgen.li/index.php")
+        assert captured["timeout"] == (20.0, 120.0)
+
+    def test_default_never_exceeds_total_budget(self, monkeypatch):
+        """The call runs under run_bounded(config.total_timeout); a per-request
+        budget above that could never be reached."""
+        monkeypatch.setenv("BOOK_SOURCE_READ_TIMEOUT", "300")
+        monkeypatch.setenv("BOOK_SOURCE_CONNECT_TIMEOUT", "300")
+        monkeypatch.setenv("BOOK_SOURCE_TOTAL_TIMEOUT", "12")
+        libgen_mod, captured = self._capture(monkeypatch)
+        libgen_mod._search_requests.get("https://libgen.li/index.php")
+        assert captured["timeout"] == (12.0, 12.0)
+
+    def test_unreadable_config_still_bounds_the_call(self, monkeypatch):
+        """A config fault must degrade to a finite timeout, never to none."""
+        from lib.sources import config as config_mod
+
+        libgen_mod, captured = self._capture(monkeypatch)
+
+        def boom():
+            raise RuntimeError("config unreadable")
+
+        monkeypatch.setattr(config_mod, "get_source_config", boom)
+        libgen_mod._search_requests.get("https://libgen.li/index.php")
+        assert captured["timeout"] == libgen_mod.SHIM_FALLBACK_TIMEOUT
+        assert captured["timeout"] == 30.0
 
     def test_caller_timeout_preserved(self, monkeypatch):
         from lib.sources import libgen as libgen_mod

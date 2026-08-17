@@ -38,6 +38,7 @@ from bs4 import BeautifulSoup
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "zlibrary" / "src"))
 from lib.sources.config import get_source_config  # noqa: E402
+from lib.sources.libgen import FALLBACK_MIRRORS as LIBGEN_FALLBACK_MIRRORS  # noqa: E402
 from lib.sources.libgen import USER_AGENT as LIBGEN_PRODUCTION_UA  # noqa: E402
 from zlibrary.eapi import DEFAULT_EAPI_DOMAINS, WALLED_STATUS_CODES  # noqa: E402
 
@@ -277,6 +278,49 @@ async def probe_annas(client: httpx.AsyncClient) -> ProbeResult:
         )
 
 
+# Headroom over the adapter's own worst case. The canary's deadline exists to
+# catch a hang the adapter failed to bound, so it must sit ABOVE every budget
+# the adapter is entitled to spend — otherwise a slow-but-legitimate failover
+# walk is cancelled and reported as LibGen drift (Codex on #133).
+LIBGEN_PROBE_MARGIN = 30.0
+
+# What the downloader actually needs: ads.php?md5= resolves nothing else. A
+# column-shifted row can put an ISBN or a citation in this field, and a
+# truthiness check would call that healthy (Codex on #133; the #132 shape).
+MD5_PATTERN = re.compile(r"[0-9a-fA-F]{32}")
+
+
+def libgen_probe_timeout(config, min_request_interval: float = 0.0) -> float:
+    """Wall clock the production adapter may legitimately spend on one search.
+
+    `LibgenAdapter.search` walks every mirror candidate, and each attempt can
+    cost a two-phase preflight (DNS, then TCP — the budget is per phase), the
+    rate-limit wait, and the full per-provider total budget. Deriving the
+    deadline from the same config the adapter reads means an operator who
+    raises `BOOK_SOURCE_TOTAL_TIMEOUT` does not thereby make the canary
+    cancel searches production would complete.
+
+    Args:
+        config: SourceConfig the adapter will be constructed with
+        min_request_interval: LibgenAdapter.MIN_REQUEST_INTERVAL, per attempt
+
+    Returns:
+        Seconds, worst-case mirror walk plus LIBGEN_PROBE_MARGIN
+    """
+    mirrors = len({config.libgen_mirror, *LIBGEN_FALLBACK_MIRRORS})
+    per_mirror = float(config.total_timeout) + float(min_request_interval)
+    if config.preflight_enabled:
+        per_mirror += 2 * float(config.preflight_timeout)
+    return mirrors * per_mirror + LIBGEN_PROBE_MARGIN
+
+
+def _usable_row(result) -> bool:
+    """Whether a parsed row is one the downloader could actually act on."""
+    return bool((result.title or "").strip()) and bool(
+        MD5_PATTERN.fullmatch(result.md5 or "")
+    )
+
+
 async def probe_libgen(client: httpx.AsyncClient) -> ProbeResult:
     """LibGen is the router's fallback source; mirrors rotate frequently.
 
@@ -294,8 +338,17 @@ async def probe_libgen(client: httpx.AsyncClient) -> ProbeResult:
     from lib.sources.libgen import LibgenAdapter  # noqa: PLC0415
 
     canary = "Pride and Prejudice"
+    config = get_source_config()
     try:
-        results = await LibgenAdapter(get_source_config()).search(canary)
+        # #106's budgets bound the adapter internally, but the canary carries
+        # its own deadline too: a canary that can hang has the exact defect
+        # it exists to detect (Codex on #128). The deadline is computed from
+        # the adapter's own configured mirror-walk budget rather than fixed at
+        # 90s, which was below the ~165s default worst case (Codex on #133).
+        results = await asyncio.wait_for(
+            LibgenAdapter(config).search(canary),
+            timeout=libgen_probe_timeout(config, LibgenAdapter.MIN_REQUEST_INTERVAL),
+        )
     except Exception as exc:  # noqa: BLE001
         return ProbeResult(
             name="libgen:search",
@@ -303,13 +356,31 @@ async def probe_libgen(client: httpx.AsyncClient) -> ProbeResult:
             detail=f"adapter search failed: {type(exc).__name__}: {exc}",
             required=False,
         )
-    if results:
+    # A nonempty list of unusable rows is a parser regression, not a pass:
+    # the adapter maps missing fields to empty strings, and a result without
+    # a resolvable md5 can never be downloaded (Codex on #128; the article-row
+    # column-shift in #132 is exactly this shape). Shape, not truthiness — a
+    # shifted column can carry an ISBN or a citation here and still be truthy.
+    usable = [r for r in results if _usable_row(r)]
+    if usable:
         return ProbeResult(
             name="libgen:search",
             ok=True,
             detail=(
-                f"{len(results)} result(s) parsed by the production adapter "
+                f"{len(usable)} usable result(s) (32-hex md5 + title) of "
+                f"{len(results)} parsed by the production adapter "
                 f"for canary {canary!r}"
+            ),
+            required=False,
+        )
+    if results:
+        return ProbeResult(
+            name="libgen:search",
+            ok=False,
+            detail=(
+                f"{len(results)} parsed result(s) but NONE usable "
+                f"(a 32-hex md5 and a nonblank title) for canary "
+                f"{canary!r} — row-markup drift"
             ),
             required=False,
         )

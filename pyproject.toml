@@ -27,7 +27,7 @@ dependencies = [
     "httpx>=0.28.0", # HTTP client (used in booklists, advanced_search)
     "aiofiles>=24.1.0", # Async file operations
     # HTML parsing
-    "beautifulsoup4>=4.14.0", # HTML parsing
+    "beautifulsoup4>=4.15.0", # HTML parsing
     "lxml>=6.0.0", # XML/HTML parser (bs4 backend)
     # NLP for footnote detection
     "nltk>=3.8.1", # Sentence boundary detection

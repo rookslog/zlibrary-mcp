@@ -24,7 +24,7 @@ jobs:
           # reason (surfaced by pytest -rs). Restore to true if the budget
           # is ever restored. See #85.
           lfs: false
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v7
         with:
           node-version: '22'
       - uses: astral-sh/setup-uv@v7
@@ -48,7 +48,7 @@ jobs:
           # reason (surfaced by pytest -rs). Restore to true if the budget
           # is ever restored. See #85.
           lfs: false
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v7
         with:
           node-version: '22'
       - uses: astral-sh/setup-uv@v7
@@ -62,7 +62,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v7
         with:
           node-version: '22'
       - uses: astral-sh/setup-uv@v7

@@ -70,7 +70,7 @@ dev = [
     "jsonschema>=4.26.0",
     "pytest-cov>=7.0.0",
     "pip-audit>=2.7.0",
-    "pip>=26.1.2",  # PYSEC-2026-196, PYSEC-2026-2875, PYSEC-2026-2876 (pulled in by pip-audit)
+    "pip>=26.2.1",  # PYSEC-2026-196, PYSEC-2026-2875, PYSEC-2026-2876 (pulled in by pip-audit)
 ]
 
 [project.urls]

@@ -2,7 +2,7 @@
 
 **Date:** 2026-02-01
 
-**Status:** Accepted
+**Status:** Accepted — decision 4 (downloads) superseded by ADR-011
 
 ## Context
 
@@ -17,7 +17,7 @@ Migrate all API calls from HTML scraping to EAPI JSON endpoints:
 1. **Search operations**: Use `/eapi/book/search` instead of HTML search pages
 2. **Book metadata**: Use `/eapi/book/{id}/{hash}` instead of scraping book detail pages
 3. **Recent books**: Use EAPI recent endpoint instead of HTML browse pages
-4. **Downloads**: Keep legacy AsyncZlib client for file downloads (EAPI returns download URL, but actual file download requires cookies from the legacy client)
+4. ~~**Downloads**: Keep legacy AsyncZlib client for file downloads (EAPI returns download URL, but actual file download requires cookies from the legacy client)~~ — **superseded by ADR-011.** The implementation diverged from this clause: `EAPIClient` grew its own `download_file` and the live Z-Library transfer runs through it. ADR-011 records that as the decision it had become.
 
 Implement an `EAPIClient` class in the vendored zlibrary fork (`zlibrary/eapi.py`) that:
 - Uses httpx with lazy initialization and cookie-based auth
@@ -36,8 +36,8 @@ Implement an `EAPIClient` class in the vendored zlibrary fork (`zlibrary/eapi.py
 - **Booklists gracefully degrade**: EAPI has no booklist endpoint; tools return empty/search fallback
 - **Full-text search limited**: No dedicated full-text search mode in EAPI; routes through regular search
 - **Terms/IPFS CIDs unavailable**: EAPI does not expose these fields; return empty defaults
-- **Downloads still use legacy client**: EAPI returns URL but file download needs AsyncZlib with session cookies
+- ~~**Downloads still use legacy client**: EAPI returns URL but file download needs AsyncZlib with session cookies~~ — no longer holds; see ADR-011.
 
 ### Neutral
-- **Dual client architecture**: EAPIClient for queries, AsyncZlib for downloads (acceptable complexity)
+- ~~**Dual client architecture**: EAPIClient for queries, AsyncZlib for downloads (acceptable complexity)~~ — the split closed; see ADR-011.
 - **EAPI client initialized in main()**: Avoids import side effects, requires passing client to tool functions

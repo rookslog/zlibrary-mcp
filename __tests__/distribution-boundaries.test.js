@@ -107,6 +107,31 @@ describe('distribution boundaries', () => {
     );
   });
 
+  test('runtime recovery instructions keep the core tier', () => {
+    // Codex on #114: these two messages are the most likely path an npm user
+    // takes when the server cannot start, and a bare `uv sync` there installs
+    // the whole development group — defeating the boundary this PR builds, at
+    // the exact moment the user is following instructions rather than choosing.
+    const venvManager = readFileSync(
+      path.join(projectRoot, 'src', 'lib', 'venv-manager.ts'),
+      'utf8',
+    );
+
+    expect(venvManager).toContain('bash setup-uv.sh --no-dev');
+    expect(venvManager).toContain('uv sync --no-dev');
+
+    // Scoped to the two thrown messages, not to the file. A doc comment may
+    // legitimately mention bare `uv sync` as the contributor variant; what must
+    // not survive is an *instruction* that installs the dev group.
+    const thrownLines = venvManager
+      .split('\n')
+      .filter((line) => /^\s*[`'].{0,8}uv sync/.test(line));
+    expect(thrownLines.length).toBeGreaterThan(0);
+    for (const line of thrownLines) {
+      expect(line).toMatch(/uv sync --no-dev/);
+    }
+  });
+
   test('end-user guides keep development tools out of core setup', () => {
     const systemWide = readFileSync(
       path.join(projectRoot, 'docs', 'installation', 'system-wide-setup.md'),

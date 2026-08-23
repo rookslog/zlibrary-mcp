@@ -1,6 +1,7 @@
 # Tests for lib/python_bridge.py (EAPI-based)
 
 import json
+import dataclasses
 import hashlib
 import pytest
 import os
@@ -1453,9 +1454,7 @@ class TestDownloadBook:
         file_path.write_bytes(content)
 
         mock_eapi_download.download_file.return_value = str(file_path)
-        mocker.patch(
-            "python_bridge.create_unified_filename", return_value=filename
-        )
+        mocker.patch("python_bridge.create_unified_filename", return_value=filename)
 
         result = await download_book(
             book_details={
@@ -2520,3 +2519,203 @@ class TestLibgenDownloadNeedsNoZlibraryLogin:
         from pathlib import Path as _P
 
         assert _P(result["file_path"]).exists()
+
+
+class TestDownloadHonoursTheLibgenUserAgentOverride:
+    """The file transfer must send the configured UA, not the compiled default.
+
+    Codex on #146: search and key resolution honoured `LIBGEN_USER_AGENT`
+    while this function imported the module-level constant, so an operator who
+    set the override to escape a widened blocklist would see search recover and
+    downloads keep failing — with the config appearing to have addressed it.
+    LibGen serves blocked UAs an HTML stub at HTTP 200, which the guard here
+    then misreads as an expired key, so the symptom points away from the cause.
+    """
+
+    @pytest.mark.asyncio
+    async def test_configured_user_agent_reaches_the_transfer(
+        self, tmp_path, mocker, monkeypatch
+    ):
+        import httpx
+
+        from lib import python_bridge
+
+        body = b"%PDF-1.6" + b"\x00" * 2040
+        digest = hashlib.md5(body).hexdigest()
+        monkeypatch.setenv("LIBGEN_USER_AGENT", "operator-chosen/2.0")
+
+        seen = {}
+
+        class Response:
+            url = httpx.URL("https://mirror.example/get")
+            headers = {}
+
+            def raise_for_status(self):
+                pass
+
+            async def aiter_bytes(self, _chunk_size):
+                yield body
+
+        class Stream:
+            async def __aenter__(self):
+                return Response()
+
+            async def __aexit__(self, *_args):
+                return False
+
+        class Client:
+            def __init__(self, **kwargs):
+                seen["headers"] = kwargs.get("headers") or {}
+
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, *_args):
+                return False
+
+            def stream(self, *_args):
+                return Stream()
+
+        mocker.patch("httpx.AsyncClient", Client)
+
+        await python_bridge._download_url_to_file(
+            "https://mirror.example/get", str(tmp_path), digest, "libgen"
+        )
+
+        assert seen["headers"].get("User-Agent") == "operator-chosen/2.0", (
+            "the transfer must use the operator's override; sending the "
+            "compiled-in default here is the failure #146 caught"
+        )
+
+    @pytest.mark.asyncio
+    async def test_caller_supplied_config_wins_over_the_ambient_one(
+        self, tmp_path, mocker, monkeypatch
+    ):
+        """A router built with an injected config must not be second-guessed.
+
+        Codex round 2 on #146: the caller resolves a router (which carries its
+        own `config`, possibly injected or cached) and this function then
+        called `get_source_config()` again. Two config objects, one of which
+        moves the file — the same split the UA fix was meant to close.
+        """
+        import httpx
+
+        from lib import python_bridge
+        from lib.sources.config import get_source_config
+
+        body = b"%PDF-1.6" + b"\x00" * 2040
+        digest = hashlib.md5(body).hexdigest()
+        monkeypatch.setenv("LIBGEN_USER_AGENT", "ambient-should-lose/1.0")
+
+        injected = dataclasses.replace(
+            get_source_config(), libgen_user_agent="injected-should-win/3.0"
+        )
+        seen = {}
+
+        class Response:
+            url = httpx.URL("https://mirror.example/get")
+            headers = {}
+
+            def raise_for_status(self):
+                pass
+
+            async def aiter_bytes(self, _chunk_size):
+                yield body
+
+        class Stream:
+            async def __aenter__(self):
+                return Response()
+
+            async def __aexit__(self, *_args):
+                return False
+
+        class Client:
+            def __init__(self, **kwargs):
+                seen["headers"] = kwargs.get("headers") or {}
+
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, *_args):
+                return False
+
+            def stream(self, *_args):
+                return Stream()
+
+        mocker.patch("httpx.AsyncClient", Client)
+
+        await python_bridge._download_url_to_file(
+            "https://mirror.example/get",
+            str(tmp_path),
+            digest,
+            "libgen",
+            config=injected,
+        )
+
+        assert seen["headers"].get("User-Agent") == "injected-should-win/3.0"
+
+    @pytest.mark.asyncio
+    async def test_the_libgen_override_does_not_leak_to_other_providers(
+        self, tmp_path, mocker, monkeypatch
+    ):
+        """`LIBGEN_USER_AGENT` is scoped to LibGen, and this function is not.
+
+        Codex round 3 on #146: an operator sets this variable to satisfy one
+        provider's blocklist. Sending that string to Anna's host changes an
+        unrelated transfer's behaviour and hands a custom identifying value to
+        a provider that never asked for it — and `auto` routing means the
+        operator does not choose which host receives it.
+        """
+        import httpx
+
+        from lib import python_bridge
+        from lib.sources.config import DEFAULT_BROWSER_USER_AGENT
+
+        body = b"%PDF-1.6" + b"\x00" * 2040
+        digest = hashlib.md5(body).hexdigest()
+        monkeypatch.setenv("LIBGEN_USER_AGENT", "libgen-only/4.0")
+
+        seen = {}
+
+        class Response:
+            url = httpx.URL("https://annas.example/get")
+            headers = {}
+
+            def raise_for_status(self):
+                pass
+
+            async def aiter_bytes(self, _chunk_size):
+                yield body
+
+        class Stream:
+            async def __aenter__(self):
+                return Response()
+
+            async def __aexit__(self, *_args):
+                return False
+
+        class Client:
+            def __init__(self, **kwargs):
+                seen["headers"] = kwargs.get("headers") or {}
+
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, *_args):
+                return False
+
+            def stream(self, *_args):
+                return Stream()
+
+        mocker.patch("httpx.AsyncClient", Client)
+
+        await python_bridge._download_url_to_file(
+            "https://annas.example/get", str(tmp_path), digest, "annas"
+        )
+
+        sent = seen["headers"].get("User-Agent")
+        assert sent == DEFAULT_BROWSER_USER_AGENT
+        assert sent != "libgen-only/4.0", (
+            "a LibGen-scoped override reaching Anna's is both a behaviour "
+            "change on an unrelated transfer and an identifier leak"
+        )

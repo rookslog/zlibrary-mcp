@@ -6,6 +6,7 @@ import hashlib
 import re
 import tempfile
 import traceback
+from typing import Optional
 from email.message import Message
 from urllib.parse import unquote, urlsplit
 
@@ -28,7 +29,7 @@ from lib import enhanced_metadata
 
 # Import multi-source router
 from lib.sources.router import SourceRouter
-from lib.sources.config import get_source_config
+from lib.sources.config import SourceConfig, get_source_config
 from lib.sources.errors import (
     AllSourcesFailedError,
     ProviderResponseError,
@@ -908,6 +909,7 @@ async def _download_url_to_file(
     *,
     enforce_timeout: bool = True,
     host_observer=None,
+    config: Optional[SourceConfig] = None,
 ) -> str:
     """Stream a resolved source URL to disk and return the raw path.
 
@@ -921,7 +923,8 @@ async def _download_url_to_file(
     """
     import httpx
 
-    from lib.sources.libgen import USER_AGENT
+    from lib.sources.config import DEFAULT_BROWSER_USER_AGENT
+    from lib.sources.libgen import get_user_agent
 
     expected_md5 = md5.strip().lower()
     if not _MD5_RE.fullmatch(expected_md5):
@@ -935,22 +938,43 @@ async def _download_url_to_file(
     os.close(descriptor)
     attempt_path = Path(attempt_name)
 
+    # LIBGEN_USER_AGENT is scoped to LibGen. This function is source-agnostic,
+    # so sending an operator's LibGen-specific string to Anna's host would both
+    # change an unrelated transfer's behaviour and hand a custom identifying
+    # string to a provider that never asked for it (Codex on #146). Other
+    # sources get the neutral browser default, which is what they sent before
+    # the override existed.
+    user_agent = (
+        get_user_agent(config)
+        if str(provider).lower() == "libgen"
+        else DEFAULT_BROWSER_USER_AGENT
+    )
+
     original_host = (urlsplit(url).hostname or "").lower()
     active_host = original_host
-    config = get_source_config()
+    # The caller's config wins when it has one. A router built with an
+    # injected or cached config would otherwise resolve its UA and timeouts
+    # from one object and move the file with another (Codex on #146).
+    config = config or get_source_config()
 
     async def stream_to_disk() -> tuple[int, str]:
         nonlocal active_host
         try:
-            # The identifying UA is load-bearing: libgen's hosts serve an HTML
+            # The admitted UA is load-bearing: libgen's hosts serve an HTML
             # stub to blocklisted tool UAs including python-httpx's default
             # (#124), which the HTML guard below then misreads as an expired
             # key — the adapter verifies the URL with the right UA and the
             # transfer dies here with the wrong one.
+            #
+            # Resolved from `config`, not the module constant: an operator who
+            # sets LIBGEN_USER_AGENT because the default went onto the
+            # blocklist would otherwise have search and key resolution honour
+            # the override while this transfer — the one request that moves the
+            # file — kept sending the blocked default (Codex on #146).
             async with httpx.AsyncClient(
                 timeout=build_timeout(config),
                 follow_redirects=True,
-                headers={"User-Agent": USER_AGENT},
+                headers={"User-Agent": user_agent},
             ) as client:
                 async with client.stream("GET", url) as response:
                     response_url = getattr(response, "url", None)
@@ -1090,7 +1114,7 @@ async def _fetch_from_source(book_details: dict, output_dir: str) -> str:
     if not _MD5_RE.fullmatch(md5):
         raise ValueError("Source downloads require a normalized 32-hex MD5")
 
-    config = get_source_config()
+    config = getattr(router, "config", None) or get_source_config()
     active_host = ""
     failures = []
     seen_failure_ids = set()
@@ -1119,6 +1143,7 @@ async def _fetch_from_source(book_details: dict, output_dir: str) -> str:
                         str(provider),
                         enforce_timeout=False,
                         host_observer=lambda host: _set_active_host(host),
+                        config=config,
                     )
                 except AllSourcesFailedError as exc:
                     for failure in exc.failures:

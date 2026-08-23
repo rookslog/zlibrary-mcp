@@ -1453,9 +1453,7 @@ class TestDownloadBook:
         file_path.write_bytes(content)
 
         mock_eapi_download.download_file.return_value = str(file_path)
-        mocker.patch(
-            "python_bridge.create_unified_filename", return_value=filename
-        )
+        mocker.patch("python_bridge.create_unified_filename", return_value=filename)
 
         result = await download_book(
             book_details={
@@ -2520,3 +2518,70 @@ class TestLibgenDownloadNeedsNoZlibraryLogin:
         from pathlib import Path as _P
 
         assert _P(result["file_path"]).exists()
+
+
+class TestDownloadHonoursTheLibgenUserAgentOverride:
+    """The file transfer must send the configured UA, not the compiled default.
+
+    Codex on #146: search and key resolution honoured `LIBGEN_USER_AGENT`
+    while this function imported the module-level constant, so an operator who
+    set the override to escape a widened blocklist would see search recover and
+    downloads keep failing — with the config appearing to have addressed it.
+    LibGen serves blocked UAs an HTML stub at HTTP 200, which the guard here
+    then misreads as an expired key, so the symptom points away from the cause.
+    """
+
+    @pytest.mark.asyncio
+    async def test_configured_user_agent_reaches_the_transfer(
+        self, tmp_path, mocker, monkeypatch
+    ):
+        import httpx
+
+        from lib import python_bridge
+
+        body = b"%PDF-1.6" + b"\x00" * 2040
+        digest = hashlib.md5(body).hexdigest()
+        monkeypatch.setenv("LIBGEN_USER_AGENT", "operator-chosen/2.0")
+
+        seen = {}
+
+        class Response:
+            url = httpx.URL("https://mirror.example/get")
+            headers = {}
+
+            def raise_for_status(self):
+                pass
+
+            async def aiter_bytes(self, _chunk_size):
+                yield body
+
+        class Stream:
+            async def __aenter__(self):
+                return Response()
+
+            async def __aexit__(self, *_args):
+                return False
+
+        class Client:
+            def __init__(self, **kwargs):
+                seen["headers"] = kwargs.get("headers") or {}
+
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, *_args):
+                return False
+
+            def stream(self, *_args):
+                return Stream()
+
+        mocker.patch("httpx.AsyncClient", Client)
+
+        await python_bridge._download_url_to_file(
+            "https://mirror.example/get", str(tmp_path), digest, "libgen"
+        )
+
+        assert seen["headers"].get("User-Agent") == "operator-chosen/2.0", (
+            "the transfer must use the operator's override; sending the "
+            "compiled-in default here is the failure #146 caught"
+        )

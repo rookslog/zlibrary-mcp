@@ -632,6 +632,18 @@ def render(results: list[ProbeResult]) -> str:
     return "\n".join(lines)
 
 
+def zlibrary_blocked(results: list[ProbeResult]) -> bool:
+    """True when a **Z-Library** probe was walled, ignoring other sources.
+
+    Scoped by the `zlibrary:` name prefix. This value feeds
+    upstream-check.yml's decision to skip filing the Z-Library drift issue, so
+    folding another source's block into it suppresses a genuine Z-Library
+    report for an unrelated reason — and #141 made that reachable, since a
+    LibGen UA block is now classified as `blocked` too (Codex on #146).
+    """
+    return any(r.blocked for r in results if r.name.startswith("zlibrary:"))
+
+
 def emit_github_output(report: str, failed: bool, zlib_blocked: bool = False) -> None:
     path: Optional[str] = os.environ.get("GITHUB_OUTPUT")
     if not path:
@@ -661,7 +673,7 @@ def main() -> int:
 
     results = asyncio.run(run_probes())
     required_failed = bool(actionable_failures(results))
-    zlib_blocked = any(r.blocked for r in results)
+    zlib_blocked = zlibrary_blocked(results)
 
     if args.json:
         print(

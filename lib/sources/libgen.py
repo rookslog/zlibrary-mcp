@@ -60,14 +60,22 @@ PROVIDER = "libgen"
 USER_AGENT = DEFAULT_LIBGEN_USER_AGENT
 
 
-def get_user_agent() -> str:
+def get_user_agent(config: Optional[SourceConfig] = None) -> str:
     """UA for every LibGen request, honouring `LIBGEN_USER_AGENT`.
+
+    Pass `config` wherever the caller holds one — an adapter constructed as
+    `LibgenAdapter(SourceConfig(libgen_user_agent=...))` must send that UA, not
+    re-read the environment behind its caller's back (Codex on #146). Only the
+    module-level search shim, which has no config to hold, falls through to the
+    environment.
 
     Read per request rather than captured at import: `get_source_config` is
     deliberately uncached so the environment can change under a running
     process, and a UA pinned at import would silently ignore the override
     that exists to answer the next blocklist widening.
     """
+    if config is not None:
+        return config.libgen_user_agent or DEFAULT_LIBGEN_USER_AGENT
     try:
         from .config import get_source_config  # noqa: PLC0415
 
@@ -130,12 +138,18 @@ class _RequestsWithUA:
     ``LibgenAdapter.search`` can tell "no matches" from "served a page with no
     results table".
 
-    ``last_response`` is **thread-local**. The search runs under
-    `net.run_bounded`, which abandons its daemon thread when the budget
+    ``last_response`` and ``user_agent`` are **thread-local**. The search runs
+    under `net.run_bounded`, which abandons its daemon thread when the budget
     elapses; an abandoned `requests.get` that completes minutes later would
     otherwise overwrite the slot a *later* mirror attempt is about to read,
     and the adapter would attribute one mirror's stub page to another. Each
     bounded attempt gets its own thread, so each gets its own slot.
+
+    ``user_agent`` rides the same mechanism so an adapter's *own*
+    `SourceConfig` reaches the search path. This shim is a module singleton
+    swapped into third-party code, so it cannot hold a config of its own;
+    `LibgenAdapter.search` sets the slot inside the bounded thread that is
+    about to use it. Unset, it falls back to the environment.
     """
 
     exceptions = requests.exceptions
@@ -151,9 +165,17 @@ class _RequestsWithUA:
     def last_response(self, response: Optional[requests.Response]) -> None:
         self._state.last_response = response
 
+    @property
+    def user_agent(self) -> Optional[str]:
+        return getattr(self._state, "user_agent", None)
+
+    @user_agent.setter
+    def user_agent(self, value: Optional[str]) -> None:
+        self._state.user_agent = value
+
     def get(self, url: str, **kwargs) -> requests.Response:
         headers = kwargs.pop("headers", None) or {}
-        headers.setdefault("User-Agent", get_user_agent())
+        headers.setdefault("User-Agent", self.user_agent or get_user_agent())
         # libgen-api-enhanced omits the timeout on some calls; a mirror that
         # accepts the connection and never responds would otherwise hold the
         # search thread past every outer budget (Codex on #128).
@@ -194,21 +216,29 @@ def _nginx_stub(text: str) -> bool:
     Matched on the title rather than the byte count: the length is incidental
     and the same block on a different vhost may pad differently, while the
     default-page title is the thing that identifies it.
+
+    Scoped to the title element specifically, not a body-wide substring: a
+    real LibGen record whose own title or description contains the phrase
+    would otherwise be classified as a block, and `_resolve_key` would discard
+    a page carrying a perfectly good GET anchor (Codex on #146).
     """
-    return "welcome to nginx" in text.lower()
+    match = re.search(r"<title>([^<]*)</title>", text, re.I)
+    return bool(match and "welcome to nginx" in match.group(1).lower())
 
 
-def _blocked_ua_detail(context: str) -> str:
+def _blocked_ua_detail(context: str, config: Optional[SourceConfig] = None) -> str:
     """Detail text naming the UA a mirror refused, and how to change it."""
     return (
         f"{context} served nginx's default stub for User-Agent "
-        f"{get_user_agent()!r} — this UA is blocklisted, which is NOT an "
+        f"{get_user_agent(config)!r} — this UA is blocklisted, which is NOT an "
         f"outage and NOT an empty catalogue. Set LIBGEN_USER_AGENT to a "
         f"string the mirror admits (#141)."
     )
 
 
-def _unparseable_search_page(page) -> Optional[str]:
+def _unparseable_search_page(
+    page, config: Optional[SourceConfig] = None
+) -> Optional[str]:
     """Detail text when a zero-result page is a parse failure, else None.
 
     A genuinely-empty search still renders the (empty) results table (verified
@@ -243,7 +273,7 @@ def _unparseable_search_page(page) -> Optional[str]:
         # title, status and byte count are what distinguish a stub from a
         # redesign, and dropping them would trade one diagnosis for another.
         return (
-            f"{_blocked_ua_detail('search page')} "
+            f"{_blocked_ua_detail('search page', config)} "
             f"[HTTP {status}, {len(text)} bytes, title {page_title!r}]"
         )
     return (
@@ -334,6 +364,10 @@ class LibgenAdapter(SourceAdapter):
                 # thread-local precisely so an abandoned earlier attempt
                 # cannot supply it.
                 _search_requests.last_response = None
+                # Set on the same thread that is about to issue the request,
+                # so this adapter's configured UA reaches the search path
+                # rather than the shim re-reading the environment.
+                _search_requests.user_agent = get_user_agent(self.config)
                 # search_default covers title+author+series+publisher —
                 # search_title made author-bearing queries return nothing
                 # and got swamped on generic titles (#134).
@@ -355,7 +389,7 @@ class LibgenAdapter(SourceAdapter):
                 continue
 
             if not results:
-                unparseable = _unparseable_search_page(page)
+                unparseable = _unparseable_search_page(page, self.config)
                 if unparseable:
                     failure = ProviderResponseError(
                         PROVIDER, host, unparseable, reason="protocol_error"
@@ -493,7 +527,7 @@ class LibgenAdapter(SourceAdapter):
         response.raise_for_status()
 
         if _nginx_stub(response.text):
-            return None, _blocked_ua_detail("ads.php")
+            return None, _blocked_ua_detail("ads.php", self.config)
 
         soup = BeautifulSoup(response.text, "html.parser")
         for anchor in soup.find_all("a"):
@@ -584,7 +618,7 @@ class LibgenAdapter(SourceAdapter):
         async with httpx.AsyncClient(
             timeout=build_timeout(self.config),
             follow_redirects=True,
-            headers={"User-Agent": get_user_agent()},
+            headers={"User-Agent": get_user_agent(self.config)},
         ) as client:
             for mirror in self._mirror_candidates():
                 try:

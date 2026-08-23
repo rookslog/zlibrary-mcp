@@ -921,7 +921,7 @@ async def _download_url_to_file(
     """
     import httpx
 
-    from lib.sources.libgen import USER_AGENT
+    from lib.sources.libgen import get_user_agent
 
     expected_md5 = md5.strip().lower()
     if not _MD5_RE.fullmatch(expected_md5):
@@ -942,15 +942,21 @@ async def _download_url_to_file(
     async def stream_to_disk() -> tuple[int, str]:
         nonlocal active_host
         try:
-            # The identifying UA is load-bearing: libgen's hosts serve an HTML
+            # The admitted UA is load-bearing: libgen's hosts serve an HTML
             # stub to blocklisted tool UAs including python-httpx's default
             # (#124), which the HTML guard below then misreads as an expired
             # key — the adapter verifies the URL with the right UA and the
             # transfer dies here with the wrong one.
+            #
+            # Resolved from `config`, not the module constant: an operator who
+            # sets LIBGEN_USER_AGENT because the default went onto the
+            # blocklist would otherwise have search and key resolution honour
+            # the override while this transfer — the one request that moves the
+            # file — kept sending the blocked default (Codex on #146).
             async with httpx.AsyncClient(
                 timeout=build_timeout(config),
                 follow_redirects=True,
-                headers={"User-Agent": USER_AGENT},
+                headers={"User-Agent": get_user_agent(config)},
             ) as client:
                 async with client.stream("GET", url) as response:
                     response_url = getattr(response, "url", None)

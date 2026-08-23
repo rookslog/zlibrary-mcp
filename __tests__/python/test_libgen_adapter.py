@@ -1049,8 +1049,24 @@ class TestLibgenBlockedUserAgent:
         assert _unparseable_search_page(page) is None
 
     @pytest.mark.asyncio
-    async def test_ads_php_stub_is_reported_as_a_blocked_ua(self, adapter, monkeypatch):
-        monkeypatch.setenv("LIBGEN_USER_AGENT", "blocked-agent/1.0")
+    async def test_ads_php_stub_is_reported_as_a_blocked_ua(self, monkeypatch):
+        """The detail names the UA the adapter actually sent.
+
+        Supplied through the adapter's own `SourceConfig` rather than the
+        environment: since #146 an adapter honours the config it was
+        constructed with, so a later env change is deliberately NOT what this
+        request used, and naming the env value would misreport the wire.
+        """
+        from lib.sources.libgen import LibgenAdapter
+
+        monkeypatch.setenv("LIBGEN_USER_AGENT", "not-what-this-adapter-uses/1.0")
+        adapter = LibgenAdapter(
+            SourceConfig(
+                libgen_mirror="li",
+                default_source="libgen",
+                libgen_user_agent="blocked-agent/1.0",
+            )
+        )
         client = MagicMock()
         client.get = AsyncMock(
             return_value=MagicMock(text=self.STUB, raise_for_status=MagicMock())
@@ -1058,6 +1074,7 @@ class TestLibgenBlockedUserAgent:
         key, detail = await adapter._resolve_key(client, "li", MD5)
         assert key is None
         assert "blocked-agent/1.0" in detail
+        assert "not-what-this-adapter-uses/1.0" not in detail
         assert "blocklisted" in detail
         assert "DOM drift" not in detail
 
@@ -1091,3 +1108,129 @@ class TestLibgenBlockedUserAgent:
         key, detail = await adapter._resolve_key(client, "li", MD5)
         assert key == "ABC123"
         assert detail == ""
+
+
+class TestUserAgentReachesEveryRequest:
+    """The override must apply to every LibGen request, not most of them.
+
+    Codex on #146 found the first cut honoured `LIBGEN_USER_AGENT` on search
+    and key resolution while the actual file transfer still sent the
+    compiled-in default. An override that covers every request except the one
+    that moves the file is worse than none: the operator sets it, search
+    starts working, and downloads keep failing for a reason the config appears
+    to have addressed.
+    """
+
+    CUSTOM = "custom-agent/9.9"
+
+    def test_supplied_config_wins_over_the_environment(self, monkeypatch):
+        """An adapter's own SourceConfig is not overridden by ambient env."""
+        from lib.sources.libgen import get_user_agent
+
+        monkeypatch.setenv("LIBGEN_USER_AGENT", "env-agent/1.0")
+        assert (
+            get_user_agent(SourceConfig(libgen_user_agent=self.CUSTOM)) == self.CUSTOM
+        )
+
+    def test_blank_config_value_falls_back_rather_than_sending_nothing(self):
+        from lib.sources.config import DEFAULT_LIBGEN_USER_AGENT
+        from lib.sources.libgen import get_user_agent
+
+        assert (
+            get_user_agent(SourceConfig(libgen_user_agent=""))
+            == DEFAULT_LIBGEN_USER_AGENT
+        )
+
+    def test_no_config_still_reads_the_environment(self, monkeypatch):
+        """The module-level search shim has no config and must keep working."""
+        from lib.sources.libgen import get_user_agent
+
+        monkeypatch.setenv("LIBGEN_USER_AGENT", "env-agent/1.0")
+        assert get_user_agent() == "env-agent/1.0"
+
+    def test_search_sends_the_adapters_own_configured_agent(self, monkeypatch):
+        """The shim is a module singleton; the adapter's UA must still reach it."""
+        import lib.sources.libgen as libgen_mod
+
+        seen = {}
+
+        def fake_get(url, headers=None, **kwargs):
+            seen["ua"] = (headers or {}).get("User-Agent")
+
+            class _Resp:
+                status_code = 200
+                text = "<html><table class='tablelibgen'></table></html>"
+
+            return _Resp()
+
+        monkeypatch.setattr(libgen_mod.requests, "get", fake_get)
+        monkeypatch.setenv("LIBGEN_USER_AGENT", "env-agent/1.0")
+
+        adapter = libgen_mod.LibgenAdapter(
+            SourceConfig(libgen_mirror="li", libgen_user_agent=self.CUSTOM)
+        )
+        libgen_mod._search_requests.user_agent = libgen_mod.get_user_agent(
+            adapter.config
+        )
+        libgen_mod._search_requests.get("https://libgen.li/index.php")
+
+        assert seen["ua"] == self.CUSTOM, (
+            "the adapter's configured UA must reach the search shim, "
+            "not the ambient environment"
+        )
+
+    def test_shim_falls_back_to_env_when_no_agent_was_set(self, monkeypatch):
+        import lib.sources.libgen as libgen_mod
+
+        seen = {}
+
+        def fake_get(url, headers=None, **kwargs):
+            seen["ua"] = (headers or {}).get("User-Agent")
+
+            class _Resp:
+                status_code = 200
+                text = ""
+
+            return _Resp()
+
+        monkeypatch.setattr(libgen_mod.requests, "get", fake_get)
+        monkeypatch.setenv("LIBGEN_USER_AGENT", "env-agent/1.0")
+        libgen_mod._search_requests.user_agent = None
+        libgen_mod._search_requests.get("https://libgen.li/index.php")
+
+        assert seen["ua"] == "env-agent/1.0"
+
+
+class TestNginxStubMatchesTitleOnly:
+    """A real record mentioning nginx is not a block.
+
+    The classifier's own docstring said "matched on the title"; the first cut
+    matched the whole body. A LibGen record whose title or description carries
+    the phrase would have had its perfectly good GET anchor discarded and been
+    reported to the operator as a blocked UA (Codex on #146).
+    """
+
+    def test_real_page_mentioning_nginx_in_content_is_not_a_stub(self):
+        from lib.sources.libgen import _nginx_stub
+
+        page = (
+            "<html><head><title>Nginx HTTP Server - Third Edition</title></head>"
+            "<body><p>Welcome to nginx! and other greetings, chapter 2</p>"
+            "<a href='/get.php?md5=abc&key=K'>GET</a></body></html>"
+        )
+        assert _nginx_stub(page) is False
+
+    def test_actual_stub_is_still_recognised(self):
+        from lib.sources.libgen import _nginx_stub
+
+        assert (
+            _nginx_stub(
+                "<html><head><title>Welcome to nginx!</title></head><body></body></html>"
+            )
+            is True
+        )
+
+    def test_title_match_is_case_insensitive_and_length_independent(self):
+        from lib.sources.libgen import _nginx_stub
+
+        assert _nginx_stub("<TITLE>WELCOME TO NGINX!</TITLE>" + "x" * 50_000) is True

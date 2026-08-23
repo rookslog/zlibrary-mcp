@@ -723,3 +723,44 @@ class TestLibgenSearchProbeUsesProductionAdapter:
         result = self._run(check_upstream, fake_search)
         assert result.ok is False
         assert "Welcome to nginx!" in result.detail
+
+
+def test_libgen_block_does_not_set_the_zlibrary_blocked_flag(check_upstream):
+    """A walled LibGen must not suppress the Z-Library drift report.
+
+    `zlib_blocked` gates whether upstream-check.yml files the Z-Library drift
+    issue. #141 made a LibGen UA block set `blocked=True` too, so an unscoped
+    `any(...)` would silence a genuine Z-Library drift report because a
+    different source was walled (Codex on #146).
+    """
+    results = [
+        check_upstream.ProbeResult(
+            name="libgen:download", ok=False, detail="nginx stub", blocked=True
+        ),
+        check_upstream.ProbeResult(
+            name="zlibrary:eapi/book/search", ok=False, detail="drift", blocked=False
+        ),
+    ]
+    assert check_upstream.zlibrary_blocked(results) is False
+
+
+def test_zlibrary_block_still_sets_the_flag(check_upstream):
+    results = [
+        check_upstream.ProbeResult(
+            name="libgen:search", ok=True, detail="fine", blocked=False
+        ),
+        check_upstream.ProbeResult(
+            name="zlibrary:eapi/info/domains", ok=False, detail="403", blocked=True
+        ),
+    ]
+    assert check_upstream.zlibrary_blocked(results) is True
+
+
+def test_annas_block_does_not_set_the_zlibrary_flag_either(check_upstream):
+    """The scope is Z-Library specifically, not 'any source but LibGen'."""
+    results = [
+        check_upstream.ProbeResult(
+            name="annas-archive:search", ok=False, detail="DDoS-Guard", blocked=True
+        ),
+    ]
+    assert check_upstream.zlibrary_blocked(results) is False

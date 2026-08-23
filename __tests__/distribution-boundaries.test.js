@@ -179,7 +179,11 @@ describe('distribution boundaries', () => {
     expect(troubleshooting).toContain('uv sync --no-dev');
     expect(troubleshooting).toContain('uv sync --no-dev --extra rag');
     expect(troubleshooting).toContain('uv sync --no-dev --extra scholar');
-    expect(troubleshooting).toContain('uv sync --group dev');
+    // The contributor row names the script, not a flag combination: `--group
+    // dev` alone fails at collection, because a unit-marked test imports PIL
+    // at module scope and Pillow is scholar-only (Codex on #114).
+    expect(troubleshooting).toContain('bash setup-uv.sh');
+    expect(troubleshooting).not.toContain('uv sync --group dev`');
     expect(troubleshooting).not.toContain(
       'uv sync            # creates .venv/ and installs all Python dependencies',
     );

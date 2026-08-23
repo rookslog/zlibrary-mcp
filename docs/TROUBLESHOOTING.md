@@ -71,11 +71,19 @@ lightweight end-user environment. Choose the tier explicitly:
 | Search, metadata, and downloads | `uv sync --no-dev` |
 | PDF/EPUB extraction and footnote detection | `uv sync --no-dev --extra rag` |
 | Complete scholarly analysis and OCR libraries | `uv sync --no-dev --extra scholar` |
-| Contributor test and lint tools | `uv sync --group dev` |
+| Contributor test and lint tools | `bash setup-uv.sh` |
 
-The optional extras remain opt-in even when the contributor development group is
-installed. Contributors running the complete Python suite should use
-`uv sync --group dev --all-extras`.
+**Contributors need every extra, not just the dev group.** `--group` adds a
+dependency group; optional dependencies need `--extra` or `--all-extras`, and
+they are not optional in practice: the fast suite collects
+`__tests__/python/test_resolution_renderer.py`, whose module-scope
+`from PIL import Image` needs the scholar extra, so a `--group dev` environment
+fails at collection before marker deselection can skip anything. CI installs
+`--all-extras`, and `bash setup-uv.sh` with no argument now does the same —
+which is why the row above names the script rather than a flag combination that
+has to be kept in step with it by hand.
+
+The end-user rows are unaffected: those tiers are genuinely opt-in.
 
 ---
 

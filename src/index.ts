@@ -75,7 +75,17 @@ const GetDownloadHistoryParamsSchema = z.object({
   count: z.number().int().optional().default(10).describe('Number of results to return'),
 });
 
-const GetDownloadLimitsParamsSchema = z.object({});
+const SourceNameSchema = z.enum(['annas_archive', 'libgen', 'zlibrary']);
+
+const GetDownloadLimitsParamsSchema = z.object({
+  sources: z
+    .array(SourceNameSchema)
+    .nonempty()
+    .optional()
+    .describe(
+      'Which sources to report. All of them when omitted. Naming only sources whose limits are known from configuration (libgen, annas_archive) avoids the Z-Library profile round-trip entirely.',
+    ),
+});
 
 const GetRecentBooksParamsSchema = z.object({
   count: z.number().int().optional().default(10).describe('Number of books to return'),
@@ -374,9 +384,12 @@ const handlers: HandlerMap = {
     }
   },
 
-  getDownloadLimits: async (_args: unknown, options: HandlerOptions = {}) => {
+  getDownloadLimits: async (
+    args: z.infer<typeof GetDownloadLimitsParamsSchema>,
+    options: HandlerOptions = {},
+  ) => {
     try {
-      return await zlibraryApi.getDownloadLimits(options);
+      return await zlibraryApi.getDownloadLimits({ sources: args?.sources }, options);
     } catch (error: any) {
       return { error: { message: error.message || 'Failed to get download limits' } };
     }
@@ -565,7 +578,7 @@ const toolRegistry: Record<string, ToolRegistryEntry> = {
     handler: handlers.getDownloadHistory,
   },
   get_download_limits: {
-    description: 'Get download limits',
+    description: 'Get per-source download limits',
     schema: GetDownloadLimitsParamsSchema,
     handler: handlers.getDownloadLimits,
   },
@@ -673,8 +686,10 @@ function validateCredentials(): void {
 
     logger.warn(
       `Missing environment variable(s): ${missing.join(', ')} — ` +
-        `Z-Library tools (search_books, full_text_search, get_download_limits, ` +
-        `download history) will fail when called. LibGen is unaffected: use ` +
+        `Z-Library tools (search_books, full_text_search, download history) ` +
+        `will fail when called, and get_download_limits will report ` +
+        `Z-Library as unavailable while still answering for the other ` +
+        `sources. LibGen is unaffected: use ` +
         `search_multi_source with source="libgen" and pass results to ` +
         `download_book_to_file. To enable Z-Library, set "env": ` +
         `{"ZLIBRARY_EMAIL": "...", "ZLIBRARY_PASSWORD": "..."} in your MCP ` +
@@ -764,12 +779,12 @@ async function start(
     // 4. get_download_limits
     server.tool(
       'get_download_limits',
-      "Get the user's current Z-Library download limits. Shows daily download quota, downloads used today, and remaining downloads.",
+      "Report each source's daily download limit. Every entry says which of the three it is reporting — no limit exists, a limit exists but is not known here, or a concrete number. Z-Library is the only source whose answer costs a round-trip, so pass `sources` to ask about the others without paying for it.",
       GetDownloadLimitsParamsSchema.shape,
       ann('get_download_limits'),
-      async (_args, extra) =>
+      async (args, extra) =>
         wrapResult(
-          await handlers.getDownloadLimits(_args, { signal: extra?.signal }),
+          await handlers.getDownloadLimits(args as any, { signal: extra?.signal }),
           'get_download_limits',
         ),
     );
@@ -889,7 +904,7 @@ async function start(
     // 13. search_multi_source
     server.tool(
       'search_multi_source',
-      "Search for books across Anna's Archive and LibGen. Alternative to Z-Library EAPI. Returns books with md5, title, author, year, extension, size, source, download_url. Use source=auto to prefer Anna's Archive with LibGen fallback, or force a specific source.",
+      "Search for books across Anna's Archive and LibGen. Alternative to Z-Library EAPI. Returns books with md5, title, author, year, extension, size, source, download_url, plus a `routing` block naming what was requested, what served it, whether a fallback happened, and each source's current routes and daily limit. Use source=auto to prefer Anna's Archive with LibGen fallback, or force a specific source.",
       SearchMultiSourceParamsSchema.shape,
       ann('search_multi_source'),
       async (args, extra) =>

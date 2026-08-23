@@ -112,10 +112,15 @@ async def _run_core_smoke(repo_root: Path) -> None:
     from lib.rag.orchestrator_pdf import process_pdf_structured
 
     class OfflineRouter:
+        config = None
+
         async def search(self, query, source="auto", **kwargs):
             if query != "offline boundary probe":
                 raise AssertionError(f"unexpected smoke query: {query!r}")
             return []
+
+        def intended_source(self, source="auto"):
+            return "libgen"
 
         async def close(self):
             return None
@@ -142,8 +147,15 @@ async def _run_core_smoke(repo_root: Path) -> None:
 
     envelope = json.loads(stdout.getvalue())
     result = json.loads(envelope["content"][0]["text"])
-    if result != {"books": [], "sources_used": []}:
+    routing = result.get("routing", {})
+    if result.get("books") != [] or routing.get("served_by") != []:
         raise AssertionError(f"unexpected bridge search result: {result!r}")
+    # The routing contract (#101) rides along with every search and is built
+    # from configuration alone, so it must survive a core-only install.
+    if routing.get("fell_back") is not False or "libgen" not in routing.get(
+        "sources", {}
+    ):
+        raise AssertionError(f"missing routing report in bridge result: {result!r}")
 
     original_pymupdf = facade.PYMUPDF_AVAILABLE
     original_ebooklib = facade.EBOOKLIB_AVAILABLE

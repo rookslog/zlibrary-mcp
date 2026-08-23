@@ -89,12 +89,12 @@ jobs:
       # needs a reason on the line.
       - run: >
           uv run pip-audit
-          --ignore-vuln CVE-2026-4539
           --ignore-vuln CVE-2026-3029
+          --ignore-vuln PYSEC-2026-3001
           --ignore-vuln PYSEC-2026-597
-        # CVE-2026-4539  pygments  - no compatible fix published
-        # CVE-2026-3029  pymupdf   - fix requires 1.26.7, which breaks footnote extraction
-        # PYSEC-2026-597 nltk      - no fix published as of 2026-07
+        # CVE-2026-3029   pymupdf - fix requires 1.26.7, blocked by the pin in pyproject.toml
+        # PYSEC-2026-3001 pymupdf - same pin, same fix version; tracked in #148
+        # PYSEC-2026-597  nltk    - no fix published as of 2026-07
 
   lint:
     runs-on: ubuntu-latest

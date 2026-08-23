@@ -185,6 +185,10 @@ LOG_LEVEL=silent|error|warn|info|debug   # stderr logging via src/lib/logger.ts
 ANNAS_SECRET_KEY=                # Enables Anna's Archive fast downloads (primary source)
 ANNAS_BASE_URL=                  # Default: https://annas-archive.li
 LIBGEN_MIRROR=                   # Default: li
+LIBGEN_USER_AGENT=               # Default: a desktop Firefox string. LibGen blocklists
+                                 # tool UAs and answers with nginx's ~640-byte default
+                                 # page at HTTP 200 — search and ads.php alike. Override
+                                 # when the blocklist widens again (#141).
 BOOK_SOURCE_DEFAULT=auto         # auto | annas | libgen
 BOOK_SOURCE_FALLBACK_ENABLED=true
 

@@ -39,7 +39,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "zlibrary" / "src"))
 from lib.sources.config import get_source_config  # noqa: E402
 from lib.sources.libgen import FALLBACK_MIRRORS as LIBGEN_FALLBACK_MIRRORS  # noqa: E402
-from lib.sources.libgen import USER_AGENT as LIBGEN_PRODUCTION_UA  # noqa: E402
+from lib.sources.libgen import _nginx_stub as _libgen_nginx_stub  # noqa: E402
+from lib.sources.libgen import get_user_agent as libgen_user_agent  # noqa: E402
 from zlibrary.eapi import DEFAULT_EAPI_DOMAINS, WALLED_STATUS_CODES  # noqa: E402
 
 TIMEOUT = httpx.Timeout(20.0, connect=10.0)
@@ -477,7 +478,11 @@ async def probe_libgen(client: httpx.AsyncClient) -> ProbeResult:
     never a status code or byte count. ``client`` is unused by design: the
     adapter builds production's own HTTP stack.
     """
-    from lib.sources.libgen import LibgenAdapter  # noqa: PLC0415
+    from lib.sources.errors import AllSourcesFailedError  # noqa: PLC0415
+    from lib.sources.libgen import (  # noqa: PLC0415
+        LibgenAdapter,
+        LibgenUserAgentBlocked,
+    )
 
     canary = "Pride and Prejudice"
     config = get_source_config()
@@ -492,9 +497,28 @@ async def probe_libgen(client: httpx.AsyncClient) -> ProbeResult:
             timeout=libgen_probe_timeout(config, LibgenAdapter.MIN_REQUEST_INTERVAL),
         )
     except Exception as exc:  # noqa: BLE001
+        # A UA block is not upstream drift and must not be summarised as one.
+        # Without this the same refusal, on the same run, came back as WARN
+        # here and BLOCK from the download probe — and the summary counted it
+        # as an optional failure while the message said it was not drift
+        # (Codex on #146). The adapter raises a distinct type for exactly this.
+        # ALL mirrors, not any: a run where one mirror served the stub and
+        # another timed out is a mixed result, and calling it BLOCK would drop
+        # the genuine transport failure out of the optional-failure count and
+        # describe drift as a wall (Codex on #146). This is the same
+        # all-mirrors rule `probe_libgen_download` applies via `blocked_count`,
+        # and the two probes have to agree or the doctor contradicts itself
+        # again in the opposite direction.
+        failures = list(getattr(exc, "failures", None) or [])
+        blocked = isinstance(exc, LibgenUserAgentBlocked) or (
+            isinstance(exc, AllSourcesFailedError)
+            and bool(failures)
+            and all(isinstance(f, LibgenUserAgentBlocked) for f in failures)
+        )
         return ProbeResult(
             name="libgen:search",
             ok=False,
+            blocked=blocked,
             detail=f"adapter search failed: {type(exc).__name__}: {exc}",
             required=False,
         )
@@ -564,6 +588,17 @@ def _libgen_block_detail(mirror: str, resp: httpx.Response) -> Optional[str]:
     wall and names ZLIB_DOMAIN. A refusal is not drift: the resolve-and-fetch
     contract may be intact for clients the wall lets through.
     """
+    # A blocklisted UA is refused with HTTP 200 and nginx's default page, so
+    # the status-code check below never sees it. Left unclassified it reaches
+    # the operator as "DOM drift" or "no results" — a parser bug or an outage,
+    # neither of which is true — which is what #141 cost a sweep to discover.
+    if _libgen_nginx_stub(resp.text):
+        return (
+            f"libgen.{mirror} served nginx's default stub for User-Agent "
+            f"{libgen_user_agent()!r} — this UA is blocklisted. Not an outage "
+            "and not upstream drift; set LIBGEN_USER_AGENT to a string the "
+            "mirror admits (#141)"
+        )
     if resp.status_code not in (403, 429, *WALLED_STATUS_CODES):
         return None
     return (
@@ -593,7 +628,7 @@ async def _probe_libgen_download_mirror(
         resp = await client.get(
             ads_url,
             params={"md5": LIBGEN_PROBE_MD5},
-            headers={"User-Agent": LIBGEN_PRODUCTION_UA},
+            headers={"User-Agent": libgen_user_agent()},
         )
         blocked = _libgen_block_detail(mirror, resp)
         if blocked:
@@ -621,7 +656,7 @@ async def _probe_libgen_download_mirror(
             get_url,
             headers={
                 "Range": f"bytes=0-{LIBGEN_PROBE_RANGE_BYTES - 1}",
-                "User-Agent": LIBGEN_PRODUCTION_UA,
+                "User-Agent": libgen_user_agent(),
             },
         )
     except Exception as exc:  # noqa: BLE001
@@ -775,6 +810,18 @@ def render(results: list[ProbeResult]) -> str:
     return "\n".join(lines)
 
 
+def zlibrary_blocked(results: list[ProbeResult]) -> bool:
+    """True when a **Z-Library** probe was walled, ignoring other sources.
+
+    Scoped by the `zlibrary:` name prefix. This value feeds
+    upstream-check.yml's decision to skip filing the Z-Library drift issue, so
+    folding another source's block into it suppresses a genuine Z-Library
+    report for an unrelated reason — and #141 made that reachable, since a
+    LibGen UA block is now classified as `blocked` too (Codex on #146).
+    """
+    return any(r.blocked for r in results if r.name.startswith("zlibrary:"))
+
+
 def emit_github_output(report: str, failed: bool, zlib_blocked: bool = False) -> None:
     path: Optional[str] = os.environ.get("GITHUB_OUTPUT")
     if not path:
@@ -804,7 +851,7 @@ def main() -> int:
 
     results = asyncio.run(run_probes())
     required_failed = bool(actionable_failures(results))
-    zlib_blocked = any(r.blocked for r in results)
+    zlib_blocked = zlibrary_blocked(results)
 
     if args.json:
         print(

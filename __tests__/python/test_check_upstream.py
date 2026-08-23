@@ -901,3 +901,175 @@ class TestRunProbesReturnsEveryProbe:
             f"{len(gathered)} probes gathered but {len(results)} returned — a "
             f"probe is being dropped, or the unpack will raise"
         )
+
+
+def test_libgen_block_does_not_set_the_zlibrary_blocked_flag(check_upstream):
+    """A walled LibGen must not suppress the Z-Library drift report.
+
+    `zlib_blocked` gates whether upstream-check.yml files the Z-Library drift
+    issue. #141 made a LibGen UA block set `blocked=True` too, so an unscoped
+    `any(...)` would silence a genuine Z-Library drift report because a
+    different source was walled (Codex on #146).
+    """
+    results = [
+        check_upstream.ProbeResult(
+            name="libgen:download", ok=False, detail="nginx stub", blocked=True
+        ),
+        check_upstream.ProbeResult(
+            name="zlibrary:eapi/book/search", ok=False, detail="drift", blocked=False
+        ),
+    ]
+    assert check_upstream.zlibrary_blocked(results) is False
+
+
+def test_zlibrary_block_still_sets_the_flag(check_upstream):
+    results = [
+        check_upstream.ProbeResult(
+            name="libgen:search", ok=True, detail="fine", blocked=False
+        ),
+        check_upstream.ProbeResult(
+            name="zlibrary:eapi/info/domains", ok=False, detail="403", blocked=True
+        ),
+    ]
+    assert check_upstream.zlibrary_blocked(results) is True
+
+
+def test_annas_block_does_not_set_the_zlibrary_flag_either(check_upstream):
+    """The scope is Z-Library specifically, not 'any source but LibGen'."""
+    results = [
+        check_upstream.ProbeResult(
+            name="annas-archive:search", ok=False, detail="DDoS-Guard", blocked=True
+        ),
+    ]
+    assert check_upstream.zlibrary_blocked(results) is False
+
+
+class TestLibgenSearchProbeReportsUserAgentBlocks:
+    """A UA-blocked search must read as BLOCK, not as upstream drift.
+
+    Codex on #146: `probe_libgen` caught the adapter's failure as an ordinary
+    optional failure, so one doctor run reported `libgen:search` WARN and
+    `libgen:download` BLOCK for the identical refusal — and the summary counted
+    an optional failure while the message said it was not drift. The two probes
+    have to agree, or the operator has to guess which one is lying.
+    """
+
+    def _run(self, check_upstream, search_impl):
+        import asyncio
+        from unittest.mock import patch
+
+        async def go():
+            with patch("lib.sources.libgen.LibgenAdapter.search", new=search_impl):
+                async with httpx.AsyncClient(
+                    transport=httpx.MockTransport(lambda request: httpx.Response(500))
+                ) as client:
+                    return await check_upstream.probe_libgen(client)
+
+        return asyncio.run(go())
+
+    def test_blocked_failure_sets_blocked_and_reads_as_block(self, check_upstream):
+        from lib.sources.errors import AllSourcesFailedError
+        from lib.sources.libgen import LibgenUserAgentBlocked
+
+        async def blocked(_self, _query, **_kwargs):
+            raise AllSourcesFailedError(
+                "LibGen search",
+                [
+                    LibgenUserAgentBlocked(
+                        "libgen",
+                        "libgen.li",
+                        "search page served nginx's default stub",
+                        reason="protocol_error",
+                    )
+                ],
+            )
+
+        result = self._run(check_upstream, blocked)
+
+        assert result.ok is False
+        assert result.blocked is True
+        assert result.symbol == "BLOCK"
+
+    def test_ordinary_upstream_failure_is_not_reported_as_blocked(self, check_upstream):
+        """The classification must stay narrow or it hides real drift.
+
+        A timeout or a DOM change reported as BLOCK would suppress the drift
+        issue the doctor exists to raise.
+        """
+        from lib.sources.errors import AllSourcesFailedError, ProviderResponseError
+
+        async def drifted(_self, _query, **_kwargs):
+            raise AllSourcesFailedError(
+                "LibGen search",
+                [
+                    ProviderResponseError(
+                        "libgen",
+                        "libgen.li",
+                        "search page had no results table — parse failure",
+                        reason="protocol_error",
+                    )
+                ],
+            )
+
+        result = self._run(check_upstream, drifted)
+
+        assert result.ok is False
+        assert result.blocked is False
+        assert result.symbol == "WARN"
+
+    def test_a_libgen_block_does_not_imply_a_zlibrary_block(self, check_upstream):
+        """`zlibrary_blocked` must stay source-scoped (#141).
+
+        The new `blocked=True` on a LibGen probe would otherwise start
+        triggering the Z-Library block path, which is the exact conflation the
+        scoping fix on this branch removed.
+        """
+        results = [
+            check_upstream.ProbeResult(
+                name="libgen:search", ok=False, detail="UA blocked", blocked=True
+            )
+        ]
+
+        assert check_upstream.zlibrary_blocked(results) is False
+
+    def test_a_mixed_failure_set_is_not_reported_as_blocked(self, check_upstream):
+        """One stubbed mirror plus one real failure is not a wall.
+
+        Codex round 4 on #146: `any()` would have marked the whole probe BLOCK,
+        dropping the genuine transport failure out of the optional-failure
+        count and describing drift as network-level. `probe_libgen_download`
+        requires every mirror to be blocked; the search probe must match, or
+        the doctor contradicts itself in the other direction.
+        """
+        from lib.sources.errors import AllSourcesFailedError, ProviderUnreachableError
+        from lib.sources.libgen import LibgenUserAgentBlocked
+
+        async def mixed(_self, _query, **_kwargs):
+            raise AllSourcesFailedError(
+                "LibGen search",
+                [
+                    LibgenUserAgentBlocked(
+                        "libgen", "libgen.li", "nginx stub", reason="protocol_error"
+                    ),
+                    ProviderUnreachableError(
+                        "libgen", "libgen.vg", "no route", reason="connect_timeout"
+                    ),
+                ],
+            )
+
+        result = self._run(check_upstream, mixed)
+
+        assert result.ok is False
+        assert result.blocked is False
+        assert result.symbol == "WARN"
+
+    def test_an_empty_failure_list_is_not_reported_as_blocked(self, check_upstream):
+        """`all()` over an empty list is True, which would invent a wall."""
+        from lib.sources.errors import AllSourcesFailedError
+
+        async def empty(_self, _query, **_kwargs):
+            raise AllSourcesFailedError("LibGen search", [])
+
+        result = self._run(check_upstream, empty)
+
+        assert result.blocked is False

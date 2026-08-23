@@ -280,7 +280,8 @@ class SourceRouter:
                 async for result in provider_stream:
                     if result.quota_info and result.quota_info.downloads_left == 0:
                         raise QuotaExhaustedError(f"{name} quota exhausted")
-                    yield result
+                    with deadline.suspended():
+                        yield result
             except QuotaExhaustedError as exc:
                 failures.append(
                     SourceError(name, detail=str(exc), reason="quota_exhausted")

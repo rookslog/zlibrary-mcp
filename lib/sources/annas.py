@@ -22,6 +22,7 @@ from .config import ANNAS_TRUSTED_HOSTS, SourceConfig
 from .errors import (
     ProviderConfigurationError,
     ProviderResponseError,
+    ProviderTimeoutError,
     ProviderUnreachableError,
     SourceError,
 )
@@ -177,7 +178,7 @@ class AnnasArchiveAdapter(SourceAdapter):
             )
         return self._client
 
-    async def _preflight(self) -> None:
+    async def _preflight(self, deadline: Optional[WalkDeadline] = None) -> None:
         """Fail fast if the configured Anna's host is not reachable.
 
         Anna's domains lapse (annas-archive.org and .se are NXDOMAIN as of
@@ -187,11 +188,21 @@ class AnnasArchiveAdapter(SourceAdapter):
         """
         if not self.config.preflight_enabled or not self.host:
             return
+        timeout = self.config.preflight_timeout
+        if deadline is not None:
+            timeout = deadline.reserve(timeout, minimum=0.000001)
+            if timeout is None:
+                raise ProviderTimeoutError(
+                    PROVIDER,
+                    self.host,
+                    "walk budget exhausted before preflight",
+                    reason="walk_budget_exhausted",
+                )
         await probe_host(
             PROVIDER,
             self.host,
             port=self.port,
-            timeout=self.config.preflight_timeout,
+            timeout=timeout,
             scheme=self.scheme,
         )
 
@@ -251,7 +262,7 @@ class AnnasArchiveAdapter(SourceAdapter):
             ProviderUnreachableError: If the host does not resolve or connect
             ProviderResponseError: If it answers with an HTTP or protocol error
         """
-        await self._preflight()
+        await self._preflight(deadline)
 
         client = await self._get_client()
         url = f"{self.base_url}/search?q={quote(query)}"
@@ -408,7 +419,7 @@ class AnnasArchiveAdapter(SourceAdapter):
                 f"has moved to a new domain you have verified yourself.",
             )
 
-        await self._preflight()
+        await self._preflight(deadline)
 
         client = await self._get_client()
         url = f"{self.base_url}/dyn/api/fast_download.json"

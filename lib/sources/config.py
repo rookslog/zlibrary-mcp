@@ -70,6 +70,14 @@ DEFAULT_WALK_BUDGET = 165.0
 # package, and serializing results back over stdout. Generous on purpose — the
 # margin absorbs a slow cold start, it is not a number to tune.
 WALK_OVERHEAD_ALLOWANCE = 30.0
+DEFAULT_NODE_BRIDGE_TIMEOUT_SECONDS = 240.0
+MAX_NODE_TIMER_DELAY_MS = 2_147_483_647
+WALK_BUDGET_SAFETY_MARGIN = 0.001
+_ECMASCRIPT_TRIM_CHARS = (
+    "\u0009\u000a\u000b\u000c\u000d\u0020\u00a0\u1680\u2000\u2001\u2002"
+    "\u2003\u2004\u2005\u2006\u2007\u2008\u2009\u200a\u2028\u2029\u202f"
+    "\u205f\u3000\ufeff"
+)
 
 # The rest of the long (download) budget, named so the sum can be computed
 # instead of asserted in prose: OCR is bounded by rag_processing, and
@@ -233,6 +241,41 @@ def _positive_float(name: str, default: float) -> float:
     return value if math.isfinite(value) and value > 0 else default
 
 
+def _ecmascript_trim(value: str) -> str:
+    """Match JavaScript String.prototype.trim for environment values."""
+    return value.strip(_ECMASCRIPT_TRIM_CHARS)
+
+
+def _node_bridge_timeout_seconds() -> float:
+    """Match Node's positive-integer bridge-timeout environment parsing."""
+    raw = _ecmascript_trim(os.environ.get("PYTHON_BRIDGE_TIMEOUT", ""))
+    if not raw or not raw.isascii() or not raw.isdecimal():
+        return DEFAULT_NODE_BRIDGE_TIMEOUT_SECONDS
+    try:
+        value = int(raw)
+    except ValueError:
+        return DEFAULT_NODE_BRIDGE_TIMEOUT_SECONDS
+    if value <= 0 or value > MAX_NODE_TIMER_DELAY_MS:
+        return DEFAULT_NODE_BRIDGE_TIMEOUT_SECONDS
+    return value / 1000.0
+
+
+def _walk_budget() -> float:
+    """Read a walk budget that the owning Node bridge can actually allow."""
+    requested = _positive_float("BOOK_SOURCE_WALK_BUDGET", DEFAULT_WALK_BUDGET)
+    available = (
+        _node_bridge_timeout_seconds()
+        - WALK_OVERHEAD_ALLOWANCE
+        - WALK_BUDGET_SAFETY_MARGIN
+    )
+    if available <= 0:
+        raise ValueError(
+            "PYTHON_BRIDGE_TIMEOUT leaves no time for a source walk after "
+            "the bridge overhead allowance"
+        )
+    return min(requested, available)
+
+
 def get_source_config() -> SourceConfig:
     """Load configuration from environment variables.
 
@@ -264,5 +307,5 @@ def get_source_config() -> SourceConfig:
         preflight_timeout=_positive_float(
             "BOOK_SOURCE_PREFLIGHT_TIMEOUT", DEFAULT_PREFLIGHT_TIMEOUT
         ),
-        walk_budget=_positive_float("BOOK_SOURCE_WALK_BUDGET", DEFAULT_WALK_BUDGET),
+        walk_budget=_walk_budget(),
     )

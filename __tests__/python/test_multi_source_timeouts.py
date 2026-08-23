@@ -9,7 +9,9 @@ reason, and an explicitly requested source is never silently swapped.
 
 import asyncio
 import math
+import os
 import socket
+import subprocess
 import time
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -99,6 +101,68 @@ class TestConfigTimeouts:
         monkeypatch.setenv("BOOK_SOURCE_CONNECT_TIMEOUT", bad)
         config = get_source_config()
         assert config.connect_timeout == 10.0
+
+    def test_env_walk_budget_fits_the_env_resolved_node_bridge_timeout(
+        self, monkeypatch
+    ):
+        """A Python override cannot outlive the Node process that owns it.
+
+        Production mutation caught: accept ``BOOK_SOURCE_WALK_BUDGET`` without
+        comparing it to the process's resolved ``PYTHON_BRIDGE_TIMEOUT`` and
+        bridge margin.  A 300-second walk would then be SIGTERM'd by a
+        240-second Node bridge before it could return attributed failures.
+        """
+        from lib.sources.config import worst_case_search_seconds
+
+        monkeypatch.setenv("PYTHON_BRIDGE_TIMEOUT", "240000")
+        monkeypatch.setenv("BOOK_SOURCE_WALK_BUDGET", "300")
+
+        config = get_source_config()
+
+        assert worst_case_search_seconds(config) < 240.0
+
+    def test_impossibly_short_node_budget_is_rejected_before_the_bridge_starts(
+        self, monkeypatch
+    ):
+        """No positive walk can fit when Node leaves no overhead allowance."""
+        monkeypatch.setenv("PYTHON_BRIDGE_TIMEOUT", "30000")
+        monkeypatch.setenv("BOOK_SOURCE_WALK_BUDGET", "1")
+
+        with pytest.raises(ValueError, match="PYTHON_BRIDGE_TIMEOUT"):
+            get_source_config()
+
+    @pytest.mark.parametrize(
+        "raw",
+        [
+            pytest.param("2147483647", id="maximum-timer-delay"),
+            pytest.param("2147483648", id="above-maximum-timer-delay"),
+            pytest.param("9" * 5000, id="python-int-digit-limit"),
+            pytest.param("\ufeff300000", id="bom-prefix"),
+            pytest.param("300000\ufeff", id="bom-suffix"),
+        ],
+    )
+    def test_node_timeout_parser_matches_node_at_boundaries(self, monkeypatch, raw):
+        """Python must exactly match Node for boundary and trim inputs."""
+        from lib.sources.config import _node_bridge_timeout_seconds
+
+        monkeypatch.setenv("PYTHON_BRIDGE_TIMEOUT", raw)
+
+        node = subprocess.run(
+            [
+                "node",
+                "-e",
+                "const raw = process.env.PYTHON_BRIDGE_TIMEOUT?.trim(); "
+                "const value = raw && /^\\d+$/.test(raw) ? Number(raw) : NaN; "
+                "process.stdout.write(String(Number.isSafeInteger(value) && "
+                "value > 0 && value <= 2147483647 ? value / 1000 : 240));",
+            ],
+            check=True,
+            capture_output=True,
+            env=os.environ,
+            text=True,
+        )
+
+        assert _node_bridge_timeout_seconds() == float(node.stdout)
 
 
 class TestLibgenSearchIsBounded:
@@ -472,6 +536,74 @@ class TestPreflightTargetsTheRealEndpoint:
             }
         ]
 
+    @pytest.mark.asyncio
+    async def test_annas_preflight_is_clamped_to_the_shared_deadline(self, monkeypatch):
+        """A late Anna's probe must not start with a fresh full timeout.
+
+        Production mutation caught: call ``_preflight()`` without the shared
+        deadline, or pass ``config.preflight_timeout`` through unchanged.
+        Either leaves a late probe free to overrun the walk before the actual
+        request receives its correctly clamped budget.
+        """
+        from lib.sources.net import WalkDeadline
+
+        now = [0.0]
+        deadline = WalkDeadline(5.0, clock=lambda: now[0])
+        now[0] = 4.5
+        probe_timeouts = []
+
+        async def record_probe(*_args, timeout, **_kwargs):
+            probe_timeouts.append(timeout)
+
+        monkeypatch.setattr(annas, "probe_host", record_probe)
+        adapter = AnnasArchiveAdapter(
+            SourceConfig(preflight_enabled=True, preflight_timeout=5.0)
+        )
+
+        async def empty_search(*_args, **_kwargs):
+            return httpx.Response(200, text="<html></html>")
+
+        monkeypatch.setattr(adapter, "_fetch", empty_search)
+        try:
+            assert await adapter.search("anything", deadline=deadline) == []
+        finally:
+            await adapter.close()
+
+        assert probe_timeouts == [pytest.approx(0.5)]
+
+    @pytest.mark.asyncio
+    async def test_annas_does_not_start_preflight_after_the_shared_deadline(
+        self, monkeypatch
+    ):
+        """An expired walk names budget exhaustion instead of probing a host."""
+        from lib.sources.net import WalkDeadline
+
+        now = [0.0]
+        deadline = WalkDeadline(5.0, clock=lambda: now[0])
+        now[0] = 5.0
+        probe_calls = []
+
+        async def record_probe(*_args, **_kwargs):
+            probe_calls.append(True)
+
+        monkeypatch.setattr(annas, "probe_host", record_probe)
+        adapter = AnnasArchiveAdapter(SourceConfig(preflight_enabled=True))
+
+        async def empty_search(*_args, **_kwargs):
+            return httpx.Response(200, text="<html></html>")
+
+        monkeypatch.setattr(adapter, "_fetch", empty_search)
+        try:
+            with pytest.raises(
+                ProviderTimeoutError, match="walk ran out of time"
+            ) as excinfo:
+                await adapter.search("anything", deadline=deadline)
+        finally:
+            await adapter.close()
+
+        assert excinfo.value.reason == "walk_budget_exhausted"
+        assert probe_calls == []
+
 
 @pytest.mark.asyncio
 class TestPartialFailureIsNotAnEmptyResult:
@@ -716,6 +848,196 @@ class TestTheDocumentedTimeoutMarginIsEnforced:
 
 class TestTheWalkDeadline:
     """The primitive the whole budget now rests on."""
+
+    def test_suspension_freezes_remaining_time_until_the_consumer_returns(self):
+        """A yielded candidate's transfer is outside active resolution time.
+
+        Production mutation caught: omit the public suspension primitive, or
+        merely record a timestamp without freezing/rebasing the deadline.
+        """
+        from lib.sources.net import WalkDeadline
+
+        now = [0.0]
+        deadline = WalkDeadline(5.0, clock=lambda: now[0])
+
+        with deadline.suspended():
+            now[0] = 8.0
+            assert deadline.remaining() == 5.0
+
+        assert deadline.remaining() == 5.0
+        now[0] = 10.0
+        assert deadline.remaining() == 3.0
+
+    def test_suspension_rebases_after_an_exception_without_negative_elapsed_time(self):
+        """Cleanup cannot spend time or shorten the deadline on clock regression."""
+        from lib.sources.net import WalkDeadline
+
+        now = [0.0]
+        deadline = WalkDeadline(5.0, clock=lambda: now[0])
+
+        with pytest.raises(RuntimeError, match="consumer failed"):
+            with deadline.suspended():
+                now[0] = -2.0
+                raise RuntimeError("consumer failed")
+
+        now[0] = 0.0
+        assert deadline.remaining() == 5.0
+
+    @pytest.mark.asyncio
+    async def test_suspension_rebases_when_the_consumer_task_is_cancelled(self):
+        """Cancelling the consumer unwinds the synchronous context manager."""
+        from lib.sources.net import WalkDeadline
+
+        now = [0.0]
+        deadline = WalkDeadline(5.0, clock=lambda: now[0])
+
+        async def cancelled_consumer():
+            with deadline.suspended():
+                now[0] = 8.0
+                await asyncio.sleep(30)
+
+        task = asyncio.create_task(cancelled_consumer())
+        await asyncio.sleep(0)
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+
+        assert deadline.remaining() == 5.0
+
+    @pytest.mark.asyncio
+    async def test_libgen_search_uses_a_short_budget_when_preflight_is_disabled(
+        self,
+    ):
+        """A no-preflight search still has time for useful resolution work.
+
+        Production mutation caught: reserve two preflight phases unconditionally
+        before a LibGen search.  With preflight disabled, that rejects a
+        two-second walk before the actual bounded search is even started.
+        """
+        from lib.sources.libgen import LibgenAdapter
+
+        adapter = LibgenAdapter(
+            SourceConfig(
+                preflight_enabled=False,
+                total_timeout=2.0,
+                walk_budget=2.0,
+            )
+        )
+        expected = [MagicMock()]
+        with (
+            patch("lib.sources.libgen.LibgenSearch") as search_class,
+            patch.object(adapter, "_rate_limit", new=AsyncMock(return_value=None)),
+            patch.object(adapter, "_to_unified", return_value=expected),
+        ):
+            search_class.return_value.search_default.return_value = [object()]
+            assert await adapter.search("short budget") == expected
+
+    @pytest.mark.asyncio
+    async def test_libgen_admits_one_aggregate_preflight_and_a_resolution_slice(self):
+        """A six-second walk can afford a five-second aggregate preflight."""
+        from lib.sources.net import WalkDeadline
+
+        adapter = LibgenAdapter(
+            SourceConfig(
+                preflight_enabled=True,
+                preflight_timeout=5.0,
+                total_timeout=6.0,
+                walk_budget=6.0,
+            )
+        )
+        preflight_mirrors = []
+        expected = [MagicMock()]
+        now = [0.0]
+
+        async def record_preflight(mirror):
+            preflight_mirrors.append(mirror)
+
+        with (
+            patch.object(adapter, "_preflight", new=record_preflight),
+            patch.object(adapter, "_to_unified", return_value=expected),
+            patch("lib.sources.libgen.LibgenSearch") as search_class,
+        ):
+            search_class.return_value.search_default.return_value = [object()]
+            assert (
+                await adapter.search(
+                    "aggregate preflight",
+                    deadline=WalkDeadline(6.0, clock=lambda: now[0]),
+                )
+                == expected
+            )
+
+        assert preflight_mirrors == ["li"]
+
+    @pytest.mark.asyncio
+    async def test_libgen_candidate_resolution_uses_a_short_budget_without_preflight(
+        self,
+    ):
+        """The download candidate walk shares the no-preflight contract.
+
+        Production mutation caught: retain the unconditional two-preflight
+        reservation in ``iter_download_candidates`` after fixing only search.
+        """
+        from lib.sources.libgen import LibgenAdapter
+
+        adapter = LibgenAdapter(
+            SourceConfig(
+                preflight_enabled=False,
+                total_timeout=2.0,
+                walk_budget=2.0,
+            )
+        )
+        with (
+            patch.object(adapter, "_rate_limit", new=AsyncMock(return_value=None)),
+            patch.object(
+                adapter, "_resolve_key", new=AsyncMock(return_value=("KEY", ""))
+            ),
+            patch.object(
+                adapter, "_serves_bytes", new=AsyncMock(return_value=(True, ""))
+            ),
+        ):
+            candidates = adapter.iter_download_candidates("a" * 32)
+            first = await anext(candidates)
+            await candidates.aclose()
+
+        assert first.url.startswith("https://libgen.li/get.php?")
+
+    @pytest.mark.asyncio
+    async def test_late_mirror_does_not_sleep_past_its_resolution_budget(
+        self, monkeypatch
+    ):
+        """Pacing is refused before it spends the last useful resolution slice."""
+        from lib.sources.libgen import LibgenAdapter
+        from lib.sources.net import WalkDeadline
+
+        now = [0.0]
+        wall_clock = [100.0]
+        adapter = LibgenAdapter(
+            SourceConfig(
+                preflight_enabled=False,
+                total_timeout=2.0,
+                walk_budget=2.0,
+            )
+        )
+        adapter._last_request = 99.5
+        sleep_calls = []
+
+        async def advance_clock(delay):
+            sleep_calls.append(delay)
+            now[0] += delay
+            wall_clock[0] += delay
+
+        monkeypatch.setattr("lib.sources.libgen.time.time", lambda: wall_clock[0])
+        monkeypatch.setattr("lib.sources.libgen.asyncio.sleep", advance_clock)
+
+        with pytest.raises(AllSourcesFailedError) as excinfo:
+            await adapter.search(
+                "late mirror", deadline=WalkDeadline(2.0, clock=lambda: now[0])
+            )
+
+        assert sleep_calls == []
+        assert [failure.reason for failure in excinfo.value.failures] == [
+            "walk_budget_exhausted"
+        ]
 
     def test_an_attempt_is_clamped_to_what_the_walk_has_left(self):
         from lib.sources.net import WalkDeadline

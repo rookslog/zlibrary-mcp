@@ -213,6 +213,12 @@ def mirror_host(mirror: str) -> str:
     return f"libgen.{mirror}"
 
 
+def _attempt_minimum(config: SourceConfig) -> float:
+    """Least useful walk slice before starting a LibGen mirror attempt."""
+    preflight_budget = config.preflight_timeout if config.preflight_enabled else 0.0
+    return preflight_budget + 1.0
+
+
 def _nginx_stub(text: str) -> bool:
     """True when a body is nginx's default page rather than LibGen's.
 
@@ -325,15 +331,32 @@ class LibgenAdapter(SourceAdapter):
         self.mirror = config.libgen_mirror
         self._last_request = 0.0
 
-    async def _rate_limit(self) -> None:
+    async def _rate_limit(
+        self,
+        deadline: Optional[WalkDeadline] = None,
+        *,
+        minimum_after: float = 0.0,
+    ) -> bool:
         """Enforce rate limiting between requests.
 
-        Sleeps if the last request was less than MIN_REQUEST_INTERVAL ago.
+        Returns false rather than sleeping when pacing would consume the
+        deadline slice required for the actual resolution attempt.
         """
         elapsed = time.time() - self._last_request
-        if elapsed < self.MIN_REQUEST_INTERVAL:
-            await asyncio.sleep(self.MIN_REQUEST_INTERVAL - elapsed)
+        delay = max(0.0, self.MIN_REQUEST_INTERVAL - elapsed)
+        if delay:
+            if (
+                deadline is not None
+                and deadline.reserve(
+                    delay + minimum_after,
+                    minimum=delay + minimum_after,
+                )
+                is None
+            ):
+                return False
+            await asyncio.sleep(delay)
         self._last_request = time.time()
+        return True
 
     async def search(
         self,
@@ -385,12 +408,15 @@ class LibgenAdapter(SourceAdapter):
 
         for index, mirror in enumerate(mirrors):
             host = mirror_host(mirror)
-            # Enough left for two preflight phases plus something to search
+            # Enough left for one aggregate preflight plus something to search
             # with, or the attempt is not worth starting.
-            if deadline.reserve(
-                self.config.total_timeout,
-                minimum=(2 * self.config.preflight_timeout) + 1.0,
-            ) is None:
+            if (
+                deadline.reserve(
+                    self.config.total_timeout,
+                    minimum=_attempt_minimum(self.config),
+                )
+                is None
+            ):
                 failures.append(self._unattempted(mirrors[index:], deadline))
                 break
 
@@ -401,7 +427,9 @@ class LibgenAdapter(SourceAdapter):
                 failures.append(exc)
                 continue
 
-            await self._rate_limit()
+            if await self._rate_limit(deadline, minimum_after=1.0) is False:
+                failures.append(self._unattempted(mirrors[index:], deadline))
+                break
 
             # Re-read after the preflight and the rate-limit sleep: both spend
             # wall clock, and the budget handed to the search has to be what is
@@ -722,10 +750,13 @@ class LibgenAdapter(SourceAdapter):
                 # configured fallback stays a candidate, and `la` is reachable
                 # even when an operator has set a custom LIBGEN_MIRROR ahead of
                 # it — which capping the list took away (Codex on #153).
-                if deadline.reserve(
-                    self.config.total_timeout,
-                    minimum=(2 * self.config.preflight_timeout) + 1.0,
-                ) is None:
+                if (
+                    deadline.reserve(
+                        self.config.total_timeout,
+                        minimum=_attempt_minimum(self.config),
+                    )
+                    is None
+                ):
                     failures.append(self._unattempted(mirrors[index:], deadline))
                     break
 
@@ -736,7 +767,9 @@ class LibgenAdapter(SourceAdapter):
                     logger.warning(f"LibGen mirror {mirror} unreachable: {exc}")
                     continue
 
-                await self._rate_limit()
+                if await self._rate_limit(deadline, minimum_after=1.0) is False:
+                    failures.append(self._unattempted(mirrors[index:], deadline))
+                    break
 
                 budget = deadline.reserve(self.config.total_timeout, minimum=1.0)
                 if budget is None:

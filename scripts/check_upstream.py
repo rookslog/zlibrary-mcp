@@ -302,7 +302,7 @@ def libgen_probe_timeout(config, min_request_interval: float = 0.0) -> float:
     """Wall clock the production adapter may legitimately spend on one search.
 
     `LibgenAdapter.search` walks every mirror candidate, and each attempt can
-    cost a two-phase preflight (DNS, then TCP — the budget is per phase), the
+    cost one aggregate preflight (DNS plus TCP), the
     rate-limit wait, and the full per-provider total budget. Deriving the
     deadline from the same config the adapter reads means an operator who
     raises `BOOK_SOURCE_TOTAL_TIMEOUT` does not thereby make the canary
@@ -318,7 +318,7 @@ def libgen_probe_timeout(config, min_request_interval: float = 0.0) -> float:
     mirrors = len({config.libgen_mirror, *LIBGEN_FALLBACK_MIRRORS})
     per_mirror = float(config.total_timeout) + float(min_request_interval)
     if config.preflight_enabled:
-        per_mirror += 2 * float(config.preflight_timeout)
+        per_mirror += float(config.preflight_timeout)
     return mirrors * per_mirror + LIBGEN_PROBE_MARGIN
 
 

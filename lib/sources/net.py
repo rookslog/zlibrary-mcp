@@ -50,8 +50,8 @@ import ssl
 import threading
 import time
 import urllib.request
-from contextlib import asynccontextmanager
-from typing import Any, Callable, Dict, Optional, Tuple
+from contextlib import asynccontextmanager, contextmanager
+from typing import Any, Callable, Dict, Iterator, Optional, Tuple
 from urllib.parse import urlsplit
 
 import httpx
@@ -284,7 +284,7 @@ async def probe_host(
         provider: Provider name for error attribution
         host: Hostname to probe
         port: TCP port (default 443)
-        timeout: Budget in seconds for EACH of the DNS and connect phases
+        timeout: Aggregate budget in seconds for DNS and TCP connect together
         use_cache: Reuse a verdict already reached for this (host, port)
         scheme: URL scheme the real request will use, for proxy detection
 
@@ -317,6 +317,7 @@ async def _probe_host_uncached(
     provider: str, host: str, port: int, timeout: float
 ) -> Optional[ProviderUnreachableError]:
     """Run the probe, returning the failure rather than raising it."""
+    started = time.monotonic()
     # DNS is a blocking libc/NSS call and cannot be cancelled. The event loop's
     # default executor uses non-daemon workers and joins them during
     # asyncio.run() shutdown, so wait_for(loop.getaddrinfo(...)) can return at
@@ -343,6 +344,15 @@ async def _probe_host_uncached(
             provider, host, f"{type(exc).__name__}: {exc}", reason="dns_failure"
         )
 
+    remaining = max(0.0, timeout - (time.monotonic() - started))
+    if remaining <= 0:
+        return ProviderUnreachableError(
+            provider,
+            host,
+            "no time left for TCP after DNS",
+            reason="connect_timeout",
+        )
+
     # TCP connect. Deliberately no TLS handshake: this only answers "is anything
     # listening", and a handshake would double the cost of the common case.
     async def connect_resolved():
@@ -366,12 +376,12 @@ async def _probe_host_uncached(
 
     writer = None
     try:
-        _, writer = await asyncio.wait_for(connect_resolved(), timeout)
+        _, writer = await asyncio.wait_for(connect_resolved(), remaining)
     except asyncio.TimeoutError:
         return ProviderUnreachableError(
             provider,
             host,
-            f"no TCP handshake within {timeout:g}s",
+            f"no TCP handshake within {remaining:g}s",
             reason="connect_timeout",
         )
     except ConnectionRefusedError:
@@ -606,10 +616,35 @@ class WalkDeadline:
         self._clock = clock
         self.budget = max(0.0, float(budget))
         self._expires_at = clock() + self.budget
+        self._suspended_at: Optional[float] = None
+        self._suspension_depth = 0
+
+    @contextmanager
+    def suspended(self) -> Iterator[None]:
+        """Exclude consumer-held candidate time from active walk resolution.
+
+        The router yields a resolved URL so its consumer can try the transfer.
+        A slow or failed transfer must not exhaust the deadline that controls
+        the next provider's URL resolution.  ``finally`` deliberately rebases
+        on normal resume, generator close, and exceptions alike.
+        """
+        if self._suspension_depth == 0:
+            self._suspended_at = self._clock()
+        self._suspension_depth += 1
+        try:
+            yield
+        finally:
+            self._suspension_depth -= 1
+            if self._suspension_depth == 0:
+                paused_at = self._suspended_at
+                self._suspended_at = None
+                if paused_at is not None:
+                    self._expires_at += max(0.0, self._clock() - paused_at)
 
     def remaining(self) -> float:
         """Seconds left, never negative."""
-        return max(0.0, self._expires_at - self._clock())
+        clock = self._suspended_at if self._suspended_at is not None else self._clock()
+        return max(0.0, self._expires_at - clock)
 
     def expired(self) -> bool:
         """True once nothing further may be started."""

@@ -91,7 +91,7 @@ keep working. See `docs/api.md` for the full response shapes.
 |--------|---------------|
 | `base.py` | `SourceAdapter` ABC: `search()`, `get_download_url(md5)`, `close()` |
 | `models.py` | `UnifiedBookResult`, `DownloadResult` (shared result shapes) |
-| `config.py` | `SourceConfig` from env (`ANNAS_SECRET_KEY`, `ANNAS_BASE_URL`, `LIBGEN_MIRROR`, `BOOK_SOURCE_DEFAULT`, `BOOK_SOURCE_FALLBACK_ENABLED`) |
+| `config.py` | `SourceConfig` from env (`ANNAS_SECRET_KEY`, `ANNAS_BASE_URL`, `LIBGEN_MIRROR`, `LIBGEN_USER_AGENT`, `BOOK_SOURCE_DEFAULT`, `BOOK_SOURCE_FALLBACK_ENABLED`) |
 | `annas.py` | Anna's Archive adapter — HTML scraping (BeautifulSoup); DOM-fragile surface |
 | `libgen.py` | LibGen adapter (fallback source) |
 | `router.py` | `SourceRouter`: Anna's primary when key configured, LibGen fallback on error/quota exhaustion; source selection `auto`/`annas`/`libgen` |

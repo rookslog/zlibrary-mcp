@@ -60,16 +60,48 @@ if [ -n "$UV_NUMBER" ] && \
 fi
 echo ""
 
-# Initialize UV project (creates .venv and installs deps)
+# npm/end-user setup passes --no-dev. Source contributors use the default,
+# which explicitly names the PEP 735 development group instead of relying on
+# uv's implicit default-group behavior.
+case "${1:-}" in
+    "")
+        # Contributors run the fast suite, and part of it imports scholar-tier
+        # modules at collection time. Without the extras, `uv run pytest` fails
+        # to collect before a single test runs — so the documented bootstrap
+        # has to produce the environment the documented verification needs
+        # (Codex on #114).
+        SYNC_ARGS=(sync --group dev --all-extras)
+        SETUP_TIER="core, every extra, and contributor development tools"
+        ;;
+    --no-dev)
+        SYNC_ARGS=(sync --no-dev)
+        SETUP_TIER="lightweight end-user core"
+        ;;
+    --deploy)
+        # Production runs the RAG pipeline; the deployment checklist validates
+        # it by processing a real document. Core alone cannot do that.
+        SYNC_ARGS=(sync --no-dev --extra rag --extra scholar)
+        SETUP_TIER="end-user core plus the rag and scholar tiers"
+        ;;
+    *)
+        echo "Usage: $0 [--no-dev|--deploy]"
+        echo "  no argument  Contributor setup: dev group and every extra"
+        echo "  --no-dev     End-user core, no development tools"
+        echo "  --deploy     End-user core plus rag and scholar, for deployments"
+        exit 2
+        ;;
+esac
+
+# Initialize UV project (creates .venv and installs the selected tier)
 echo "📦 Installing Python dependencies with UV..."
 echo "   This will:"
 echo "   - Create .venv/ directory"
-echo "   - Install all dependencies from pyproject.toml"
+echo "   - Install $SETUP_TIER from pyproject.toml"
 echo "   - Install vendored zlibrary as editable"
 echo "   - Generate uv.lock for reproducibility"
 echo ""
 
-uv sync
+uv "${SYNC_ARGS[@]}"
 
 echo ""
 echo "✅ Dependencies installed"

@@ -28,6 +28,21 @@ from footnote_continuation import (
     analyze_footnote_batch,
     get_incomplete_confidence_threshold,
 )
+import footnote_continuation as _footnote_continuation
+
+# Some assertions below are about the NLTK sentence-boundary path specifically —
+# its reason codes (`nltk_*`) and its higher confidence — not about the contract
+# every environment must satisfy. NLTK's punkt data is not a package dependency
+# and the module deliberately never downloads it (a RAG operation has to be
+# deterministic and usable offline, #103), so a checkout without it takes the
+# deterministic fallback and those assertions are false there for a reason that
+# is not a defect. CI provisions the data explicitly, so these still run there;
+# the fallback path has its own dedicated coverage in
+# `test_optional_dependencies.py`, which pins both branches exactly.
+requires_nltk_tokenizer = pytest.mark.skipif(
+    not _footnote_continuation._nltk_ready,
+    reason="NLTK punkt data absent; this asserts the NLTK path, not the contract",
+)
 from rag_data_models import NoteSource
 
 pytestmark = pytest.mark.unit
@@ -695,6 +710,7 @@ class TestIsFootnoteIncomplete:
         assert confidence == 0.95
         assert reason == "hyphenation"
 
+    @requires_nltk_tokenizer
     def test_incomplete_phrase_strong_signal(self):
         """Test incomplete phrases (refers to, according to, etc.)."""
         # These end with incomplete phrase patterns (high confidence)
@@ -729,6 +745,7 @@ class TestIsFootnoteIncomplete:
             assert confidence >= 0.75, f"Low confidence for: {text} (got {confidence})"
             assert "nltk_incomplete" in reason, f"Wrong reason for: {text}"
 
+    @requires_nltk_tokenizer
     def test_nltk_incomplete_no_punctuation(self):
         """Test NLTK detection of sentences without terminal punctuation."""
         test_cases = [
@@ -744,6 +761,7 @@ class TestIsFootnoteIncomplete:
             assert confidence >= 0.75, f"Low confidence for: {text}"
             assert "nltk_incomplete" in reason, f"Wrong reason for: {text}"
 
+    @requires_nltk_tokenizer
     def test_nltk_incomplete_with_continuation_word(self):
         """Test NLTK + continuation word for stronger signal."""
         test_cases = [
@@ -808,6 +826,7 @@ class TestIsFootnoteIncomplete:
                 f"Wrong detection for: {text} (expected {expected_incomplete})"
             )
 
+    @requires_nltk_tokenizer
     def test_multiple_sentences_complete(self):
         """Test footnotes with multiple complete sentences."""
         text = (

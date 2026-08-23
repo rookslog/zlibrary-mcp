@@ -1,11 +1,12 @@
 """Font analysis and DPI computation for adaptive resolution rendering."""
 
+from __future__ import annotations
+
 import logging
 from typing import Optional
 
-import fitz
-
 from .models import DPIDecision, PageAnalysis
+from ..utils.deps import PYMUPDF_AVAILABLE, fitz, require_optional_dependency
 
 logger = logging.getLogger(__name__)
 
@@ -110,6 +111,7 @@ def analyze_page_fonts(page) -> PageAnalysis:
 
 def _analyze_page_worker(pdf_path: str, page_num: int) -> tuple[int, PageAnalysis]:
     """Worker function for parallel page analysis. Receives path (picklable)."""
+    require_optional_dependency(PYMUPDF_AVAILABLE, "PyMuPDF (fitz)", "rag")
     with fitz.open(pdf_path) as doc:
         page = doc[page_num]
         result = analyze_page_fonts(page)
@@ -129,6 +131,7 @@ def analyze_document_fonts(
     Returns:
         Dict mapping page number to PageAnalysis.
     """
+    require_optional_dependency(PYMUPDF_AVAILABLE, "PyMuPDF (fitz)", "rag")
     results: dict[int, PageAnalysis] = {}
 
     with fitz.open(pdf_path) as doc:

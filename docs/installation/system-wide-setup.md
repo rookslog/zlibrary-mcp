@@ -246,8 +246,12 @@ cd ~/projects/some-project
 ```bash
 cd ~/mcp-servers/zlibrary-mcp
 npm install
-bash setup-uv.sh
+bash setup-uv.sh --no-dev
 ```
+
+This installs the lightweight search/download core without contributor test and
+lint tools. Add PDF/EPUB processing with `uv sync --no-dev --extra rag`, or the
+complete scholarly/OCR tier with `uv sync --no-dev --extra scholar`.
 
 ### "Path not found" in .mcp.json
 - Verify path is absolute: `/home/rookslog/mcp-servers/zlibrary-mcp/dist/index.js`

@@ -11,7 +11,7 @@
  * - No programmatic pip installation
  * - UV handles all dependency management
  *
- * Setup: Run `uv sync` before building
+ * Setup: Run `uv sync --no-dev` before building (`uv sync` for contributors)
  */
 
 import * as path from 'path';
@@ -25,11 +25,11 @@ const __dirname = path.dirname(__filename);
 /**
  * Get path to UV-managed Python executable
  *
- * UV creates .venv/ in project root when you run: uv sync
+ * UV creates .venv/ in project root when you run: uv sync --no-dev
  * This function returns the path to Python in that venv.
  *
  * @returns {Promise<string>} Path to Python executable in .venv
- * @throws {Error} If .venv not found (user needs to run: uv sync)
+ * @throws {Error} If .venv not found (user needs to run: uv sync --no-dev)
  */
 /**
  * Path segments to UV's Python executable inside `.venv`, for a given platform.
@@ -37,7 +37,7 @@ const __dirname = path.dirname(__filename);
  * UV follows the platform convention: `.venv/bin/python` on POSIX,
  * `.venv\Scripts\python.exe` on Windows. Hardcoding the POSIX layout meant the
  * venv was never found on Windows and every invocation failed with the
- * "run uv sync" error even after a successful sync.
+ * "run uv sync --no-dev" error even after a successful sync.
  *
  * Exported and platform-parameterised so both branches are testable from any
  * host — a platform-conditional that only runs on the platform it is broken for
@@ -72,11 +72,15 @@ export async function getManagedPythonPath(): Promise<string> {
     throw new Error(
       'Python virtual environment not found.\n\n' +
       'UV has not initialized the environment. Please run:\n' +
-      '  uv sync\n\n' +
+      '  bash setup-uv.sh --no-dev\n' +
+      '  # or, equivalently:  uv sync --no-dev\n\n' +
       'This will:\n' +
       '  1. Create .venv/ directory\n' +
-      '  2. Install all dependencies from pyproject.toml\n' +
+      '  2. Install the runtime dependencies from pyproject.toml\n' +
       '  3. Generate uv.lock for reproducibility\n\n' +
+      'Contributing to this repo rather than running it? Use\n' +
+      '  bash setup-uv.sh\n' +
+      'which adds the development group (pytest, Ruff, pip-audit).\n\n' +
       'First time setup? Install UV:\n' +
       `  ${uvInstallCommand(process.platform)}\n` +
       '  # Or: pip install uv\n\n' +
@@ -94,7 +98,7 @@ export async function getManagedPythonPath(): Promise<string> {
       `Python at ${uvVenvPython} is not executable.\n` +
       `This usually means .venv is corrupted. Try:\n` +
       `  ${venvRemoveCommand(process.platform)}\n` +
-      `  uv sync`,
+      `  uv sync --no-dev`,
       { cause: error }
     );
   }

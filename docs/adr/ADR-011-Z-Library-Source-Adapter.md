@@ -336,6 +336,10 @@ at its compatibility façade. That is a property of the legacy tool contract,
 not a default inside the generic router.
 
 `source="auto"` has an explicit migration path. A new optional
+`BOOK_SOURCE_ORDER` names the providers to attempt, in order, and is the only
+setting that changes routing; the paragraphs below define it, bound it, and
+state the precondition it cannot ship without.
+
 **A three-source order does not fit the current timeout budget, and the order
 cannot ship before that is resolved.** `lib/sources/config.py` documents the
 arithmetic: one provider attempt costs at worst `2 x preflight + total` = 55s,
@@ -354,6 +358,15 @@ lives. A full-order timeout test covering the longest permitted order lands in
 the same stage; without it the regression is invisible until a slow walk in
 production.
 
+**The order is a set, not a bag.** Validation rejects a repeated source:
+`[libgen, libgen, libgen, libgen, libgen]` would otherwise be valid, and since
+the router attempts the supplied order exactly, it multiplies the mirror walk
+without bound — reinstating the timeout overrun the paragraph above exists to
+prevent, with no way for the arithmetic to anticipate it. Each canonical value
+appears at most once, which also bounds the order's length at the number of
+registered sources and makes the worst-case attempt count computable from the
+registry rather than from operator input.
+
 `BOOK_SOURCE_ORDER` is a validated, non-empty ordered list of canonical
 `SourceType` values (`annas_archive`, `libgen`, or `zlibrary`) and controls
 `auto` only when set. Selector aliases are normalised before validation:
@@ -361,7 +374,7 @@ legacy `annas` becomes `annas_archive`, while canonical values pass unchanged;
 unknown values fail rather than becoming registry keys. 
 
 **`BOOK_SOURCE_DEFAULT` is currently inert, and this migration must not quietly
-activate it.** `SourceRouter._resolve_source` never reads
+activate it.** `SourceRouter._determine_source` never reads
 `config.default_source`; it resolves an omitted or `auto` request from
 `has_annas_key` alone. So an operator who set `BOOK_SOURCE_DEFAULT=annas`
 without a key is being routed to LibGen today, and one who set `libgen` with a
@@ -384,18 +397,37 @@ would silently drop key-free Anna's results for every operator without a key.
   is enabled, `[libgen]` when it is not.
 - **Search, unset or `auto`, key present** → `[annas_archive, libgen]` when
   fallback is enabled, `[annas_archive]` when it is not.
-- **Acquisition, unset or `auto`, no key** → `[libgen]`. Anna's is not appended:
-  its key-free search cannot be followed by a supported key-free download.
-- **Acquisition, unset or `auto`, key present** → `[annas_archive, libgen]` when
-  fallback is enabled, `[annas_archive]` when it is not.
+**Acquisition dispatches to the adapter the selected result names, not to a
+configured order.** A result carries its `source`, and the file lives at that
+provider — handing a LibGen result to Anna's would mean passing LibGen's
+`source_ref` to an adapter that cannot resolve it, or performing the
+cross-source lookup this ADR explicitly defers. So the orders above govern
+**search**; acquisition follows `book.source`, as the source-bound contract
+earlier in this document requires.
+
+The ordered walk still matters for acquisition, but *within* the named
+provider: LibGen's mirrors, and Anna's partner servers. Cross-provider
+acquisition fallback is only reachable when the caller asked for `auto` and no
+result has been selected yet, and even then it is bounded by the timeout
+arithmetic below:
+
+- **`auto` acquisition, no key** → `[libgen]`. Anna's is not appended: its
+  key-free search cannot be followed by a supported key-free download.
+- **`auto` acquisition, key present** → `[annas_archive, libgen]` when fallback
+  is enabled, `[annas_archive]` when it is not.
 - **`BOOK_SOURCE_DEFAULT` set to anything** → *ignored for ordering*, exactly as
   today, and logged once at startup as inert with a pointer to
   `BOOK_SOURCE_ORDER`. Silence would leave an operator believing a setting
   works; honouring it would change routing under their feet.
 
-Legacy fallback stays one-way: when Anna's Archive is the primary and fallback
-is enabled, LibGen is appended; LibGen never implicitly falls through to Anna's
-Archive. `BOOK_SOURCE_ORDER` is the single opt-in way to choose an order, and
+Legacy fallback is one-way **for acquisition only**: with a key, Anna's is
+primary and LibGen is appended; without one, acquisition is `[libgen]` and
+Anna's is not appended, because its key-free search cannot be followed by a
+supported key-free download. **Search is not one-way** — the orders above give
+a keyless operator `[libgen, annas_archive]`, matching
+`_search_candidates` today, and removing that would drop key-free Anna's
+results for every operator without a key. Stating the restriction without its
+scope is what made this paragraph contradict the orders three lines above it. `BOOK_SOURCE_ORDER` is the single opt-in way to choose an order, and
 adopting it is what makes a previously inert preference take effect. Z-Library is not added to
 the derived legacy order merely by registration; its named compatibility tools
 remain explicit. Invalid legacy or new order values fail configuration
@@ -426,7 +458,9 @@ The stable fields are:
 
 ```text
 source       SourceType value, required only for a single-source failure
-operation    search, acquire, metadata, limits, history, recent, or booklist
+operation    search, download, metadata, limits, history, recent, or booklist
+             (`download`, never `acquire` — see the wire-compatibility note
+             below; `acquire` is the adapter method name and stays internal)
 reason       stable machine-readable reason code
 retryable    explicit boolean when known
 detail       bounded human-readable context

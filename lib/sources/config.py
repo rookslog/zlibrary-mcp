@@ -245,7 +245,14 @@ def get_source_config() -> SourceConfig:
         .strip()
         .lower()
         in ("1", "true", "yes"),
-        annas_browser_profile_dir=(
+        # expanduser applies to the OVERRIDE too, not just the default. The
+        # value arrives from an MCP client's JSON `env` block, where no shell
+        # has expanded anything, so a perfectly ordinary `~/.cache/...` stays
+        # literal and Chrome, the usage counter and the process lock all land
+        # in a `./~/` directory beside the server's cwd — losing the clearance
+        # the operator solved by hand, or failing outright on a read-only
+        # install (Codex on #150).
+        annas_browser_profile_dir=os.path.expanduser(
             os.environ.get("ANNAS_BROWSER_PROFILE_DIR", "").strip()
             or DEFAULT_ANNAS_BROWSER_PROFILE_DIR
         ),

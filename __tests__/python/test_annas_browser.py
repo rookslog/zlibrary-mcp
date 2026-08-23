@@ -21,7 +21,7 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 
-from lib.sources.annas_usage import DailyUsage  # noqa: E402
+from lib.sources.annas_usage import CrossProcessLock, DailyUsage  # noqa: E402
 from lib.sources.annas_browser import (  # noqa: E402
     AnnasBrowserSession,
     visible_text,
@@ -778,48 +778,117 @@ class TestCrossProcessSerialisation:
         )
         session._process_lock.release()
 
-    def test_a_lock_whose_owner_died_is_reclaimed(self, tmp_path):
-        """A crashed process must not block the operator's tool forever."""
-        import os
-        import time
+    def test_a_lock_whose_holder_was_killed_is_immediately_available(self, tmp_path):
+        """A crashed holder must not wedge the operator's tool.
 
-        from lib.sources.annas_usage import CrossProcessLock
+        This is the finding that made the lock an OS lock. The directory
+        version had to *judge* staleness — read an owner pid, decide it was
+        dead, delete the directory — and two processes could pass that check
+        together, the second deleting a lock the first had already retaken
+        (Codex on #150, twice). There is nothing to judge here: the child is
+        SIGKILLed, so it runs no cleanup at all, and the kernel drops the lock
+        because the file descriptor holding it is closed.
 
-        path = tmp_path / "held.lock"
-        os.makedirs(path)
-        # A PID that cannot be running: os.kill(0, 0) targets the process
-        # group, so use a recorded value that reads back as absent instead.
-        (path / "owner").write_text("999999999")
-        time.sleep(0.06)
+        A real subprocess, killed for real. A mocked pid would only test the
+        bookkeeping that this change deletes.
+        """
+        import subprocess
+        import sys as _sys
 
-        lock = CrossProcessLock(str(path), stale_after=0.05)
+        repo_root = Path(__file__).resolve().parents[2]
+        lock_path = tmp_path / "held.lock"
+        child = subprocess.Popen(
+            [
+                _sys.executable,
+                "-c",
+                (
+                    "import sys, time\n"
+                    f"sys.path.insert(0, {str(repo_root)!r})\n"
+                    "from lib.sources.annas_usage import CrossProcessLock\n"
+                    f"lock = CrossProcessLock({str(lock_path)!r})\n"
+                    "assert lock.acquire(5.0)\n"
+                    "print('HELD', flush=True)\n"
+                    "time.sleep(300)\n"
+                ),
+            ],
+            stdout=subprocess.PIPE,
+            text=True,
+        )
+        try:
+            assert child.stdout.readline().strip() == "HELD", (
+                "the child never took the lock, so this test proves nothing"
+            )
+            contender = CrossProcessLock(str(lock_path))
+            assert contender.acquire(0.3) is False, (
+                "a live holder's lock was handed to a second process"
+            )
+            child.kill()
+            child.wait(timeout=10)
+        finally:
+            if child.poll() is None:  # pragma: no cover - only on an early failure
+                child.kill()
+                child.wait(timeout=10)
 
-        assert lock.acquire(1.0) is True
-        lock.release()
+        reclaimer = CrossProcessLock(str(lock_path))
+        assert reclaimer.acquire(2.0) is True, (
+            "the kernel did not release the lock when its holder died"
+        )
+        reclaimer.release()
 
-    def test_a_live_owner_is_never_reclaimed_however_old(self, tmp_path):
-        """Age is not evidence of staleness while the holder is running.
+    def test_a_live_holder_is_never_displaced_however_long_it_holds(self, tmp_path):
+        """Age is not evidence of anything while the holder is running.
 
         Codex on #150: a payload transfer may legitimately run for 25 minutes
-        with the holder suspended, still owning the Chrome profile. Reclaiming
-        on age alone would launch a second Chrome against a profile in use and
-        break both downloads.
+        with the holder suspended, still owning the Chrome profile. The old
+        lock reclaimed on age and would have launched a second Chrome against
+        a profile in use. An OS lock has no age to consult.
         """
         import time
 
-        from lib.sources.annas_usage import CrossProcessLock
-
-        holder = CrossProcessLock(str(tmp_path / "held.lock"), stale_after=0.05)
+        holder = CrossProcessLock(str(tmp_path / "held.lock"))
         assert holder.acquire(1.0) is True
-        time.sleep(0.1)  # well past stale_after
+        time.sleep(0.1)
 
-        other = CrossProcessLock(str(tmp_path / "held.lock"), stale_after=0.05)
+        other = CrossProcessLock(str(tmp_path / "held.lock"))
+        try:
+            assert other.acquire(0.3) is False, (
+                "a second holder took a lock the first is still using"
+            )
+        finally:
+            holder.release()
 
-        assert other.acquire(0.3) is False, (
-            "the owner of this lock is this very process; reclaiming it on age "
-            "would hand the browser to a second holder while the first is using it"
-        )
-        holder.release()
+        assert other.acquire(1.0) is True, "the lock was not released"
+        other.release()
+
+    def test_nothing_reads_the_owner_pid_to_make_a_decision(self):
+        """The pid in the lock file is diagnostics, and must stay that way.
+
+        Every version of this lock that consulted a pid to decide whether it
+        could take the lock had a check-then-act race. This asserts the source
+        carries no liveness probe, so a future round cannot reintroduce one
+        without deleting this test and saying why.
+        """
+        import inspect
+
+        from lib.sources import annas_usage
+
+        source = inspect.getsource(annas_usage)
+
+        for banned in ("os.kill(", "OpenProcess", "/proc/", "stale_after"):
+            assert banned not in source, (
+                f"{banned!r} is back in the lock module; the OS lock exists "
+                f"precisely so no pid has to be judged"
+            )
+
+    def test_acquiring_a_lock_this_object_already_holds_is_an_error(self, tmp_path):
+        """Silently re-entering would make one release() drop a held lock."""
+        lock = CrossProcessLock(str(tmp_path / "held.lock"))
+        assert lock.acquire(1.0) is True
+        try:
+            with pytest.raises(RuntimeError):
+                lock.acquire(1.0)
+        finally:
+            lock.release()
 
     def test_an_unlockable_counter_refuses_rather_than_running_uncounted(
         self, tmp_path
@@ -859,50 +928,6 @@ class TestCrossProcessSerialisation:
             await session.resolve_download_url(MD5)
 
         assert excinfo.value.reason == "configuration_error"
-
-    def test_liveness_never_signals_the_process_it_asks_about(self, tmp_path):
-        """`os.kill(pid, 0)` terminates the target on Windows (#150).
-
-        CPython maps any signal but the console-control values onto
-        `TerminateProcess`, so the "harmless" probe would have killed the
-        bridge holding the browser lock — and then waited behind a lock whose
-        owner it had just destroyed.
-        """
-        import ast
-        import inspect
-        import textwrap
-
-        from lib.sources import annas_usage
-
-        tree = ast.parse(
-            textwrap.dedent(inspect.getsource(annas_usage._process_exists))
-        )
-        body = tree.body[0].body
-        # Drop the docstring, which legitimately *mentions* os.kill while
-        # explaining why it is guarded.
-        if isinstance(body[0], ast.Expr) and isinstance(body[0].value, ast.Constant):
-            body = body[1:]
-        code = "\n".join(ast.unparse(node) for node in body)
-
-        assert "win32" in code, "the Windows path must be handled in code"
-        assert "OpenProcess" in code
-        # The POSIX probe must sit behind the platform check, not before it.
-        assert code.index("win32") < code.index("os.kill("), (
-            "os.kill reached before the platform check would terminate the "
-            "process on Windows"
-        )
-
-    def test_liveness_reports_a_dead_pid_as_dead(self):
-        from lib.sources.annas_usage import _process_exists
-
-        assert _process_exists(999999999) is False
-
-    def test_liveness_reports_this_process_as_alive(self):
-        import os
-
-        from lib.sources.annas_usage import _process_exists
-
-        assert _process_exists(os.getpid()) is True
 
     def test_an_unknown_budget_omits_quota_rather_than_reporting_zero(self):
         from lib.sources.annas import AnnasArchiveAdapter

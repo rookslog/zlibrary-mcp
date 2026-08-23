@@ -442,12 +442,26 @@ class AnnasBrowserSession:
                 self._playwright = None
 
     async def close(self) -> None:
+        """Tear the browser down without turning cleanup into failure.
+
+        `python_bridge.main()` closes the router AFTER printing a successful
+        result, so an exception raised here exits the process nonzero and the
+        Node caller reports a failed download for an artifact already written
+        to disk. Chrome disconnecting mid-transfer — the case the guarded
+        `page.close()` covers — reaches this call for the same reason, so it
+        needs the same treatment: log it, do not raise it (Codex on #150).
+        """
         if self._context is not None:
             try:
                 await self._context.close()
+            except Exception as exc:
+                logger.warning("Anna's browser context did not close: %s", exc)
             finally:
                 self._context = None
-        await self._shutdown_playwright()
+        try:
+            await self._shutdown_playwright()
+        except Exception as exc:
+            logger.warning("Anna's Playwright driver did not stop: %s", exc)
 
     # -- navigation --------------------------------------------------------
 

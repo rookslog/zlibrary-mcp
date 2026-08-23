@@ -10,9 +10,22 @@ being rhetorical.
 
 The state is a small JSON file next to the browser profile, guarded by an
 exclusive lock file so two concurrent bridge processes cannot both read 29 and
-both write 30. The lock is a directory rather than `fcntl`: `os.mkdir` is
-atomic on POSIX and Windows alike, needs no third-party dependency, and this
-project supports both.
+both write 30.
+
+The lock was an atomic `os.mkdir`, chosen because it works the same on POSIX
+and Windows. That bought atomic *creation* and no atomic *reclamation*: a
+holder that dies leaves its directory behind, and every scheme for cleaning
+one up is check-then-act — read the owner, decide it is dead, delete. Two
+processes can pass that check together, and the second then deletes the lock
+the first has already retaken, leaving two holders of one Chrome profile
+(Codex on #150, twice). The PID files, liveness probes and staleness ages that
+grew around it were all attempts to shrink that window rather than close it.
+
+It is now an OS-held advisory lock — `fcntl.flock` on POSIX, `msvcrt.locking`
+on Windows — because the kernel releases it when the holder dies. There is no
+stale lock to reclaim, so the race has no window to occur in, and roughly
+eighty lines of PID bookkeeping are gone with it. Both platforms are still
+supported and nothing was added to the dependency set.
 
 Nothing here is a security boundary. An operator who wants more can edit the
 file or raise `ANNAS_BROWSER_DAILY_LIMIT`; the point is that they have to
@@ -21,7 +34,6 @@ decide to, rather than getting it by accident because the counter forgot.
 
 from __future__ import annotations
 
-import errno
 import json
 import logging
 import os
@@ -33,91 +45,34 @@ from typing import Optional, Tuple
 logger = logging.getLogger(__name__)
 
 
-def _process_start_time(pid: int) -> Optional[float]:
-    """Process start time in seconds since boot, or None if unavailable.
-
-    Linux only, from `/proc/<pid>/stat` field 22. Used to tell a live lock
-    owner from an unrelated process that happens to have inherited its PID
-    after a reboot — without it, a reused PID makes a stale lock look live
-    forever and no download can ever take the browser again (Codex on #150).
-    """
-    try:
-        with open(f"/proc/{pid}/stat", "rb") as handle:
-            fields = handle.read().rsplit(b")", 1)[1].split()
-        ticks = float(fields[19])  # field 22, zero-indexed after the comm split
-    except (OSError, IndexError, ValueError):
-        return None
-    try:
-        hertz = os.sysconf("SC_CLK_TCK") or 100
-    except (OSError, ValueError):
-        hertz = 100
-    return ticks / hertz
-
-
-def _process_exists(pid: int) -> bool:
-    """Whether a process id is live, without signalling it.
-
-    **`os.kill(pid, 0)` is not a liveness probe on Windows.** CPython maps any
-    signal other than the console-control values onto `TerminateProcess`, so
-    the "harmless" zero signal *kills* the process it was meant to ask about
-    (Codex on #150). Here that would mean a second download terminating the
-    bridge holding the browser lock, and then waiting behind a lock whose owner
-    it had just destroyed.
-
-    POSIX keeps the cheap check. Windows uses `OpenProcess`, which is the
-    read-only question actually being asked.
-    """
-    if sys.platform == "win32":  # pragma: no cover - exercised on Windows only
-        import ctypes  # noqa: PLC0415
-
-        PROCESS_QUERY_LIMITED_INFORMATION = 0x1000
-        STILL_ACTIVE = 259
-        kernel32 = ctypes.windll.kernel32
-        handle = kernel32.OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, False, pid)
-        if not handle:
-            return False
-        try:
-            code = ctypes.c_ulong()
-            if not kernel32.GetExitCodeProcess(handle, ctypes.byref(code)):
-                # Cannot tell; treat as alive rather than reclaim a lock we do
-                # not understand.
-                return True
-            return code.value == STILL_ACTIVE
-        finally:
-            kernel32.CloseHandle(handle)
-    try:
-        os.kill(pid, 0)
-    except ProcessLookupError:
-        return False
-    except PermissionError:
-        # Alive, owned by another user. Not ours to reclaim.
-        return True
-    except OSError:
-        return True
-    return True
-
-
 # How long to wait for another process to finish its read-modify-write. The
 # critical section is two file operations, so anything beyond this means a
 # crashed process left the directory behind rather than a genuine queue.
 _LOCK_TIMEOUT = 5.0
 _LOCK_POLL = 0.02
-_STALE_LOCK_AGE = 30.0
-
-# How many multiples of `stale_after` a PID-alive lock is trusted for on
-# platforms that cannot report process start times. Generous, because a live
-# holder really can hold for a whole download; finite, because a PID reused
-# after a reboot must not wedge the browser forever.
-_PID_TRUST_CEILING = 8
 
 
-def _system_uptime() -> Optional[float]:
-    """Seconds since boot, or None where unavailable."""
-    try:
-        with open("/proc/uptime", "rb") as handle:
-            return float(handle.read().split()[0])
-    except (OSError, IndexError, ValueError):
-        return None
+if sys.platform == "win32":  # pragma: no cover - exercised on Windows only
+    import msvcrt  # noqa: PLC0415
+
+    def _try_lock(fd: int) -> None:
+        """Claim byte 0 exclusively, or raise OSError."""
+        os.lseek(fd, 0, os.SEEK_SET)
+        msvcrt.locking(fd, msvcrt.LK_NBLCK, 1)
+
+    def _unlock(fd: int) -> None:
+        os.lseek(fd, 0, os.SEEK_SET)
+        msvcrt.locking(fd, msvcrt.LK_UNLCK, 1)
+
+else:
+    import fcntl  # noqa: PLC0415
+
+    def _try_lock(fd: int) -> None:
+        """Claim the whole file exclusively, or raise OSError."""
+        fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+
+    def _unlock(fd: int) -> None:
+        fcntl.flock(fd, fcntl.LOCK_UN)
 
 
 class UsageCounterUnavailableError(RuntimeError):
@@ -137,150 +92,79 @@ class CrossProcessLock:
     second launch against a profile the first one owns, producing a confusing
     browser error instead of a clear one.
 
-    Same atomic-`mkdir` mechanism as the usage counter, with a much longer
-    timeout: a browser walk legitimately takes a couple of minutes, so waiting
-    is the correct behaviour rather than a symptom.
+    The claim is an OS advisory lock on an open file descriptor, so the kernel
+    drops it when the holder exits — crash, kill -9 or clean return alike.
+    That is the whole reason it replaced the lock directory this class used to
+    manage by hand: there is no orphaned lock, therefore no staleness to judge,
+    no owner PID to trust, and no check-then-act window in which two processes
+    can both decide they are entitled to reclaim.
+
+    Waiting is the correct behaviour here rather than a symptom: a browser walk
+    legitimately takes a couple of minutes, so callers pass a generous timeout.
+
+    The pid written into the file is diagnostics only. Nothing reads it to make
+    a decision — that was the old design, and it is what went wrong.
     """
 
-    def __init__(self, path: str, stale_after: float = 600.0):
+    def __init__(self, path: str):
         self.path = Path(path)
-        self.owner_path = self.path / "owner"
-        self.stale_after = stale_after
-
-    def _owner_pid(self) -> Optional[int]:
-        try:
-            return int(self.owner_path.read_text().strip())
-        except (OSError, ValueError):
-            return None
-
-    def _owner_is_alive(self) -> bool:
-        """Whether the process that took this lock still exists.
-
-        Age alone is not evidence of staleness here: a payload transfer may
-        legitimately run for far longer than `stale_after` (the download budget
-        allows 25 minutes) while the holder sits suspended, still owning the
-        Chrome profile. Reclaiming on age would then launch a second Chrome
-        against a profile in use — defeating the serialisation and breaking
-        both downloads (Codex on #150). Liveness is the question that was
-        actually being asked.
-        """
-        pid = self._owner_pid()
-        if pid is None:
-            # No owner recorded: an older lock, or one whose write was
-            # interrupted. Fall back to age, which is what this class did
-            # before liveness existed.
-            return False
-        if not _process_exists(pid):
-            return False
-
-        # A live PID is not proof of ownership. After a reboot or an unclean
-        # shutdown the directory survives and its PID can belong to an
-        # unrelated long-lived process, which would make the lock look live
-        # forever (Codex on #150). Where the platform can tell us, a process
-        # that started AFTER the lock was created cannot be its owner.
-        started = _process_start_time(pid)
-        if started is not None:
-            try:
-                lock_age = time.time() - self.path.stat().st_mtime
-            except OSError:
-                return True
-            uptime = _system_uptime()
-            if uptime is not None and (uptime - started) < lock_age:
-                logger.warning(
-                    "Lock at %s names PID %d, but that process is younger than "
-                    "the lock — treating it as stale rather than live",
-                    self.path,
-                    pid,
-                )
-                return False
-            return True
-
-        # No start time available (non-Linux). Trust the PID, but not forever:
-        # cap it so a reused PID cannot wedge the browser permanently.
-        try:
-            lock_age = time.time() - self.path.stat().st_mtime
-        except OSError:
-            return True
-        return lock_age < (self.stale_after * _PID_TRUST_CEILING)
+        self._fd: Optional[int] = None
 
     def acquire(self, timeout: float) -> bool:
+        """Block up to `timeout` seconds for the lock. False if not taken.
+
+        Fails CLOSED on an unusable lock path, for the same reason the counter
+        does: returning success would mean "no lock exists, proceed anyway",
+        two bridge processes would launch Chrome against one profile, and the
+        serialisation this class exists for would be gone (Codex on #150). An
+        unwritable path does not heal itself, so allowing the first request
+        allows every later one.
+        """
+        if self._fd is not None:
+            # Re-entrant acquisition would make the paired release() drop a
+            # lock the caller still believes it holds.
+            raise RuntimeError(f"lock at {self.path} is already held by this object")
         deadline = time.monotonic() + timeout
         while True:
             try:
                 self.path.parent.mkdir(parents=True, exist_ok=True)
-                os.mkdir(self.path)
-                try:
-                    self.owner_path.write_text(str(os.getpid()))
-                except OSError:  # pragma: no cover - lock still held, just anonymous
-                    logger.debug(
-                        "Could not record the lock owner at %s", self.owner_path
-                    )
-                return True
-            except FileExistsError:
-                observed_owner = self._owner_pid()
-                if self._owner_is_alive():
-                    # Held by a running process. Wait however long the caller
-                    # allows; a live holder is never stale, whatever its age.
-                    if time.monotonic() >= deadline:
-                        return False
-                    time.sleep(0.25)
-                    continue
-                try:
-                    age = time.time() - self.path.stat().st_mtime
-                except OSError:
-                    age = 0.0
-                if age > self.stale_after:
-                    # Ownership-aware: two processes can both see the same
-                    # stale lock, and if the first reclaims and recreates it,
-                    # a blind `release()` from the second would delete the NEW
-                    # owner's lock and hand the browser to two holders at once
-                    # (Codex on #150). Only remove what we actually observed.
-                    logger.warning(
-                        "Reclaiming a browser lock at %s: owner is gone and the "
-                        "lock is %.0fs old",
-                        self.path,
-                        age,
-                    )
-                    self._release_if_unchanged(observed_owner)
-                    continue
+                fd = os.open(self.path, os.O_RDWR | os.O_CREAT, 0o644)
+            except OSError as exc:
+                logger.warning("Cannot open the lock file at %s: %s", self.path, exc)
+                return False
+            try:
+                _try_lock(fd)
+            except OSError:
+                os.close(fd)
                 if time.monotonic() >= deadline:
                     return False
-                time.sleep(0.25)
-            except OSError as exc:
-                # Fail CLOSED, for the same reason the counter does. Returning
-                # success here means "no lock exists, proceed anyway" — so two
-                # bridge processes both launch Chrome against one profile and
-                # the serialisation this class exists for is gone, usually
-                # surfacing as a confusing profile-lock error rather than as
-                # the policy violation it is (Codex on #150). An unwritable
-                # lock path does not heal itself, so allowing the first request
-                # allows every later one.
-                logger.warning(
-                    "Cannot create the browser lock at %s: %s", self.path, exc
-                )
-                return False
-
-    def _release_if_unchanged(self, observed_owner: Optional[int]) -> None:
-        """Remove the lock only if it still names the owner we saw.
-
-        Between observing a stale lock and reclaiming it, another process may
-        have reclaimed and re-taken it. Removing that one would leave two
-        holders believing they own the browser.
-        """
-        if self._owner_pid() != observed_owner:
-            logger.info("Not reclaiming %s: another process took it first", self.path)
-            return
-        self.release()
+                time.sleep(_LOCK_POLL if timeout <= _LOCK_TIMEOUT else 0.25)
+                continue
+            except Exception:
+                os.close(fd)
+                raise
+            self._fd = fd
+            try:
+                os.ftruncate(fd, 0)
+                os.write(fd, str(os.getpid()).encode())
+            except OSError:  # pragma: no cover - diagnostics only
+                logger.debug("Could not record the lock owner in %s", self.path)
+            return True
 
     def release(self) -> None:
+        """Drop the lock. Safe to call when not held."""
+        fd, self._fd = self._fd, None
+        if fd is None:
+            return
         try:
-            self.owner_path.unlink()
-        except OSError:
+            _unlock(fd)
+        except OSError:  # pragma: no cover - the close below releases it anyway
             pass
-        try:
-            os.rmdir(self.path)
-        except OSError:
-            pass
+        finally:
+            try:
+                os.close(fd)
+            except OSError:
+                pass
 
 
 class DailyUsage:
@@ -289,45 +173,24 @@ class DailyUsage:
     def __init__(self, state_path: str):
         self.path = Path(state_path)
         self.lock_path = Path(str(state_path) + ".lock")
+        # The same lock as the browser session uses, on a different path. It
+        # used to be a second hand-rolled copy of the mkdir scheme, with its
+        # own staleness age and its own version of the reclamation race.
+        self._lock = CrossProcessLock(self.lock_path)
 
     # -- locking -----------------------------------------------------------
 
     def _acquire(self) -> bool:
-        deadline = time.monotonic() + _LOCK_TIMEOUT
-        while True:
-            try:
-                self.lock_path.parent.mkdir(parents=True, exist_ok=True)
-                os.mkdir(self.lock_path)
-                return True
-            except FileExistsError:
-                # A process that died mid-write must not wedge the limiter
-                # shut. Waiting forever would be a denial of the operator's own
-                # tool; ignoring the lock entirely would defeat it.
-                try:
-                    age = time.time() - self.lock_path.stat().st_mtime
-                except OSError:
-                    age = 0.0
-                if age > _STALE_LOCK_AGE:
-                    logger.warning(
-                        "Removing a stale Anna's usage lock (%.0fs old) at %s",
-                        age,
-                        self.lock_path,
-                    )
-                    self._release()
-                    continue
-                if time.monotonic() >= deadline:
-                    return False
-                time.sleep(_LOCK_POLL)
-            except OSError as exc:
-                if exc.errno in (errno.EACCES, errno.EROFS):
-                    return False
-                raise
+        """Take the counter lock, or report failure so the caller can refuse.
+
+        The critical section is two file operations, so `_LOCK_TIMEOUT` beyond
+        it means genuine contention rather than a crashed holder — a crashed
+        holder no longer leaves anything behind to wait for.
+        """
+        return self._lock.acquire(_LOCK_TIMEOUT)
 
     def _release(self) -> None:
-        try:
-            os.rmdir(self.lock_path)
-        except OSError:
-            pass
+        self._lock.release()
 
     # -- state -------------------------------------------------------------
 
@@ -426,12 +289,23 @@ class DailyUsage:
             if now - window_started >= 86400:
                 window_started, spent = now, 0
             elif now < window_started:
+                # `next_allowed` is an ABSOLUTE timestamp on the pre-correction
+                # clock, so re-anchoring the window alone leaves it stranded in
+                # the future: a one-hour NTP correction turned "wait 20s" into
+                # "wait an hour and 20s" (Codex on #150). Shift it by the same
+                # delta the clock moved, which preserves whatever real delay
+                # was left — including a long `penalise()` backoff, which must
+                # survive this or the rollback would quietly cancel it.
+                rollback = window_started - now
                 logger.warning(
-                    "Clock moved backwards past the usage window start; "
-                    "re-anchoring without resetting the %d requests already spent",
+                    "Clock moved backwards %.0fs past the usage window start; "
+                    "re-anchoring without resetting the %d requests already "
+                    "spent, and shifting the request floor by the same amount",
+                    rollback,
                     spent,
                 )
                 window_started = now
+                next_allowed = max(0.0, next_allowed - rollback)
             if spent >= limit:
                 return False, 0, 0.0
             start_at = max(now, next_allowed)

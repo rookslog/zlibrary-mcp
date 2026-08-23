@@ -18,6 +18,7 @@ from .config import SourceConfig, get_source_config
 from .errors import AllSourcesFailedError, SourceError
 from .libgen import LibgenAdapter
 from .models import DownloadResult, UnifiedBookResult
+from .net import WalkDeadline
 
 logger = logging.getLogger("zlibrary.sources")
 
@@ -156,10 +157,19 @@ class SourceRouter:
         candidates = self._search_candidates(source)
         failures: List[SourceError] = []
         answered = False
+        # ONE clock for the whole walk, created here and spent by every
+        # provider and every mirror beneath them. The alternative — each
+        # attempt bounded on its own — makes the walk's cost a product of two
+        # counts that move with configuration, and #152 is what that product
+        # being wrong looks like from the operator's side: a killed bridge
+        # process and a generic timeout in place of attributed failures.
+        deadline = WalkDeadline(self.config.walk_budget)
 
         for name in candidates:
             try:
-                results = await self._adapter_for(name).search(query, **kwargs)
+                results = await self._adapter_for(name).search(
+                    query, deadline=deadline, **kwargs
+                )
             except AllSourcesFailedError as exc:
                 # A provider that walks its own mirrors (LibGen) reports a set.
                 failures.extend(exc.failures)
@@ -251,6 +261,7 @@ class SourceRouter:
         """Flatten candidate streams, crossing providers only for ``auto``."""
         candidates = self._download_candidates(source)
         failures: List[SourceError] = []
+        deadline = WalkDeadline(self.config.walk_budget)
 
         for name in candidates:
             provider_stream = None
@@ -258,11 +269,11 @@ class SourceRouter:
                 adapter = self._adapter_for(name)
                 candidate_method = getattr(adapter, "iter_download_candidates", None)
                 if candidate_method and inspect.isasyncgenfunction(candidate_method):
-                    provider_stream = candidate_method(md5)
+                    provider_stream = candidate_method(md5, deadline=deadline)
                 else:
 
                     async def single_candidate():
-                        yield await adapter.get_download_url(md5)
+                        yield await adapter.get_download_url(md5, deadline=deadline)
 
                     provider_stream = single_candidate()
 

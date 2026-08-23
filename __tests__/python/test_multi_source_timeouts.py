@@ -522,6 +522,14 @@ class TestTheDocumentedTimeoutMarginIsEnforced:
     killed the subprocess and the operator saw a generic bridge timeout instead
     of the attributed per-mirror failures the error taxonomy exists to produce.
 
+    The first fix capped the mirror list, which made the sum constant by
+    deleting `la` from the download walk — where the budget is generous and
+    byte-driven `li -> vg -> la` failover is a stated repo contract (Codex on
+    #153). The walk is now bounded by a shared `WalkDeadline` instead, so the
+    worst case is one configurable number and NOT a function of how many
+    mirrors or providers exist. Several of these tests assert that
+    independence directly, because it is the property that was missing.
+
     A comment cannot fail. These tests can.
     """
 
@@ -565,26 +573,30 @@ class TestTheDocumentedTimeoutMarginIsEnforced:
             f"constant together, or lower a provider budget."
         )
 
-    def test_the_mirror_walk_is_capped_whatever_the_configured_mirror(self):
-        """The cap is what keeps the worst case independent of configuration."""
-        from lib.sources.config import (
-            MAX_LIBGEN_MIRROR_ATTEMPTS,
-            SourceConfig,
-        )
-        from lib.sources.libgen import LibgenAdapter
+    def test_every_configured_fallback_survives_a_custom_mirror(self):
+        """Capping the list is the fix this one rejects (Codex on #153).
 
-        for mirror in ("li", "vg", "la", "rs", "is", "unknown-mirror"):
+        With `LIBGEN_MIRROR=rs` a three-attempt cap truncated `[rs, li, vg, la]`
+        to `[rs, li, vg]` — and `_mirror_candidates()` is shared by search AND
+        download, so `la` stopped being reachable on the long-budget download
+        walk even when it was the only mirror serving bytes.
+        """
+        from lib.sources.config import SourceConfig
+        from lib.sources.libgen import FALLBACK_MIRRORS, LibgenAdapter
+
+        for mirror in ("rs", "is", "unknown-mirror"):
             candidates = LibgenAdapter(
                 SourceConfig(libgen_mirror=mirror)
             )._mirror_candidates()
 
-            assert len(candidates) <= MAX_LIBGEN_MIRROR_ATTEMPTS, (
-                f"{mirror!r} yields {len(candidates)} attempts; the timeout "
-                f"arithmetic assumes at most {MAX_LIBGEN_MIRROR_ATTEMPTS}"
-            )
+            for fallback in FALLBACK_MIRRORS:
+                assert fallback in candidates, (
+                    f"{fallback!r} is unreachable with LIBGEN_MIRROR={mirror!r}; "
+                    f"the walk is bounded by the clock, not by dropping mirrors"
+                )
 
-    def test_the_configured_mirror_is_never_the_one_dropped(self):
-        """The cap must cost a fallback, not the operator's own choice."""
+    def test_the_configured_mirror_is_tried_first(self):
+        """A walk that runs out of clock must have spent it on the right mirror."""
         from lib.sources.config import SourceConfig
         from lib.sources.libgen import LibgenAdapter
 
@@ -594,15 +606,16 @@ class TestTheDocumentedTimeoutMarginIsEnforced:
             )._mirror_candidates()
 
             assert candidates[0] == mirror, (
-                f"{mirror!r} must be attempted first; capping the walk cannot "
-                f"mean ignoring what the operator configured"
+                f"{mirror!r} must be attempted first: the deadline can end a "
+                f"walk early, so the operator's own choice has to be the one "
+                f"that already had its turn"
             )
 
     def test_a_raised_provider_budget_fails_here_rather_than_in_production(self):
         """The guard has to actually bind, or it is another dead comment."""
         from lib.sources.config import SourceConfig, worst_case_search_seconds
 
-        generous = SourceConfig(total_timeout=90.0, preflight_timeout=15.0)
+        generous = SourceConfig(walk_budget=300.0)
 
         assert (
             worst_case_search_seconds(generous) > self._node_bridge_timeout_seconds()
@@ -622,17 +635,163 @@ class TestTheDocumentedTimeoutMarginIsEnforced:
             "is the whole point of reading it"
         )
 
-    def test_the_provider_count_is_derived_from_the_router(self):
-        """Adding a provider to `auto` must move the budget."""
-        from lib.sources.config import SourceConfig, _auto_search_provider_count
+    def test_the_worst_case_does_not_move_with_the_mirror_count(self):
+        """The property the old arithmetic lacked, asserted directly.
+
+        A custom `LIBGEN_MIRROR` genuinely adds a fourth mirror — that part was
+        never in dispute, and this test confirms it still does. What must NOT
+        move is the walk's worst case, because the mirrors share one clock
+        rather than each bringing their own budget.
+        """
+        from lib.sources.config import SourceConfig, worst_case_search_seconds
+        from lib.sources.libgen import LibgenAdapter
+
+        default = SourceConfig()
+        custom = SourceConfig(libgen_mirror="rs")
+
+        assert len(LibgenAdapter(custom)._mirror_candidates()) == (
+            len(LibgenAdapter(default)._mirror_candidates()) + 1
+        ), "the premise of #152 no longer holds; this test is testing nothing"
+
+        assert worst_case_search_seconds(custom) == worst_case_search_seconds(
+            default
+        ), (
+            "an extra mirror moved the worst case — the walk is being costed "
+            "per attempt again instead of against one shared deadline"
+        )
+
+    def test_the_worst_case_does_not_move_with_the_provider_count(self):
+        """Z-Library joining the `auto` walk under #40 must not break this."""
+        from lib.sources.config import SourceConfig, worst_case_search_seconds
         from lib.sources.router import SourceRouter
 
-        router = SourceRouter.__new__(SourceRouter)
-        router.config = SourceConfig(fallback_enabled=True)
+        one = SourceConfig(fallback_enabled=False)
+        many = SourceConfig(fallback_enabled=True)
 
-        assert _auto_search_provider_count() == len(
-            router._search_candidates("auto")
-        ), (
-            "a literal would keep reporting 220s after Z-Library joins the "
-            "auto walk, while the real worst case became 275s"
+        router = SourceRouter.__new__(SourceRouter)
+        router.config = many
+        assert len(router._search_candidates("auto")) > 1, (
+            "fallback is not actually adding a provider; nothing is being tested"
+        )
+
+        assert worst_case_search_seconds(one) == worst_case_search_seconds(many)
+
+    @staticmethod
+    def _node_long_timeout_seconds() -> float:
+        """The other Node budget, read rather than copied, for the same reason."""
+        import re
+        from pathlib import Path
+
+        source = (
+            Path(__file__).parent.parent.parent / "src" / "lib" / "python-runner.ts"
+        ).read_text()
+        match = re.search(
+            r"LONG_BRIDGE_TIMEOUT_MS\s*=\s*positiveIntEnv\("
+            r"\s*'PYTHON_BRIDGE_LONG_TIMEOUT'\s*,\s*(\d+)\s*\)",
+            source,
+        )
+        assert match, (
+            "could not read LONG_BRIDGE_TIMEOUT_MS from python-runner.ts — "
+            "the download guard cannot verify anything without it"
+        )
+        return int(match.group(1)) / 1000.0
+
+    def test_the_download_allocation_fits_the_long_budget(self):
+        """Resolution + transfer + OCR + finalization, computed not asserted.
+
+        This allocation lived only in a comment beside DEFAULT_DOWNLOAD_TIMEOUT,
+        which is exactly the shape of the sentence that made #152: correct when
+        written, never recomputed. The download walk shares the search walk's
+        budget, so raising `BOOK_SOURCE_WALK_BUDGET` has to fit BOTH ceilings.
+        """
+        from lib.sources.config import SourceConfig, worst_case_download_seconds
+
+        worst = worst_case_download_seconds(SourceConfig())
+
+        assert worst <= self._node_long_timeout_seconds(), (
+            f"an acquisition can take {worst}s against a "
+            f"{self._node_long_timeout_seconds()}s long-bridge budget"
+        )
+
+
+class TestTheWalkDeadline:
+    """The primitive the whole budget now rests on."""
+
+    def test_an_attempt_is_clamped_to_what_the_walk_has_left(self):
+        from lib.sources.net import WalkDeadline
+
+        now = [0.0]
+        deadline = WalkDeadline(165.0, clock=lambda: now[0])
+
+        assert deadline.reserve(45.0, minimum=11.0) == 45.0
+
+        now[0] = 140.0  # 25s left: less than a full attempt
+        assert deadline.reserve(45.0, minimum=11.0) == 25.0, (
+            "a late attempt started with a full 45s budget is how a walk "
+            "overruns the bridge timeout it was supposed to fit inside"
+        )
+
+        now[0] = 160.0  # 5s left: enough to time out, not enough to inform
+        assert deadline.reserve(45.0, minimum=11.0) is None
+        assert not deadline.expired(), (
+            "refusing a useless slice is not the same as having no time left; "
+            "conflating them would report the wrong reason to the caller"
+        )
+
+        now[0] = 170.0
+        assert deadline.expired()
+        assert deadline.remaining() == 0.0, "remaining() must never go negative"
+
+    @pytest.mark.asyncio
+    async def test_a_spent_walk_names_the_mirrors_it_never_attempted(self):
+        """The reason code has to distinguish this from a slow host.
+
+        Attributing an exhausted walk to the next mirror would report a healthy
+        server as slow, and send the operator to fix the wrong thing: this one
+        is fixed by raising BOOK_SOURCE_WALK_BUDGET.
+        """
+        from lib.sources.config import SourceConfig
+        from lib.sources.errors import AllSourcesFailedError
+        from lib.sources.libgen import LibgenAdapter
+        from lib.sources.net import WalkDeadline
+
+        adapter = LibgenAdapter(SourceConfig(libgen_mirror="rs"))
+
+        with pytest.raises(AllSourcesFailedError) as excinfo:
+            await adapter.search("anything", deadline=WalkDeadline(0.0))
+
+        failures = excinfo.value.failures
+        assert [f.reason for f in failures] == ["walk_budget_exhausted"]
+        for mirror in ("rs", "li", "vg", "la"):
+            assert mirror in failures[0].detail, (
+                f"{mirror!r} was skipped without being named; a silently "
+                f"absent mirror is indistinguishable from one that answered"
+            )
+
+    @pytest.mark.asyncio
+    async def test_the_router_gives_every_provider_the_same_clock(self):
+        """One walk, one deadline — not one per provider."""
+        from unittest.mock import AsyncMock
+
+        from lib.sources.config import SourceConfig
+        from lib.sources.router import SourceRouter
+
+        seen = []
+
+        async def record(query, deadline=None, **kwargs):
+            seen.append(deadline)
+            return []
+
+        router = SourceRouter(SourceConfig(fallback_enabled=True))
+        for name in ("_annas", "_libgen"):
+            adapter = AsyncMock()
+            adapter.search = record
+            setattr(router, name, adapter)
+
+        await router.search("nothing matches", source="auto")
+
+        assert len(seen) == 2, "both providers should have been attempted"
+        assert seen[0] is not None and seen[0] is seen[1], (
+            "each provider got its own deadline, so the walk costs the sum of "
+            "them again — which is the bug (#152)"
         )

@@ -246,7 +246,7 @@ class TestRouterDownload:
             async def search(self, query, **kwargs):
                 return []
 
-            async def get_download_url(self, md5):
+            async def get_download_url(self, md5, **kwargs):
                 return DownloadResult(
                     url=f"https://single.example/{md5}", source=SourceType.LIBGEN
                 )
@@ -267,12 +267,12 @@ class TestRouterDownload:
         """Stopping after the first provider candidate would hide later mirrors."""
         router = SourceRouter(config_with_annas)
 
-        async def annas_candidates(_md5):
+        async def annas_candidates(_md5, **kwargs):
             yield DownloadResult(
                 url="https://annas.example/book", source=SourceType.ANNAS_ARCHIVE
             )
 
-        async def libgen_candidates(_md5):
+        async def libgen_candidates(_md5, **kwargs):
             yield DownloadResult(url="https://libgen.li/book", source=SourceType.LIBGEN)
             yield DownloadResult(url="https://libgen.vg/book", source=SourceType.LIBGEN)
 
@@ -301,7 +301,7 @@ class TestRouterDownload:
         closed = False
 
         class ResourceAdapter:
-            async def iter_download_candidates(self, _md5):
+            async def iter_download_candidates(self, _md5, **kwargs):
                 nonlocal closed
                 try:
                     yield DownloadResult(
@@ -333,12 +333,12 @@ class TestRouterDownload:
         """An explicit source selection must never invoke the other adapter."""
         router = SourceRouter(config_with_annas)
 
-        async def annas_candidates(_md5):
+        async def annas_candidates(_md5, **kwargs):
             yield DownloadResult(
                 url="https://annas.example/book", source=SourceType.ANNAS_ARCHIVE
             )
 
-        async def libgen_candidates(_md5):
+        async def libgen_candidates(_md5, **kwargs):
             yield DownloadResult(
                 url="https://libgen.example/book", source=SourceType.LIBGEN
             )

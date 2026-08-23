@@ -67,11 +67,12 @@ LIBGEN_BASE_URL = f"https://libgen.{_source_config.libgen_mirror}"
 # mirrors hand off to *different* CDN nodes that fail independently — on
 # 2026-08-10 `li` -> cdn4.booksdl.lc failed TLS while `vg`/`la` -> cdn3 served
 # real bytes.
-# Derived from the adapter, not restated. Production caps its walk at
-# MAX_LIBGEN_MIRROR_ATTEMPTS, and a probe that walked one mirror further would
-# report the download path healthy on a mirror production never reaches — the
-# reachability-vs-capability gap this script exists to close, inverted (Codex
-# on #153).
+# Derived from the adapter, not restated, so the probe walks exactly the list
+# production walks. Production may stop early when its `WalkDeadline` runs out;
+# the probe deliberately does not, because a mirror skipped for lack of clock
+# is a fact about one busy walk, not about the mirror's health — and reporting
+# it as untested would hide the reachability-vs-capability gap this script
+# exists to close (Codex on #153).
 LIBGEN_MIRROR_CANDIDATES: tuple[str, ...] = tuple(
     LibgenAdapter(_source_config)._mirror_candidates()
 )

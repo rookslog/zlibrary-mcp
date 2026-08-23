@@ -27,6 +27,7 @@ from .errors import (
 )
 from .models import DownloadResult, QuotaInfo, SourceType, UnifiedBookResult
 from .net import (
+    WalkDeadline,
     bounded_await,
     build_timeout,
     classify_httpx_error,
@@ -111,6 +112,20 @@ class QuotaExhaustedError(Exception):
     """Raised when Anna's Archive download quota is exhausted."""
 
     pass
+
+
+def _attempt_budget(config, deadline: Optional[WalkDeadline]) -> float:
+    """One attempt's budget, clamped to whatever the shared walk has left.
+
+    Without the clamp a provider late in an `auto` walk starts a fresh
+    45-second attempt on a walk that has 3 seconds left, and the bridge is
+    killed mid-request rather than returning the failures it had collected
+    (#152). With no deadline — an adapter used directly — the configured
+    budget stands.
+    """
+    if deadline is None:
+        return config.total_timeout
+    return min(config.total_timeout, max(0.0, deadline.remaining()))
 
 
 class AnnasArchiveAdapter(SourceAdapter):
@@ -210,7 +225,12 @@ class AnnasArchiveAdapter(SourceAdapter):
         response.raise_for_status()
         return response
 
-    async def search(self, query: str, **kwargs) -> List[UnifiedBookResult]:
+    async def search(
+        self,
+        query: str,
+        deadline: Optional[WalkDeadline] = None,
+        **kwargs,
+    ) -> List[UnifiedBookResult]:
         """Search Anna's Archive for books.
 
         Scrapes HTML from /search?q={query} and extracts MD5 hashes
@@ -218,6 +238,10 @@ class AnnasArchiveAdapter(SourceAdapter):
 
         Args:
             query: Search query string
+            deadline: Wall-clock ceiling shared with the rest of the router's
+                walk. Anna's is one attempt, but in an `auto` search it runs
+                alongside LibGen's mirror walk and they spend the same clock —
+                which is the whole point of a shared deadline (#152).
             **kwargs: Additional search options (unused)
 
         Returns:
@@ -237,7 +261,7 @@ class AnnasArchiveAdapter(SourceAdapter):
             # outer budget is what actually enforces config.total_timeout.
             response = await bounded_await(
                 self._fetch(client, url),
-                self.config.total_timeout,
+                _attempt_budget(self.config, deadline),
                 provider=PROVIDER,
                 host=self.host,
                 operation="search",
@@ -339,7 +363,11 @@ class AnnasArchiveAdapter(SourceAdapter):
             extra=extra,
         )
 
-    async def get_download_url(self, md5: str) -> DownloadResult:
+    async def get_download_url(
+        self,
+        md5: str,
+        deadline: Optional[WalkDeadline] = None,
+    ) -> DownloadResult:
         """Get fast download URL for a book.
 
         Calls /dyn/api/fast_download.json with MD5 and API key.
@@ -393,7 +421,7 @@ class AnnasArchiveAdapter(SourceAdapter):
         try:
             response = await bounded_await(
                 self._fetch(client, url, params=params),
-                self.config.total_timeout,
+                _attempt_budget(self.config, deadline),
                 provider=PROVIDER,
                 host=self.host,
                 operation="download resolution",

@@ -56,28 +56,48 @@ Preflight is skipped when `HTTP_PROXY` or `HTTPS_PROXY` covers the target, with
 letting that probe veto the real client would create a false outage.
 
 The preflight budget applies to two phases (DNS, then TCP). At the defaults, one
-provider attempt can cost at most `2 × 5s + 45s = 55s`. LibGen walks **at most
-three** mirrors — capped by `MAX_LIBGEN_MIRROR_ATTEMPTS`, so the number does not
-change when an operator sets `LIBGEN_MIRROR` — and `auto` can add Anna's
-Archive, so the worst-case search budget is `4 × 55s = 220s`, below the
-240-second ordinary bridge budget. Raise `PYTHON_BRIDGE_TIMEOUT` whenever
-provider budgets make that composition larger; otherwise the outer process-tree
-kill can preempt legitimate fallback work.
+provider attempt can cost at most `2 × 5s + 45s = 55s`. Those numbers size an
+**attempt**. They do not size a walk, and the difference is what #152 was.
 
-**Do not verify that composition by reading.** `lib/sources/config.py`
-provides `worst_case_search_seconds()` and
-`__tests__/python/test_multi_source_timeouts.py` compares it to the Node budget,
-so a raised provider budget fails the suite instead of producing an unexplained
-timeout. The prose above was wrong for months before #152, because it assumed
-three mirrors while a custom `LIBGEN_MIRROR` produced four.
+A walk costs providers × mirrors, and both factors are operator input:
+`LIBGEN_MIRROR` set to something outside `("li", "vg", "la")` adds a fourth
+mirror, and `BOOK_SOURCE_FALLBACK_ENABLED` decides whether `auto` adds Anna's.
+Any product written down here goes stale the moment either moves — this
+document said `4 × 55s = 220s` for months while the real figure under a custom
+mirror was 275s, against a 240-second bridge budget. Node killed the subprocess
+and the operator saw a generic timeout instead of the attributed per-mirror
+failures the error taxonomy exists to produce.
+
+**The walk is bounded by a wall clock instead.** `SourceRouter` creates one
+`WalkDeadline` per search or download and passes it to every adapter; each
+attempt draws `min(its own budget, what the walk has left)` from it. So:
+
+| Setting | Default | Bounds |
+|---|---|---|
+| `BOOK_SOURCE_WALK_BUDGET` | `165` (seconds) | one whole walk, across every provider and mirror |
+| `BOOK_SOURCE_TOTAL_TIMEOUT` | `45` (seconds) | one attempt, clamped by whatever the walk has left |
+
+The worst case is now `BOOK_SOURCE_WALK_BUDGET`, independent of how many
+mirrors or providers exist. Mirrors are **not** capped: every configured
+fallback stays a candidate, so `li → vg → la` failover survives a custom
+`LIBGEN_MIRROR`, and a mirror that fails its preflight in 5s leaves room for
+the next rather than consuming one of a fixed three. A mirror the deadline
+never reaches is reported with reason `walk_budget_exhausted`, naming the
+mirrors skipped — deliberately distinct from a timeout, which is a verdict
+about a host. This one is fixed by raising `BOOK_SOURCE_WALK_BUDGET`.
+
+**Do not verify the composition by reading.** `lib/sources/config.py` provides
+`worst_case_search_seconds()` and `worst_case_download_seconds()`, and
+`__tests__/python/test_multi_source_timeouts.py` compares both against the Node
+budgets parsed out of `src/lib/python-runner.ts`. Raising the walk budget past
+what either allows fails the suite instead of producing an unexplained timeout.
 
 Source-file transfer has a separate 1,500-second default because a valid large
-book can exceed the 45-second search and URL-resolution budget. The 2,400-second
-long bridge default composes worst-case LibGen resolution
-(`MAX_LIBGEN_MIRROR_ATTEMPTS × (2 × 5s + 45s) = 165s`), transfer (`1,500s`), the OCR subprocess default
-(`600s`), and finalization headroom (`135s`). If any component is overridden,
-keep `PYTHON_BRIDGE_LONG_TIMEOUT` at least as large as their sum after converting
-milliseconds to seconds.
+book can exceed the per-attempt resolution budget. The 2,400-second long bridge
+default composes the walk budget (`165s`), transfer (`1,500s`), the OCR
+subprocess default (`600s`), and finalization headroom (`135s`). Both bridge
+budgets are satisfied by the same walk budget, so raising it has to fit under
+both — which is what `worst_case_download_seconds()` checks.
 
 LibGen download resolution inspects at most the first 2 KiB of a candidate
 response. Some CDNs ignore `Range` and answer `200`; the probe streams and closes

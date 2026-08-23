@@ -24,29 +24,58 @@ from dataclasses import dataclass
 # mirrors, and because the LibGen library's own request cannot be interrupted
 # once started (see lib/sources/net.run_bounded).
 #
-# These compose. The preflight budget is per PHASE and there are two (DNS, then
-# TCP), so one provider attempt costs at worst 2*preflight + total = 55s. LibGen
-# walks at most MAX_LIBGEN_MIRROR_ATTEMPTS mirrors and an `auto` search adds
-# Anna's on top, giving a worst case of 4 x 55s = 220s. PYTHON_BRIDGE_TIMEOUT on
-# the Node side (240s) has to stay above that — a subprocess kill that fires
-# first would preempt a legitimate slow walk rather than catch a hang.
+# These compose, and for months this comment tried to state how. It said one
+# provider attempt costs 2*preflight + total = 55s, that LibGen walks three
+# mirrors, that an `auto` search adds Anna's, and therefore 4 x 55s = 220s
+# against a 240s PYTHON_BRIDGE_TIMEOUT. Every clause was true and the total was
+# wrong: a custom LIBGEN_MIRROR prepends a fourth mirror, making it 275s, so the
+# Node side killed the subprocess and the operator got a generic timeout instead
+# of the per-mirror failures the walk had collected (#152).
 #
-# Do not maintain that sum by hand. `worst_case_search_seconds()` computes it
-# and a test compares it to the Node budget, so raising a budget here surfaces
-# in the suite rather than as an unexplained timeout in production. This comment
-# was wrong for months before #152: a custom LIBGEN_MIRROR added a fourth
-# mirror and nothing recomputed the total.
+# The repair is not a better sum. A walk costs providers x mirrors, both of
+# which move with configuration, so any hand-maintained product drifts the
+# moment either factor does. The walk is bounded by a WALL CLOCK instead:
+# `WalkDeadline` (net.py) is created once per walk and every attempt draws from
+# it, so the worst case is WALK_BUDGET regardless of how many mirrors or
+# providers exist. The numbers below therefore size individual ATTEMPTS; only
+# WALK_BUDGET sizes the walk, and only it has to stay under the Node budget.
 DEFAULT_CONNECT_TIMEOUT = 10.0
 DEFAULT_READ_TIMEOUT = 30.0
 DEFAULT_TOTAL_TIMEOUT = 45.0
 # A source URL can legitimately serve a multi-hundred-megabyte book. Keep its
-# full-transfer wall clock finite but separate from the 45-second search and
-# URL-resolution budget. The independent 40-minute Node budget allows 165
-# seconds for worst-case LibGen resolution, 25 minutes for transfer, 10 minutes
-# for OCR, and 135 seconds for finalization without coupling Python config to a
-# TypeScript constant.
+# full-transfer wall clock finite but separate from the per-attempt search and
+# URL-resolution budget. The 40-minute Node budget splits into DEFAULT_WALK_
+# BUDGET for resolution, this for transfer, OCR_ALLOWANCE and
+# FINALIZE_ALLOWANCE; `worst_case_download_seconds()` adds them up and a test
+# compares the total to PYTHON_BRIDGE_LONG_TIMEOUT.
 DEFAULT_DOWNLOAD_TIMEOUT = 1500.0
 DEFAULT_PREFLIGHT_TIMEOUT = 5.0
+
+# The ceiling on a whole search or download-resolution walk, however many
+# providers and mirrors it spans. ONE number covers both, and 165s is what both
+# Node budgets already allow it:
+#
+#   search   PYTHON_BRIDGE_TIMEOUT      240s = 165 + 75s of bridge overhead
+#   download PYTHON_BRIDGE_LONG_TIMEOUT 2400s = 165 resolution + 1500 transfer
+#                                              + 600 OCR + 135 finalization
+#
+# Both sums are asserted by tests that read the TypeScript constants, so this
+# cannot drift out of step with either. It is also, deliberately, the same
+# clock the capped three-mirror walk used to cost — the change is that the cap
+# is gone, so a mirror that fails its preflight in 5s now leaves room for the
+# fourth instead of consuming one of only three slots.
+DEFAULT_WALK_BUDGET = 165.0
+
+# What the bridge costs outside the walk: spawning python, importing the source
+# package, and serializing results back over stdout. Generous on purpose — the
+# margin absorbs a slow cold start, it is not a number to tune.
+WALK_OVERHEAD_ALLOWANCE = 30.0
+
+# The rest of the long (download) budget, named so the sum can be computed
+# instead of asserted in prose: OCR is bounded by rag_processing, and
+# finalization covers hashing, staging-to-final rename and envelope writing.
+OCR_ALLOWANCE = 600.0
+FINALIZE_ALLOWANCE = 135.0
 
 # Hosts operated by the Anna's Archive project, per the mirror list the live
 # site itself advertises (verified 2026-07-24: .gl/.pk/.gd serve real search
@@ -83,12 +112,6 @@ DEFAULT_ANNAS_BASE_URL = "https://annas-archive.gl"
 # https://libgen.{mirror}/ — keep scripts/check_upstream.py deriving its probe
 # host from here so the probe cannot drift from the runtime again.
 DEFAULT_LIBGEN_MIRROR = "li"
-
-# The mirror walk is capped so the timeout arithmetic above stays a constant
-# rather than a function of operator configuration. `_mirror_candidates()` puts
-# the configured mirror first, so a custom value costs the *last* fallback
-# rather than displacing failover: three attempts either way (#152).
-MAX_LIBGEN_MIRROR_ATTEMPTS = 3
 
 # LibGen's blocklist is a moving target and it fails SILENTLY: a blocked UA
 # gets HTTP 200 with nginx's ~640-byte default page, which is indistinguishable
@@ -134,6 +157,9 @@ class SourceConfig:
         download_timeout: Seconds allowed for a complete source-file transfer
         preflight_enabled: Probe host reachability before the real request
         preflight_timeout: Seconds allowed for each probe phase
+        walk_budget: Seconds allowed for a WHOLE walk, across every
+            provider and mirror it touches. The only budget the Node side
+            has to be kept in step with.
     """
 
     annas_secret_key: str = ""
@@ -148,6 +174,7 @@ class SourceConfig:
     download_timeout: float = DEFAULT_DOWNLOAD_TIMEOUT
     preflight_enabled: bool = True
     preflight_timeout: float = DEFAULT_PREFLIGHT_TIMEOUT
+    walk_budget: float = DEFAULT_WALK_BUDGET
 
     @property
     def has_annas_key(self) -> bool:
@@ -155,45 +182,38 @@ class SourceConfig:
         return bool(self.annas_secret_key)
 
 
-def _auto_search_provider_count() -> int:
-    """How many providers an `auto` search can attempt.
-
-    Read from `SourceRouter`'s own candidate list so the budget arithmetic
-    cannot fall behind a newly registered source. Falls back to the historical
-    two (Anna's and LibGen) if the router cannot be imported, which keeps this
-    module usable in a partial environment rather than making a budget helper
-    the thing that breaks it.
-    """
-    try:
-        from .router import SourceRouter  # noqa: PLC0415
-
-        router = SourceRouter.__new__(SourceRouter)
-        router.config = SourceConfig(fallback_enabled=True)
-        return len(router._search_candidates("auto"))
-    except Exception:  # noqa: BLE001 - a budget helper must not break imports
-        return 2
-
-
 def worst_case_search_seconds(config: "SourceConfig") -> float:
-    """Worst-case wall clock for an `auto` search, from the live budgets.
+    """Worst-case wall clock the Node side must allow for one bridge call.
 
-    Computed rather than asserted, because the hand-maintained version in the
-    comment above was wrong for months: it assumed three LibGen mirrors, and a
-    custom `LIBGEN_MIRROR` made it four (#152). Anything that changes a budget,
-    the mirror cap, or the number of providers in an `auto` walk changes this
-    number, and the test comparing it to `PYTHON_BRIDGE_TIMEOUT` turns that into
-    a failing build instead of a subprocess kill in production.
+    Now a sum of exactly two terms, neither of which depends on how many
+    mirrors or providers exist: the walk's own ceiling, and what the bridge
+    costs around it. That independence is the point. The previous version
+    multiplied a per-attempt cost by a mirror count and a provider count, and
+    was wrong for months because a custom `LIBGEN_MIRROR` changed one of the
+    factors and nothing recomputed the product (#152). Adding Z-Library to the
+    `auto` walk under #40 would have broken it again.
+
+    A test compares this to `PYTHON_BRIDGE_TIMEOUT` in `python-runner.ts`, so
+    raising `BOOK_SOURCE_WALK_BUDGET` past what the Node side allows fails the
+    build instead of producing a killed subprocess in production.
     """
-    per_attempt = (2 * config.preflight_timeout) + config.total_timeout
-    # Derived from the router rather than counted by hand: when a provider joins
-    # the `auto` walk — Z-Library, under #40 — the sum has to move with it, and
-    # a literal `+ 1` here would keep reporting 220s while the real worst case
-    # became 275s (Codex on #153). The docstring promises this tracks the
-    # provider count; it now does.
-    providers = _auto_search_provider_count()
-    # LibGen contributes its capped mirror walk; every other provider one
-    # attempt each.
-    return per_attempt * (MAX_LIBGEN_MIRROR_ATTEMPTS + (providers - 1))
+    return config.walk_budget + WALK_OVERHEAD_ALLOWANCE
+
+
+def worst_case_download_seconds(config: "SourceConfig") -> float:
+    """Worst-case wall clock for one acquisition, against the LONG budget.
+
+    The same discipline as `worst_case_search_seconds`, for the other Node
+    timeout. The allocation used to live only in a comment beside
+    `DEFAULT_DOWNLOAD_TIMEOUT`, which is how #152 happened to the search side:
+    a correct sentence nobody recomputed.
+    """
+    return (
+        config.walk_budget
+        + config.download_timeout
+        + OCR_ALLOWANCE
+        + FINALIZE_ALLOWANCE
+    )
 
 
 def _positive_float(name: str, default: float) -> float:
@@ -244,4 +264,5 @@ def get_source_config() -> SourceConfig:
         preflight_timeout=_positive_float(
             "BOOK_SOURCE_PREFLIGHT_TIMEOUT", DEFAULT_PREFLIGHT_TIMEOUT
         ),
+        walk_budget=_positive_float("BOOK_SOURCE_WALK_BUDGET", DEFAULT_WALK_BUDGET),
     )

@@ -33,6 +33,13 @@ three different mechanisms:
    so a host that trickles bytes never trips it. `bounded_await` puts one
    wall-clock deadline over a whole async operation, which is what actually
    enforces `config.total_timeout`. `build_timeout` alone never did.
+
+5. **Walks that outlive the caller that is waiting for them** — bounding each
+   attempt says nothing about a walk of N attempts, and N is not a constant:
+   it is the number of providers times the number of mirrors each one has,
+   both of which move with configuration. `WalkDeadline` puts a single
+   wall-clock ceiling over the whole walk, so the worst case stops being a
+   sum nobody recomputes and becomes a number the caller sets (#152).
 """
 
 import asyncio
@@ -41,6 +48,7 @@ import logging
 import socket
 import ssl
 import threading
+import time
 import urllib.request
 from contextlib import asynccontextmanager
 from typing import Any, Callable, Dict, Optional, Tuple
@@ -564,3 +572,68 @@ async def bounded_await(
             f"{operation} exceeded {timeout:g}s",
             reason="search_timeout",
         ) from None
+
+
+class WalkDeadline:
+    """One wall-clock ceiling shared by every attempt in a multi-source walk.
+
+    `bounded_await` and `run_bounded` bound a single attempt. A walk is many
+    attempts, and its cost is the *product* of two things nobody keeps in their
+    head: how many providers the router tries, and how many mirrors each of
+    those walks internally. #152 is what happens when that product is tracked
+    by hand — a custom `LIBGEN_MIRROR` added a fourth mirror, the worst case
+    went from 220s to 275s against a 240s bridge budget, and the operator got
+    a killed subprocess and a generic timeout instead of the per-mirror
+    failures the walk had actually collected.
+
+    Capping the mirror list was the obvious repair and the wrong one: it bought
+    constant arithmetic by deleting the last fallback from the download walk,
+    where the budget is generous and `li -> vg -> la` failover is a stated
+    repo contract. A deadline buys the same constant without dropping anyone.
+    Every mirror stays a candidate; what is bounded is the clock, not the list.
+
+    Deliberately not a module-level singleton. Every MCP operation spawns a
+    fresh `python_bridge.py`, so process-global state is a recurring source of
+    bugs here; a deadline is created per walk and passed down explicitly.
+
+    Args:
+        budget: Seconds the whole walk may take.
+        clock: Monotonic time source, injectable for tests. Monotonic rather
+            than wall-clock so an NTP step mid-walk cannot expire or extend it.
+    """
+
+    def __init__(self, budget: float, clock: Callable[[], float] = time.monotonic):
+        self._clock = clock
+        self.budget = max(0.0, float(budget))
+        self._expires_at = clock() + self.budget
+
+    def remaining(self) -> float:
+        """Seconds left, never negative."""
+        return max(0.0, self._expires_at - self._clock())
+
+    def expired(self) -> bool:
+        """True once nothing further may be started."""
+        return self.remaining() <= 0.0
+
+    def reserve(self, want: float, *, minimum: float) -> Optional[float]:
+        """Budget for the next attempt, or None if starting one is dishonest.
+
+        Returns `min(want, remaining)` when at least `minimum` seconds are
+        left. Below that the attempt is refused rather than started with a
+        sliver of a budget, because a 0.2s timeout would be recorded against
+        the *mirror* — reporting a healthy host as slow when what actually ran
+        out was the walk. The caller records `walk_budget_exhausted` instead,
+        which names the real cause and is the reason the operator can act on.
+
+        Args:
+            want: The attempt's own budget, from config.
+            minimum: Least useful slice — typically one preflight phase, since
+                an attempt that cannot finish DNS cannot inform anyone.
+
+        Returns:
+            Seconds to allow this attempt, or None to stop the walk.
+        """
+        left = self.remaining()
+        if left < minimum:
+            return None
+        return min(want, left)

@@ -143,6 +143,22 @@ class TestRoutingBlock:
         assert result["routing"]["served_by"] == []
         assert result["routing"]["fell_back"] is False
 
+    @pytest.mark.parametrize("count", [0, -1])
+    @pytest.mark.asyncio
+    async def test_slicing_results_does_not_erase_who_served_them(
+        self, monkeypatch, count
+    ):
+        """A successful fallback stays visible even when no book is returned."""
+        install_router(monkeypatch, [book("e" * 32, SourceType.LIBGEN)])
+
+        result = await python_bridge.search_multi_source(
+            "hegel", source="annas", count=count
+        )
+
+        assert result["books"] == []
+        assert result["routing"]["served_by"] == ["libgen"]
+        assert result["routing"]["fell_back"] is True
+
     @pytest.mark.asyncio
     async def test_routing_is_nested_and_cannot_collide_with_book_fields(
         self, monkeypatch

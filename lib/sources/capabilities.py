@@ -29,8 +29,9 @@ and paying for a round-trip that can never answer. Hence
 
 import os
 from typing import Dict, Iterable, List, Optional, Sequence
+from urllib.parse import urlsplit
 
-from .config import SourceConfig, get_source_config
+from .config import ANNAS_TRUSTED_HOSTS, SourceConfig, get_source_config
 
 # Canonical source identities. These are what appears in `routing.sources`,
 # `routing.served_by`, `provenance.source` and the `get_download_limits`
@@ -199,7 +200,8 @@ def _entry(
 
 def describe_annas(config: SourceConfig) -> Dict:
     """Anna's Archive constraints, from configuration alone."""
-    if config.has_annas_key:
+    host = (urlsplit(config.annas_base_url).hostname or "").lower()
+    if config.has_annas_key and host in ANNAS_TRUSTED_HOSTS:
         return _entry(
             available=True,
             routes=[ROUTE_SEARCH, ROUTE_DOWNLOAD],
@@ -212,6 +214,19 @@ def describe_annas(config: SourceConfig) -> Dict:
                 "cannot be read without spending one"
             ),
             note="ANNAS_SECRET_KEY configured; keyed fast download available",
+        )
+    if config.has_annas_key:
+        return _entry(
+            available=True,
+            routes=[ROUTE_SEARCH],
+            daily_limit=daily_limit_not_applicable(
+                "configured Anna's host is not trusted for keyed download"
+            ),
+            note=(
+                "ANNAS_SECRET_KEY configured, but configured host "
+                f"'{host or '<missing>'}' is not trusted for keyed download; "
+                "search only"
+            ),
         )
     return _entry(
         available=True,

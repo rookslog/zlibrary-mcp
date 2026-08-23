@@ -133,6 +133,20 @@ class TestLimitStates:
         assert entry["routes"] == ["search", "download"]
         assert entry["daily_limit"]["state"] == LIMIT_UNKNOWN
 
+    def test_keyed_annas_on_an_untrusted_host_is_search_only(self):
+        """The report must not advertise a route the adapter rejects."""
+        entry = describe_sources(
+            SourceConfig(
+                annas_secret_key="k",
+                annas_base_url="https://annas-archive.li",
+            )
+        )[SOURCE_ANNAS]
+
+        assert entry["available"] is True
+        assert entry["routes"] == ["search"]
+        assert entry["daily_limit"]["state"] == LIMIT_NOT_APPLICABLE
+        assert "not trusted" in entry["note"]
+
     def test_a_concrete_number_is_distinguishable_from_both(self):
         limit = known_daily_limit(10, 3, 7)
         assert limit["state"] == LIMIT_KNOWN

@@ -1818,10 +1818,11 @@ async def search_multi_source(
         }
         for r in results[:count]
     ]
+    routing_books = [{"source": r.source.value} for r in results]
 
     return {
         "books": books,
-        "routing": _routing_report(router, source, books),
+        "routing": _routing_report(router, source, routing_books),
     }
 
 

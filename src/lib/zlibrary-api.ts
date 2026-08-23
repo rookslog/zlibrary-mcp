@@ -250,6 +250,10 @@ interface GetDownloadHistoryArgs {
     count?: number;
 }
 
+interface GetDownloadLimitsArgs {
+    sources?: string[];
+}
+
 interface DownloadBookToFileArgs {
     // id: string; // Replaced by bookDetails
     // format?: string | null; // Replaced by bookDetails
@@ -434,15 +438,27 @@ export async function getDownloadHistory({ count = 10 }: GetDownloadHistoryArgs,
  * @param args - Optional canonical source names to report
  * @param options - Timeout and abort signal
  */
+export function getDownloadLimits(options?: CallOptions): Promise<any>;
+export function getDownloadLimits(
+  args: GetDownloadLimitsArgs,
+  options?: CallOptions,
+): Promise<any>;
 export async function getDownloadLimits(
-  args: { sources?: string[] } = {},
-  options: CallOptions = {},
+  argsOrOptions: GetDownloadLimitsArgs | CallOptions = {},
+  options?: CallOptions,
 ): Promise<any> {
-  // Omit the key entirely when unset: the bridge reads `sources: null` as
-  // "every source", and sending an explicit null would be a second spelling
-  // of the default for no gain.
-  const pythonArgs = args?.sources?.length ? { sources: args.sources } : {};
-  return await callPythonFunction('get_download_limits', pythonArgs, options);
+  const hasSources = Object.prototype.hasOwnProperty.call(argsOrOptions, 'sources');
+  const args = hasSources ? argsOrOptions as GetDownloadLimitsArgs : {};
+  const callOptions = options ?? (hasSources
+    ? {
+        timeoutMs: (argsOrOptions as CallOptions).timeoutMs,
+        signal: (argsOrOptions as CallOptions).signal,
+      }
+    : argsOrOptions as CallOptions);
+  // Omit the key only when it is unset. An explicit empty list has different
+  // semantics: the bridge rejects it rather than widening it to every source.
+  const pythonArgs = args.sources === undefined ? {} : { sources: args.sources };
+  return await callPythonFunction('get_download_limits', pythonArgs, callOptions);
 }
 
 

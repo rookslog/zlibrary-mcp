@@ -606,7 +606,26 @@ describe('Z-Library API', () => {
         }), expect.objectContaining({ label: expect.any(String) }));
     });
 
-    test('should omit the key entirely when no narrowing is given', async () => {
+    test('should preserve a legacy one-argument cancellation option', async () => {
+        mockGetManagedPythonPath.mockResolvedValue('/fake/python');
+        const payload = JSON.stringify({ requested: [], sources: {} });
+        mockRunPythonBridge.mockResolvedValueOnce([
+            JSON.stringify({ content: [{ type: 'text', text: payload }] }),
+        ]);
+        const controller = new AbortController();
+
+        await zlibApi.getDownloadLimits({ signal: controller.signal });
+
+        expect(mockRunPythonBridge).toHaveBeenCalledWith('python_bridge.py', expect.objectContaining({
+            scriptPath: EXPECTED_SCRIPT_PATH,
+            args: ['get_download_limits', JSON.stringify({})],
+        }), expect.objectContaining({
+            label: expect.any(String),
+            signal: controller.signal,
+        }));
+    });
+
+    test('should preserve an explicit empty narrowing for bridge validation', async () => {
         mockGetManagedPythonPath.mockResolvedValue('/fake/python');
         const payload = JSON.stringify({ requested: [], sources: {} });
         mockRunPythonBridge.mockResolvedValueOnce([
@@ -615,12 +634,11 @@ describe('Z-Library API', () => {
 
         await zlibApi.getDownloadLimits({ sources: [] });
 
-        // An explicit empty list is the bridge's "you asked about nothing"
-        // error case; the API layer treats it as "no narrowing given" rather
-        // than sending a request that can only fail.
+        // `[]` is distinct from omitting `sources`: the bridge rejects an
+        // explicit request about no sources instead of widening it to all.
         expect(mockRunPythonBridge).toHaveBeenCalledWith('python_bridge.py', expect.objectContaining({
             scriptPath: EXPECTED_SCRIPT_PATH,
-            args: ['get_download_limits', JSON.stringify({})]
+            args: ['get_download_limits', JSON.stringify({ sources: [] })]
         }), expect.objectContaining({ label: expect.any(String) }));
     });
   });

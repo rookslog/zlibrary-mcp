@@ -268,9 +268,12 @@ result from another source. Cross-source availability hints remain hints under
 deduplication or matching remains #52.
 
 `get_book_metadata` should likewise migrate from raw `bookId`/`bookHash`
-parameters to the selected `bookDetails` result. The old parameters may be
-accepted during deprecation, but they must be converted at the façade and must
-not create a generic direct-ID route.
+parameters to the selected `bookDetails` result. The old parameters **must
+remain accepted** for the deprecation interval — `src/index.ts` currently
+*requires* them, so "may" would let Stage 5 replace them with `bookDetails`
+immediately and fail existing clients at schema validation, inside a migration
+this ADR calls additive. They must be converted at the façade and must not
+create a generic direct-ID route.
 
 ### 3. Capability protocols, not fake universal methods
 
@@ -357,11 +360,21 @@ state the precondition it cannot ship without.
 cannot ship before that is resolved.** `lib/sources/config.py` documents the
 arithmetic: one provider attempt costs at worst `2 x preflight + total` = 55s,
 LibGen walks three mirrors, and today's worst case is 4 attempts = 220s against
-a 240-second `PYTHON_BRIDGE_TIMEOUT` — a 20-second margin. An order of
-`[zlibrary, annas_archive, libgen]` is **five** attempts = 275s, so Node would
-kill a legitimate walk 35 seconds before the router returned its structured
-result, and the operator would see a subprocess timeout instead of the
-attributed failures the whole error taxonomy exists to produce.
+a 240-second `PYTHON_BRIDGE_TIMEOUT` — a 20-second margin.
+
+**LibGen does not always walk three mirrors.** `_mirror_candidates()` returns
+`[configured] + [m for m in ("li", "vg", "la") if m != configured]`, so a
+supported custom `LIBGEN_MIRROR` such as `rs` yields **four**. An order of
+`[zlibrary, annas_archive, libgen]` is therefore up to **six** attempts = 330s,
+not five — Node kills a legitimate walk 90 seconds before the router returns
+its structured result, and the operator sees a subprocess timeout instead of
+the attributed failures the whole error taxonomy exists to produce.
+
+The bound must be computed from the registry and the *configuration*, not from
+a constant: every source in the order, times that source's own worst-case
+attempt count, where LibGen's depends on whether `LIBGEN_MIRROR` names one of
+the fallbacks. Any arithmetic here that hardcodes three mirrors is wrong for a
+configuration this project supports.
 
 This is a precondition, not a follow-up. Before three-source orders become
 valid, the migration must either share one total budget across the ordered walk
@@ -370,6 +383,21 @@ with the margin recomputed and written down where the existing arithmetic
 lives. A full-order timeout test covering the longest permitted order lands in
 the same stage; without it the regression is invisible until a slow walk in
 production.
+
+**`BOOK_SOURCE_ORDER` is comma-separated, case-insensitive, whitespace-
+tolerant.** It is an environment variable, so it reaches Python as a string,
+and the abstract `[zlibrary, annas_archive, libgen]` notation used in this
+document is not an encoding — leaving it unstated lets one implementation
+accept JSON and another accept commas while both satisfy the ADR, so an
+operator's working configuration breaks on upgrade. Canonical form:
+
+```bash
+BOOK_SOURCE_ORDER=zlibrary,annas_archive,libgen
+```
+
+Empty entries are an error rather than being skipped, because a trailing comma
+should be diagnosed rather than silently tolerated into a different order than
+the operator wrote.
 
 **The order is a set, not a bag.** Validation rejects a repeated source:
 `[libgen, libgen, libgen, libgen, libgen]` would otherwise be valid, and since
@@ -435,14 +463,21 @@ chosen and it names its own source.
   `BOOK_SOURCE_ORDER`. Silence would leave an operator believing a setting
   works; honouring it would change routing under their feet.
 
-Legacy fallback is one-way **for acquisition only**: with a key, Anna's is
-primary and LibGen is appended; without one, acquisition is `[libgen]` and
-Anna's is not appended, because its key-free search cannot be followed by a
-supported key-free download. **Search is not one-way** — the orders above give
-an operator without an Anna's key `[libgen, annas_archive]`, matching
-`_search_candidates` today, and removing that would drop key-free Anna's
-results for every operator without a key. Stating the restriction without its
-scope is what made this paragraph contradict the orders three lines above it. `BOOK_SOURCE_ORDER` is the single opt-in way to choose an order, and
+**Search is not one-way** — the orders above give an operator without an
+Anna's key `[libgen, annas_archive]`, matching `_search_candidates` today, and
+removing that would drop key-free Anna's results for every operator without a
+key.
+
+**Acquisition has no cross-source fallback at all**, one-way or otherwise. A
+selected result names its source and carries only that source's `source_ref`,
+so an exhausted Anna's quota returns the attributed failure rather than
+appending LibGen — appending it would mean handing Anna's `source_ref` to an
+adapter that cannot resolve it. The earlier "one-way" wording described legacy
+behaviour that the source-binding rule above replaces, and keeping it left two
+contracts an implementation could not satisfy at once. A caller who wants
+another source retries the *search*.
+
+`BOOK_SOURCE_ORDER` is the single opt-in way to choose a search order, and
 adopting it is what makes a previously inert preference take effect. Z-Library is not added to
 the derived legacy order merely by registration; its named compatibility tools
 remain explicit. Invalid legacy or new order values fail configuration
@@ -529,6 +564,24 @@ Classification for the added set:
 | `not_found` | no — the provider answered correctly | no |
 | `aborted` | no — the caller's own choice, per #106 | no |
 | `partial_failure` | inherits from its children | inherits |
+
+**The circuit breaker must be scoped per source, and that is a precondition of
+this migration rather than a nicety.** `src/lib/zlibrary-api.ts` runs **one**
+breaker for every bridge operation, and its `isFailure` excludes only permanent
+reasons. The table above makes the *caller-state* reasons permanent, which was
+necessary and is not sufficient: `dns_failure`, `connect_timeout`,
+`http_error` and the rest are transient by design and therefore still count. So
+five Z-Library failures from a genuinely unreachable host open the shared
+breaker and reject subsequent **credential-free LibGen** requests, which is the
+same cross-source outage the reason table was written to prevent, arriving
+through the other door.
+
+Routing more sources through one bridge makes this strictly worse: today only
+Z-Library and the two multi-source adapters share it; after this migration
+every source does. The migration therefore keys breaker state by source — a
+Z-Library outage opens the Z-Library breaker and nothing else — and the tests
+cover breaker state across sources, since a single-source test cannot see this
+failure at all.
 
 **Aggregate classification must be child-aware.** `everyFailureHasReason`
 returns on a top-level `reason` when one is present and never inspects

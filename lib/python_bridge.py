@@ -6,6 +6,7 @@ import hashlib
 import re
 import tempfile
 import traceback
+from typing import Optional
 from email.message import Message
 from urllib.parse import unquote, urlsplit
 
@@ -28,7 +29,7 @@ from lib import enhanced_metadata
 
 # Import multi-source router
 from lib.sources.router import SourceRouter
-from lib.sources.config import get_source_config
+from lib.sources.config import SourceConfig, get_source_config
 from lib.sources.errors import (
     AllSourcesFailedError,
     ProviderResponseError,
@@ -908,6 +909,7 @@ async def _download_url_to_file(
     *,
     enforce_timeout: bool = True,
     host_observer=None,
+    config: Optional[SourceConfig] = None,
 ) -> str:
     """Stream a resolved source URL to disk and return the raw path.
 
@@ -937,7 +939,10 @@ async def _download_url_to_file(
 
     original_host = (urlsplit(url).hostname or "").lower()
     active_host = original_host
-    config = get_source_config()
+    # The caller's config wins when it has one. A router built with an
+    # injected or cached config would otherwise resolve its UA and timeouts
+    # from one object and move the file with another (Codex on #146).
+    config = config or get_source_config()
 
     async def stream_to_disk() -> tuple[int, str]:
         nonlocal active_host
@@ -1096,7 +1101,7 @@ async def _fetch_from_source(book_details: dict, output_dir: str) -> str:
     if not _MD5_RE.fullmatch(md5):
         raise ValueError("Source downloads require a normalized 32-hex MD5")
 
-    config = get_source_config()
+    config = getattr(router, "config", None) or get_source_config()
     active_host = ""
     failures = []
     seen_failure_ids = set()
@@ -1125,6 +1130,7 @@ async def _fetch_from_source(book_details: dict, output_dir: str) -> str:
                         str(provider),
                         enforce_timeout=False,
                         host_observer=lambda host: _set_active_host(host),
+                        config=config,
                     )
                 except AllSourcesFailedError as exc:
                     for failure in exc.failures:

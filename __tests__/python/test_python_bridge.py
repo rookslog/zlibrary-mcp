@@ -1,6 +1,7 @@
 # Tests for lib/python_bridge.py (EAPI-based)
 
 import json
+import dataclasses
 import hashlib
 import pytest
 import os
@@ -2585,3 +2586,70 @@ class TestDownloadHonoursTheLibgenUserAgentOverride:
             "the transfer must use the operator's override; sending the "
             "compiled-in default here is the failure #146 caught"
         )
+
+    @pytest.mark.asyncio
+    async def test_caller_supplied_config_wins_over_the_ambient_one(
+        self, tmp_path, mocker, monkeypatch
+    ):
+        """A router built with an injected config must not be second-guessed.
+
+        Codex round 2 on #146: the caller resolves a router (which carries its
+        own `config`, possibly injected or cached) and this function then
+        called `get_source_config()` again. Two config objects, one of which
+        moves the file — the same split the UA fix was meant to close.
+        """
+        import httpx
+
+        from lib import python_bridge
+        from lib.sources.config import get_source_config
+
+        body = b"%PDF-1.6" + b"\x00" * 2040
+        digest = hashlib.md5(body).hexdigest()
+        monkeypatch.setenv("LIBGEN_USER_AGENT", "ambient-should-lose/1.0")
+
+        injected = dataclasses.replace(
+            get_source_config(), libgen_user_agent="injected-should-win/3.0"
+        )
+        seen = {}
+
+        class Response:
+            url = httpx.URL("https://mirror.example/get")
+            headers = {}
+
+            def raise_for_status(self):
+                pass
+
+            async def aiter_bytes(self, _chunk_size):
+                yield body
+
+        class Stream:
+            async def __aenter__(self):
+                return Response()
+
+            async def __aexit__(self, *_args):
+                return False
+
+        class Client:
+            def __init__(self, **kwargs):
+                seen["headers"] = kwargs.get("headers") or {}
+
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, *_args):
+                return False
+
+            def stream(self, *_args):
+                return Stream()
+
+        mocker.patch("httpx.AsyncClient", Client)
+
+        await python_bridge._download_url_to_file(
+            "https://mirror.example/get",
+            str(tmp_path),
+            digest,
+            "libgen",
+            config=injected,
+        )
+
+        assert seen["headers"].get("User-Agent") == "injected-should-win/3.0"

@@ -71,32 +71,10 @@ because the route is planned. Guardrails for it (#97) are moot rather than defer
 sanctioned rate-limited route ever appears, reopen those rather than restarting.
 _Avoid_: Keyless download (ambiguous — say this instead)
 
-**Browser-resident session**:
-A route where a *real browser on the operator's machine* holds the DDoS-Guard clearance and
-search and download requests are issued from inside it, rate-limited. Nothing is exported to
-a different client, so the binding that defeated the operator-cookie route above does not
-apply. Whether clearance can be held at all is what #142 measures; #143 and #144 are gated
-on its answer.
-
 **Machine-solved challenge**:
 Any route where the *server* defeats the browser verification itself — headless browser,
-fingerprint spoofing.
-
-**Scope reversed 2026-08-23** (operator ruling, recorded in `DECISION_LOG.md`). This entry
-read "permanently out of scope" from 2026-08-11 until then, and #95 carried the same clause
-forward to every successor map. Both are retired for the purpose of reaching Anna's search
-and download. The stated reason is that non-API Anna's access is the project's hardest
-requirement: Anna's aggregates LibGen, Z-Library and IA, and the scholarly editions it
-uniquely carries are the whole reason it is a source.
-
-Read this honestly rather than as a re-scoping: it does defeat an anti-abuse control Anna's
-operates deliberately, and Anna's states its reason plainly — *"browser verification for our
-slow downloads, because otherwise bots and scrapers will abuse them."* What keeps this on the
-right side of that claim is #144's rate limiting, which ships **in the same pass** as any
-bypass rather than after it, bounded to the personal-use scale #95 fixed: 10-15 books
-typical, 30 maximum, per roughly a four-hour reading session. A bypass that shipped without
-those limits would make the politeness claim rhetorical, which is the one outcome this entry
-exists to prevent.
+fingerprint spoofing. Permanently out of scope: it defeats an anti-abuse control Anna's
+operates deliberately.
 _Avoid_: Keyless download, automated download
 
 Note that "keyless" alone should not be used. It has meant both *no API key* (a live

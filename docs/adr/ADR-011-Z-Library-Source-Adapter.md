@@ -83,11 +83,26 @@ The source abstraction is only partial on current `master`.
   and client close.
 
 The current download mechanism is not the detail-page scraping recorded in
-ADR-002. ADR-005 migrated the live Z-Library path to JSON EAPI calls, and
-`EAPIClient.download_file` now performs the Z-Library transfer. ADR-002 remains
-binding only for its search-result-first decision: acquisition consumes the
-book details returned by search. ADR-003's rejection of direct ID lookup also
-remains binding.
+ADR-002. ADR-005 migrated the live Z-Library query path to JSON EAPI calls;
+ADR-002 remains binding only for its search-result-first decision, that
+acquisition consumes the book details returned by search. ADR-003's rejection
+of direct ID lookup also remains binding.
+
+**This ADR supersedes ADR-005's download clause.** ADR-005 decided that
+downloads would *keep* the legacy `AsyncZlib` client, on the reasoning that
+"EAPI returns download URL, but actual file download requires cookies from the
+legacy client." The implementation subsequently diverged: `EAPIClient` grew its
+own `download_file`, and the live Z-Library transfer runs through it today. The
+divergence was never recorded, so ADR-005 has been stating a decision the code
+stopped honouring — and an implementer reading it could not tell whether the
+EAPI download path was an intentional decision or drift.
+
+It is a decision, and it is recorded here: the Z-Library transfer runs on
+`EAPIClient.download_file`, and ADR-005's "Downloads: keep legacy AsyncZlib
+client" decision, together with its two matching consequence bullets, no longer
+binds. The Z-Library adapter this ADR designs targets `EAPIClient`, not
+`AsyncZlib`. ADR-005's search, metadata, and domain-discovery decisions are
+untouched.
 
 ## Forces and invariants
 
@@ -365,7 +380,16 @@ The transport and upstream reason codes introduced by PR #106 are retained:
 
 - `dns_failure`, `dns_timeout`, `connect_timeout`, `connect_refused`,
   `connect_error`, `tls_error`, `read_timeout`, `search_timeout`,
-  `http_error`, `quota_exhausted`, `protocol_error`, and `unknown`.
+  `http_error`, `quota_exhausted`, `protocol_error`, `integrity_mismatch`,
+  `configuration_error`, and `unknown`.
+
+`integrity_mismatch` and `configuration_error` are load-bearing and easy to
+drop by accident, because neither is a transport failure: the first is emitted
+when a completed transfer's digest does not match what was requested, the
+second when a provider cannot run with the configuration it was given. Both are
+covered by tests. Retained means retained — an adapter that folds either into
+`protocol_error` or `unknown` has lost a stable classification callers already
+depend on, and has done so while believing it preserved #106.
 
 #40 adds operation/contract reasons as needed:
 
@@ -453,8 +477,14 @@ until parity is demonstrated.
   history, recent books, booklist degradation, and acquisition.
 - Record failing privacy regressions for the current raw bridge payload and
   query logging, using sentinel values rather than credentials or live URLs.
-- Record the existing credential-free LibGen startup/search path and the
-  current acquisition failure caused by eager EAPI initialisation.
+- Record the existing credential-free LibGen startup, search **and
+  acquisition** paths as a baseline to preserve. The eager-EAPI-initialisation
+  failure this stage originally characterised no longer exists: the rebase
+  parent carries `python_bridge.py::_requires_eapi_client`, which exempts
+  downloads of multi-source results from EAPI initialisation (#129). Treat that
+  source-conditional initialisation as an existing constraint the adapter must
+  not regress, not as a defect to fix in Stage 2 — reimplementing a landed fix
+  is how a plan silently loses one.
 - Confirm test counts before and after every stage; a lower count is a failure
   signal, not a simplification.
 

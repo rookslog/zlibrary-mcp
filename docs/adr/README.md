@@ -31,7 +31,7 @@
 
 ---
 
-## All ADRs (Chronological)
+## All ADRs (by ADR number)
 
 ### ADR-001: Jest ESM Migration
 **Status**: 🟡 Proposed
@@ -120,7 +120,7 @@ const scriptPath = getPythonScriptPath('python_bridge.py');
 ---
 
 ### ADR-005: EAPI Migration
-**Status**: ✅ Accepted
+**Status**: ✅ Accepted — download clause superseded by ADR-011
 **Date**: 2026-02-01
 **Context**: Browser verification made the HTML scraping path unusable
 **Decision**: Move Z-Library search, metadata, and domain discovery to JSON EAPI endpoints

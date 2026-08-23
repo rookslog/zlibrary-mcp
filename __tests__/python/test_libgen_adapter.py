@@ -1457,6 +1457,7 @@ class TestLibgenMixedBookAndArticleRows:
         assert len(results) == 4, "two books and two articles, none dropped"
 
     def test_article_row_fields_are_not_column_shifted(self, results):
+        """The corrected row keeps its edition title, rather than journal metadata."""
         article = next(r for r in results if r.md5 == self.ARTICLE_MD5)
 
         assert article.author == "Rutherford, R. B."
@@ -1465,7 +1466,23 @@ class TestLibgenMixedBookAndArticleRows:
         assert article.year == "2001 October"
         assert article.extra["language"] == "English"
         assert article.extra["pages"] == "0"
-        assert "Classical Review" in article.title, "used to be empty"
+        assert article.title.startswith("The Inner Citadel P Hadot")
+
+    def test_article_uses_its_edition_title_and_id(self, results):
+        """The series and issue links describe metadata, not this edition.
+
+        A mutation that joins every anchor in the title cell (or takes its
+        first link) would return the journal name, issue metadata, DOI, and
+        the shared `series.php` ID instead of the article's edition identity.
+        """
+        article = next(r for r in results if r.md5 == self.ARTICLE_MD5)
+
+        assert article.extra["id"] == "76430726"
+        assert article.title == (
+            "The Inner Citadel P Hadot The Inner Citadel the Meditations of "
+            "Marcus Aurelius  Pp x  351 Cambridge MA and London Harvard "
+            "University Press 1998 Cased 2795 ISBN 0674461711"
+        )
 
     def test_rows_declare_their_object_type(self, results):
         by_md5 = {r.md5: r for r in results}
@@ -1483,3 +1500,83 @@ class TestLibgenMixedBookAndArticleRows:
         assert book.year == "2001"
         assert book.extra["language"] == "English"
         assert "Inner Citadel" in book.title
+
+
+class TestLibgenEditionLinkSelection:
+    """Only a visible, direct edition link identifies a result row."""
+
+    MD5 = "a3f85ebc6faa062bceb95b349f369672"
+
+    @staticmethod
+    def _parse(title_markup):
+        from bs4 import BeautifulSoup
+        from libgen_api_enhanced.search_request import SearchRequest
+        from lib.sources.libgen import _get_books
+
+        table = BeautifulSoup(
+            f"""
+            <table><tr>
+              <td><img src="" /></td>
+              <td>{title_markup}</td>
+              <td>Author</td><td>Publisher</td><td>2026</td><td>English</td>
+              <td>1</td><td>1 MB</td><td>pdf</td>
+              <td><a href="/ads.php?md5={TestLibgenEditionLinkSelection.MD5}">1</a></td>
+            </tr></table>
+            """,
+            "html.parser",
+        ).table
+        request = SearchRequest("title", mirror="https://libgen.li")
+        return list(_get_books(request, table))
+
+    def test_skips_blank_duplicate_and_uses_nested_visible_title_content(self):
+        books = self._parse(
+            '<a href="edition.php?id=11111"><span></span></a>'
+            '<a href="edition.php?id=24680"><span>Visible <strong>Article</strong></span></a>'
+        )
+
+        assert len(books) == 1
+        assert books[0].id == "24680"
+        assert books[0].title == "Visible Article"
+
+    @pytest.mark.parametrize(
+        ("href", "expected_id"),
+        [
+            ("edition.php?id=101", "101"),
+            ("/edition.php?id=102", "102"),
+            ("https://libgen.li/edition.php?id=103", "103"),
+        ],
+    )
+    def test_accepts_direct_edition_link_url_forms(self, href, expected_id):
+        books = self._parse(f'<a href="{href}"><span>Article</span></a>')
+
+        assert len(books) == 1
+        assert books[0].id == expected_id
+
+    @pytest.mark.parametrize(
+        "href",
+        ["/notedition.php?id=123", "/fooedition.php?id=123"],
+    )
+    def test_rejects_paths_that_only_end_with_edition_php(self, href):
+        assert self._parse(f'<a href="{href}">Article</a>') == []
+
+    @pytest.mark.parametrize(
+        "href",
+        [
+            "edition.php",
+            "edition.php?id=",
+            "edition.php?id=not-a-number",
+            "edition.php?not_id=123",
+        ],
+    )
+    def test_skips_direct_edition_links_without_a_usable_id(self, href):
+        assert self._parse(f'<a href="{href}">Article</a>') == []
+
+    def test_ignores_nested_metadata_edition_link(self):
+        books = self._parse(
+            '<span><a href="edition.php?id=98765">Series metadata</a></span>'
+            '<a href="edition.php?id=12345"><span>Actual</span> article</a>'
+        )
+
+        assert len(books) == 1
+        assert books[0].id == "12345"
+        assert books[0].title == "Actual article"

@@ -276,14 +276,21 @@ def _get_books(self, table):
                 cover_url = urljoin(self.mirror, src).replace("_small", "")
 
         title_cell = tds[offset]
-        title_links = title_cell.find_all("a", href=True)
-        if not title_links:
+        edition_links = [
+            link
+            for link in title_cell.find_all("a", href=True, recursive=False)
+            if urlparse(link["href"]).path.rsplit("/", maxsplit=1)[-1] == "edition.php"
+            and parse_qs(urlparse(link["href"]).query).get("id", [""])[0].isdigit()
+            and link.get_text(" ", strip=True)
+        ]
+        if not edition_links:
             continue
 
-        raw_title = "".join([link.text for link in title_links])
+        edition_link = edition_links[0]
+        raw_title = edition_link.get_text(" ", strip=True)
         title = re.sub(r"\s+", " ", raw_title.strip())
         title = re.sub(r"[^A-Za-z0-9 ]+", "", title.strip())
-        id_param = parse_qs(urlparse(title_links[0]["href"]).query).get("id", [""])[0]
+        id_param = parse_qs(urlparse(edition_link["href"]).query)["id"][0]
 
         author = tds[offset + 1].get_text(strip=True)
         publisher = tds[offset + 2].get_text(strip=True)

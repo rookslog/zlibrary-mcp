@@ -725,6 +725,288 @@ class TestLibgenSearchProbeUsesProductionAdapter:
         assert "Welcome to nginx!" in result.detail
 
 
+class TestLibgenArticleSearchProbe:
+    """The article canary is separate from the existing book-row canary."""
+
+    def _run(self, check_upstream, search_impl):
+        from unittest.mock import patch
+
+        async def go():
+            with patch("lib.sources.libgen.LibgenAdapter.search", new=search_impl):
+                async with httpx.AsyncClient(
+                    transport=httpx.MockTransport(lambda request: httpx.Response(500))
+                ) as client:
+                    return await check_upstream.probe_libgen_article(client)
+
+        return asyncio.run(go())
+
+    def test_probe_queries_a_known_article_result(self, check_upstream):
+        """The live canary must cover article markup, not only monograph rows.
+
+        Restoring the former Pride and Prejudice query here leaves the article
+        parser's selector, edition ID, and MD5 path outside drift detection.
+        """
+        from types import SimpleNamespace
+
+        seen = {}
+
+        async def fake_search(_self, query, **_kwargs):
+            seen["query"] = query
+            return [
+                SimpleNamespace(
+                    md5="e3f85ebc6faa062bceb95b349f369672",
+                    title="The Inner Citadel P Hadot",
+                    extra={"id": "76430726", "content_type": "article"},
+                )
+            ]
+
+        result = self._run(check_upstream, fake_search)
+
+        assert result.ok is True
+        assert result.name == "libgen:article-search"
+        assert seen["query"] == "The Inner Citadel Meditations Marcus Aurelius"
+
+    def test_pre_repair_series_id_and_joined_title_do_not_clear_the_canary(
+        self, check_upstream
+    ):
+        """The old series.php identity must fail despite a valid article MD5."""
+        from types import SimpleNamespace
+
+        async def fake_search(_self, _query, **_kwargs):
+            return [
+                SimpleNamespace(
+                    md5="e3f85ebc6faa062bceb95b349f369672",
+                    title=(
+                        "The Classical Review 2001oct vol 51 iss 2 The Inner "
+                        "Citadel P Hadot DOI 101093cr512298"
+                    ),
+                    extra={"id": "23549", "content_type": "article"},
+                )
+            ]
+
+        result = self._run(check_upstream, fake_search)
+
+        assert result.ok is False
+        assert "NONE usable article" in result.detail
+
+    def test_correct_edition_id_without_the_article_title_marker_fails(
+        self, check_upstream
+    ):
+        """The article ID alone does not prove the edition title was selected."""
+        from types import SimpleNamespace
+
+        async def fake_search(_self, _query, **_kwargs):
+            return [
+                SimpleNamespace(
+                    md5="e3f85ebc6faa062bceb95b349f369672",
+                    title="The Classical Review October 2001",
+                    extra={"id": "76430726", "content_type": "article"},
+                )
+            ]
+
+        result = self._run(check_upstream, fake_search)
+
+        assert result.ok is False
+        assert "NONE usable article" in result.detail
+
+    def test_valid_md5_book_row_does_not_clear_the_article_canary(self, check_upstream):
+        """A book result proves neither the article selector nor its MD5 path."""
+        from types import SimpleNamespace
+
+        async def fake_search(_self, _query, **_kwargs):
+            return [
+                SimpleNamespace(
+                    md5="3b516fa296c861195bc94fad9bddda9e",
+                    title="The Inner Citadel",
+                    extra={"content_type": "book"},
+                )
+            ]
+
+        result = self._run(check_upstream, fake_search)
+
+        assert result.ok is False
+        assert "NONE usable article" in result.detail
+
+
+def test_run_probes_includes_the_article_canary(check_upstream):
+    """The article probe has to be wired into doctor and scheduled CI."""
+    from unittest.mock import patch
+
+    async def zlibrary(_client):
+        return [check_upstream.ProbeResult("zlibrary:eapi", True, "ok")]
+
+    async def annas(_client):
+        return check_upstream.ProbeResult("annas-archive:search", True, "ok")
+
+    async def libgen_canaries(_client):
+        return (
+            check_upstream.ProbeResult("libgen:search", True, "ok"),
+            check_upstream.ProbeResult("libgen:article-search", True, "ok"),
+        )
+
+    async def download(_client):
+        return check_upstream.ProbeResult("libgen:download", True, "ok")
+
+    async def go():
+        with (
+            patch.object(check_upstream, "probe_zlibrary_eapi", zlibrary),
+            patch.object(check_upstream, "probe_annas", annas),
+            patch.object(check_upstream, "probe_libgen_canaries", libgen_canaries),
+            patch.object(check_upstream, "probe_libgen_download", download),
+        ):
+            return await check_upstream.run_probes()
+
+    results = asyncio.run(go())
+
+    assert [result.name for result in results] == [
+        "zlibrary:eapi",
+        "annas-archive:search",
+        "libgen:search",
+        "libgen:article-search",
+        "libgen:download",
+    ]
+
+
+def test_run_probes_starts_the_article_search_only_after_book_search_finishes(
+    check_upstream,
+):
+    """The article canary starts only after the book canary returns."""
+    from unittest.mock import patch
+
+    book_started = asyncio.Event()
+    allow_book_finish = asyncio.Event()
+    article_started = asyncio.Event()
+    order = []
+
+    async def zlibrary(_client):
+        return [check_upstream.ProbeResult("zlibrary:eapi", True, "ok")]
+
+    async def annas(_client):
+        return check_upstream.ProbeResult("annas-archive:search", True, "ok")
+
+    async def download(_client):
+        return check_upstream.ProbeResult("libgen:download", True, "ok")
+
+    async def libgen_canaries(_client):
+        order.append("book:start")
+        book_started.set()
+        await allow_book_finish.wait()
+        order.append("book:end")
+        order.append("article:start")
+        article_started.set()
+        return (
+            check_upstream.ProbeResult("libgen:search", True, "ok"),
+            check_upstream.ProbeResult("libgen:article-search", True, "ok"),
+        )
+
+    async def go():
+        with (
+            patch.object(check_upstream, "probe_zlibrary_eapi", zlibrary),
+            patch.object(check_upstream, "probe_annas", annas),
+            patch.object(check_upstream, "probe_libgen_download", download),
+            patch.object(check_upstream, "probe_libgen_canaries", libgen_canaries),
+        ):
+            probes = asyncio.create_task(check_upstream.run_probes())
+            await book_started.wait()
+            await asyncio.sleep(0)
+            assert article_started.is_set() is False
+            allow_book_finish.set()
+            results = await probes
+        return results
+
+    results = asyncio.run(go())
+
+    assert [result.name for result in results] == [
+        "zlibrary:eapi",
+        "annas-archive:search",
+        "libgen:search",
+        "libgen:article-search",
+        "libgen:download",
+    ]
+    assert order == ["book:start", "book:end", "article:start"]
+
+
+def test_run_probes_reuses_the_adapter_so_article_search_is_rate_limited(
+    check_upstream,
+):
+    """The second canary must inherit the first request's pacing state."""
+    from types import SimpleNamespace
+    from unittest.mock import patch
+
+    from lib.sources import libgen as libgen_mod
+    from lib.sources.config import SourceConfig
+
+    config = SourceConfig(
+        libgen_mirror="li",
+        default_source="libgen",
+        fallback_enabled=False,
+        preflight_enabled=False,
+    )
+    search_adapters = []
+    sleep_delays = []
+    closed = []
+
+    async def fake_search(adapter, query, **_kwargs):
+        search_adapters.append(adapter)
+        await adapter._rate_limit()
+        if query == "Pride and Prejudice":
+            return [
+                SimpleNamespace(
+                    md5="3b516fa296c861195bc94fad9bddda9e",
+                    title="Pride and Prejudice",
+                    extra={"id": "1342", "content_type": "book"},
+                )
+            ]
+        return [
+            SimpleNamespace(
+                md5="e3f85ebc6faa062bceb95b349f369672",
+                title="The Inner Citadel P Hadot",
+                extra={"id": "76430726", "content_type": "article"},
+            )
+        ]
+
+    async def fake_sleep(delay):
+        sleep_delays.append(delay)
+
+    async def fake_close(adapter):
+        closed.append(adapter)
+
+    async def zlibrary(_client):
+        return [check_upstream.ProbeResult("zlibrary:eapi", True, "ok")]
+
+    async def annas(_client):
+        return check_upstream.ProbeResult("annas-archive:search", True, "ok")
+
+    async def download(_client):
+        return check_upstream.ProbeResult("libgen:download", True, "ok")
+
+    async def go():
+        with (
+            patch.object(check_upstream, "get_source_config", return_value=config),
+            patch.object(check_upstream, "probe_zlibrary_eapi", zlibrary),
+            patch.object(check_upstream, "probe_annas", annas),
+            patch.object(check_upstream, "probe_libgen_download", download),
+            patch.object(libgen_mod.LibgenAdapter, "search", fake_search),
+            patch.object(libgen_mod.LibgenAdapter, "close", fake_close),
+            patch.object(libgen_mod.time, "time", side_effect=[100, 100, 101, 102]),
+            patch.object(libgen_mod.asyncio, "sleep", fake_sleep),
+        ):
+            return await check_upstream.run_probes()
+
+    results = asyncio.run(go())
+
+    assert [result.name for result in results] == [
+        "zlibrary:eapi",
+        "annas-archive:search",
+        "libgen:search",
+        "libgen:article-search",
+        "libgen:download",
+    ]
+    assert search_adapters[0] is search_adapters[1]
+    assert sleep_delays == [1.0]
+    assert closed == [search_adapters[0]]
+
+
 def test_libgen_block_does_not_set_the_zlibrary_blocked_flag(check_upstream):
     """A walled LibGen must not suppress the Z-Library drift report.
 

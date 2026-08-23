@@ -734,6 +734,12 @@ class TestAnnasDownloadDomProbe:
     close, reintroduced on a new surface.
     """
 
+    PARTNER_PAGE = (
+        '<html><body><a href="/faq">FAQ</a>'
+        '<a href="https://cdn9.example.net/d/x/Book.pdf?sig=1">Download now</a>'
+        "</body></html>"
+    )
+
     def _run(self, check_upstream, handler):
         import asyncio
 
@@ -745,6 +751,17 @@ class TestAnnasDownloadDomProbe:
 
         return asyncio.run(go())
 
+    def _two_page(self, book, partner=None):
+        """Serve the book page first, the partner page on the second request."""
+        partner = self.PARTNER_PAGE if partner is None else partner
+
+        def handler(request):
+            if "/slow_download/" in str(request.url):
+                return httpx.Response(200, text=partner)
+            return httpx.Response(200, text=book)
+
+        return handler
+
     def test_partner_links_in_the_expected_shape_pass(self, check_upstream):
         md5 = check_upstream.ANNAS_DOM_CANARY_MD5
         page = (
@@ -752,10 +769,14 @@ class TestAnnasDownloadDomProbe:
             f'<a href="/slow_download/{md5}/0/1">Server 2</a></body></html>'
         )
 
-        result = self._run(check_upstream, lambda r: httpx.Response(200, text=page))
+        result = self._run(check_upstream, self._two_page(page))
 
         assert result.ok is True
         assert "2 partner-server link" in result.detail
+        assert "cdn9.example.net" in result.detail, (
+            "the probe must report the payload host it actually reached, or "
+            "green says nothing about the half of the flow that moves the file"
+        )
 
     def test_a_page_without_partner_links_is_drift_not_a_block(self, check_upstream):
         """Loaded, unchallenged, and missing the links the extractor needs."""
@@ -799,7 +820,84 @@ class TestAnnasDownloadDomProbe:
             'fetch("/dyn/recent_downloads/");</script></body></html>'
         )
 
-        result = self._run(check_upstream, lambda r: httpx.Response(200, text=page))
+        result = self._run(check_upstream, self._two_page(page))
 
         assert result.ok is True
         assert result.blocked is False
+
+    def test_a_partner_page_without_a_payload_link_is_drift(self, check_upstream):
+        """The half of the flow that was previously unmonitored (#150).
+
+        A book page can be perfectly intact while the partner page redesigns
+        underneath it, and the probe used to return green on the book page
+        alone — reporting the adapter healthy while every download failed.
+        """
+        md5 = check_upstream.ANNAS_DOM_CANARY_MD5
+        book = f'<html><body><a href="/slow_download/{md5}/0/0">S1</a></body></html>'
+        redesigned = '<html><body><button id="dl">Get it</button></body></html>'
+
+        result = self._run(check_upstream, self._two_page(book, redesigned))
+
+        assert result.ok is False
+        assert result.blocked is False
+        assert "partner-page drift" in result.detail
+
+    def test_a_walled_partner_page_is_blocked_not_drift(self, check_upstream):
+        md5 = check_upstream.ANNAS_DOM_CANARY_MD5
+        book = f'<html><body><a href="/slow_download/{md5}/0/0">S1</a></body></html>'
+        wall = "<html><body><h1>Checking your browser</h1></body></html>"
+
+        result = self._run(check_upstream, self._two_page(book, wall))
+
+        assert result.blocked is True
+        assert result.symbol == "BLOCK"
+        assert "UNVERIFIED" in result.detail
+
+
+class TestRunProbesReturnsEveryProbe:
+    """`run_probes` must unpack and return every probe it gathers.
+
+    Codex on #150: a probe was added to the `gather()` call without a target,
+    so the tuple unpack raised and `npm run doctor` plus the scheduled
+    upstream check failed before producing a report — the health check
+    disabled by an addition to it. The per-probe tests all passed, because
+    they call the probe functions directly and never go through here.
+
+    This test is deliberately structural rather than behavioural: it counts
+    what goes in against what comes out, so the next probe added without a
+    target fails here instead of in CI.
+    """
+
+    def test_every_gathered_probe_appears_in_the_result(self, check_upstream):
+        import asyncio
+        import inspect
+
+        source = inspect.getsource(check_upstream.run_probes)
+        import re
+
+        gathered = re.findall(r"\b(probe_\w+)\(client\)", source)
+        assert len(gathered) >= 5, f"expected the full probe set, saw {gathered}"
+
+        async def stub(_client):
+            return check_upstream.ProbeResult(
+                name="stub", ok=True, detail="", required=False
+            )
+
+        async def stub_list(_client):
+            return [
+                check_upstream.ProbeResult(
+                    name="zlibrary:stub", ok=True, detail="", required=False
+                )
+            ]
+
+        import unittest.mock as mock
+
+        patches = {name: stub for name in gathered}
+        patches["probe_zlibrary_eapi"] = stub_list
+        with mock.patch.multiple(check_upstream, **patches):
+            results = asyncio.run(check_upstream.run_probes())
+
+        assert len(results) == len(gathered), (
+            f"{len(gathered)} probes gathered but {len(results)} returned — a "
+            f"probe is being dropped, or the unpack will raise"
+        )

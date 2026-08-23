@@ -44,7 +44,7 @@ from dataclasses import dataclass
 from typing import List, Optional, Tuple
 from urllib.parse import urlsplit
 
-from .annas_usage import DailyUsage
+from .annas_usage import CrossProcessLock, DailyUsage
 from .config import SourceConfig
 from .errors import (
     ProviderConfigurationError,
@@ -194,6 +194,16 @@ class ProviderRateLimitedError(ProviderResponseError):
     reason = "quota_exhausted"
 
 
+class BrowserBusyError(ProviderResponseError):
+    """Another process already holds the browser.
+
+    Non-retryable by reason, because the generic retry loop would start a
+    fourth and fifth process queueing for the same browser rather than waiting.
+    """
+
+    reason = "configuration_error"
+
+
 class DailyLimitReachedError(ProviderResponseError):
     """This session's own per-day ceiling is spent.
 
@@ -333,7 +343,20 @@ class AnnasBrowserSession:
         )
         self._playwright = None
         self._context = None
+        # Budget as it stood when the current resolution began. Reporting the
+        # budget *after* spending would tell the router `downloads_left == 0`
+        # for a resolution that legitimately used the last slots — and the
+        # router discards such a result and raises QuotaExhaustedError, so the
+        # final fully-budgeted download would fail after paying for itself
+        # (Codex on #150).
         self._remaining_today = config.annas_browser_daily_limit
+        self._remaining_at_start: Optional[int] = None
+        # The in-process lock keeps coroutines in order; this one keeps
+        # *processes* in order, which is the level that actually matters here
+        # since every MCP operation gets its own bridge process.
+        self._process_lock = CrossProcessLock(
+            os.path.join(config.annas_browser_profile_dir, "..", "annas-browser.lock")
+        )
 
     # -- lifecycle ---------------------------------------------------------
 
@@ -404,6 +427,11 @@ class AnnasBrowserSession:
         and defaults above the slower of the two.
         """
         self._remaining_today = await self._limiter.acquire()
+        if self._remaining_at_start is None:
+            # +1 because acquire() has already taken this resolution's first
+            # slot. The number is a true statement: this many were available
+            # when the download started.
+            self._remaining_at_start = self._remaining_today + 1
         try:
             await page.goto(
                 url,
@@ -496,15 +524,53 @@ class AnnasBrowserSession:
         return None
 
     async def resolve_download_url(self, md5: str) -> Tuple[str, int]:
-        """Walk book page → partner server → signed URL. Returns (url, remaining).
+        """First working partner URL, for callers that want a single answer."""
+        async for url, remaining in self.iter_download_urls(md5):
+            return url, remaining
+        raise ProviderResponseError(
+            PROVIDER,
+            self.host,
+            f"no partner server yielded a payload link for md5 {md5}",
+            reason="protocol_error",
+        )
 
-        Returns a URL for the caller to fetch with the ordinary httpx transfer,
-        which already verifies content md5, bounds throughput and stages
-        atomically. The browser deliberately never sees the bytes.
+    async def iter_download_urls(self, md5: str):
+        """Yield one payload URL per working partner server, in Anna's order.
+
+        A stream rather than a single answer because the transfer happens
+        *after* this returns: a syntactically valid URL whose CDN is dead,
+        expired, or serving the wrong bytes is only discovered downstream, and
+        a single return ends the candidate stream before the remaining partner
+        servers are tried (Codex on #150). `ANNAS_BROWSER_MAX_SERVERS`
+        advertises that failover; this is what makes it real.
+
+        The transfer stays on the ordinary httpx path either way — the browser
+        never sees the bytes.
         """
         async with self._lock:
-            context = await self._ensure_context()
-            page = await context.new_page()
+            # A full walk is a couple of navigations plus settle time, so the
+            # wait is generous: queueing behind another download is correct
+            # behaviour, not a fault. `to_thread` keeps the blocking wait off
+            # the event loop.
+            wait = self.config.annas_browser_nav_timeout * 3
+            if not await asyncio.to_thread(self._process_lock.acquire, wait):
+                raise BrowserBusyError(
+                    PROVIDER,
+                    self.host,
+                    f"another process has held the Anna's browser for more "
+                    f"than {wait:.0f}s. One download at a time is deliberate "
+                    f"(#144) and Chrome will not share a profile anyway. Retry "
+                    f"once the other download finishes.",
+                )
+            # The release below must cover launch too: a browser that fails to
+            # start would otherwise leave the lock held until it went stale,
+            # blocking every later download for ten minutes.
+            try:
+                context = await self._ensure_context()
+                page = await context.new_page()
+            except BaseException:
+                self._process_lock.release()
+                raise
             try:
                 book_html = await self._visit(page, f"{self.base_url}/md5/{md5}")
                 candidates = self._slow_download_paths(book_html, md5)
@@ -516,10 +582,17 @@ class AnnasBrowserSession:
                         f"page. The page loaded and the challenge did not "
                         f"fire, so this is a missing edition or a layout "
                         f"change — not a wall, and not a reason to retry.",
+                        # Non-retryable on the Node side too: without that, the
+                        # message saying "not a reason to retry" was followed by
+                        # three retries, each spending another daily slot and
+                        # settle delay on a page that will not change, and each
+                        # counting toward the shared bridge circuit breaker
+                        # (Codex on #150).
                         reason="not_found",
                     )
 
                 attempts: List[str] = []
+                yielded = 0
                 for path in candidates[: self.config.annas_browser_max_servers]:
                     try:
                         partner_html = await self._visit(page, f"{self.base_url}{path}")
@@ -540,15 +613,20 @@ class AnnasBrowserSession:
 
                     url = self._direct_file_url(partner_html, self.host)
                     if url:
-                        return url, self._remaining_today
+                        yielded += 1
+                        yield url, self._remaining_at_start
+                        continue
                     attempts.append(f"{path}: no payload link")
 
-                raise ProviderResponseError(
-                    PROVIDER,
-                    self.host,
-                    "no partner server yielded a payload link — "
-                    + " | ".join(attempts),
-                    reason="protocol_error",
-                )
+                if not yielded:
+                    raise ProviderResponseError(
+                        PROVIDER,
+                        self.host,
+                        "no partner server yielded a payload link — "
+                        + " | ".join(attempts),
+                        reason="protocol_error",
+                    )
             finally:
+                self._remaining_at_start = None
                 await page.close()
+                self._process_lock.release()

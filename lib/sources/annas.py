@@ -493,6 +493,41 @@ class AnnasArchiveAdapter(SourceAdapter):
             quota_info=quota_info,
         )
 
+    async def iter_download_candidates(self, md5: str):
+        """Yield every usable download URL, best first.
+
+        The router consumes this as a stream and moves to the next candidate
+        when a transfer fails, so a partner server whose CDN is dead no longer
+        ends acquisition for the whole provider (Codex on #150). The keyed
+        route has exactly one answer and yields it unchanged.
+        """
+        if not self.secret_key and self.config.annas_browser_enabled:
+            session = self._browser_session()
+            async for url, remaining in session.iter_download_urls(md5):
+                yield self._browser_result(url, remaining)
+            return
+        yield await self.get_download_url(md5)
+
+    def _browser_session(self):
+        from .annas_browser import AnnasBrowserSession  # noqa: PLC0415
+
+        if self._browser is None:
+            self._browser = AnnasBrowserSession(self.config)
+        return self._browser
+
+    def _browser_result(self, url: str, remaining: int) -> DownloadResult:
+        return DownloadResult(
+            url=url,
+            source=SourceType.ANNAS_ARCHIVE,
+            quota_info=QuotaInfo(
+                downloads_left=remaining,
+                downloads_per_day=self.config.annas_browser_daily_limit,
+                downloads_done_today=max(
+                    0, self.config.annas_browser_daily_limit - remaining
+                ),
+            ),
+        )
+
     async def _browser_download_url(self, md5: str) -> DownloadResult:
         """Resolve a payload URL through the browser-resident session (#143).
 
@@ -503,22 +538,8 @@ class AnnasArchiveAdapter(SourceAdapter):
         moving bytes through Playwright would have meant reimplementing three
         pieces of working machinery for no gain.
         """
-        from .annas_browser import AnnasBrowserSession  # noqa: PLC0415
-
-        if self._browser is None:
-            self._browser = AnnasBrowserSession(self.config)
-        url, remaining = await self._browser.resolve_download_url(md5)
-        return DownloadResult(
-            url=url,
-            source=SourceType.ANNAS_ARCHIVE,
-            quota_info=QuotaInfo(
-                downloads_left=remaining,
-                downloads_per_day=self.config.annas_browser_daily_limit,
-                downloads_done_today=(
-                    self.config.annas_browser_daily_limit - remaining
-                ),
-            ),
-        )
+        url, remaining = await self._browser_session().resolve_download_url(md5)
+        return self._browser_result(url, remaining)
 
     async def close(self) -> None:
         """Clean up HTTP client resources."""

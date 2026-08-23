@@ -39,6 +39,60 @@ _LOCK_POLL = 0.02
 _STALE_LOCK_AGE = 30.0
 
 
+class CrossProcessLock:
+    """One holder at a time, across processes, for a named resource.
+
+    An `asyncio.Lock` serialises coroutines inside one event loop, and every
+    MCP operation runs in a **separate** `python_bridge.py` process — so two
+    overlapping downloads each build their own session, their own lock, and
+    navigate simultaneously (Codex on #150). Chrome would then also refuse the
+    second launch against a profile the first one owns, producing a confusing
+    browser error instead of a clear one.
+
+    Same atomic-`mkdir` mechanism as the usage counter, with a much longer
+    timeout: a browser walk legitimately takes a couple of minutes, so waiting
+    is the correct behaviour rather than a symptom.
+    """
+
+    def __init__(self, path: str, stale_after: float = 600.0):
+        self.path = Path(path)
+        self.stale_after = stale_after
+
+    def acquire(self, timeout: float) -> bool:
+        deadline = time.monotonic() + timeout
+        while True:
+            try:
+                self.path.parent.mkdir(parents=True, exist_ok=True)
+                os.mkdir(self.path)
+                return True
+            except FileExistsError:
+                try:
+                    age = time.time() - self.path.stat().st_mtime
+                except OSError:
+                    age = 0.0
+                if age > self.stale_after:
+                    logger.warning(
+                        "Reclaiming a stale browser lock (%.0fs old) at %s",
+                        age,
+                        self.path,
+                    )
+                    self.release()
+                    continue
+                if time.monotonic() >= deadline:
+                    return False
+                time.sleep(0.25)
+            except OSError:
+                # Same reasoning as the counter: a lock we cannot take must not
+                # block the operator's own downloads outright.
+                return True
+
+    def release(self) -> None:
+        try:
+            os.rmdir(self.path)
+        except OSError:
+            pass
+
+
 class DailyUsage:
     """Persistent count of requests spent in the current 24-hour window."""
 

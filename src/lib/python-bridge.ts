@@ -34,6 +34,10 @@ const PERMANENT_CALLER_REASONS = new Set([
   'configuration_error',
   'quota_exhausted',
   'challenge_required',
+  // The provider answered correctly and the answer will not change. Retrying
+  // spends another Anna's daily slot and settle delay per attempt on a page
+  // that already told us the edition is not there (Codex on #150).
+  'not_found',
 ]);
 
 function everyFailureHasReason(details: any, predicate: (reason: unknown) => boolean): boolean {

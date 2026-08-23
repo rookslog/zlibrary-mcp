@@ -366,7 +366,12 @@ class TestResolveDownloadUrl:
         url, remaining = await session.resolve_download_url(MD5)
 
         assert url.startswith("https://cdn3.example.net/")
-        assert remaining == 98, "two navigations spent, out of a 100 ceiling"
+        assert remaining == 100, (
+            "the budget reported is the one that applied when this resolution "
+            "started, not what is left after it — reporting 0 for a download "
+            "that legitimately spent the last slots makes the router discard "
+            "the URL it just paid for (Codex on #150)"
+        )
         assert session._page.visited == [
             f"https://annas-archive.gl/md5/{MD5}",
             f"https://annas-archive.gl/slow_download/{MD5}/0/0",
@@ -592,3 +597,152 @@ class TestEntityDecoding:
             "https://cdn.example.net/x/book.pdf?Expires=1&Signature=abc&Key-Pair-Id=K1"
         )
         assert "amp;" not in url
+
+
+class TestPartnerFailover:
+    """A dead CDN must not end acquisition for the whole provider (#150).
+
+    The transfer happens after resolution returns, so a syntactically valid URL
+    whose partner server is dead, expired, or serving wrong bytes is only
+    discovered downstream. Returning one URL ended Anna's candidate stream
+    before the remaining partner servers were tried — while
+    ANNAS_BROWSER_MAX_SERVERS advertised exactly that failover.
+    """
+
+    @pytest.mark.asyncio
+    async def test_every_working_partner_is_yielded(self, tmp_path):
+        second = PARTNER_PAGE.replace("cdn3.example.net", "cdn7.example.net")
+        session = _session([BOOK_PAGE, PARTNER_PAGE, second], tmp_path)
+
+        urls = [url async for url, _ in session.iter_download_urls(MD5)]
+
+        assert len(urls) == 2, "both partner servers must be offered"
+        assert "cdn3.example.net" in urls[0]
+        assert "cdn7.example.net" in urls[1]
+
+    @pytest.mark.asyncio
+    async def test_a_partner_without_a_link_is_skipped_not_fatal(self, tmp_path):
+        dead = "<html><body><a href='/faq'>nothing</a></body></html>"
+        session = _session([BOOK_PAGE, dead, PARTNER_PAGE], tmp_path)
+
+        urls = [url async for url, _ in session.iter_download_urls(MD5)]
+
+        assert len(urls) == 1
+
+    @pytest.mark.asyncio
+    async def test_the_budget_reported_is_the_one_that_applied(self, tmp_path):
+        """Every candidate reports the budget as of the start of the walk.
+
+        Reporting the post-spend figure made the last fully-budgeted download
+        fail: the router discards a result whose `downloads_left` is 0 and
+        raises QuotaExhaustedError, after the slots were already spent.
+        """
+        session = _session(
+            [BOOK_PAGE, PARTNER_PAGE], tmp_path, annas_browser_daily_limit=2
+        )
+
+        # Take only the first candidate, which is what the router does when the
+        # transfer succeeds — the walk is lazy and costs nothing further.
+        stream = session.iter_download_urls(MD5)
+        _, remaining = await stream.__anext__()
+        await stream.aclose()
+
+        assert remaining == 2, (
+            "two slots existed when this download began; reporting the "
+            "post-spend 0 makes the router discard the URL it just paid for"
+        )
+
+    @pytest.mark.asyncio
+    async def test_the_adapter_exposes_the_stream_to_the_router(self, tmp_path):
+        """`SourceRouter` only fails over when the adapter is a generator."""
+        import inspect
+
+        from lib.sources.annas import AnnasArchiveAdapter
+
+        method = AnnasArchiveAdapter.iter_download_candidates
+
+        assert inspect.isasyncgenfunction(method), (
+            "the router checks isasyncgenfunction; a coroutine here silently "
+            "falls back to the single-candidate path and failover is lost"
+        )
+
+    @pytest.mark.asyncio
+    async def test_the_walk_is_lazy(self, tmp_path):
+        """Later partner servers cost nothing unless the caller asks for them.
+
+        The generator suspends at each yield, so a download whose first
+        candidate works never pays for the rest — which is what keeps failover
+        cheap enough to be worth having under a 30-request daily budget.
+        """
+        session = _session([BOOK_PAGE, PARTNER_PAGE, PARTNER_PAGE], tmp_path)
+
+        stream = session.iter_download_urls(MD5)
+        await stream.__anext__()
+        visited_after_first = len(session._page.visited)
+        await stream.aclose()
+
+        assert visited_after_first == 2, (
+            "one book page plus one partner page; walking the rest eagerly "
+            "would spend the daily budget on candidates nobody asked for"
+        )
+
+
+class TestCrossProcessSerialisation:
+    """One browser walk at a time, across processes (#144, #150).
+
+    An `asyncio.Lock` orders coroutines inside one event loop, and every MCP
+    operation runs in its own `python_bridge.py` process — so the in-process
+    lock never saw the case it was written for. Chrome would also refuse the
+    second launch against a profile the first owns, turning a policy violation
+    into a confusing browser error.
+    """
+
+    @pytest.mark.asyncio
+    async def test_a_second_session_waits_for_the_first(self, tmp_path):
+        from lib.sources.annas_browser import BrowserBusyError
+
+        first = _session([BOOK_PAGE, PARTNER_PAGE], tmp_path)
+        second = _session(
+            [BOOK_PAGE, PARTNER_PAGE], tmp_path, annas_browser_nav_timeout=0.1
+        )
+
+        assert first._process_lock.path == second._process_lock.path, (
+            "two sessions on one profile must contend for the same lock"
+        )
+        assert first._process_lock.acquire(1.0) is True
+        try:
+            with pytest.raises(BrowserBusyError):
+                await second.resolve_download_url(MD5)
+        finally:
+            first._process_lock.release()
+
+    @pytest.mark.asyncio
+    async def test_the_lock_is_released_when_the_walk_fails(self, tmp_path):
+        """A failed walk must not wedge every later download."""
+        session = _session(["<html><body>Not found</body></html>"], tmp_path)
+
+        with pytest.raises(ProviderResponseError):
+            await session.resolve_download_url(MD5)
+
+        assert session._process_lock.acquire(1.0) is True, (
+            "the lock survived a failed walk; every later download would wait "
+            "for it to go stale"
+        )
+        session._process_lock.release()
+
+    def test_a_stale_lock_is_reclaimed(self, tmp_path):
+        """A crashed process must not block the operator's tool forever."""
+        import os
+        import time
+
+        from lib.sources.annas_usage import CrossProcessLock
+
+        lock = CrossProcessLock(str(tmp_path / "held.lock"), stale_after=0.05)
+        assert lock.acquire(1.0) is True
+        time.sleep(0.1)
+
+        other = CrossProcessLock(str(tmp_path / "held.lock"), stale_after=0.05)
+
+        assert other.acquire(1.0) is True
+        assert os.path.isdir(tmp_path / "held.lock")
+        other.release()

@@ -341,12 +341,69 @@ async def probe_annas_download_dom(client: httpx.AsyncClient) -> ProbeResult:
 
     partner_links = AnnasBrowserSession._slow_download_paths(body, ANNAS_DOM_CANARY_MD5)
     if partner_links:
+        # Stopping here would leave the second half of the flow unmonitored: a
+        # partner-page redesign breaks every download while this row stays
+        # green (Codex on #150). One extra request, against the first server
+        # Anna's lists, through the same extractor production uses.
+        try:
+            partner = await client.get(f"{ANNAS_BASE_URL}{partner_links[0]}")
+        except Exception as exc:  # noqa: BLE001
+            return ProbeResult(
+                name="annas-archive:download-dom",
+                ok=False,
+                detail=(
+                    f"book page intact ({len(partner_links)} partner links) but "
+                    f"{partner_links[0]} could not be fetched: "
+                    f"{type(exc).__name__}: {exc}"
+                ),
+                required=False,
+            )
+
+        partner_body = partner.text
+        partner_walled = _block_detail(partner) or any(
+            marker in visible_text(partner_body).lower()
+            for marker in (
+                "checking your browser",
+                "just a moment",
+                "verifying you are human",
+            )
+        )
+        if partner_walled:
+            return ProbeResult(
+                name="annas-archive:download-dom",
+                ok=False,
+                blocked=True,
+                detail=(
+                    f"book page intact ({len(partner_links)} partner links) but "
+                    f"the partner page answered with browser verification, so "
+                    f"payload-link extraction is UNVERIFIED from this network — "
+                    f"not evidence that it drifted"
+                ),
+                required=False,
+            )
+
+        annas_host = (urlsplit(ANNAS_BASE_URL).hostname or "").lower()
+        payload = AnnasBrowserSession._direct_file_url(partner_body, annas_host)
+        if not payload:
+            return ProbeResult(
+                name="annas-archive:download-dom",
+                ok=False,
+                detail=(
+                    f"book page intact ({len(partner_links)} partner links) but "
+                    f"{partner_links[0]} yielded NO off-site payload link "
+                    f"(HTTP {partner.status_code}, {len(partner_body)} bytes) — "
+                    f"partner-page drift, and every browser download fails"
+                ),
+                required=False,
+            )
+
         return ProbeResult(
             name="annas-archive:download-dom",
             ok=True,
             detail=(
-                f"{len(partner_links)} partner-server link(s) in the expected "
-                f"shape on the canary book page (first: {partner_links[0]})"
+                f"{len(partner_links)} partner-server link(s) on the canary book "
+                f"page, and {partner_links[0]} yielded a payload link on "
+                f"{urlsplit(payload).hostname or '?'}"
             ),
             required=False,
         )
@@ -666,14 +723,26 @@ async def run_probes() -> list[ProbeResult]:
         follow_redirects=True,
         headers={"User-Agent": "zlibrary-mcp-upstream-check"},
     ) as client:
-        zlib_results, annas, libgen, libgen_download = await asyncio.gather(
+        (
+            zlib_results,
+            annas,
+            annas_download_dom,
+            libgen,
+            libgen_download,
+        ) = await asyncio.gather(
             probe_zlibrary_eapi(client),
             probe_annas(client),
             probe_annas_download_dom(client),
             probe_libgen(client),
             probe_libgen_download(client),
         )
-    return [*zlib_results, annas, libgen, libgen_download]
+    return [
+        *zlib_results,
+        annas,
+        annas_download_dom,
+        libgen,
+        libgen_download,
+    ]
 
 
 def actionable_failures(results: list[ProbeResult]) -> list[ProbeResult]:

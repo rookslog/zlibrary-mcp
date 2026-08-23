@@ -1,0 +1,147 @@
+"""A daily request budget that survives the process it was spent in.
+
+Every MCP operation starts a fresh `python_bridge.py`, so a counter held in a
+`_RateLimiter` instance resets to zero on every call. A 30-per-day ceiling
+stored that way is not a limit — it is a number in a docstring, and an operator
+could issue unbounded downloads while the code claimed otherwise (Codex on
+#150). Anna's browser route is in scope *on the condition* that the limits are
+real, so this is the difference between the politeness claim being true and
+being rhetorical.
+
+The state is a small JSON file next to the browser profile, guarded by an
+exclusive lock file so two concurrent bridge processes cannot both read 29 and
+both write 30. The lock is a directory rather than `fcntl`: `os.mkdir` is
+atomic on POSIX and Windows alike, needs no third-party dependency, and this
+project supports both.
+
+Nothing here is a security boundary. An operator who wants more can edit the
+file or raise `ANNAS_BROWSER_DAILY_LIMIT`; the point is that they have to
+decide to, rather than getting it by accident because the counter forgot.
+"""
+
+from __future__ import annotations
+
+import errno
+import json
+import logging
+import os
+import time
+from pathlib import Path
+from typing import Tuple
+
+logger = logging.getLogger(__name__)
+
+# How long to wait for another process to finish its read-modify-write. The
+# critical section is two file operations, so anything beyond this means a
+# crashed process left the directory behind rather than a genuine queue.
+_LOCK_TIMEOUT = 5.0
+_LOCK_POLL = 0.02
+_STALE_LOCK_AGE = 30.0
+
+
+class DailyUsage:
+    """Persistent count of requests spent in the current 24-hour window."""
+
+    def __init__(self, state_path: str):
+        self.path = Path(state_path)
+        self.lock_path = Path(str(state_path) + ".lock")
+
+    # -- locking -----------------------------------------------------------
+
+    def _acquire(self) -> bool:
+        deadline = time.monotonic() + _LOCK_TIMEOUT
+        while True:
+            try:
+                self.lock_path.parent.mkdir(parents=True, exist_ok=True)
+                os.mkdir(self.lock_path)
+                return True
+            except FileExistsError:
+                # A process that died mid-write must not wedge the limiter
+                # shut. Waiting forever would be a denial of the operator's own
+                # tool; ignoring the lock entirely would defeat it.
+                try:
+                    age = time.time() - self.lock_path.stat().st_mtime
+                except OSError:
+                    age = 0.0
+                if age > _STALE_LOCK_AGE:
+                    logger.warning(
+                        "Removing a stale Anna's usage lock (%.0fs old) at %s",
+                        age,
+                        self.lock_path,
+                    )
+                    self._release()
+                    continue
+                if time.monotonic() >= deadline:
+                    return False
+                time.sleep(_LOCK_POLL)
+            except OSError as exc:
+                if exc.errno in (errno.EACCES, errno.EROFS):
+                    return False
+                raise
+
+    def _release(self) -> None:
+        try:
+            os.rmdir(self.lock_path)
+        except OSError:
+            pass
+
+    # -- state -------------------------------------------------------------
+
+    def _read(self) -> Tuple[float, int]:
+        try:
+            raw = json.loads(self.path.read_text())
+            return float(raw["window_started"]), int(raw["spent"])
+        except (OSError, ValueError, KeyError, TypeError):
+            # A corrupt or absent file starts a fresh window. It must not raise
+            # — an unreadable counter that took the whole route down would make
+            # the politeness layer a liability rather than a guard.
+            return time.time(), 0
+
+    def _write(self, window_started: float, spent: int) -> None:
+        temporary = self.path.with_suffix(self.path.suffix + ".tmp")
+        temporary.parent.mkdir(parents=True, exist_ok=True)
+        temporary.write_text(
+            json.dumps({"window_started": window_started, "spent": spent})
+        )
+        os.replace(temporary, self.path)
+
+    # -- the operations the limiter needs ---------------------------------
+
+    def spend(self, limit: int) -> Tuple[bool, int]:
+        """Take one request from today's budget.
+
+        Returns `(allowed, remaining_after)`. The whole read-modify-write runs
+        under the lock, because the interesting failure is two bridge processes
+        each reading `limit - 1` and each deciding it may proceed.
+        """
+        if not self._acquire():
+            # Failing open here is deliberate and narrow: the alternative is
+            # that a permissions problem or a wedged lock silently blocks the
+            # operator's own downloads. It is logged, and the in-process
+            # spacing and backoff still apply.
+            logger.warning(
+                "Could not lock the Anna's usage counter at %s; this request is "
+                "not counted against the daily ceiling",
+                self.path,
+            )
+            return True, -1
+        try:
+            window_started, spent = self._read()
+            now = time.time()
+            if now - window_started >= 86400 or now < window_started:
+                window_started, spent = now, 0
+            if spent >= limit:
+                return False, 0
+            spent += 1
+            self._write(window_started, spent)
+            return True, max(0, limit - spent)
+        finally:
+            self._release()
+
+    def remaining(self, limit: int) -> int:
+        """Budget left, without spending any. Never blocks on the lock."""
+        window_started, spent = self._read()
+        now = time.time()
+        if now - window_started >= 86400 or now < window_started:
+            return limit
+        return max(0, limit - spent)

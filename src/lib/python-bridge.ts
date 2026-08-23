@@ -23,7 +23,18 @@ const UNREACHABLE_REASONS = new Set([
   'connect_error',
   'tls_error',
 ]);
-const PERMANENT_CALLER_REASONS = new Set(['configuration_error', 'quota_exhausted']);
+// Reasons where retrying cannot help, because the next attempt needs the
+// caller to change something rather than the provider to recover.
+// `challenge_required` is here for a sharper reason than the other two: a
+// browser-verification wall is cleared by a *person*, and each generic retry
+// spawns a fresh bridge process whose rate limiter has forgotten the backoff —
+// so retrying walks straight back into the wall three times, which is the
+// behaviour Anna's politeness layer exists to prevent (Codex on #150).
+const PERMANENT_CALLER_REASONS = new Set([
+  'configuration_error',
+  'quota_exhausted',
+  'challenge_required',
+]);
 
 function everyFailureHasReason(details: any, predicate: (reason: unknown) => boolean): boolean {
   if (!details || typeof details !== 'object') return false;

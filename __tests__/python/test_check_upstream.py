@@ -723,3 +723,83 @@ class TestLibgenSearchProbeUsesProductionAdapter:
         result = self._run(check_upstream, fake_search)
         assert result.ok is False
         assert "Welcome to nginx!" in result.detail
+
+
+class TestAnnasDownloadDomProbe:
+    """The browser route's DOM shape needs its own drift check (#150).
+
+    `probe_annas` only exercises `/search`. Anna's could change the book page
+    and every browser download would fail while the doctor still reported the
+    adapter healthy — the reachability-vs-capability gap this script exists to
+    close, reintroduced on a new surface.
+    """
+
+    def _run(self, check_upstream, handler):
+        import asyncio
+
+        async def go():
+            async with httpx.AsyncClient(
+                transport=httpx.MockTransport(handler)
+            ) as client:
+                return await check_upstream.probe_annas_download_dom(client)
+
+        return asyncio.run(go())
+
+    def test_partner_links_in_the_expected_shape_pass(self, check_upstream):
+        md5 = check_upstream.ANNAS_DOM_CANARY_MD5
+        page = (
+            f'<html><body><a href="/slow_download/{md5}/0/0">Server 1</a>'
+            f'<a href="/slow_download/{md5}/0/1">Server 2</a></body></html>'
+        )
+
+        result = self._run(check_upstream, lambda r: httpx.Response(200, text=page))
+
+        assert result.ok is True
+        assert "2 partner-server link" in result.detail
+
+    def test_a_page_without_partner_links_is_drift_not_a_block(self, check_upstream):
+        """Loaded, unchallenged, and missing the links the extractor needs."""
+        page = "<html><body><h1>The Feynman Lectures</h1><p>No links.</p></body></html>"
+
+        result = self._run(check_upstream, lambda r: httpx.Response(200, text=page))
+
+        assert result.ok is False
+        assert result.blocked is False
+        assert "DOM drift" in result.detail
+
+    def test_a_challenge_reports_block_and_says_the_shape_is_unverified(
+        self, check_upstream
+    ):
+        """Being walled is not evidence the DOM changed, and must not say so."""
+        page = (
+            "<html><head><title>Just a moment...</title></head><body>"
+            "<h1>Checking your browser before accessing</h1></body></html>"
+        )
+
+        result = self._run(check_upstream, lambda r: httpx.Response(200, text=page))
+
+        assert result.ok is False
+        assert result.blocked is True
+        assert result.symbol == "BLOCK"
+        assert "UNVERIFIED" in result.detail
+        assert "not \nevidence" in result.detail or "not " in result.detail
+
+    def test_annas_own_script_comments_do_not_read_as_a_challenge(self, check_upstream):
+        """The live bug from #150, guarded on this surface too.
+
+        Every Anna's page carries `// "text/css" for DDOS-GUARD caching.` in a
+        script block. A probe that matched raw HTML would report BLOCK on every
+        healthy run, which is worse than no probe: it teaches the operator to
+        ignore the row.
+        """
+        md5 = check_upstream.ANNAS_DOM_CANARY_MD5
+        page = (
+            f'<html><body><a href="/slow_download/{md5}/0/0">Server 1</a>'
+            '<script>// "text/css" for DDOS-GUARD caching.\n'
+            'fetch("/dyn/recent_downloads/");</script></body></html>'
+        )
+
+        result = self._run(check_upstream, lambda r: httpx.Response(200, text=page))
+
+        assert result.ok is True
+        assert result.blocked is False

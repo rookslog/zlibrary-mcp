@@ -35,13 +35,16 @@ right side of that true rather than rhetorical.
 from __future__ import annotations
 
 import asyncio
+import html
 import logging
+import os
 import re
 import time
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import List, Optional, Tuple
 from urllib.parse import urlsplit
 
+from .annas_usage import DailyUsage
 from .config import SourceConfig
 from .errors import (
     ProviderConfigurationError,
@@ -60,7 +63,65 @@ _SLOW_LINK_RE = re.compile(r"/slow_download/([a-f0-9]{32})/(\d+)/(\d+)")
 # A direct file URL, as opposed to another Anna's page. The partner page's
 # payload link points off-site at a CDN node, which is what makes it fetchable
 # outside the browser at all.
-_FILE_EXTENSION_RE = re.compile(r"\.(pdf|epub|djvu|mobi|azw3|cbz|cbr|fb2|txt)\b", re.I)
+# A mirror of `filename_utils.SAFE_DOCUMENT_EXTENSIONS`, used only when that
+# module cannot be imported. Guarded by a test that compares the two.
+_FALLBACK_EXTENSIONS = frozenset(
+    {
+        "azw",
+        "azw3",
+        "cbr",
+        "cbz",
+        "djv",
+        "djvu",
+        "doc",
+        "docx",
+        "epub",
+        "fb2",
+        "lit",
+        "mobi",
+        "odt",
+        "pdf",
+        "rtf",
+        "txt",
+    }
+)
+
+
+def _payload_extension_pattern() -> "re.Pattern[str]":
+    """Build the file-link pattern from the project's own extension vocabulary.
+
+    A hand-written allowlist here silently failed every Anna's result in a
+    format it happened to omit — `rtf`, `lit`, `djv`, `azw`, `doc`, `docx` and
+    `odt` were all missing, and each produced a protocol error on a partner
+    page that had a perfectly good link on it (Codex on #150). Deriving it from
+    `filename_utils.SAFE_DOCUMENT_EXTENSIONS` means a format added there cannot
+    be forgotten here.
+    """
+    extensions = None
+    for module in ("filename_utils", "lib.filename_utils"):
+        try:
+            extensions = __import__(
+                module, fromlist=["SAFE_DOCUMENT_EXTENSIONS"]
+            ).SAFE_DOCUMENT_EXTENSIONS
+            break
+        except Exception:  # noqa: BLE001 - fall through to the mirror
+            continue
+    if extensions is None:
+        # A partial environment must not make this module unimportable at all.
+        # `_FALLBACK_EXTENSIONS` mirrors the same set and
+        # `test_the_fallback_mirrors_the_source_of_truth` fails if the two ever
+        # diverge, so the mirror cannot rot the way the hand-written allowlist
+        # this replaced did.
+        logger.debug("filename_utils unavailable; using the mirrored extension set")
+        extensions = _FALLBACK_EXTENSIONS
+    # Longest first, so `.azw3` cannot be shadowed by `.azw`.
+    alternatives = "|".join(
+        re.escape(ext) for ext in sorted(extensions, key=len, reverse=True)
+    )
+    return re.compile(rf"\.({alternatives})\b", re.I)
+
+
+_FILE_EXTENSION_RE = _payload_extension_pattern()
 
 # Any Anna's book link. Used as positive evidence that a page is genuinely
 # Anna's rather than an interstitial standing in front of it.
@@ -150,41 +211,47 @@ class _RateLimiter:
     Deliberately crude. A token bucket would let a burst through after an idle
     period, and a burst is the exact shape of traffic this exists to prevent —
     the point is not to average out politely, it is to never be fast.
+
+    Spacing and backoff are in-process, which is correct: they govern one
+    session's own pacing. The **daily ceiling is not**, and cannot be. Every MCP
+    operation starts a fresh `python_bridge.py`, so a counter living in this
+    object resets to zero on every download and the advertised ceiling would
+    never be reached (Codex on #150). It is delegated to `DailyUsage`, which
+    keeps the count in a locked file beside the browser profile.
     """
 
     min_interval: float
     daily_limit: int
+    usage: "DailyUsage"
     _last_request: float = 0.0
-    _spent: int = 0
-    _window_started: float = field(default_factory=time.monotonic)
-
-    def _roll_window(self) -> None:
-        if time.monotonic() - self._window_started >= 86400:
-            self._window_started = time.monotonic()
-            self._spent = 0
 
     @property
     def remaining_today(self) -> int:
-        self._roll_window()
-        return max(0, self.daily_limit - self._spent)
+        return self.usage.remaining(self.daily_limit)
 
-    async def acquire(self) -> None:
-        """Wait out the interval, or refuse if the day's budget is spent."""
-        self._roll_window()
-        if self._spent >= self.daily_limit:
+    async def acquire(self) -> int:
+        """Take a slot from the day's budget, then wait out the interval.
+
+        Returns the budget remaining afterwards. The budget check comes first:
+        sleeping twenty seconds only to then refuse would be the wrong order to
+        find out.
+        """
+        allowed, remaining = self.usage.spend(self.daily_limit)
+        if not allowed:
             raise DailyLimitReachedError(
                 PROVIDER,
                 "",
                 f"this session's own daily ceiling of {self.daily_limit} "
                 f"requests is spent. This is our limit, not Anna's — the "
-                f"browser route is deliberately bounded (#144). Raise "
+                f"browser route is deliberately bounded (#144). It resets 24 "
+                f"hours after the first request of the current window. Raise "
                 f"ANNAS_BROWSER_DAILY_LIMIT only with a reason.",
             )
         elapsed = time.monotonic() - self._last_request
         if self._last_request and elapsed < self.min_interval:
             await asyncio.sleep(self.min_interval - elapsed)
         self._last_request = time.monotonic()
-        self._spent += 1
+        return remaining
 
     def penalise(self, seconds: float) -> None:
         """Push the next allowed request out, after a refusal.
@@ -251,9 +318,15 @@ class AnnasBrowserSession:
         self._limiter = _RateLimiter(
             min_interval=config.annas_browser_min_interval,
             daily_limit=config.annas_browser_daily_limit,
+            usage=DailyUsage(
+                os.path.join(
+                    config.annas_browser_profile_dir, "..", "annas-browser-usage.json"
+                )
+            ),
         )
         self._playwright = None
         self._context = None
+        self._remaining_today = config.annas_browser_daily_limit
 
     # -- lifecycle ---------------------------------------------------------
 
@@ -323,7 +396,7 @@ class AnnasBrowserSession:
         solves measured ~15s and re-solves ~35s, so the budget is configurable
         and defaults above the slower of the two.
         """
-        await self._limiter.acquire()
+        self._remaining_today = await self._limiter.acquire()
         try:
             await page.goto(
                 url,
@@ -352,7 +425,12 @@ class AnnasBrowserSession:
                 "once in the visible browser window and retry. Backing off "
                 f"{self.config.annas_browser_backoff_seconds:.0f}s rather than "
                 "retrying into the wall.",
-                reason="http_error",
+                # NOT http_error: that reads as retryable, and the Node retry
+                # layer would spawn three fresh bridge processes whose limiters
+                # have each forgotten this backoff — walking straight back into
+                # the wall on the retry delays alone (Codex on #150). A person
+                # clears this wall, so the person decides when to try again.
+                reason="challenge_required",
             )
         if wall == "exhausted":
             self._limiter.penalise(self.config.annas_browser_backoff_seconds)
@@ -385,15 +463,22 @@ class AnnasBrowserSession:
         return seen
 
     @staticmethod
-    def _direct_file_url(html: str, base_host: str) -> Optional[str]:
+    def _direct_file_url(page_html: str, base_host: str) -> Optional[str]:
         """The off-site payload link on a partner-server page.
 
         Constrained to off-site hosts on purpose: every same-host candidate is
         another Anna's page, and following one would walk the flow in a circle
         while spending rate budget on each lap.
         """
-        for match in re.finditer(r'href="([^"]+)"', html):
-            href = match.group(1)
+        for match in re.finditer(r'href="([^"]+)"', page_html):
+            # `page.content()` serialises attribute separators as entities, so
+            # a signed URL with several query parameters arrives carrying
+            # `&amp;`. Sent to httpx unchanged that becomes `amp;Signature`,
+            # which invalidates the signature and 403s a perfectly good link
+            # (Codex on #150). The live URL that verified this route happened
+            # to be path-signed and had no `&` in it at all, which is exactly
+            # how a bug like this survives a green end-to-end run.
+            href = html.unescape(match.group(1))
             if not href.startswith("http"):
                 continue
             if not _FILE_EXTENSION_RE.search(href):
@@ -448,7 +533,7 @@ class AnnasBrowserSession:
 
                     url = self._direct_file_url(partner_html, self.host)
                     if url:
-                        return url, self._limiter.remaining_today
+                        return url, self._remaining_today
                     attempts.append(f"{path}: no payload link")
 
                 raise ProviderResponseError(

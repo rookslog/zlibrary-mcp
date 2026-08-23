@@ -213,8 +213,13 @@ The server then reads the download links out of that same browser and fetches th
 normally. Set `ANNAS_BROWSER_ENABLED=true` and install the extra:
 
 ```bash
-uv sync --extra annas-browser && playwright install chrome
+uv sync --extra annas-browser
+uv run --extra annas-browser playwright install chrome
 ```
+
+(`uv run` is not optional there: `uv sync` puts the `playwright` script in
+`.venv/bin` without putting that directory on your `PATH`, so calling it
+directly fails with `command not found` on a fresh setup.)
 
 A visible browser window opens when a download starts. Solve the challenge if it appears;
 clearance then lasts about twenty minutes. **This route cannot run headless** — a headless

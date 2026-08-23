@@ -278,6 +278,91 @@ async def probe_annas(client: httpx.AsyncClient) -> ProbeResult:
         )
 
 
+# A book that has been on Anna's for years and is not going anywhere. The probe
+# needs a page that reliably exists; a missing edition would read as DOM drift.
+ANNAS_DOM_CANARY_MD5 = "e2055de39f1c745d606301917fe66344"
+
+
+async def probe_annas_download_dom(client: httpx.AsyncClient) -> ProbeResult:
+    """Check the two DOM shapes the browser download route (#143) depends on.
+
+    `probe_annas` only exercises `/search`. Anna's could change the book page or
+    the partner-server page and every browser download would fail while the
+    doctor still reported the adapter healthy (Codex on #150) — the precise
+    reachability-vs-capability gap this script exists to close.
+
+    This probe deliberately runs over plain httpx, not the browser. It cannot
+    clear the challenge and does not try: from a walled network it reports BLOCK
+    and says outright that the shape is unverified, which is honest and
+    actionable. From a network Anna's serves, it checks the thing that actually
+    matters — that partner-server links are still on the book page in the shape
+    the extractor looks for.
+    """
+    from lib.sources.annas_browser import (  # noqa: PLC0415
+        AnnasBrowserSession,
+        visible_text,
+    )
+
+    url = f"{ANNAS_BASE_URL}/md5/{ANNAS_DOM_CANARY_MD5}"
+    try:
+        resp = await client.get(url)
+    except Exception as exc:  # noqa: BLE001
+        return ProbeResult(
+            name="annas-archive:download-dom",
+            ok=False,
+            detail=f"{type(exc).__name__}: {exc}",
+            required=False,
+        )
+
+    walled = _block_detail(resp)
+    body = resp.text
+    challenged = any(
+        marker in visible_text(body).lower()
+        for marker in (
+            "checking your browser",
+            "just a moment",
+            "verifying you are human",
+        )
+    )
+    if walled or challenged:
+        return ProbeResult(
+            name="annas-archive:download-dom",
+            ok=False,
+            blocked=True,
+            detail=(
+                "browser verification answered instead of the book page, so the "
+                "partner-link DOM shape is UNVERIFIED from this network — not "
+                "evidence that it drifted. The browser route (#143) clears this "
+                "wall with a real browser; this probe deliberately does not. "
+                + (walled or "challenge interstitial served")
+            ),
+            required=False,
+        )
+
+    partner_links = AnnasBrowserSession._slow_download_paths(body, ANNAS_DOM_CANARY_MD5)
+    if partner_links:
+        return ProbeResult(
+            name="annas-archive:download-dom",
+            ok=True,
+            detail=(
+                f"{len(partner_links)} partner-server link(s) in the expected "
+                f"shape on the canary book page (first: {partner_links[0]})"
+            ),
+            required=False,
+        )
+    return ProbeResult(
+        name="annas-archive:download-dom",
+        ok=False,
+        detail=(
+            f"book page loaded (HTTP {resp.status_code}, {len(body)} bytes) with "
+            f"NO /slow_download/<md5>/<n>/<n> links — the browser download route "
+            f"extracts those, so this is DOM drift and every #143 download will "
+            f"fail while search keeps working"
+        ),
+        required=False,
+    )
+
+
 # Headroom over the adapter's own worst case. The canary's deadline exists to
 # catch a hang the adapter failed to bound, so it must sit ABOVE every budget
 # the adapter is entitled to spend — otherwise a slow-but-legitimate failover
@@ -584,6 +669,7 @@ async def run_probes() -> list[ProbeResult]:
         zlib_results, annas, libgen, libgen_download = await asyncio.gather(
             probe_zlibrary_eapi(client),
             probe_annas(client),
+            probe_annas_download_dom(client),
             probe_libgen(client),
             probe_libgen_download(client),
         )

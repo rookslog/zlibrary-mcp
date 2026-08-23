@@ -122,6 +122,12 @@ def _payload_extension_pattern() -> "re.Pattern[str]":
 
 _FILE_EXTENSION_RE = _payload_extension_pattern()
 
+_ANCHOR_RE = re.compile(
+    r'<a\b[^>]*\bhref="([^"]+)"[^>]*>(.*?)</a>',
+    flags=re.IGNORECASE | re.DOTALL,
+)
+_DOWNLOAD_LABEL_RE = re.compile(r"\b(?:download|save|get\s+file)\b", re.IGNORECASE)
+
 # Any Anna's book link. Used as positive evidence that a page is genuinely
 # Anna's rather than an interstitial standing in front of it.
 _BOOK_LINK_RE = re.compile(r"/md5/[a-f0-9]{32}")
@@ -149,6 +155,7 @@ _CHALLENGE_MARKERS = (
     "enable javascript and cookies",
     "just a moment",
     "ddos-guard protection",
+    "diamwall",
 )
 
 # Anna's own refusal. Deliberately specific: "please wait" and "rate limit"
@@ -299,6 +306,17 @@ def visible_text(html: str) -> str:
     return _WHITESPACE_RE.sub(" ", text).strip()
 
 
+def _has_labelled_payload_link(page_html: str) -> bool:
+    """Recognise an opaque off-site handoff without guessing its extension."""
+    for match in _ANCHOR_RE.finditer(page_html):
+        href = html.unescape(match.group(1))
+        if href.startswith(("http://", "https://")) and _DOWNLOAD_LABEL_RE.search(
+            visible_text(match.group(2))
+        ):
+            return True
+    return False
+
+
 def looks_like_annas_page(html: str) -> bool:
     """Whether this page carries Anna's own navigation, i.e. it really loaded.
 
@@ -315,7 +333,7 @@ def looks_like_annas_page(html: str) -> bool:
     # 20 `/md5/` links), but the payload link is the content we actually came
     # for — so a redesign that drops the navigation must not let a
     # challenge-hop 403 veto a page that handed us the file.
-    return bool(_FILE_EXTENSION_RE.search(html))
+    return bool(_FILE_EXTENSION_RE.search(html) or _has_labelled_payload_link(html))
 
 
 def _classify_page(html: str) -> Optional[str]:
@@ -339,6 +357,26 @@ def _classify_page(html: str) -> Optional[str]:
     for marker in _EXHAUSTED_MARKERS:
         if marker in low:
             return "exhausted"
+    return None
+
+
+def classify_annas_response(html: str, status: Optional[int]) -> Optional[str]:
+    """Classify one settled Anna response using production's precedence rules.
+
+    The first navigation hop can be a 403 even when the challenge succeeds, so
+    settled Anna content outranks status.  Both the browser route and its drift
+    probe use this function; keeping a second branch table in the probe caused
+    repeated review defects on #150.
+    """
+    wall = _classify_page(html)
+    if wall is not None:
+        return wall
+    if looks_like_annas_page(html):
+        return None
+    if status in _REFUSAL_STATUSES:
+        return "refusal"
+    if status is not None and status >= 400:
+        return "http_error"
     return None
 
 
@@ -406,9 +444,11 @@ class AnnasBrowserSession:
                 "playwright is not installed. The browser-resident Anna's route "
                 "needs it:\n"
                 "  uv sync --extra annas-browser\n"
-                "  uv run --extra annas-browser playwright install chrome\n"
+                "  uv run --no-sync playwright install chrome\n"
                 "(`uv run` is required for the second line: uv sync puts the "
-                "console script in .venv/bin without putting it on PATH.) "
+                "console script in .venv/bin without putting it on PATH; "
+                "`--no-sync` preserves whichever dependency tier is already "
+                "installed.) "
                 "Anna's keyed fast_download and every LibGen route are "
                 "unaffected and need none of this.",
             ) from exc
@@ -510,14 +550,8 @@ class AnnasBrowserSession:
         # the settled page has been looked at. A page carrying Anna's own
         # navigation loaded, whatever the first hop said.
         status = getattr(response, "status", None)
-        wall = _classify_page(html)
-        if (
-            wall is None
-            and status is not None
-            and status >= 400
-            and status not in _REFUSAL_STATUSES
-            and not looks_like_annas_page(html)
-        ):
+        outcome = classify_annas_response(html, status)
+        if outcome == "http_error":
             # Anything else in the 4xx/5xx range is a provider error, and it
             # must say so. Returning the error page as ordinary HTML meant the
             # caller found no partner links and raised a **permanent**
@@ -532,11 +566,7 @@ class AnnasBrowserSession:
                 f"error, not a missing edition.",
                 reason="http_error",
             )
-        if (
-            wall is None
-            and status in _REFUSAL_STATUSES
-            and not looks_like_annas_page(html)
-        ):
+        if outcome == "refusal":
             self._limiter.penalise(self.config.annas_browser_backoff_seconds)
             raise ProviderRateLimitedError(
                 PROVIDER,
@@ -547,7 +577,7 @@ class AnnasBrowserSession:
                 f"walking the remaining servers into it.",
                 reason="quota_exhausted",
             )
-        if wall == "challenge":
+        if outcome == "challenge":
             self._limiter.penalise(self.config.annas_browser_backoff_seconds)
             raise ChallengeNotClearedError(
                 PROVIDER,
@@ -564,7 +594,7 @@ class AnnasBrowserSession:
                 # clears this wall, so the person decides when to try again.
                 reason="challenge_required",
             )
-        if wall == "exhausted":
+        if outcome == "exhausted":
             self._limiter.penalise(self.config.annas_browser_backoff_seconds)
             raise ProviderRateLimitedError(
                 PROVIDER,
@@ -602,7 +632,9 @@ class AnnasBrowserSession:
         another Anna's page, and following one would walk the flow in a circle
         while spending rate budget on each lap.
         """
-        for match in re.finditer(r'href="([^"]+)"', page_html):
+        opaque_candidates: List[str] = []
+        labelled_candidates: List[str] = []
+        for match in _ANCHOR_RE.finditer(page_html):
             # `page.content()` serialises attribute separators as entities, so
             # a signed URL with several query parameters arrives carrying
             # `&amp;`. Sent to httpx unchanged that becomes `amp;Signature`,
@@ -613,23 +645,39 @@ class AnnasBrowserSession:
             href = html.unescape(match.group(1))
             if not href.startswith("http"):
                 continue
-            if not _FILE_EXTENSION_RE.search(href):
-                continue
             host = (urlsplit(href).hostname or "").lower()
-            if host and host != base_host:
+            if not host or host == base_host:
+                continue
+            if _FILE_EXTENSION_RE.search(href):
                 return href
+            opaque_candidates.append(href)
+            label = visible_text(match.group(2)).lower()
+            if _DOWNLOAD_LABEL_RE.search(label):
+                labelled_candidates.append(href)
+        if labelled_candidates:
+            return labelled_candidates[0]
+        if len(opaque_candidates) == 1:
+            return opaque_candidates[0]
         return None
 
     async def resolve_download_url(self, md5: str) -> Tuple[str, int]:
         """First working partner URL, for callers that want a single answer."""
-        async for url, remaining in self.iter_download_urls(md5):
-            return url, remaining
-        raise ProviderResponseError(
-            PROVIDER,
-            self.host,
-            f"no partner server yielded a payload link for md5 {md5}",
-            reason="protocol_error",
-        )
+        stream = self.iter_download_urls(md5)
+        try:
+            try:
+                return await anext(stream)
+            except StopAsyncIteration:
+                raise ProviderResponseError(
+                    PROVIDER,
+                    self.host,
+                    f"no partner server yielded a payload link for md5 {md5}",
+                    reason="protocol_error",
+                ) from None
+        finally:
+            # Returning from an async-for does not synchronously close its
+            # generator.  The generator owns the page and process lock, so the
+            # single-result wrapper must close it explicitly before returning.
+            await stream.aclose()
 
     async def iter_download_urls(self, md5: str):
         """Yield one payload URL per working partner server, in Anna's order.
@@ -668,16 +716,26 @@ class AnnasBrowserSession:
             acquire = asyncio.create_task(
                 asyncio.to_thread(self._process_lock.acquire, wait)
             )
+
+            def release_late_lock(task: asyncio.Task) -> None:
+                """Release a lock obtained after its awaiting walk was cancelled."""
+                if task.cancelled():
+                    return
+                try:
+                    acquired = task.result()
+                except BaseException:
+                    return
+                if acquired:
+                    self._process_lock.release()
+
             try:
-                got_lock = await acquire
+                # Cancelling a task that awaits `to_thread()` does not stop the
+                # worker thread.  Shield the task so its eventual True result
+                # remains observable and the callback below can release the
+                # OS lock instead of abandoning it.
+                got_lock = await asyncio.shield(acquire)
             except asyncio.CancelledError:
-                acquire.add_done_callback(
-                    lambda task: (
-                        self._process_lock.release()
-                        if not task.cancelled() and task.result()
-                        else None
-                    )
-                )
+                acquire.add_done_callback(release_late_lock)
                 raise
             if not got_lock:
                 raise BrowserBusyError(

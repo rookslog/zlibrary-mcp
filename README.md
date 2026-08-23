@@ -218,16 +218,28 @@ unattended.
 download route with a browser verification challenge, and this server does not solve that
 challenge — a real Chrome window on your own machine does, once, with you in front of it.
 The server then reads the download links out of that same browser and fetches the file
-normally. Set `ANNAS_BROWSER_ENABLED=true` and install the extra:
+normally. Set `ANNAS_BROWSER_ENABLED=true` and add the browser extra to the tier you use:
 
 ```bash
+# Core only
+uv sync --no-dev --extra annas-browser
+
+# Core + RAG, or the complete scholar tier
+uv sync --no-dev --extra rag --extra annas-browser
+uv sync --no-dev --extra scholar --extra annas-browser
+
+# Contributor environment (keeps the default dev group)
 uv sync --extra annas-browser
-uv run --extra annas-browser playwright install chrome
+
+# Run after one of the sync commands above; --no-sync preserves that tier.
+uv run --no-sync playwright install chrome
 ```
 
 (`uv run` is not optional there: `uv sync` puts the `playwright` script in
-`.venv/bin` without putting that directory on your `PATH`, so calling it
-directly fails with `command not found` on a fresh setup.)
+`.venv/bin` without putting that directory on your `PATH`. The `--no-sync`
+flag is also deliberate: running `uv run` with only `--extra annas-browser`
+would re-synchronize the environment and remove an existing `rag` or `scholar`
+tier.)
 
 A visible browser window opens when a download starts. Solve the challenge if it appears;
 clearance then lasts about twenty minutes. **This route cannot run headless** — a headless

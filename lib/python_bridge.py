@@ -21,6 +21,11 @@ from pathlib import Path
 from filename_utils import create_unified_filename, normalize_document_extension
 import logging
 
+from lib.download_validation import (
+    payload_rejection as _payload_rejection,
+    signature_probe as _signature_probe,
+)
+
 # Import the new RAG processing functions
 from lib import rag_processing
 
@@ -791,22 +796,6 @@ def _response_extension(
     return "", ""
 
 
-def _signature_probe(signature: bytes) -> bytes:
-    """Strip a UTF-8 BOM and leading whitespace for content classification."""
-    return signature.removeprefix(b"\xef\xbb\xbf").lstrip()
-
-
-def _looks_like_html(signature: bytes) -> bool:
-    """Recognize common leading HTML shapes independent of response headers."""
-    probe = _signature_probe(signature).lower()
-    return bool(
-        re.match(
-            rb"^(?:<!doctype\s+html|<html(?:\s|>)|<head(?:\s|>)|<body(?:\s|>)|<script(?:\s|>)|<!--)",
-            probe,
-        )
-    )
-
-
 def _signature_extension(signature: bytes) -> tuple[str, str]:
     """Classify supported document bytes without trusting names or MIME.
 
@@ -987,11 +976,12 @@ async def _download_url_to_file(
                     response.raise_for_status()
 
                     content_type = response.headers.get("content-type", "")
-                    if "text/html" in content_type:
+                    header_rejection = _payload_rejection(b"probe", content_type)
+                    if header_rejection:
                         raise ProviderResponseError(
                             provider,
                             active_host,
-                            f"HTML response for {md5}; download key may have expired",
+                            f"{header_rejection} for {md5}; download key may have expired",
                             reason="protocol_error",
                         )
 
@@ -1005,11 +995,14 @@ async def _download_url_to_file(
                             if len(signature) < 4096:
                                 signature.extend(chunk[: 4096 - len(signature)])
                             written += len(chunk)
-                    if _looks_like_html(bytes(signature)):
+                    payload_rejection = _payload_rejection(
+                        bytes(signature), content_type
+                    )
+                    if payload_rejection:
                         raise ProviderResponseError(
                             provider,
                             active_host,
-                            f"HTML body for {md5}; download key may have expired",
+                            f"{payload_rejection} for {md5}; download key may have expired",
                             reason="protocol_error",
                         )
                     actual_md5 = digest.hexdigest()

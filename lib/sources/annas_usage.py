@@ -173,6 +173,11 @@ class DailyUsage:
     def __init__(self, state_path: str):
         self.path = Path(state_path)
         self.lock_path = Path(str(state_path) + ".lock")
+        # The durable floor is authoritative across processes.  This monotonic
+        # fallback covers the one process that observed a wall when contention
+        # prevented it from writing that floor; the previous warning claimed
+        # such a fallback existed when no state actually recorded it.
+        self._local_penalty_until = 0.0
         # The same lock as the browser session uses, on a different path. It
         # used to be a second hand-rolled copy of the mkdir scheme, with its
         # own staleness age and its own version of the reclamation race.
@@ -308,7 +313,8 @@ class DailyUsage:
                 next_allowed = max(0.0, next_allowed - rollback)
             if spent >= limit:
                 return False, 0, 0.0
-            start_at = max(now, next_allowed)
+            local_wait = max(0.0, self._local_penalty_until - time.monotonic())
+            start_at = max(now, next_allowed, now + local_wait)
             # The next slot is reserved *before* the wait, under the lock, so
             # two processes queueing at once get consecutive slots rather than
             # both computing the same start time and going together.
@@ -324,17 +330,22 @@ class DailyUsage:
         "back off five minutes rather than retrying into the wall" was true of
         one call and false of the next one the operator made (#144).
         """
+        delay = max(0.0, seconds)
+        self._local_penalty_until = max(
+            self._local_penalty_until, time.monotonic() + delay
+        )
+        floor = time.time() + delay
         if not self._acquire():
             logger.warning(
                 "Could not lock the Anna's usage counter at %s; a backoff of "
-                "%.0fs applies to this process only",
+                "%.0fs is enforced in this process but could not be persisted "
+                "for the next one",
                 self.path,
-                seconds,
+                delay,
             )
             return
         try:
             window_started, spent, next_allowed = self._read()
-            floor = time.time() + max(0.0, seconds)
             self._write(window_started, spent, max(next_allowed, floor))
         finally:
             self._release()

@@ -168,6 +168,22 @@ class TestLinkSelection:
 
         assert AnnasBrowserSession._direct_file_url(page, "annas-archive.gl") is None
 
+    def test_an_opaque_signed_payload_url_is_not_discarded(self, tmp_path):
+        """The transfer layer validates bytes; the resolver must retain candidates.
+
+        Signed CDN routes do not have to expose a filename or extension.  The
+        old extractor discarded them before the content signature, response
+        URL, Content-Disposition, and Content-Type classifiers could run.
+        """
+        page = (
+            '<a href="https://example.org/about.html">About the mirror</a>'
+            '<a href="https://cdn9.example.org/download?id=opaque-token">Download</a>'
+        )
+
+        assert AnnasBrowserSession._direct_file_url(page, "annas-archive.gl") == (
+            "https://cdn9.example.org/download?id=opaque-token"
+        )
+
 
 class TestWallClassification:
     """A wall and a missing book need opposite responses, so they need names."""
@@ -337,6 +353,22 @@ class TestRateLimiter:
 
         assert wait > 100, "a fresh process walked straight back into the wall"
 
+    def test_lock_contention_keeps_the_backoff_in_this_process(
+        self, tmp_path, monkeypatch
+    ):
+        """Failure to persist a penalty cannot erase it from the current process."""
+        usage = DailyUsage(str(tmp_path / "usage.json"))
+        real_acquire = usage._acquire
+        monkeypatch.setattr(usage, "_acquire", lambda: False)
+
+        usage.penalise(120.0)
+
+        monkeypatch.setattr(usage, "_acquire", real_acquire)
+        allowed, _remaining, wait = usage.spend(10, 0.0)
+
+        assert allowed is True
+        assert wait > 100, "counter-lock contention erased the promised backoff"
+
     @pytest.mark.asyncio
     async def test_spacing_survives_a_new_process(self, tmp_path):
         """Two sequential MCP downloads are two processes, not two coroutines.
@@ -418,6 +450,13 @@ class TestResolveDownloadUrl:
             f"https://annas-archive.gl/md5/{MD5}",
             f"https://annas-archive.gl/slow_download/{MD5}/0/0",
         ]
+        assert session._page.closed is True, (
+            "the single-result wrapper returned without closing its async generator"
+        )
+        assert session._process_lock.acquire(1.0) is True, (
+            "the single-result wrapper left the browser process lock held"
+        )
+        session._process_lock.release()
 
     @pytest.mark.asyncio
     async def test_the_browser_never_fetches_the_file(self, tmp_path):
@@ -576,6 +615,9 @@ class TestMissingPlaywright:
         assert excinfo.value.reason == "configuration_error"
         message = str(excinfo.value)
         assert "annas-browser" in message, "must name the extra that installs it"
+        assert "uv run --no-sync playwright install chrome" in message, (
+            "installing Chrome must not re-sync away an already selected dependency tier"
+        )
         assert "LibGen" in message, (
             "a credential-free LibGen user must be told this does not affect them"
         )
@@ -777,6 +819,35 @@ class TestCrossProcessSerialisation:
             "for it to go stale"
         )
         session._process_lock.release()
+
+    @pytest.mark.asyncio
+    async def test_cancellation_during_lock_acquisition_releases_a_late_lock(
+        self, tmp_path, monkeypatch
+    ):
+        """Cancelling the await cannot abandon a worker that later gets the lock."""
+        import time
+
+        session = _session([BOOK_PAGE, PARTNER_PAGE], tmp_path)
+        real_acquire = session._process_lock.acquire
+
+        def delayed_acquire(wait):
+            time.sleep(0.1)
+            return real_acquire(wait)
+
+        monkeypatch.setattr(session._process_lock, "acquire", delayed_acquire)
+        walk = asyncio.create_task(session.resolve_download_url(MD5))
+        await asyncio.sleep(0.02)
+
+        walk.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await walk
+
+        await asyncio.sleep(0.2)
+        contender = CrossProcessLock(session._process_lock.path)
+        assert contender.acquire(0.2) is True, (
+            "the cancelled await abandoned a worker that acquired the OS lock later"
+        )
+        contender.release()
 
     def test_a_lock_whose_holder_was_killed_is_immediately_available(self, tmp_path):
         """A crashed holder must not wedge the operator's tool.

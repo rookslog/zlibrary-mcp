@@ -763,7 +763,15 @@ class TestAnnasDownloadDomProbe:
 
         return asyncio.run(go())
 
-    def _two_page(self, book, partner=None, payload_status=206):
+    def _two_page(
+        self,
+        book,
+        partner=None,
+        payload_status=206,
+        *,
+        book_status=200,
+        partner_status=200,
+    ):
         """Book page, then partner page, then the payload range request."""
         partner = self.PARTNER_PAGE if partner is None else partner
 
@@ -772,8 +780,8 @@ class TestAnnasDownloadDomProbe:
             if "cdn9.example.net" in url:
                 return httpx.Response(payload_status, content=b"%PDF-1.5" + b"\0" * 64)
             if "/slow_download/" in url:
-                return httpx.Response(200, text=partner)
-            return httpx.Response(200, text=book)
+                return httpx.Response(partner_status, text=partner)
+            return httpx.Response(book_status, text=book)
 
         return handler
 
@@ -867,6 +875,128 @@ class TestAnnasDownloadDomProbe:
         assert result.blocked is True
         assert result.symbol == "BLOCK"
         assert "UNVERIFIED" in result.detail
+
+    @pytest.mark.parametrize(
+        ("status", "body"),
+        [
+            (200, "<h1>Checking your browser before accessing</h1>"),
+            (200, "<p>You have downloaded too many files today</p>"),
+            (403, "<p>refused</p>"),
+            (429, "<p>slow down</p>"),
+            (503, "<p>temporarily refused</p>"),
+        ],
+    )
+    def test_every_book_page_wall_is_blocked_and_persistently_penalised(
+        self, check_upstream, monkeypatch, status, body
+    ):
+        from lib.sources.annas_usage import DailyUsage
+
+        penalties = []
+        monkeypatch.setattr(
+            DailyUsage,
+            "penalise",
+            lambda _usage, seconds: penalties.append(seconds),
+        )
+
+        result = self._run(
+            check_upstream, lambda _request: httpx.Response(status, text=body)
+        )
+
+        assert result.blocked is True
+        assert penalties == [pytest.approx(300.0)]
+
+    @pytest.mark.parametrize(
+        ("status", "body"),
+        [
+            (200, "<h1>Checking your browser before accessing</h1>"),
+            (200, "<p>You have downloaded too many files today</p>"),
+            (403, "<p>refused</p>"),
+            (429, "<p>slow down</p>"),
+            (503, "<p>temporarily refused</p>"),
+        ],
+    )
+    def test_every_partner_page_wall_is_blocked_and_persistently_penalised(
+        self, check_upstream, monkeypatch, status, body
+    ):
+        from lib.sources.annas_usage import DailyUsage
+
+        md5 = check_upstream.ANNAS_DOM_CANARY_MD5
+        book = f'<a href="/slow_download/{md5}/0/0">S1</a>'
+        penalties = []
+        monkeypatch.setattr(
+            DailyUsage,
+            "penalise",
+            lambda _usage, seconds: penalties.append(seconds),
+        )
+
+        result = self._run(
+            check_upstream,
+            self._two_page(book, body, partner_status=status),
+        )
+
+        assert result.blocked is True
+        assert penalties == [pytest.approx(300.0)]
+
+    @pytest.mark.parametrize("stage", ["book", "partner"])
+    @pytest.mark.parametrize("status", [401, 500])
+    def test_http_errors_are_provider_failures_not_dom_drift_or_backoff(
+        self, check_upstream, monkeypatch, stage, status
+    ):
+        from lib.sources.annas_usage import DailyUsage
+
+        md5 = check_upstream.ANNAS_DOM_CANARY_MD5
+        book = f'<a href="/slow_download/{md5}/0/0">S1</a>'
+        error = "<p>temporary upstream error</p>"
+        penalties = []
+        monkeypatch.setattr(
+            DailyUsage,
+            "penalise",
+            lambda _usage, seconds: penalties.append(seconds),
+        )
+        handler = (
+            (lambda _request: httpx.Response(status, text=error))
+            if stage == "book"
+            else self._two_page(book, error, partner_status=status)
+        )
+
+        result = self._run(check_upstream, handler)
+
+        assert result.ok is False
+        assert result.blocked is False
+        assert "HTTP error" in result.detail
+        assert "DOM drift" not in result.detail
+        assert penalties == []
+
+    def test_a_challenge_hop_status_cannot_veto_a_real_book_page(self, check_upstream):
+        """Production trusts settled Anna content over the first-hop 403."""
+        md5 = check_upstream.ANNAS_DOM_CANARY_MD5
+        book = f'<a href="/slow_download/{md5}/0/0">S1</a>'
+
+        result = self._run(
+            check_upstream,
+            self._two_page(book, book_status=403),
+        )
+
+        assert result.ok is True
+        assert result.blocked is False
+
+    def test_a_challenge_hop_status_cannot_veto_an_opaque_payload_link(
+        self, check_upstream
+    ):
+        """A signed CDN route can be a real payload without a file extension."""
+        md5 = check_upstream.ANNAS_DOM_CANARY_MD5
+        book = f'<a href="/slow_download/{md5}/0/0">S1</a>'
+        partner = (
+            '<a href="https://cdn9.example.net/download?id=opaque-token">Download</a>'
+        )
+
+        result = self._run(
+            check_upstream,
+            self._two_page(book, partner, partner_status=403),
+        )
+
+        assert result.ok is True
+        assert result.blocked is False
 
     def test_an_unfetchable_payload_is_not_healthy(self, check_upstream):
         """Extraction is not the end of the flow (#150).
@@ -1183,58 +1313,8 @@ class TestAnnasProbeDiagnosticsNameAnnas:
         assert "UNVERIFIED" in result.detail
 
 
-class TestTheProbeReusesProductionRatherThanRedefiningIt:
-    """Six round-7 findings on #150 were one mistake: the probe re-derived
-    every property the production route already has — backoff, serialisation,
-    refusal statuses, body validation, user agent, bounded reads — and got each
-    of them wrong once. These assert the reuse rather than the behaviour, so a
-    future edit that forks the logic again fails here.
-    """
-
-    def test_the_probe_uses_productions_refusal_statuses(self, check_upstream):
-        import inspect
-
-        source = inspect.getsource(check_upstream._annas_block_detail)
-
-        assert "_REFUSAL_STATUSES" in source, (
-            "reusing Z-Library's WALLED_STATUS_CODES missed a bare 429/503, so "
-            "Anna's throttling was reported as DOM drift"
-        )
-
-    def test_the_probe_takes_the_production_browser_lock(self, check_upstream):
-        import inspect
-
-        source = inspect.getsource(check_upstream.probe_annas_download_dom)
-
-        assert "CrossProcessLock" in source
-        assert "browser_lock.release()" in source, (
-            "every early return sits inside walk(); the release has to be in "
-            "the outer finally or a blocked probe wedges the browser"
-        )
-
-    def test_the_probe_backs_off_on_a_wall(self, check_upstream):
-        import inspect
-
-        source = inspect.getsource(check_upstream.probe_annas_download_dom)
-
-        assert "usage.penalise(" in source, (
-            "production penalises on a wall; a probe that does not lets the "
-            "next request hit Anna's after only the spacing interval"
-        )
-
-    def test_the_payload_probe_is_streamed_and_bounded(self, check_upstream):
-        import inspect
-
-        source = inspect.getsource(check_upstream.probe_annas_download_dom)
-
-        assert "client.stream(" in source, (
-            "a plain get() buffers the whole file when a CDN ignores Range — "
-            "a 4KB probe that can pull 30MB is not a 4KB probe"
-        )
-        assert "DEFAULT_BROWSER_USER_AGENT" in source, (
-            "the doctor client identifies as zlibrary-mcp-upstream-check; a CDN "
-            "that blocks it would report a healthy handoff as broken"
-        )
+class TestTheProbeMatchesProductionBehavior:
+    """Behavioral oracles for policy shared by production and the probe."""
 
     def test_every_response_production_rejects_is_rejected_here(self, check_upstream):
         """The probe must refuse what `_download_url_to_file` refuses (#150).
@@ -1255,7 +1335,6 @@ class TestTheProbeReusesProductionRatherThanRedefiningIt:
             b"<body>Access denied</body>",
             b"<script>location='/login'</script>",
             b"<!-- soft block -->",
-            b"<?xml version='1.0'?><error/>",
         ):
             assert reject(opening, "application/octet-stream"), opening
 
@@ -1266,19 +1345,4 @@ class TestTheProbeReusesProductionRatherThanRedefiningIt:
         assert reject(b"%PDF-1.5\n%\xe2\xe3", "application/octet-stream") is None
         assert (
             reject(b"The_Feynman\x00\x00BOOKMOBI", "application/octet-stream") is None
-        )
-
-    def test_the_probe_handles_both_classifier_verdicts(self, check_upstream):
-        """`_classify_page` returns "exhausted" as well as "challenge".
-
-        Accepting only "challenge" meant Anna's own download-limit page, served
-        at HTTP 200, was reported as DOM drift and skipped the backoff.
-        """
-        import inspect
-
-        source = inspect.getsource(check_upstream.probe_annas_download_dom)
-
-        assert '"exhausted"' in source, (
-            "throttling reported as a layout change sends a maintainer to fix "
-            "something that is not broken"
         )

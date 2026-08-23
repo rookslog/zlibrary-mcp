@@ -38,6 +38,7 @@ from bs4 import BeautifulSoup
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "zlibrary" / "src"))
 from lib.sources.config import get_source_config  # noqa: E402
+from lib.download_validation import payload_rejection as _payload_rejection  # noqa: E402
 from lib.sources.libgen import FALLBACK_MIRRORS as LIBGEN_FALLBACK_MIRRORS  # noqa: E402
 from lib.sources.libgen import _nginx_stub as _libgen_nginx_stub  # noqa: E402
 from lib.sources.libgen import get_user_agent as libgen_user_agent  # noqa: E402
@@ -122,45 +123,19 @@ class ProbeResult:
         return "FAIL" if self.required else "WARN"
 
 
-# The openings `_download_url_to_file` treats as an HTML error page rather than
-# file bytes. `<html`/`<!doctype` alone missed a fragment beginning `<head>`,
-# `<body>`, `<script>` or a comment — all of which production rejects and a
-# narrower probe reported as a healthy transfer (Codex on #150).
-_HTML_OPENINGS = (
-    b"<!doctype",
-    b"<html",
-    b"<head",
-    b"<body",
-    b"<script",
-    b"<!--",
-    b"<?xml",
-)
-
-
-def _payload_rejection(sample: bytes, content_type: str) -> Optional[str]:
-    """Why production would refuse these bytes, or None if it would accept them.
-
-    Mirrors the guards in `python_bridge.py::_download_url_to_file`: an empty
-    body, an HTML content type, or an HTML-looking opening are all rejected
-    there, so a probe that accepted them would report the browser-to-httpx
-    handoff healthy on exactly the responses that fail in production.
-    """
-    if not sample:
-        return "an empty body"
-    if "html" in (content_type or "").lower():
-        return f"content-type {content_type!r}"
-    head = sample[:512].lstrip().lower()
-    if any(head.startswith(opening) for opening in _HTML_OPENINGS):
-        return "an HTML body rather than file bytes"
-    return None
-
-
 def _looks_like_html(sample: bytes) -> bool:
     """Kept for the tests that assert the opening set directly."""
     return _payload_rejection(sample, "") is not None
 
 
-def _annas_block_detail(resp: httpx.Response) -> Optional[str]:
+def _annas_response_outcome(resp: httpx.Response) -> Optional[str]:
+    """Apply the same settled-page precedence as the production browser route."""
+    from lib.sources.annas_browser import classify_annas_response  # noqa: PLC0415
+
+    return classify_annas_response(resp.text, resp.status_code)
+
+
+def _annas_block_detail(resp: httpx.Response, outcome: Optional[str]) -> Optional[str]:
     """A block report for Anna's, naming Anna's.
 
     `_block_detail` hardcodes the Z-Library domain and tells the operator to
@@ -168,28 +143,16 @@ def _annas_block_detail(resp: httpx.Response) -> Optional[str]:
     an irrelevant remedy for an Anna's wall — actively misleading in the exact
     anti-bot scenario this probe exists to distinguish (Codex on #150).
     """
-    from lib.sources.annas_browser import _REFUSAL_STATUSES  # noqa: PLC0415
-
-    body_is_diamwall = "diamwall" in resp.text.lower()
-    # Anna's refusal statuses, not Z-Library's wall statuses. Reusing
-    # WALLED_STATUS_CODES (307/403/513/517) missed a bare 429 or 503, so
-    # throttling fell through to the missing-link branch and was reported as
-    # DOM drift — sending a maintainer to look for a layout change while Anna's
-    # was simply saying slow down (Codex on #150). `_REFUSAL_STATUSES` is what
-    # the production route already uses for exactly this question.
-    throttled = resp.status_code in _REFUSAL_STATUSES
-    if (
-        not body_is_diamwall
-        and not throttled
-        and resp.status_code not in WALLED_STATUS_CODES
-    ):
+    if outcome not in {"challenge", "exhausted", "refusal"}:
         return None
     wall = (
         "DiamWall anti-bot wall"
-        if body_is_diamwall
+        if "diamwall" in resp.text.lower()
+        else "browser challenge"
+        if outcome == "challenge"
+        else "provider download limit"
+        if outcome == "exhausted"
         else "throttled or refused"
-        if throttled
-        else "network-level block"
     )
     host = urlsplit(ANNAS_BASE_URL).hostname or "annas-archive"
     return (
@@ -378,10 +341,7 @@ async def probe_annas_download_dom(client: httpx.AsyncClient) -> ProbeResult:
     matters — that partner-server links are still on the book page in the shape
     the extractor looks for.
     """
-    from lib.sources.annas_browser import (  # noqa: PLC0415
-        AnnasBrowserSession,
-        _classify_page,
-    )
+    from lib.sources.annas_browser import AnnasBrowserSession  # noqa: PLC0415
     from lib.sources.annas_usage import (  # noqa: PLC0415
         CrossProcessLock,
         DailyUsage,
@@ -449,6 +409,36 @@ async def probe_annas_download_dom(client: httpx.AsyncClient) -> ProbeResult:
                 await asyncio.sleep(wait)
             return None
 
+        def wall_result(response: httpx.Response, stage: str) -> Optional[ProbeResult]:
+            outcome = _annas_response_outcome(response)
+            if outcome == "http_error":
+                return ProbeResult(
+                    name="annas-archive:download-dom",
+                    ok=False,
+                    detail=(
+                        f"{stage} answered with HTTP error {response.status_code}. "
+                        "Production treats that as a provider failure, so the DOM "
+                        "shape is unverified rather than drifted; no browser-wall "
+                        "backoff was applied."
+                    ),
+                    required=False,
+                )
+            detail = _annas_block_detail(response, outcome)
+            if detail is None:
+                return None
+            usage.penalise(browser_config.annas_browser_backoff_seconds)
+            return ProbeResult(
+                name="annas-archive:download-dom",
+                ok=False,
+                blocked=True,
+                detail=(
+                    f"{stage} answered with a browser wall or provider limit, so "
+                    "its DOM shape is UNVERIFIED from this network — not evidence "
+                    f"that it drifted. {detail}"
+                ),
+                required=False,
+            )
+
         skipped = await metered()
         if skipped is not None:
             return skipped
@@ -464,35 +454,10 @@ async def probe_annas_download_dom(client: httpx.AsyncClient) -> ProbeResult:
                 required=False,
             )
 
-        walled = _annas_block_detail(resp)
         body = resp.text
-        # The production classifier, not a copy of some of its markers: a partial
-        # copy reported a 200 challenge page as DOM drift, sending the maintainer
-        # to look for a layout change that is not there (Codex on #150).
-        #
-        # Both of its verdicts, not just one: it also returns "exhausted" for
-        # Anna's own download-limit text on an ordinary HTTP 200, and dropping
-        # that meant throttling read as DOM drift and skipped the backoff.
-        challenged = _classify_page(body) in ("challenge", "exhausted")
-        if walled or challenged:
-            # Production penalises on a wall; a probe that does not would let the
-            # next doctor run or download hit Anna's again after only the spacing
-            # interval, and the advertised five-minute backoff would apply to the
-            # feature but not to the tool exercising it (Codex on #150).
-            usage.penalise(browser_config.annas_browser_backoff_seconds)
-            return ProbeResult(
-                name="annas-archive:download-dom",
-                ok=False,
-                blocked=True,
-                detail=(
-                    "browser verification answered instead of the book page, so the "
-                    "partner-link DOM shape is UNVERIFIED from this network — not "
-                    "evidence that it drifted. The browser route (#143) clears this "
-                    "wall with a real browser; this probe deliberately does not. "
-                    + (walled or "challenge interstitial served")
-                ),
-                required=False,
-            )
+        blocked = wall_result(resp, "the book page")
+        if blocked is not None:
+            return blocked
 
         partner_links = AnnasBrowserSession._slow_download_paths(
             body, ANNAS_DOM_CANARY_MD5
@@ -521,23 +486,9 @@ async def probe_annas_download_dom(client: httpx.AsyncClient) -> ProbeResult:
                 )
 
             partner_body = partner.text
-            partner_walled = (
-                _annas_block_detail(partner)
-                or _classify_page(partner_body) == "challenge"
-            )
-            if partner_walled:
-                return ProbeResult(
-                    name="annas-archive:download-dom",
-                    ok=False,
-                    blocked=True,
-                    detail=(
-                        f"book page intact ({len(partner_links)} partner links) but "
-                        f"the partner page answered with browser verification, so "
-                        f"payload-link extraction is UNVERIFIED from this network — "
-                        f"not evidence that it drifted"
-                    ),
-                    required=False,
-                )
+            blocked = wall_result(partner, "the partner page")
+            if blocked is not None:
+                return blocked
 
             annas_host = (urlsplit(ANNAS_BASE_URL).hostname or "").lower()
             payload = AnnasBrowserSession._direct_file_url(partner_body, annas_host)

@@ -43,7 +43,7 @@ from dataclasses import dataclass
 from typing import List, Optional, Tuple
 from urllib.parse import urlsplit
 
-from .annas_usage import CrossProcessLock, DailyUsage
+from .annas_usage import CrossProcessLock, DailyUsage, UsageCounterUnavailableError
 from .config import SourceConfig
 from .errors import (
     ProviderConfigurationError,
@@ -244,7 +244,15 @@ class _RateLimiter:
         sleeping twenty seconds only to then refuse would be the wrong order to
         find out.
         """
-        allowed, remaining, wait = self.usage.spend(self.daily_limit, self.min_interval)
+        try:
+            allowed, remaining, wait = self.usage.spend(
+                self.daily_limit, self.min_interval
+            )
+        except UsageCounterUnavailableError as exc:
+            # A configuration_error, not an outage: permanent until the
+            # operator changes something, so it must not count as evidence
+            # Anna's is unhealthy, and it must not be retried.
+            raise ProviderConfigurationError(PROVIDER, "", str(exc)) from None
         if not allowed:
             raise DailyLimitReachedError(
                 PROVIDER,

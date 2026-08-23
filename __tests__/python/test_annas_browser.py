@@ -809,26 +809,88 @@ class TestCrossProcessSerialisation:
         )
         holder.release()
 
-    def test_an_unreadable_usage_count_is_unknown_not_zero(self, tmp_path):
-        """Fail-open must not look like an exhausted quota.
+    def test_an_unlockable_counter_refuses_rather_than_running_uncounted(
+        self, tmp_path
+    ):
+        """Fail CLOSED, because an unlockable path is not transient (#150).
 
-        Codex on #150: the fail-open path returned -1, which reached
-        `QuotaInfo.downloads_left`, and the router reads a non-positive value
-        as exhausted — so it discarded a URL the walk had already paid for.
+        An earlier version allowed the request uncounted so a lock problem
+        would not block the operator. But every later process takes the same
+        branch, so the ceiling disappears permanently and silently — and this
+        route's scope is conditional on the ceiling being real. A refusal is
+        visible and fixable in one command; an unbounded browser route against
+        an anti-abuse control is neither.
         """
-        from lib.sources.annas_usage import DailyUsage
+        from lib.sources.annas_usage import DailyUsage, UsageCounterUnavailableError
 
         usage = DailyUsage(str(tmp_path / "usage.json"))
-        usage._acquire = lambda: False  # simulate a lock we cannot take
+        usage._acquire = lambda: False  # a lock we can never take
 
-        allowed, remaining, wait = usage.spend(30, 20.0)
+        with pytest.raises(UsageCounterUnavailableError) as excinfo:
+            usage.spend(30, 20.0)
 
-        assert allowed is True, "a lock problem must not block the operator"
-        assert remaining is None, "unknown must not be representable as a count"
-        assert wait == 20.0, (
-            "spacing must still apply when the count is unknown; failing open "
-            "on the ceiling is not a reason to also stop being polite"
+        assert "ANNAS_BROWSER_PROFILE_DIR" in str(excinfo.value), (
+            "the refusal has to say how to fix it, or it is just an outage"
         )
+
+    @pytest.mark.asyncio
+    async def test_the_refusal_reaches_the_caller_as_a_configuration_error(
+        self, tmp_path
+    ):
+        """Permanent until the operator acts, so not evidence Anna's is down."""
+        from lib.sources.errors import ProviderConfigurationError
+
+        session = _session([BOOK_PAGE, PARTNER_PAGE], tmp_path)
+        session._limiter.usage._acquire = lambda: False
+
+        with pytest.raises(ProviderConfigurationError) as excinfo:
+            await session.resolve_download_url(MD5)
+
+        assert excinfo.value.reason == "configuration_error"
+
+    def test_liveness_never_signals_the_process_it_asks_about(self, tmp_path):
+        """`os.kill(pid, 0)` terminates the target on Windows (#150).
+
+        CPython maps any signal but the console-control values onto
+        `TerminateProcess`, so the "harmless" probe would have killed the
+        bridge holding the browser lock — and then waited behind a lock whose
+        owner it had just destroyed.
+        """
+        import ast
+        import inspect
+        import textwrap
+
+        from lib.sources import annas_usage
+
+        tree = ast.parse(
+            textwrap.dedent(inspect.getsource(annas_usage._process_exists))
+        )
+        body = tree.body[0].body
+        # Drop the docstring, which legitimately *mentions* os.kill while
+        # explaining why it is guarded.
+        if isinstance(body[0], ast.Expr) and isinstance(body[0].value, ast.Constant):
+            body = body[1:]
+        code = "\n".join(ast.unparse(node) for node in body)
+
+        assert "win32" in code, "the Windows path must be handled in code"
+        assert "OpenProcess" in code
+        # The POSIX probe must sit behind the platform check, not before it.
+        assert code.index("win32") < code.index("os.kill("), (
+            "os.kill reached before the platform check would terminate the "
+            "process on Windows"
+        )
+
+    def test_liveness_reports_a_dead_pid_as_dead(self):
+        from lib.sources.annas_usage import _process_exists
+
+        assert _process_exists(999999999) is False
+
+    def test_liveness_reports_this_process_as_alive(self):
+        import os
+
+        from lib.sources.annas_usage import _process_exists
+
+        assert _process_exists(os.getpid()) is True
 
     def test_an_unknown_budget_omits_quota_rather_than_reporting_zero(self):
         from lib.sources.annas import AnnasArchiveAdapter

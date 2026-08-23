@@ -25,11 +25,56 @@ import errno
 import json
 import logging
 import os
+import sys
 import time
 from pathlib import Path
 from typing import Optional, Tuple
 
 logger = logging.getLogger(__name__)
+
+
+def _process_exists(pid: int) -> bool:
+    """Whether a process id is live, without signalling it.
+
+    **`os.kill(pid, 0)` is not a liveness probe on Windows.** CPython maps any
+    signal other than the console-control values onto `TerminateProcess`, so
+    the "harmless" zero signal *kills* the process it was meant to ask about
+    (Codex on #150). Here that would mean a second download terminating the
+    bridge holding the browser lock, and then waiting behind a lock whose owner
+    it had just destroyed.
+
+    POSIX keeps the cheap check. Windows uses `OpenProcess`, which is the
+    read-only question actually being asked.
+    """
+    if sys.platform == "win32":  # pragma: no cover - exercised on Windows only
+        import ctypes  # noqa: PLC0415
+
+        PROCESS_QUERY_LIMITED_INFORMATION = 0x1000
+        STILL_ACTIVE = 259
+        kernel32 = ctypes.windll.kernel32
+        handle = kernel32.OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, False, pid)
+        if not handle:
+            return False
+        try:
+            code = ctypes.c_ulong()
+            if not kernel32.GetExitCodeProcess(handle, ctypes.byref(code)):
+                # Cannot tell; treat as alive rather than reclaim a lock we do
+                # not understand.
+                return True
+            return code.value == STILL_ACTIVE
+        finally:
+            kernel32.CloseHandle(handle)
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        # Alive, owned by another user. Not ours to reclaim.
+        return True
+    except OSError:
+        return True
+    return True
+
 
 # How long to wait for another process to finish its read-modify-write. The
 # critical section is two file operations, so anything beyond this means a
@@ -37,6 +82,13 @@ logger = logging.getLogger(__name__)
 _LOCK_TIMEOUT = 5.0
 _LOCK_POLL = 0.02
 _STALE_LOCK_AGE = 30.0
+
+
+class UsageCounterUnavailableError(RuntimeError):
+    """The daily counter cannot be locked, so the ceiling cannot be enforced.
+
+    Raised rather than swallowed: see the reasoning in `DailyUsage.spend`.
+    """
 
 
 class CrossProcessLock:
@@ -82,16 +134,7 @@ class CrossProcessLock:
             # interrupted. Fall back to age, which is what this class did
             # before liveness existed.
             return False
-        try:
-            os.kill(pid, 0)
-        except ProcessLookupError:
-            return False
-        except PermissionError:
-            # Alive, owned by another user. Not ours to reclaim.
-            return True
-        except OSError:
-            return True
-        return True
+        return _process_exists(pid)
 
     def acquire(self, timeout: float) -> bool:
         deadline = time.monotonic() + timeout
@@ -249,16 +292,23 @@ class DailyUsage:
         and each deciding it may proceed.
         """
         if not self._acquire():
-            # Failing open here is deliberate and narrow: the alternative is
-            # that a permissions problem or a wedged lock silently blocks the
-            # operator's own downloads. It is logged, and the in-process
-            # spacing and backoff still apply.
-            logger.warning(
-                "Could not lock the Anna's usage counter at %s; this request is "
-                "not counted against the daily ceiling",
-                self.path,
+            # Fail CLOSED. An earlier version allowed the request uncounted, on
+            # the reasoning that a lock problem should not block the operator.
+            # That was wrong in the way that matters: an unlockable path is not
+            # transient — every later process takes the same branch, so the
+            # ceiling is gone permanently and silently, and this route's scope
+            # is conditional on the ceiling being real (Codex on #150).
+            #
+            # A refusal is visible, diagnosable, and fixable in one command. An
+            # unbounded browser route against an anti-abuse control is neither.
+            raise UsageCounterUnavailableError(
+                f"cannot lock the Anna's daily-usage counter at {self.path}. "
+                f"The browser route refuses to run without an enforceable "
+                f"ceiling (#144) — an uncounted request would remove the limit "
+                f"for every later call too, not just this one. Check that the "
+                f"directory is writable, or set ANNAS_BROWSER_PROFILE_DIR "
+                f"somewhere that is."
             )
-            return True, None, min_interval
         try:
             window_started, spent, next_allowed = self._read()
             now = time.time()

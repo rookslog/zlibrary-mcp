@@ -253,10 +253,18 @@ is empty). That is the stable shape emitted by
 `normalize_eapi_book`; `{id, hash}` alone is not sufficient. This structural
 predicate preserves existing stateless callers but is not a claim of
 unforgeable provenance. It applies only inside the existing `bookDetails`
-compatibility facade; raw `bookId`/`bookHash` parameters and identifier-only
-objects remain rejected. Contract tests accept a representative legacy result
-and reject both raw parameter and identifier-only forms so the interval does
-not recreate a generic direct-ID path.
+compatibility facade.
+
+**The rejection of raw `bookId`/`bookHash` is scoped to acquisition**, where a
+direct-ID download route is what ADR-003 ruled out. `get_book_metadata` must
+keep accepting them for the deprecation interval — `src/index.ts` requires them
+today — as the compatibility section below states; a blanket rejection here
+would contradict that and break existing clients at schema validation. What is
+banned everywhere is an identifier-only object standing in for a selected
+result. Contract tests accept a representative legacy result, reject
+identifier-only forms everywhere, and reject raw parameters **on the
+acquisition path**, so the interval does not recreate a generic direct-ID
+download while metadata keeps working.
 
 Acquisition is bound to the source that produced the selected result. Ordered
 fallback applies to discovery and other operations that do not consume a
@@ -355,6 +363,16 @@ not a default inside the generic router.
 `BOOK_SOURCE_ORDER` names the providers to attempt, in order, and is the only
 setting that changes routing; the paragraphs below define it, bound it, and
 state the precondition it cannot ship without.
+
+**An explicit order wins over `BOOK_SOURCE_FALLBACK_ENABLED=false`, and the
+conflict is logged once at startup.** The two settings otherwise have no
+determinate result: an explicit order names several providers to attempt while
+fallback-disabled means attempt only the first. Precedence goes to the explicit
+order because it is the newer, more specific instruction and the operator wrote
+it deliberately; `BOOK_SOURCE_FALLBACK_ENABLED` continues to govern the
+*derived* orders for `auto`, which is its whole existing purpose. Silently
+honouring one would leave an operator believing the other works — the same
+failure `BOOK_SOURCE_DEFAULT` produced by being inert.
 
 **A three-source order does not fit the current timeout budget, and the order
 cannot ship before that is resolved.** `lib/sources/config.py` documents the
@@ -536,6 +554,10 @@ operation    search, download, metadata, limits, history, recent, or booklist
 reason       stable machine-readable reason code
 retryable    explicit boolean when known
 detail       bounded human-readable context
+message      the existing human-readable summary, retained: both
+             SourceError.to_dict() and AllSourcesFailedError.to_dict() already
+             emit it and it is already public through the bridge `details`, so
+             a migration described as additive cannot drop it
 host         optional host that failed
 mirror       optional source-internal mirror
 failures     optional ordered child failures for an aggregate
@@ -646,6 +668,16 @@ The permanent vocabulary says `source`, matching project language. If #106
 lands with its current serialized `provider` field, the migration serializer
 must emit `source` and retain `provider` only as a documented compatibility
 alias until callers have moved. No new code should branch on the alias.
+
+**The alias must carry the legacy *value*, not just the legacy key.** Anna's
+adapter sets `PROVIDER = "annas"` and `SourceError.to_dict()` emits it, and
+Node tests assert that string; the canonical `SourceType` is `annas_archive`.
+So a serializer that aliases `provider` to the new value emits
+`provider="annas_archive"` and breaks every caller the alias exists to protect
+— the field survives and its content does not. During the interval `source`
+carries the canonical value and `provider` carries the legacy one, and a test
+asserts the two differ for Anna's, since they are identical for LibGen and a
+LibGen-only test would pass either way.
 
 ## Dependencies and sequencing
 

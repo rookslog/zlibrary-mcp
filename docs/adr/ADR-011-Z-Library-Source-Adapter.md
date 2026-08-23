@@ -650,9 +650,13 @@ tool nor treats passive failure reporting as a decided replacement.
 - PR #106 was not merged when this ADR was written; conflict resolution may
   change exact class or function names. The semantic dependencies above remain
   required and must be rechecked against its merged form.
-- #103 is now slotted in v1.5 because its sequencing constraint is binding.
-  #40 must still stop before changing TypeScript registration until #103 lands;
-  milestone membership records the dependency but does not make unfinished
+- #40 is recorded in the tracker as blocked by #103, using GitHub's native issue
+  dependency. That relation is where the sequencing is enforced and read. This
+  ADR deliberately does not name #103's milestone: AGENTS.md requires priorities
+  to be read from milestones rather than from any document in this repo, and an
+  earlier revision of this line asserted a slot that moved underneath it within
+  days. #40 must still stop before changing TypeScript registration until #103
+  lands; the dependency records that ordering without making unfinished
   registration work safe to build against.
 - The EAPI is undocumented. Adapter parity under fake-client tests does not
   predict endpoint drift, domain rotation, authentication throttling, or live

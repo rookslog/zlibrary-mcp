@@ -325,6 +325,58 @@ async def probe_annas_download_dom(client: httpx.AsyncClient) -> ProbeResult:
         AnnasBrowserSession,
         _classify_page,
     )
+    from lib.sources.annas_usage import (  # noqa: PLC0415
+        DailyUsage,
+        UsageCounterUnavailableError,
+    )
+    from lib.sources.config import get_source_config  # noqa: PLC0415
+
+    # This probe is real traffic to Anna's free route, so it is metered by the
+    # same counter the production path uses. Uncounted health checks would let
+    # repeated `npm run doctor` runs bypass the 20-second spacing and the
+    # 30-request ceiling that are the condition of this route's scope — the
+    # politeness layer would cover the feature and not the tool that exercises
+    # it (Codex on #150).
+    browser_config = get_source_config()
+    usage = DailyUsage(
+        os.path.join(
+            browser_config.annas_browser_profile_dir, "..", "annas-browser-usage.json"
+        )
+    )
+
+    async def metered() -> Optional[ProbeResult]:
+        """Take a slot, or return the row explaining why the probe did not run."""
+        try:
+            allowed, _remaining, wait = usage.spend(
+                browser_config.annas_browser_daily_limit,
+                browser_config.annas_browser_min_interval,
+            )
+        except UsageCounterUnavailableError as exc:
+            return ProbeResult(
+                name="annas-archive:download-dom",
+                ok=False,
+                detail=f"not probed: {exc}",
+                required=False,
+            )
+        if not allowed:
+            return ProbeResult(
+                name="annas-archive:download-dom",
+                ok=False,
+                detail=(
+                    "not probed: today's Anna's browser-route budget is spent. "
+                    "The health check is metered by the same counter as the "
+                    "route it checks (#144), so it yields to real downloads "
+                    "rather than competing with them."
+                ),
+                required=False,
+            )
+        if wait > 0:
+            await asyncio.sleep(wait)
+        return None
+
+    skipped = await metered()
+    if skipped is not None:
+        return skipped
 
     url = f"{ANNAS_BASE_URL}/md5/{ANNAS_DOM_CANARY_MD5}"
     try:
@@ -364,6 +416,10 @@ async def probe_annas_download_dom(client: httpx.AsyncClient) -> ProbeResult:
         # partner-page redesign breaks every download while this row stays
         # green (Codex on #150). One extra request, against the first server
         # Anna's lists, through the same extractor production uses.
+        skipped = await metered()
+        if skipped is not None:
+            return skipped
+
         try:
             partner = await client.get(f"{ANNAS_BASE_URL}{partner_links[0]}")
         except Exception as exc:  # noqa: BLE001
@@ -411,13 +467,49 @@ async def probe_annas_download_dom(client: httpx.AsyncClient) -> ProbeResult:
                 required=False,
             )
 
+        # Extraction is not the end of the flow — the browser hands the URL to
+        # httpx, and that handoff is the part this route depends on. A signed
+        # URL that starts requiring browser cookies or a referrer would still
+        # extract cleanly while every production transfer failed (Codex on
+        # #150). Four kilobytes, from the CDN rather than from Anna's, so it
+        # costs Anna's nothing and is not metered.
+        payload_host = urlsplit(payload).hostname or "?"
+        try:
+            probe = await client.get(payload, headers={"Range": "bytes=0-4095"})
+        except Exception as exc:  # noqa: BLE001
+            return ProbeResult(
+                name="annas-archive:download-dom",
+                ok=False,
+                detail=(
+                    f"payload link extracted from {partner_links[0]} but "
+                    f"{payload_host} could not be reached: "
+                    f"{type(exc).__name__}: {exc} — the browser-to-httpx "
+                    f"handoff is what every download depends on"
+                ),
+                required=False,
+            )
+
+        if probe.status_code not in (200, 206):
+            return ProbeResult(
+                name="annas-archive:download-dom",
+                ok=False,
+                detail=(
+                    f"payload link extracted but {payload_host} answered HTTP "
+                    f"{probe.status_code} to a plain ranged GET — the URL no "
+                    f"longer works outside the browser, so extraction being "
+                    f"healthy says nothing about downloads"
+                ),
+                required=False,
+            )
+
         return ProbeResult(
             name="annas-archive:download-dom",
             ok=True,
             detail=(
                 f"{len(partner_links)} partner-server link(s) on the canary book "
-                f"page, and {partner_links[0]} yielded a payload link on "
-                f"{urlsplit(payload).hostname or '?'}"
+                f"page; {partner_links[0]} yielded a payload link on "
+                f"{payload_host}, which served HTTP {probe.status_code} "
+                f"({len(probe.content)} bytes) to plain httpx"
             ),
             required=False,
         )

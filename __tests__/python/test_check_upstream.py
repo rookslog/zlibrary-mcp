@@ -734,6 +734,18 @@ class TestAnnasDownloadDomProbe:
     close, reintroduced on a new surface.
     """
 
+    @pytest.fixture(autouse=True)
+    def _isolated_usage_counter(self, tmp_path, monkeypatch):
+        """Never spend the operator's real Anna's budget from a test.
+
+        The probe is metered by the same persistent counter as production
+        (#144), so without this a test run consumes real daily slots and, once
+        they are gone, every later test sees "budget spent" instead of the
+        behaviour it is checking. Found exactly that way.
+        """
+        monkeypatch.setenv("ANNAS_BROWSER_PROFILE_DIR", str(tmp_path / "profile"))
+        monkeypatch.setenv("ANNAS_BROWSER_MIN_INTERVAL", "0.001")
+
     PARTNER_PAGE = (
         '<html><body><a href="/faq">FAQ</a>'
         '<a href="https://cdn9.example.net/d/x/Book.pdf?sig=1">Download now</a>'
@@ -751,12 +763,15 @@ class TestAnnasDownloadDomProbe:
 
         return asyncio.run(go())
 
-    def _two_page(self, book, partner=None):
-        """Serve the book page first, the partner page on the second request."""
+    def _two_page(self, book, partner=None, payload_status=206):
+        """Book page, then partner page, then the payload range request."""
         partner = self.PARTNER_PAGE if partner is None else partner
 
         def handler(request):
-            if "/slow_download/" in str(request.url):
+            url = str(request.url)
+            if "cdn9.example.net" in url:
+                return httpx.Response(payload_status, content=b"%PDF-1.5" + b"\0" * 64)
+            if "/slow_download/" in url:
                 return httpx.Response(200, text=partner)
             return httpx.Response(200, text=book)
 
@@ -852,6 +867,36 @@ class TestAnnasDownloadDomProbe:
         assert result.blocked is True
         assert result.symbol == "BLOCK"
         assert "UNVERIFIED" in result.detail
+
+    def test_an_unfetchable_payload_is_not_healthy(self, check_upstream):
+        """Extraction is not the end of the flow (#150).
+
+        The browser hands the URL to httpx, and that handoff is what every
+        download depends on. A signed URL that started requiring browser
+        cookies or a referrer would extract cleanly while every production
+        transfer failed — so a probe that stopped at extraction would report
+        green through a total outage of the thing it exists to watch.
+        """
+        md5 = check_upstream.ANNAS_DOM_CANARY_MD5
+        book = f'<html><body><a href="/slow_download/{md5}/0/0">S1</a></body></html>'
+
+        result = self._run(check_upstream, self._two_page(book, payload_status=403))
+
+        assert result.ok is False
+        assert result.blocked is False
+        assert "outside the browser" in result.detail
+
+    def test_a_fetchable_payload_is_named_in_the_detail(self, check_upstream):
+        md5 = check_upstream.ANNAS_DOM_CANARY_MD5
+        book = f'<html><body><a href="/slow_download/{md5}/0/0">S1</a></body></html>'
+
+        result = self._run(check_upstream, self._two_page(book))
+
+        assert result.ok is True
+        assert "plain httpx" in result.detail, (
+            "green must state that the handoff was exercised, or it reads as "
+            "a claim about extraction alone"
+        )
 
 
 class TestRunProbesReturnsEveryProbe:
@@ -1083,6 +1128,18 @@ class TestAnnasProbeDiagnosticsNameAnnas:
     host and an irrelevant remedy in the exact anti-bot scenario the probe
     exists to distinguish.
     """
+
+    @pytest.fixture(autouse=True)
+    def _isolated_usage_counter(self, tmp_path, monkeypatch):
+        """Never spend the operator's real Anna's budget from a test.
+
+        The probe is metered by the same persistent counter as production
+        (#144), so without this a test run consumes real daily slots and, once
+        they are gone, every later test sees "budget spent" instead of the
+        behaviour it is checking. Found exactly that way.
+        """
+        monkeypatch.setenv("ANNAS_BROWSER_PROFILE_DIR", str(tmp_path / "profile"))
+        monkeypatch.setenv("ANNAS_BROWSER_MIN_INTERVAL", "0.001")
 
     def _run(self, check_upstream, handler):
         import asyncio

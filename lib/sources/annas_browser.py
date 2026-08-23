@@ -499,6 +499,27 @@ class AnnasBrowserSession:
         wall = _classify_page(html)
         if (
             wall is None
+            and status is not None
+            and status >= 400
+            and status not in _REFUSAL_STATUSES
+            and not looks_like_annas_page(html)
+        ):
+            # Anything else in the 4xx/5xx range is a provider error, and it
+            # must say so. Returning the error page as ordinary HTML meant the
+            # caller found no partner links and raised a **permanent**
+            # `not_found` — so a transient 502 was reported as a missing
+            # edition and never retried (Codex on #150). 401 lands here too,
+            # which is what the refusal-set comment intends: a contract change
+            # surfaced rather than absorbed.
+            raise ProviderResponseError(
+                PROVIDER,
+                self.host,
+                f"HTTP {status} from {url} with no Anna's content — a provider "
+                f"error, not a missing edition.",
+                reason="http_error",
+            )
+        if (
+            wall is None
             and status in _REFUSAL_STATUSES
             and not looks_like_annas_page(html)
         ):

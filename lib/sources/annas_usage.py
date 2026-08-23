@@ -173,10 +173,19 @@ class CrossProcessLock:
                 if time.monotonic() >= deadline:
                     return False
                 time.sleep(0.25)
-            except OSError:
-                # Same reasoning as the counter: a lock we cannot take must not
-                # block the operator's own downloads outright.
-                return True
+            except OSError as exc:
+                # Fail CLOSED, for the same reason the counter does. Returning
+                # success here means "no lock exists, proceed anyway" — so two
+                # bridge processes both launch Chrome against one profile and
+                # the serialisation this class exists for is gone, usually
+                # surfacing as a confusing profile-lock error rather than as
+                # the policy violation it is (Codex on #150). An unwritable
+                # lock path does not heal itself, so allowing the first request
+                # allows every later one.
+                logger.warning(
+                    "Cannot create the browser lock at %s: %s", self.path, exc
+                )
+                return False
 
     def release(self) -> None:
         try:

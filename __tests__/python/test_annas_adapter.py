@@ -1043,6 +1043,15 @@ class TestKeyedDownloadTracebacksCannotCarryTheKey:
 
     SECRET = "s3cr3t-key-that-must-not-appear"
 
+    # A TRUSTED host, deliberately. `annas-archive.org` is absent from
+    # ANNAS_TRUSTED_HOSTS, so the adapter refuses before `_fetch` is ever
+    # called — and these tests then passed on that early
+    # ProviderConfigurationError without reaching the raise sites they exist to
+    # guard. Verified by reverting the three `from None` changes: all three
+    # tests stayed green (Codex on #151). A security regression test that
+    # passes against the unfixed code is worse than none.
+    HOST = "annas-archive.gl"
+
     def _adapter(self):
         from lib.sources.annas import AnnasArchiveAdapter
         from lib.sources.config import SourceConfig
@@ -1050,7 +1059,7 @@ class TestKeyedDownloadTracebacksCannotCarryTheKey:
         return AnnasArchiveAdapter(
             SourceConfig(
                 annas_secret_key=self.SECRET,
-                annas_base_url="https://annas-archive.org",
+                annas_base_url="https://annas-archive.gl",
                 preflight_enabled=False,
             )
         )
@@ -1066,7 +1075,7 @@ class TestKeyedDownloadTracebacksCannotCarryTheKey:
         import httpx
 
         adapter = self._adapter()
-        url = f"https://annas-archive.org/dyn/api/fast_download.json?key={self.SECRET}"
+        url = f"https://annas-archive.gl/dyn/api/fast_download.json?key={self.SECRET}"
         request = httpx.Request("GET", url)
         response = httpx.Response(403, request=request)
 
@@ -1094,7 +1103,7 @@ class TestKeyedDownloadTracebacksCannotCarryTheKey:
         import httpx
 
         adapter = self._adapter()
-        url = f"https://annas-archive.org/dyn/api/fast_download.json?key={self.SECRET}"
+        url = f"https://annas-archive.gl/dyn/api/fast_download.json?key={self.SECRET}"
         request = httpx.Request("GET", url)
 
         mocker.patch.object(
@@ -1128,7 +1137,7 @@ class TestKeyedDownloadTracebacksCannotCarryTheKey:
             side_effect=httpx.ConnectError(
                 "boom",
                 request=httpx.Request(
-                    "GET", "https://annas-archive.org/search?q=anything"
+                    "GET", "https://annas-archive.gl/search?q=anything"
                 ),
             ),
         )

@@ -71,10 +71,22 @@ because the route is planned. Guardrails for it (#97) are moot rather than defer
 sanctioned rate-limited route ever appears, reopen those rather than restarting.
 _Avoid_: Keyless download (ambiguous — say this instead)
 
+**Browser-resident session**:
+A route where a *real browser on the operator's machine* holds the DDoS-Guard clearance and
+search and download requests are issued from inside it, rate-limited. Nothing is exported to
+a different client, so the IP binding that defeated the operator-cookie route above does not
+apply. #142 measured that clearance can be held this way — headful only, roughly 20 minutes
+per solve — and #143 and #144 build on that answer.
+
 **Machine-solved challenge**:
 Any route where the *server* defeats the browser verification itself — headless browser,
-fingerprint spoofing. Permanently out of scope: it defeats an anti-abuse control Anna's
-operates deliberately.
+fingerprint spoofing.
+
+**Scope reversed 2026-08-23** (operator ruling; the reasoning and its limits are in
+`AGENTS.md` §"Two terms with sharp edges"). This entry read "permanently out of scope" from
+2026-08-11 until then, and #95 carried the clause forward to every successor map. Both are
+retired for the purpose of reaching Anna's search and download, on the condition that #144's
+rate limiting ships in the same pass as the route rather than after it.
 _Avoid_: Keyless download, automated download
 
 Note that "keyless" alone should not be used. It has meant both *no API key* (a live

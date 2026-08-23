@@ -336,6 +336,24 @@ at its compatibility façade. That is a property of the legacy tool contract,
 not a default inside the generic router.
 
 `source="auto"` has an explicit migration path. A new optional
+**A three-source order does not fit the current timeout budget, and the order
+cannot ship before that is resolved.** `lib/sources/config.py` documents the
+arithmetic: one provider attempt costs at worst `2 x preflight + total` = 55s,
+LibGen walks three mirrors, and today's worst case is 4 attempts = 220s against
+a 240-second `PYTHON_BRIDGE_TIMEOUT` — a 20-second margin. An order of
+`[zlibrary, annas_archive, libgen]` is **five** attempts = 275s, so Node would
+kill a legitimate walk 35 seconds before the router returned its structured
+result, and the operator would see a subprocess timeout instead of the
+attributed failures the whole error taxonomy exists to produce.
+
+This is a precondition, not a follow-up. Before three-source orders become
+valid, the migration must either share one total budget across the ordered walk
+rather than granting each provider its own, or raise `PYTHON_BRIDGE_TIMEOUT`
+with the margin recomputed and written down where the existing arithmetic
+lives. A full-order timeout test covering the longest permitted order lands in
+the same stage; without it the regression is invisible until a slow walk in
+production.
+
 `BOOK_SOURCE_ORDER` is a validated, non-empty ordered list of canonical
 `SourceType` values (`annas_archive`, `libgen`, or `zlibrary`) and controls
 `auto` only when set. Selector aliases are normalised before validation:
@@ -355,9 +373,21 @@ the key they do not have.
 
 The migration therefore preserves `auto` exactly as it behaves now:
 
-- **Unset or `auto`, no key** → `[libgen]`.
-- **Unset or `auto`, key present** → `[annas_archive, libgen]` when fallback is
-  enabled, `[annas_archive]` when it is not.
+**Search and acquisition already differ, and the migration must keep them
+differing.** `_search_candidates` appends every other provider for `auto`
+regardless of credentials, because Anna's **key-free search** works;
+`_download_candidates` appends Anna's only when a key is present, because
+Anna's supported acquisition needs one. Flattening the two into a single order
+would silently drop key-free Anna's results for every operator without a key.
+
+- **Search, unset or `auto`, no key** → `[libgen, annas_archive]` when fallback
+  is enabled, `[libgen]` when it is not.
+- **Search, unset or `auto`, key present** → `[annas_archive, libgen]` when
+  fallback is enabled, `[annas_archive]` when it is not.
+- **Acquisition, unset or `auto`, no key** → `[libgen]`. Anna's is not appended:
+  its key-free search cannot be followed by a supported key-free download.
+- **Acquisition, unset or `auto`, key present** → `[annas_archive, libgen]` when
+  fallback is enabled, `[annas_archive]` when it is not.
 - **`BOOK_SOURCE_DEFAULT` set to anything** → *ignored for ordering*, exactly as
   today, and logged once at startup as inert with a pointer to
   `BOOK_SOURCE_ORDER`. Silence would leave an operator believing a setting
@@ -427,9 +457,52 @@ depend on, and has done so while believing it preserved #106.
   `invalid_book_ref`, `not_found`, `dependency_unavailable`, `aborted`, and
   `partial_failure`.
 
+**Every added reason ships with its retry and breaker classification in the
+same change, and a test for it.** A reason code is not a label; it is an input
+to `src/lib/python-bridge.ts::isBridgeDetailRetryable` and, through
+`isPermanentBridgeDetail`, to the global circuit breaker in
+`zlibrary-api.ts`. A code Node has never heard of is retryable by default and
+counts as a bridge failure — so **five ordinary searches by an operator with no
+Z-Library credentials would open the breaker and start rejecting
+credential-free LibGen operations.** A source that was never configured would
+take down the source that needs no configuration, which is the specific outcome
+#129 already fixed once by another route.
+
+Classification for the added set:
+
+| Reason | Retryable | Counts toward the breaker |
+|---|---|---|
+| `credentials_missing` | no — permanent caller state | no |
+| `authentication_failed` | no — permanent caller state | no |
+| `unsupported_operation` | no — permanent caller state | no |
+| `invalid_book_ref` | no — permanent caller state | no |
+| `dependency_unavailable` | no — permanent caller state | no |
+| `not_found` | no — the provider answered correctly | no |
+| `aborted` | no — the caller's own choice, per #106 | no |
+| `partial_failure` | inherits from its children | inherits |
+
+**Aggregate classification must be child-aware.** `everyFailureHasReason`
+returns on a top-level `reason` when one is present and never inspects
+`failures`. `AllSourcesFailedError.to_dict()` emits no top-level `reason`
+today, which is why the current classifier works — so if `all_sources_failed`
+is introduced as a top-level reason, it must be excluded from that short
+circuit and the children consulted, or every aggregate becomes retryable
+regardless of what it contains. Tests must cover retry behaviour *and* breaker
+state for a Z-Library-without-credentials failure alongside a healthy LibGen
+call, because the failure this prevents is cross-source.
+
 Aggregates also use `all_sources_failed` when every attempted capable source
 failed. The aggregate keeps each child reason in order; it never copies one
 child reason to the top level or uses `partial_failure` when nothing answered.
+
+**The wire value for acquisition failures stays `download`.**
+`python_bridge.py` constructs aggregates with `operation="download"`, and both
+`__tests__/python/test_python_bridge.py` and
+`__tests__/zlibrary-api-extended.test.js` enforce that shape. `acquire` is the
+internal adapter method name; renaming the discriminator to match it would
+break clients branching on `operation` during a migration that is otherwise
+additive. If the wire value is ever to change, that is its own decision with
+its own alias interval, and this ADR does not make it.
 
 An aggregate error retains each source failure in attempted order. A complete
 empty search result means every attempted capable source answered and none

@@ -205,13 +205,13 @@ Anna's **key-free search** works and is why Anna's remains a source at all. Writ
 "keyless" conflates *no API key* with *no human in the loop*, and that conflation already
 caused approved work to be recorded as cancelled.
 
-**A second route is now in scope: the browser-resident session** (operator ruling
-2026-08-23, measured in #142). A real browser on the operator's machine holds the
-clearance and issues search and download requests from inside it — nothing is exported to
-another client, so #84's IP-binding finding does not apply to it. This reverses the
-"permanently out of scope" clause that #76 and #95 carried from 2026-08-11: non-API
-Anna's access is a hard requirement, because Anna's aggregates LibGen, Z-Library and IA
-and uniquely carries the scholarly editions that are the reason it is a source at all.
+**A second route is in scope: the browser-resident session** (operator ruling, measured
+in #142). A real browser on the operator's machine holds the clearance and issues search
+and download requests from inside it — nothing is exported to another client, so #84's
+IP-binding finding does not apply to it. This reverses the "permanently out of scope"
+clause that #76 and #95 carried: non-API Anna's access is a hard requirement, because
+Anna's aggregates LibGen, Z-Library and IA and uniquely carries the scholarly editions
+that are the reason it is a source at all.
 
 Read that honestly rather than as a re-scoping. It does route around an anti-abuse control
 Anna's operates deliberately, and Anna's states its reason plainly — *"browser verification

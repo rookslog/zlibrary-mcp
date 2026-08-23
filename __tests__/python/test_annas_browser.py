@@ -110,9 +110,14 @@ BOOK_PAGE = f"""
 </body></html>
 """
 
-PARTNER_PAGE = """
+# Shaped like the real thing: a live capture of a partner-server page carried
+# 20 `/md5/` navigation links alongside the payload anchor. The earlier minimal
+# stub was what let a challenge-hop 403 look like a refusal in testing while
+# passing live, and vice versa.
+PARTNER_PAGE = f"""
 <html><body>
   <a href="/faq">Anna's FAQ</a>
+  <a href="/md5/{"c" * 32}">Another edition</a>
   <a href="https://cdn3.example.net/d/9f2/Plotinus-Enneads.pdf?sig=abc">Download now</a>
 </body></html>
 """
@@ -997,3 +1002,34 @@ class TestBareRefusalStatuses:
         url, _ = await session.resolve_download_url(MD5)
 
         assert url.startswith("https://cdn3.example.net/")
+
+    @pytest.mark.asyncio
+    async def test_a_403_challenge_hop_on_a_good_page_is_not_a_refusal(self, tmp_path):
+        """The regression a live run caught and the mocks did not (#142, #150).
+
+        `page.goto()` returns the FIRST response, and DDoS-Guard's challenge
+        hop answers **403 while succeeding** — the JS challenge then solves and
+        the real page loads. So on a perfectly ordinary successful request the
+        status is 403 and the settled content is the book.
+
+        A status check with no content guard therefore rejected *every*
+        successful request. #142 lost a probe to exactly this reading once
+        before; the fixed-marker classifier lost it again here.
+        """
+        session = self._session_with([BOOK_PAGE, PARTNER_PAGE], [403, 403], tmp_path)
+
+        url, _ = await session.resolve_download_url(MD5)
+
+        assert url.startswith("https://cdn3.example.net/"), (
+            "a 403 on the challenge hop must not veto a page that plainly "
+            "loaded — the settled content is the evidence, not the first status"
+        )
+
+    @pytest.mark.asyncio
+    async def test_a_403_with_no_annas_content_is_still_a_refusal(self, tmp_path):
+        """The guard must not disarm the check it guards."""
+        empty = "<html><body><p>Forbidden.</p></body></html>"
+        session = self._session_with([BOOK_PAGE, empty], [200, 403], tmp_path)
+
+        with pytest.raises(ProviderRateLimitedError):
+            await session.resolve_download_url(MD5)

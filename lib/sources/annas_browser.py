@@ -299,6 +299,25 @@ def visible_text(html: str) -> str:
     return _WHITESPACE_RE.sub(" ", text).strip()
 
 
+def looks_like_annas_page(html: str) -> bool:
+    """Whether this page carries Anna's own navigation, i.e. it really loaded.
+
+    Positive evidence, and the only thing that can safely override a refusal
+    status: **the DDoS-Guard challenge hop answers 403 while succeeding.**
+    `page.goto()` returns that first response, so on a perfectly good run the
+    status is 403 and the settled page is the book. #142 lost a probe to this
+    reading before, and a live run lost it again here — a status check with no
+    content guard rejected every successful request.
+    """
+    if _SLOW_LINK_RE.search(html) or _BOOK_LINK_RE.search(html):
+        return True
+    # A partner page carries Anna's navigation in practice (a live capture had
+    # 20 `/md5/` links), but the payload link is the content we actually came
+    # for — so a redesign that drops the navigation must not let a
+    # challenge-hop 403 veto a page that handed us the file.
+    return bool(_FILE_EXTENSION_RE.search(html))
+
+
 def _classify_page(html: str) -> Optional[str]:
     """Name the wall in a page, or None if it looks like a real page.
 
@@ -311,7 +330,7 @@ def _classify_page(html: str) -> Optional[str]:
        else it says. A challenge interstitial has no book links in it, so their
        presence is positive evidence that cannot coexist with a wall.
     """
-    if _SLOW_LINK_RE.search(html) or _BOOK_LINK_RE.search(html):
+    if looks_like_annas_page(html):
         return None
     low = visible_text(html).lower()
     for marker in _CHALLENGE_MARKERS:
@@ -472,9 +491,17 @@ class AnnasBrowserSession:
         # #150). The status is the plainest statement Anna's can make; it is
         # only consulted after the challenge markers, so a challenge served with
         # a refusal status still reads as a challenge.
+        # `page.goto()` returns the FIRST response, and the challenge hop
+        # answers 403 while succeeding — so the status alone says nothing until
+        # the settled page has been looked at. A page carrying Anna's own
+        # navigation loaded, whatever the first hop said.
         status = getattr(response, "status", None)
         wall = _classify_page(html)
-        if wall is None and status in _REFUSAL_STATUSES:
+        if (
+            wall is None
+            and status in _REFUSAL_STATUSES
+            and not looks_like_annas_page(html)
+        ):
             self._limiter.penalise(self.config.annas_browser_backoff_seconds)
             raise ProviderRateLimitedError(
                 PROVIDER,

@@ -18,6 +18,7 @@ from lib.rag.utils.constants import SUPPORTED_FORMATS, PROCESSED_OUTPUT_DIR  # n
 from lib.rag.utils.exceptions import (
     FileSaveError,
 )  # noqa: F401
+from lib.rag.utils.deps import require_optional_dependency
 from lib.rag.utils.text import _slugify
 from lib.rag.utils.cache import _clear_textpage_cache  # noqa: F401
 from lib.rag.utils.header import (  # noqa: F401
@@ -154,10 +155,9 @@ async def process_document(
             )
             processed_text = doc_output.body_text
         elif file_extension == ".epub":
-            if not _get_facade().EBOOKLIB_AVAILABLE:
-                raise ImportError(
-                    "Required library 'ebooklib' is not installed or available for EPUB processing."
-                )
+            require_optional_dependency(
+                _get_facade().EBOOKLIB_AVAILABLE, "ebooklib", "rag"
+            )
             processed_text = await asyncio.to_thread(
                 process_epub, file_path, output_format
             )

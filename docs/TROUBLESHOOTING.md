@@ -22,7 +22,7 @@ The MCP client reports the server disconnected, or `node dist/index.js` exits at
    ```
 2. **Python venv missing** (fresh clone or after cleaning):
    ```bash
-   uv sync            # creates .venv/ and installs all Python dependencies
+   bash setup-uv.sh --no-dev   # creates .venv/ with the end-user core
    ```
 3. **Node version**: Node 22+ is required (see `engines` in `package.json` / `.nvmrc`).
 4. **Credentials**: `ZLIBRARY_EMAIL` / `ZLIBRARY_PASSWORD` must be set in the
@@ -53,13 +53,37 @@ with the working tree.
 ### Solution
 
 ```bash
-uv sync
+uv sync --no-dev
 .venv/bin/python -c "from zlibrary import Extension; print('OK')"
 ```
 
 If you **moved the project directory**, `.venv/` moves with it (it is project-local),
-but run `uv sync` once from the new location to be safe, and update any absolute paths
-in your clients' `.mcp.json`.
+but run `uv sync --no-dev` once from the new location to be safe, and update any
+absolute paths in your clients' `.mcp.json`.
+
+### Which UV sync command should I use?
+
+Bare `uv sync` installs UV's default development group in this project; it is not the
+lightweight end-user environment. Choose the tier explicitly:
+
+| Need | Command |
+|---|---|
+| Search, metadata, and downloads | `uv sync --no-dev` |
+| PDF/EPUB extraction and footnote detection | `uv sync --no-dev --extra rag` |
+| Complete scholarly analysis and OCR libraries | `uv sync --no-dev --extra scholar` |
+| Contributor test and lint tools | `bash setup-uv.sh` |
+
+**Contributors need every extra, not just the dev group.** `--group` adds a
+dependency group; optional dependencies need `--extra` or `--all-extras`, and
+they are not optional in practice: the fast suite collects
+`__tests__/python/test_resolution_renderer.py`, whose module-scope
+`from PIL import Image` needs the scholar extra, so a `--group dev` environment
+fails at collection before marker deselection can skip anything. CI installs
+`--all-extras`, and `bash setup-uv.sh` with no argument now does the same —
+which is why the row above names the script rather than a flag combination that
+has to be kept in step with it by hand.
+
+The end-user rows are unaffected: those tiers are genuinely opt-in.
 
 ---
 

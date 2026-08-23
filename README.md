@@ -15,8 +15,13 @@ For what this project is — and deliberately isn't — see [VISION.md](VISION.m
 
 ```bash
 npm install -g zlibrary-mcp
-cd "$(npm root -g)/zlibrary-mcp" && bash setup-uv.sh   # one-time Python environment setup
+cd "$(npm root -g)/zlibrary-mcp" && bash setup-uv.sh --no-dev   # one-time core setup
 ```
+
+This installs the lightweight core for search, metadata, and downloads. Document
+processing is opt-in: run `uv sync --no-dev --extra rag` for PDF/EPUB extraction, or
+`uv sync --no-dev --extra scholar` for the complete scholarly/OCR pipeline. See
+[Optional Python dependencies](docs/optional-dependencies.md) for the tier details.
 
 Then add the server to your MCP client config (Claude Code `.mcp.json`, Claude Desktop `claude_desktop_config.json`):
 
@@ -235,7 +240,7 @@ Then set up the Python environment inside the installed package (one-time):
 ```bash
 cd "$(npm root -g)/zlibrary-mcp"
 curl -LsSf https://astral.sh/uv/install.sh | sh  # Install UV if needed
-bash setup-uv.sh
+bash setup-uv.sh --no-dev
 ```
 
 The package ships the complete Python bridge (`lib/`, the vendored `zlibrary/`
@@ -259,10 +264,18 @@ git clone https://github.com/rookslog/zlibrary-mcp.git
 cd zlibrary-mcp
 git lfs pull         # Hydrates LFS-tracked test PDFs (don't run `git lfs install`;
                      # it conflicts with the repo's Husky-managed hooks)
-bash setup-uv.sh    # Creates .venv/ and installs Python dependencies
+bash setup-uv.sh    # Creates .venv/ with every tier plus the dev group
 npm install          # Installs Node.js dependencies
 npm run build        # Compiles TypeScript to dist/
 ```
+
+The source bootstrap installs **every optional tier along with the contributor
+tools**, because part of the fast test suite imports scholar-tier modules while
+collecting — a core-only contributor environment cannot run the project's own
+verification. Nothing further is needed to work on the RAG pipeline or to run
+the complete Python suite.
+
+End users want a smaller install: see [Optional Python dependencies](docs/optional-dependencies.md).
 
 **MCP client configuration (stdio transport):**
 
@@ -327,8 +340,10 @@ curl -s -N --max-time 3 http://localhost:8000/sse | head -2
 # data: /message?sessionId=...
 ```
 
-> Alpine caveat: OpenCV has no musl wheels, so X-mark detection is unavailable
-> in the container; everything else works.
+The image includes the `rag` tier, so PDF and EPUB extraction work without an
+additional install step. It does not include the `scholar` tier. In particular,
+OpenCV-backed X-mark detection remains unavailable on Alpine; see [Optional
+Python dependencies](docs/optional-dependencies.md) for the tier boundaries.
 
 **Building from source instead** (adds a `/health` endpoint via compose):
 
@@ -355,6 +370,10 @@ curl http://localhost:8000/health
 ## Output Format (RAG Processing)
 
 The RAG pipeline processes downloaded documents (EPUB, PDF, TXT) into clean text files for use in retrieval-augmented generation workflows.
+
+PDF and EPUB processing require `uv sync --no-dev --extra rag`. Scholarly analysis and OCR
+require `uv sync --no-dev --extra scholar`, which includes the RAG tier. If a required tier is
+missing, the operation returns the exact `uv sync` command to install it.
 
 - **Output location:** Processed text files are saved to `./processed_rag_output/`
 - **File-based output:** Tools return file paths rather than raw text content, avoiding context overflow in AI assistants

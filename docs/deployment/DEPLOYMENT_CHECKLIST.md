@@ -101,8 +101,10 @@ cd zlibrary-mcp
 # Node.js dependencies
 npm install
 
-# Python virtual environment (UV-based)
-bash setup-uv.sh
+# Python virtual environment (UV-based).
+# --deploy adds the rag and scholar tiers, which the document-processing
+# validation later in this checklist needs and which core alone does not carry.
+bash setup-uv.sh --deploy
 ```
 
 ---
@@ -133,15 +135,25 @@ Expected output: TypeScript compiles without errors
 ### 5. Test Installation
 
 ```bash
-# Run unit tests (should pass 140/140)
+# Node suite. Jest comes from `npm install` above, so this works on a
+# deployment as-is.
 npm test
-
-# OR just Python tests
-source venv/bin/activate
-pytest
-
-# Expected: 140 unit tests passing
 ```
+
+The **Python** suite needs pytest, which lives in the PEP 735 development
+group — and `--deploy` deliberately excludes it, because a deployment should
+not carry test and lint tooling. If you want to run it here, install the
+contributor tier instead of the deployment one:
+
+```bash
+bash setup-uv.sh          # contributor tier: dev group and every extra
+uv run pytest -m "not slow and not integration and not performance"
+```
+
+That is a contributor activity performed on a server, not a deployment step.
+The check that actually validates *this* deployment is the document-processing
+run further down: it exercises the installed tiers against a real file, which
+is what a green unit suite on a developer's laptop cannot tell you.
 
 ---
 

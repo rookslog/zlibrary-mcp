@@ -16,7 +16,7 @@
     "postbuild": "node scripts/validate-python-bridge.js",
     "validate": "node scripts/validate-python-bridge.js",
     "audit:release": "node scripts/release-audit.mjs",
-    "doctor": "uv run python scripts/check_upstream.py && node scripts/release-audit.mjs",
+    "doctor": "uv run --no-dev python scripts/check_upstream.py && node scripts/release-audit.mjs",
     "start": "node dist/index.js",
     "test": "node --experimental-vm-modules node_modules/jest/bin/jest.js --coverage --forceExit",
     "test:integration": "node --experimental-vm-modules node_modules/jest/bin/jest.js --testPathPattern 'integration/bridge' --forceExit",

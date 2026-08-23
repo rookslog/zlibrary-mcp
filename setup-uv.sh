@@ -65,17 +65,29 @@ echo ""
 # uv's implicit default-group behavior.
 case "${1:-}" in
     "")
-        SYNC_ARGS=(sync --group dev)
-        SETUP_TIER="core plus contributor development tools"
+        # Contributors run the fast suite, and part of it imports scholar-tier
+        # modules at collection time. Without the extras, `uv run pytest` fails
+        # to collect before a single test runs — so the documented bootstrap
+        # has to produce the environment the documented verification needs
+        # (Codex on #114).
+        SYNC_ARGS=(sync --group dev --all-extras)
+        SETUP_TIER="core, every extra, and contributor development tools"
         ;;
     --no-dev)
         SYNC_ARGS=(sync --no-dev)
         SETUP_TIER="lightweight end-user core"
         ;;
+    --deploy)
+        # Production runs the RAG pipeline; the deployment checklist validates
+        # it by processing a real document. Core alone cannot do that.
+        SYNC_ARGS=(sync --no-dev --extra rag --extra scholar)
+        SETUP_TIER="end-user core plus the rag and scholar tiers"
+        ;;
     *)
-        echo "Usage: $0 [--no-dev]"
-        echo "  no argument  Source/contributor setup with the PEP 735 dev group"
-        echo "  --no-dev     End-user core setup without development tools"
+        echo "Usage: $0 [--no-dev|--deploy]"
+        echo "  no argument  Contributor setup: dev group and every extra"
+        echo "  --no-dev     End-user core, no development tools"
+        echo "  --deploy     End-user core plus rag and scholar, for deployments"
         exit 2
         ;;
 esac

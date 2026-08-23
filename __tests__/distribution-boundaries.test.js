@@ -90,7 +90,13 @@ describe('distribution boundaries', () => {
 
   test('setup keeps end-user core separate from the contributor dev group', () => {
     expect(runSetupUv(['--no-dev'])).toBe('sync --no-dev');
-    expect(runSetupUv([])).toBe('sync --group dev');
+    // Contributors get the dev group AND every extra: part of the fast suite
+    // imports scholar-tier modules at collection time, so a core-only
+    // contributor environment cannot run the verification CONTRIBUTING.md
+    // documents on the very next line (Codex on #114).
+    expect(runSetupUv([])).toBe('sync --group dev --all-extras');
+    // Deployments validate RAG processing, which core alone cannot do.
+    expect(runSetupUv(['--deploy'])).toBe('sync --no-dev --extra rag --extra scholar');
   });
 
   test('packed CI runs the documented core setup and rejects contributor packages', () => {
@@ -130,6 +136,33 @@ describe('distribution boundaries', () => {
     for (const line of thrownLines) {
       expect(line).toMatch(/uv sync --no-dev/);
     }
+  });
+
+  test('every documented setup produces the environment its own steps need', () => {
+    // Codex on #114: three guides invoked a tier that could not run the very
+    // next thing they told the reader to do. A setup script and the document
+    // that calls it have to agree, or the instructions fail on a clean machine
+    // at the step after the one that "worked".
+    const setup = readFileSync(path.join(projectRoot, 'setup-uv.sh'), 'utf8');
+    const contributing = readFileSync(path.join(projectRoot, 'CONTRIBUTING.md'), 'utf8');
+    const deployment = readFileSync(
+      path.join(projectRoot, 'docs', 'deployment', 'DEPLOYMENT_CHECKLIST.md'),
+      'utf8',
+    );
+    const pkg = JSON.parse(
+      readFileSync(path.join(projectRoot, 'package.json'), 'utf8'),
+    );
+
+    // Contributor default must match what the fast suite needs to collect.
+    expect(setup).toContain('sync --group dev --all-extras');
+    expect(contributing).toMatch(/bash setup-uv\.sh\s*$/m);
+
+    // Deployment validates RAG processing, so its tier must carry rag+scholar.
+    expect(setup).toContain('--extra rag --extra scholar');
+    expect(deployment).toContain('bash setup-uv.sh --deploy');
+
+    // The health check is recommended to core installs; it must not sync dev.
+    expect(pkg.scripts.doctor).toContain('uv run --no-dev');
   });
 
   test('end-user guides keep development tools out of core setup', () => {

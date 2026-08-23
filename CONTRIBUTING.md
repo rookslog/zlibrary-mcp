@@ -24,7 +24,10 @@ cd zlibrary-mcp
 # Hydrate LFS-tracked test fixtures (no `git lfs install` needed -- see Prerequisites)
 git lfs pull
 
-# Setup Python environment (creates .venv/ with all dependencies)
+# Setup Python environment: core, every extra, and the dev group.
+# The extras are not optional for contributors — part of the fast suite
+# imports scholar-tier modules at collection time, so a core-only environment
+# fails to collect before any test runs.
 bash setup-uv.sh
 
 # Install Node.js dependencies

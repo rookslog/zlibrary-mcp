@@ -101,8 +101,10 @@ cd zlibrary-mcp
 # Node.js dependencies
 npm install
 
-# Python virtual environment (UV-based)
-bash setup-uv.sh
+# Python virtual environment (UV-based).
+# --deploy adds the rag and scholar tiers, which the document-processing
+# validation later in this checklist needs and which core alone does not carry.
+bash setup-uv.sh --deploy
 ```
 
 ---

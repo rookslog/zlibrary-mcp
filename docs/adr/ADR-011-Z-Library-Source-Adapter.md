@@ -284,8 +284,20 @@ currently unavailable explicit source returns its attributed availability
 reason, for example Z-Library without credentials returns
 `credentials_missing`. A fallback request skips statically incapable adapters
 in routing metadata. It records a supported but unavailable adapter as an
-attributed failed attempt without making a network call, then may continue in
-the supplied order. If every source in an ordered request is skipped as
+attributed failed attempt and may then continue in the supplied order.
+
+The no-network rule applies to **locally knowable** unavailability only —
+absent credentials, a missing optional dependency, a capability the adapter
+does not declare. Those are decidable from configuration and must never cost a
+request. Availability that is *not* locally knowable may cost a **bounded
+probe**: Z-Library learns the current account's quota through
+`EAPIClient.get_profile()`, and host reachability is established by the source
+preflight probe. Forbidding those outright would force an implementation to
+choose between stale state and reclassifying quota and reachability as ordinary
+operation failures — which is the fallback-metadata inconsistency this section
+exists to prevent. What stays forbidden is running the *requested operation*
+against an adapter already known to be unavailable: the probe is allowed, the
+search or download it would have replaced is not. If every source in an ordered request is skipped as
 incapable, the router returns an aggregate `unsupported_operation` with no
 top-level `source` and with the ordered skipped attempts in routing metadata.
 It does not return an empty result or require an invented child failure.
@@ -328,17 +340,33 @@ not a default inside the generic router.
 `SourceType` values (`annas_archive`, `libgen`, or `zlibrary`) and controls
 `auto` only when set. Selector aliases are normalised before validation:
 legacy `annas` becomes `annas_archive`, while canonical values pass unchanged;
-unknown values fail rather than becoming registry keys. Until an operator sets
-the new order, the router
-normalises the legacy `BOOK_SOURCE_DEFAULT` and
-`BOOK_SOURCE_FALLBACK_ENABLED` scalars into an Anna's/LibGen-only order: a
-concrete legacy default starts the order and `auto`/unset preserves the current
-key-dependent primary. Legacy fallback is one-way: when Anna's Archive is the
-primary and fallback is enabled, LibGen is appended; LibGen never implicitly
-falls through to Anna's Archive. Therefore an unkeyed `auto`/unset default
-normalises to `[libgen]` even when fallback is enabled, while a keyed default
-normalises to `[annas_archive, libgen]` when fallback is enabled. An operator may opt
-into another order only through `BOOK_SOURCE_ORDER`. Z-Library is not added to
+unknown values fail rather than becoming registry keys. 
+
+**`BOOK_SOURCE_DEFAULT` is currently inert, and this migration must not quietly
+activate it.** `SourceRouter._resolve_source` never reads
+`config.default_source`; it resolves an omitted or `auto` request from
+`has_annas_key` alone. So an operator who set `BOOK_SOURCE_DEFAULT=annas`
+without a key is being routed to LibGen today, and one who set `libgen` with a
+key is being routed to Anna's first. "Normalising the legacy scalar into an
+order" would change both, under a label that says compatibility — and one of
+those changes is worse than cosmetic, since it would select Anna's key-free
+search for an operator whose only supported Anna's acquisition path requires
+the key they do not have.
+
+The migration therefore preserves `auto` exactly as it behaves now:
+
+- **Unset or `auto`, no key** → `[libgen]`.
+- **Unset or `auto`, key present** → `[annas_archive, libgen]` when fallback is
+  enabled, `[annas_archive]` when it is not.
+- **`BOOK_SOURCE_DEFAULT` set to anything** → *ignored for ordering*, exactly as
+  today, and logged once at startup as inert with a pointer to
+  `BOOK_SOURCE_ORDER`. Silence would leave an operator believing a setting
+  works; honouring it would change routing under their feet.
+
+Legacy fallback stays one-way: when Anna's Archive is the primary and fallback
+is enabled, LibGen is appended; LibGen never implicitly falls through to Anna's
+Archive. `BOOK_SOURCE_ORDER` is the single opt-in way to choose an order, and
+adopting it is what makes a previously inert preference take effect. Z-Library is not added to
 the derived legacy order merely by registration; its named compatibility tools
 remain explicit. Invalid legacy or new order values fail configuration
 validation before a network call. Contract tests cover the normaliser for
@@ -577,9 +605,18 @@ until parity is demonstrated.
   durable file paths plus nested provenance. No test may introduce a raw-ID
   download path.
 - Bridge tests assert structured error envelopes and stderr-only diagnostics.
-  Sentinel credentials, queries, raw payloads, full `bookDetails`, and
-  secret-bearing URLs must be absent from captured stderr as well as stdout.
+  Sentinel credentials, raw payloads, full `bookDetails`, and secret-bearing
+  URLs must be absent from captured stderr **and** stdout.
   `__tests__/stdio-purity.test.js` remains unchanged.
+- **The query is exempt on stdout, and only there.** The bridge deliberately
+  serialises it into successful responses — `retrieved_from_url` carries
+  `f"EAPI search: {query}"` for general and full-text search, and advanced
+  search returns a `query` field. Those are response contract, not leakage, and
+  a blanket "no queries in stdout" assertion would either fail the migration
+  tests or force an undocumented protocol break under a privacy label. The
+  privacy defect this work addresses was diagnostic query *logging*, so the
+  assertion is scoped to stderr. Removing the query from the public response is
+  a separate decision, and this ADR does not make it.
 - Node tests assert all registered handlers preserve #106 cancellation and
   that the README/tool registry check still reports 13 tools.
 - #103 packaging tests run a core-only environment and prove source search and

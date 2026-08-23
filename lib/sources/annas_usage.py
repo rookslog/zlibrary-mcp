@@ -33,6 +33,27 @@ from typing import Optional, Tuple
 logger = logging.getLogger(__name__)
 
 
+def _process_start_time(pid: int) -> Optional[float]:
+    """Process start time in seconds since boot, or None if unavailable.
+
+    Linux only, from `/proc/<pid>/stat` field 22. Used to tell a live lock
+    owner from an unrelated process that happens to have inherited its PID
+    after a reboot — without it, a reused PID makes a stale lock look live
+    forever and no download can ever take the browser again (Codex on #150).
+    """
+    try:
+        with open(f"/proc/{pid}/stat", "rb") as handle:
+            fields = handle.read().rsplit(b")", 1)[1].split()
+        ticks = float(fields[19])  # field 22, zero-indexed after the comm split
+    except (OSError, IndexError, ValueError):
+        return None
+    try:
+        hertz = os.sysconf("SC_CLK_TCK") or 100
+    except (OSError, ValueError):
+        hertz = 100
+    return ticks / hertz
+
+
 def _process_exists(pid: int) -> bool:
     """Whether a process id is live, without signalling it.
 
@@ -82,6 +103,21 @@ def _process_exists(pid: int) -> bool:
 _LOCK_TIMEOUT = 5.0
 _LOCK_POLL = 0.02
 _STALE_LOCK_AGE = 30.0
+
+# How many multiples of `stale_after` a PID-alive lock is trusted for on
+# platforms that cannot report process start times. Generous, because a live
+# holder really can hold for a whole download; finite, because a PID reused
+# after a reboot must not wedge the browser forever.
+_PID_TRUST_CEILING = 8
+
+
+def _system_uptime() -> Optional[float]:
+    """Seconds since boot, or None where unavailable."""
+    try:
+        with open("/proc/uptime", "rb") as handle:
+            return float(handle.read().split()[0])
+    except (OSError, IndexError, ValueError):
+        return None
 
 
 class UsageCounterUnavailableError(RuntimeError):
@@ -134,7 +170,38 @@ class CrossProcessLock:
             # interrupted. Fall back to age, which is what this class did
             # before liveness existed.
             return False
-        return _process_exists(pid)
+        if not _process_exists(pid):
+            return False
+
+        # A live PID is not proof of ownership. After a reboot or an unclean
+        # shutdown the directory survives and its PID can belong to an
+        # unrelated long-lived process, which would make the lock look live
+        # forever (Codex on #150). Where the platform can tell us, a process
+        # that started AFTER the lock was created cannot be its owner.
+        started = _process_start_time(pid)
+        if started is not None:
+            try:
+                lock_age = time.time() - self.path.stat().st_mtime
+            except OSError:
+                return True
+            uptime = _system_uptime()
+            if uptime is not None and (uptime - started) < lock_age:
+                logger.warning(
+                    "Lock at %s names PID %d, but that process is younger than "
+                    "the lock — treating it as stale rather than live",
+                    self.path,
+                    pid,
+                )
+                return False
+            return True
+
+        # No start time available (non-Linux). Trust the PID, but not forever:
+        # cap it so a reused PID cannot wedge the browser permanently.
+        try:
+            lock_age = time.time() - self.path.stat().st_mtime
+        except OSError:
+            return True
+        return lock_age < (self.stale_after * _PID_TRUST_CEILING)
 
     def acquire(self, timeout: float) -> bool:
         deadline = time.monotonic() + timeout
@@ -150,6 +217,7 @@ class CrossProcessLock:
                     )
                 return True
             except FileExistsError:
+                observed_owner = self._owner_pid()
                 if self._owner_is_alive():
                     # Held by a running process. Wait however long the caller
                     # allows; a live holder is never stale, whatever its age.
@@ -162,13 +230,18 @@ class CrossProcessLock:
                 except OSError:
                     age = 0.0
                 if age > self.stale_after:
+                    # Ownership-aware: two processes can both see the same
+                    # stale lock, and if the first reclaims and recreates it,
+                    # a blind `release()` from the second would delete the NEW
+                    # owner's lock and hand the browser to two holders at once
+                    # (Codex on #150). Only remove what we actually observed.
                     logger.warning(
                         "Reclaiming a browser lock at %s: owner is gone and the "
                         "lock is %.0fs old",
                         self.path,
                         age,
                     )
-                    self.release()
+                    self._release_if_unchanged(observed_owner)
                     continue
                 if time.monotonic() >= deadline:
                     return False
@@ -186,6 +259,18 @@ class CrossProcessLock:
                     "Cannot create the browser lock at %s: %s", self.path, exc
                 )
                 return False
+
+    def _release_if_unchanged(self, observed_owner: Optional[int]) -> None:
+        """Remove the lock only if it still names the owner we saw.
+
+        Between observing a stale lock and reclaiming it, another process may
+        have reclaimed and re-taken it. Removing that one would leave two
+        holders believing they own the browser.
+        """
+        if self._owner_pid() != observed_owner:
+            logger.info("Not reclaiming %s: another process took it first", self.path)
+            return
+        self.release()
 
     def release(self) -> None:
         try:
@@ -262,11 +347,23 @@ class DailyUsage:
                 int(raw["spent"]),
                 float(raw.get("next_allowed", 0.0)),
             )
-        except (OSError, ValueError, KeyError, TypeError):
-            # A corrupt or absent file starts a fresh window. It must not raise
-            # — an unreadable counter that took the whole route down would make
-            # the politeness layer a liability rather than a guard.
+        except FileNotFoundError:
+            # No file yet: a genuinely fresh window, which is the ordinary
+            # first-run case.
             return time.time(), 0, 0.0
+        except (OSError, ValueError, KeyError, TypeError) as exc:
+            # A file that EXISTS and cannot be read is a different situation
+            # entirely. Resetting `spent` to zero there hands out a fresh
+            # thirty requests, and the next write replaces the real count — so
+            # a corrupt or unreadable state file silently raised the ceiling
+            # instead of enforcing it (Codex on #150). Refuse, as with an
+            # unlockable counter.
+            raise UsageCounterUnavailableError(
+                f"the Anna's daily-usage counter at {self.path} exists but "
+                f"cannot be read ({type(exc).__name__}: {exc}). Refusing rather "
+                f"than starting a fresh allowance on top of an unknown count. "
+                f"Delete the file to reset the day deliberately."
+            ) from None
 
     def _write(self, window_started: float, spent: int, next_allowed: float) -> None:
         temporary = self.path.with_suffix(self.path.suffix + ".tmp")

@@ -122,6 +122,18 @@ class ProbeResult:
         return "FAIL" if self.required else "WARN"
 
 
+def _looks_like_html(sample: bytes) -> bool:
+    """Whether a body opens like an HTML document rather than a file.
+
+    The same question `_download_url_to_file` asks before accepting bytes: a
+    CDN soft block, login page or interstitial arrives with HTTP 200 and an
+    HTML body, and production refuses it. A status-only check would have
+    reported the handoff healthy on exactly that response.
+    """
+    head = sample[:512].lstrip().lower()
+    return head.startswith(b"<!doctype html") or head.startswith(b"<html")
+
+
 def _annas_block_detail(resp: httpx.Response) -> Optional[str]:
     """A block report for Anna's, naming Anna's.
 
@@ -130,10 +142,29 @@ def _annas_block_detail(resp: httpx.Response) -> Optional[str]:
     an irrelevant remedy for an Anna's wall — actively misleading in the exact
     anti-bot scenario this probe exists to distinguish (Codex on #150).
     """
+    from lib.sources.annas_browser import _REFUSAL_STATUSES  # noqa: PLC0415
+
     body_is_diamwall = "diamwall" in resp.text.lower()
-    if not body_is_diamwall and resp.status_code not in WALLED_STATUS_CODES:
+    # Anna's refusal statuses, not Z-Library's wall statuses. Reusing
+    # WALLED_STATUS_CODES (307/403/513/517) missed a bare 429 or 503, so
+    # throttling fell through to the missing-link branch and was reported as
+    # DOM drift — sending a maintainer to look for a layout change while Anna's
+    # was simply saying slow down (Codex on #150). `_REFUSAL_STATUSES` is what
+    # the production route already uses for exactly this question.
+    throttled = resp.status_code in _REFUSAL_STATUSES
+    if (
+        not body_is_diamwall
+        and not throttled
+        and resp.status_code not in WALLED_STATUS_CODES
+    ):
         return None
-    wall = "DiamWall anti-bot wall" if body_is_diamwall else "network-level block"
+    wall = (
+        "DiamWall anti-bot wall"
+        if body_is_diamwall
+        else "throttled or refused"
+        if throttled
+        else "network-level block"
+    )
     host = urlsplit(ANNAS_BASE_URL).hostname or "annas-archive"
     return (
         f"{wall} (HTTP {resp.status_code}) — {host} refuses this network's "
@@ -326,10 +357,14 @@ async def probe_annas_download_dom(client: httpx.AsyncClient) -> ProbeResult:
         _classify_page,
     )
     from lib.sources.annas_usage import (  # noqa: PLC0415
+        CrossProcessLock,
         DailyUsage,
         UsageCounterUnavailableError,
     )
-    from lib.sources.config import get_source_config  # noqa: PLC0415
+    from lib.sources.config import (  # noqa: PLC0415
+        DEFAULT_BROWSER_USER_AGENT,
+        get_source_config,
+    )
 
     # This probe is real traffic to Anna's free route, so it is metered by the
     # same counter the production path uses. Uncounted health checks would let
@@ -338,192 +373,263 @@ async def probe_annas_download_dom(client: httpx.AsyncClient) -> ProbeResult:
     # politeness layer would cover the feature and not the tool that exercises
     # it (Codex on #150).
     browser_config = get_source_config()
-    usage = DailyUsage(
-        os.path.join(
-            browser_config.annas_browser_profile_dir, "..", "annas-browser-usage.json"
-        )
-    )
-
-    async def metered() -> Optional[ProbeResult]:
-        """Take a slot, or return the row explaining why the probe did not run."""
-        try:
-            allowed, _remaining, wait = usage.spend(
-                browser_config.annas_browser_daily_limit,
-                browser_config.annas_browser_min_interval,
-            )
-        except UsageCounterUnavailableError as exc:
-            return ProbeResult(
-                name="annas-archive:download-dom",
-                ok=False,
-                detail=f"not probed: {exc}",
-                required=False,
-            )
-        if not allowed:
-            return ProbeResult(
-                name="annas-archive:download-dom",
-                ok=False,
-                detail=(
-                    "not probed: today's Anna's browser-route budget is spent. "
-                    "The health check is metered by the same counter as the "
-                    "route it checks (#144), so it yields to real downloads "
-                    "rather than competing with them."
-                ),
-                required=False,
-            )
-        if wait > 0:
-            await asyncio.sleep(wait)
-        return None
-
-    skipped = await metered()
-    if skipped is not None:
-        return skipped
-
-    url = f"{ANNAS_BASE_URL}/md5/{ANNAS_DOM_CANARY_MD5}"
-    try:
-        resp = await client.get(url)
-    except Exception as exc:  # noqa: BLE001
+    profile = browser_config.annas_browser_profile_dir
+    usage = DailyUsage(os.path.join(profile, "..", "annas-browser-usage.json"))
+    # The same lock the browser route takes. Without it the probe could issue
+    # requests while a download already had one in flight, so `npm run doctor`
+    # would break the one-request-at-a-time guarantee it exists to report on
+    # (Codex on #150). A short wait: a health check should yield to a real
+    # download rather than queue behind it for twenty-five minutes.
+    browser_lock = CrossProcessLock(os.path.join(profile, "..", "annas-browser.lock"))
+    if not await asyncio.to_thread(browser_lock.acquire, 5.0):
         return ProbeResult(
             name="annas-archive:download-dom",
             ok=False,
-            detail=f"{type(exc).__name__}: {exc}",
-            required=False,
-        )
-
-    walled = _annas_block_detail(resp)
-    body = resp.text
-    # The production classifier, not a copy of some of its markers: a partial
-    # copy reported a 200 challenge page as DOM drift, sending the maintainer
-    # to look for a layout change that is not there (Codex on #150).
-    challenged = _classify_page(body) == "challenge"
-    if walled or challenged:
-        return ProbeResult(
-            name="annas-archive:download-dom",
-            ok=False,
-            blocked=True,
             detail=(
-                "browser verification answered instead of the book page, so the "
-                "partner-link DOM shape is UNVERIFIED from this network — not "
-                "evidence that it drifted. The browser route (#143) clears this "
-                "wall with a real browser; this probe deliberately does not. "
-                + (walled or "challenge interstitial served")
+                "not probed: a browser download holds the Anna's session. The "
+                "health check yields rather than competing with real traffic."
             ),
             required=False,
         )
 
-    partner_links = AnnasBrowserSession._slow_download_paths(body, ANNAS_DOM_CANARY_MD5)
-    if partner_links:
-        # Stopping here would leave the second half of the flow unmonitored: a
-        # partner-page redesign breaks every download while this row stays
-        # green (Codex on #150). One extra request, against the first server
-        # Anna's lists, through the same extractor production uses.
+    async def walk() -> ProbeResult:
+        async def metered() -> Optional[ProbeResult]:
+            """Take a slot, or return the row explaining why the probe did not run."""
+            try:
+                allowed, _remaining, wait = usage.spend(
+                    browser_config.annas_browser_daily_limit,
+                    browser_config.annas_browser_min_interval,
+                )
+            except UsageCounterUnavailableError as exc:
+                return ProbeResult(
+                    name="annas-archive:download-dom",
+                    ok=False,
+                    detail=f"not probed: {exc}",
+                    required=False,
+                )
+            if not allowed:
+                return ProbeResult(
+                    name="annas-archive:download-dom",
+                    ok=False,
+                    detail=(
+                        "not probed: today's Anna's browser-route budget is spent. "
+                        "The health check is metered by the same counter as the "
+                        "route it checks (#144), so it yields to real downloads "
+                        "rather than competing with them."
+                    ),
+                    required=False,
+                )
+            if wait > 0:
+                await asyncio.sleep(wait)
+            return None
+
         skipped = await metered()
         if skipped is not None:
             return skipped
 
+        url = f"{ANNAS_BASE_URL}/md5/{ANNAS_DOM_CANARY_MD5}"
         try:
-            partner = await client.get(f"{ANNAS_BASE_URL}{partner_links[0]}")
+            resp = await client.get(url)
         except Exception as exc:  # noqa: BLE001
             return ProbeResult(
                 name="annas-archive:download-dom",
                 ok=False,
-                detail=(
-                    f"book page intact ({len(partner_links)} partner links) but "
-                    f"{partner_links[0]} could not be fetched: "
-                    f"{type(exc).__name__}: {exc}"
-                ),
+                detail=f"{type(exc).__name__}: {exc}",
                 required=False,
             )
 
-        partner_body = partner.text
-        partner_walled = (
-            _annas_block_detail(partner) or _classify_page(partner_body) == "challenge"
-        )
-        if partner_walled:
+        walled = _annas_block_detail(resp)
+        body = resp.text
+        # The production classifier, not a copy of some of its markers: a partial
+        # copy reported a 200 challenge page as DOM drift, sending the maintainer
+        # to look for a layout change that is not there (Codex on #150).
+        challenged = _classify_page(body) == "challenge"
+        if walled or challenged:
+            # Production penalises on a wall; a probe that does not would let the
+            # next doctor run or download hit Anna's again after only the spacing
+            # interval, and the advertised five-minute backoff would apply to the
+            # feature but not to the tool exercising it (Codex on #150).
+            usage.penalise(browser_config.annas_browser_backoff_seconds)
             return ProbeResult(
                 name="annas-archive:download-dom",
                 ok=False,
                 blocked=True,
                 detail=(
-                    f"book page intact ({len(partner_links)} partner links) but "
-                    f"the partner page answered with browser verification, so "
-                    f"payload-link extraction is UNVERIFIED from this network — "
-                    f"not evidence that it drifted"
+                    "browser verification answered instead of the book page, so the "
+                    "partner-link DOM shape is UNVERIFIED from this network — not "
+                    "evidence that it drifted. The browser route (#143) clears this "
+                    "wall with a real browser; this probe deliberately does not. "
+                    + (walled or "challenge interstitial served")
                 ),
                 required=False,
             )
 
-        annas_host = (urlsplit(ANNAS_BASE_URL).hostname or "").lower()
-        payload = AnnasBrowserSession._direct_file_url(partner_body, annas_host)
-        if not payload:
+        partner_links = AnnasBrowserSession._slow_download_paths(
+            body, ANNAS_DOM_CANARY_MD5
+        )
+        if partner_links:
+            # Stopping here would leave the second half of the flow unmonitored: a
+            # partner-page redesign breaks every download while this row stays
+            # green (Codex on #150). One extra request, against the first server
+            # Anna's lists, through the same extractor production uses.
+            skipped = await metered()
+            if skipped is not None:
+                return skipped
+
+            try:
+                partner = await client.get(f"{ANNAS_BASE_URL}{partner_links[0]}")
+            except Exception as exc:  # noqa: BLE001
+                return ProbeResult(
+                    name="annas-archive:download-dom",
+                    ok=False,
+                    detail=(
+                        f"book page intact ({len(partner_links)} partner links) but "
+                        f"{partner_links[0]} could not be fetched: "
+                        f"{type(exc).__name__}: {exc}"
+                    ),
+                    required=False,
+                )
+
+            partner_body = partner.text
+            partner_walled = (
+                _annas_block_detail(partner)
+                or _classify_page(partner_body) == "challenge"
+            )
+            if partner_walled:
+                return ProbeResult(
+                    name="annas-archive:download-dom",
+                    ok=False,
+                    blocked=True,
+                    detail=(
+                        f"book page intact ({len(partner_links)} partner links) but "
+                        f"the partner page answered with browser verification, so "
+                        f"payload-link extraction is UNVERIFIED from this network — "
+                        f"not evidence that it drifted"
+                    ),
+                    required=False,
+                )
+
+            annas_host = (urlsplit(ANNAS_BASE_URL).hostname or "").lower()
+            payload = AnnasBrowserSession._direct_file_url(partner_body, annas_host)
+            if not payload:
+                return ProbeResult(
+                    name="annas-archive:download-dom",
+                    ok=False,
+                    detail=(
+                        f"book page intact ({len(partner_links)} partner links) but "
+                        f"{partner_links[0]} yielded NO off-site payload link "
+                        f"(HTTP {partner.status_code}, {len(partner_body)} bytes) — "
+                        f"partner-page drift, and every browser download fails"
+                    ),
+                    required=False,
+                )
+
+            # Extraction is not the end of the flow — the browser hands the URL to
+            # httpx, and that handoff is the part this route depends on. A signed
+            # URL that starts requiring browser cookies or a referrer would still
+            # extract cleanly while every production transfer failed (Codex on
+            # #150). Four kilobytes, from the CDN rather than from Anna's, so it
+            # costs Anna's nothing and is not metered.
+            payload_host = urlsplit(payload).hostname or "?"
+            try:
+                # Streamed and stopped after the first chunk. A plain `get()`
+                # buffers the WHOLE file when a CDN ignores `Range`, so a
+                # "four-kilobyte probe" could pull a 30MB book on every doctor
+                # run (Codex on #150).
+                #
+                # With production's User-Agent, too: the shared doctor client
+                # identifies as `zlibrary-mcp-upstream-check`, so a CDN that
+                # admits the browser UA and blocks that one would have this
+                # probe report the handoff broken while
+                # `_download_url_to_file` succeeded.
+                async with client.stream(
+                    "GET",
+                    payload,
+                    headers={
+                        "Range": "bytes=0-4095",
+                        "User-Agent": DEFAULT_BROWSER_USER_AGENT,
+                    },
+                ) as response:
+                    probe_status = response.status_code
+                    sample = b""
+                    async for chunk in response.aiter_bytes(4096):
+                        sample = chunk
+                        break
+            except Exception as exc:  # noqa: BLE001
+                return ProbeResult(
+                    name="annas-archive:download-dom",
+                    ok=False,
+                    detail=(
+                        f"payload link extracted from {partner_links[0]} but "
+                        f"{payload_host} could not be reached: "
+                        f"{type(exc).__name__}: {exc} — the browser-to-httpx "
+                        f"handoff is what every download depends on"
+                    ),
+                    required=False,
+                )
+
+            if probe_status not in (200, 206):
+                return ProbeResult(
+                    name="annas-archive:download-dom",
+                    ok=False,
+                    detail=(
+                        f"payload link extracted but {payload_host} answered HTTP "
+                        f"{probe_status} to a plain ranged GET — the URL no "
+                        f"longer works outside the browser, so extraction being "
+                        f"healthy says nothing about downloads"
+                    ),
+                    required=False,
+                )
+
+            # Status alone is not the production check. `_download_url_to_file`
+            # rejects an HTML body served at HTTP 200 — a soft block, a login
+            # page, an interstitial — and verifies content md5. A probe that
+            # stopped at the status would report the handoff healthy on exactly
+            # the response production refuses (Codex on #150).
+            if _looks_like_html(sample):
+                return ProbeResult(
+                    name="annas-archive:download-dom",
+                    ok=False,
+                    detail=(
+                        f"payload link extracted and {payload_host} answered "
+                        f"HTTP {probe_status}, but the body is HTML rather than "
+                        f"file bytes — a soft block or interstitial, which "
+                        f"production rejects. Extraction is healthy and the "
+                        f"transfer is not"
+                    ),
+                    required=False,
+                )
+
             return ProbeResult(
                 name="annas-archive:download-dom",
-                ok=False,
+                ok=True,
                 detail=(
-                    f"book page intact ({len(partner_links)} partner links) but "
-                    f"{partner_links[0]} yielded NO off-site payload link "
-                    f"(HTTP {partner.status_code}, {len(partner_body)} bytes) — "
-                    f"partner-page drift, and every browser download fails"
+                    f"{len(partner_links)} partner-server link(s) on the canary book "
+                    f"page; {partner_links[0]} yielded a payload link on "
+                    f"{payload_host}, which served HTTP {probe_status} and "
+                    f"{len(sample)} bytes of non-HTML body to plain httpx"
                 ),
                 required=False,
             )
-
-        # Extraction is not the end of the flow — the browser hands the URL to
-        # httpx, and that handoff is the part this route depends on. A signed
-        # URL that starts requiring browser cookies or a referrer would still
-        # extract cleanly while every production transfer failed (Codex on
-        # #150). Four kilobytes, from the CDN rather than from Anna's, so it
-        # costs Anna's nothing and is not metered.
-        payload_host = urlsplit(payload).hostname or "?"
-        try:
-            probe = await client.get(payload, headers={"Range": "bytes=0-4095"})
-        except Exception as exc:  # noqa: BLE001
-            return ProbeResult(
-                name="annas-archive:download-dom",
-                ok=False,
-                detail=(
-                    f"payload link extracted from {partner_links[0]} but "
-                    f"{payload_host} could not be reached: "
-                    f"{type(exc).__name__}: {exc} — the browser-to-httpx "
-                    f"handoff is what every download depends on"
-                ),
-                required=False,
-            )
-
-        if probe.status_code not in (200, 206):
-            return ProbeResult(
-                name="annas-archive:download-dom",
-                ok=False,
-                detail=(
-                    f"payload link extracted but {payload_host} answered HTTP "
-                    f"{probe.status_code} to a plain ranged GET — the URL no "
-                    f"longer works outside the browser, so extraction being "
-                    f"healthy says nothing about downloads"
-                ),
-                required=False,
-            )
-
         return ProbeResult(
             name="annas-archive:download-dom",
-            ok=True,
+            ok=False,
             detail=(
-                f"{len(partner_links)} partner-server link(s) on the canary book "
-                f"page; {partner_links[0]} yielded a payload link on "
-                f"{payload_host}, which served HTTP {probe.status_code} "
-                f"({len(probe.content)} bytes) to plain httpx"
+                f"book page loaded (HTTP {resp.status_code}, {len(body)} bytes) with "
+                f"NO /slow_download/<md5>/<n>/<n> links — the browser download route "
+                f"extracts those, so this is DOM drift and every #143 download will "
+                f"fail while search keeps working"
             ),
             required=False,
         )
-    return ProbeResult(
-        name="annas-archive:download-dom",
-        ok=False,
-        detail=(
-            f"book page loaded (HTTP {resp.status_code}, {len(body)} bytes) with "
-            f"NO /slow_download/<md5>/<n>/<n> links — the browser download route "
-            f"extracts those, so this is DOM drift and every #143 download will "
-            f"fail while search keeps working"
-        ),
-        required=False,
-    )
+
+    try:
+        return await walk()
+    finally:
+        # Every return path above is inside `walk()`, so the lock is released
+        # once, here, whatever happens — including the several early returns
+        # that report a wall or drift.
+        browser_lock.release()
 
 
 # Headroom over the adapter's own worst case. The canary's deadline exists to

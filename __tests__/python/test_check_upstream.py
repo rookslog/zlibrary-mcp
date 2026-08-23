@@ -1181,3 +1181,64 @@ class TestAnnasProbeDiagnosticsNameAnnas:
             "a challenge marker production recognises must not read as drift"
         )
         assert "UNVERIFIED" in result.detail
+
+
+class TestTheProbeReusesProductionRatherThanRedefiningIt:
+    """Six round-7 findings on #150 were one mistake: the probe re-derived
+    every property the production route already has — backoff, serialisation,
+    refusal statuses, body validation, user agent, bounded reads — and got each
+    of them wrong once. These assert the reuse rather than the behaviour, so a
+    future edit that forks the logic again fails here.
+    """
+
+    def test_the_probe_uses_productions_refusal_statuses(self, check_upstream):
+        import inspect
+
+        source = inspect.getsource(check_upstream._annas_block_detail)
+
+        assert "_REFUSAL_STATUSES" in source, (
+            "reusing Z-Library's WALLED_STATUS_CODES missed a bare 429/503, so "
+            "Anna's throttling was reported as DOM drift"
+        )
+
+    def test_the_probe_takes_the_production_browser_lock(self, check_upstream):
+        import inspect
+
+        source = inspect.getsource(check_upstream.probe_annas_download_dom)
+
+        assert "CrossProcessLock" in source
+        assert "browser_lock.release()" in source, (
+            "every early return sits inside walk(); the release has to be in "
+            "the outer finally or a blocked probe wedges the browser"
+        )
+
+    def test_the_probe_backs_off_on_a_wall(self, check_upstream):
+        import inspect
+
+        source = inspect.getsource(check_upstream.probe_annas_download_dom)
+
+        assert "usage.penalise(" in source, (
+            "production penalises on a wall; a probe that does not lets the "
+            "next request hit Anna's after only the spacing interval"
+        )
+
+    def test_the_payload_probe_is_streamed_and_bounded(self, check_upstream):
+        import inspect
+
+        source = inspect.getsource(check_upstream.probe_annas_download_dom)
+
+        assert "client.stream(" in source, (
+            "a plain get() buffers the whole file when a CDN ignores Range — "
+            "a 4KB probe that can pull 30MB is not a 4KB probe"
+        )
+        assert "DEFAULT_BROWSER_USER_AGENT" in source, (
+            "the doctor client identifies as zlibrary-mcp-upstream-check; a CDN "
+            "that blocks it would report a healthy handoff as broken"
+        )
+
+    def test_an_html_body_at_200_is_not_a_healthy_handoff(self, check_upstream):
+        """Production rejects an HTML body; the probe must ask the same question."""
+        assert check_upstream._looks_like_html(b"<!DOCTYPE html><html>...")
+        assert check_upstream._looks_like_html(b"  \n<html><body>login</body>")
+        assert not check_upstream._looks_like_html(b"%PDF-1.5\n%\xe2\xe3")
+        assert not check_upstream._looks_like_html(b"The_Feynman\x00\x00BOOKMOBI")

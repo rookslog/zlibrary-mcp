@@ -155,6 +155,25 @@ class SourceConfig:
         return bool(self.annas_secret_key)
 
 
+def _auto_search_provider_count() -> int:
+    """How many providers an `auto` search can attempt.
+
+    Read from `SourceRouter`'s own candidate list so the budget arithmetic
+    cannot fall behind a newly registered source. Falls back to the historical
+    two (Anna's and LibGen) if the router cannot be imported, which keeps this
+    module usable in a partial environment rather than making a budget helper
+    the thing that breaks it.
+    """
+    try:
+        from .router import SourceRouter  # noqa: PLC0415
+
+        router = SourceRouter.__new__(SourceRouter)
+        router.config = SourceConfig(fallback_enabled=True)
+        return len(router._search_candidates("auto"))
+    except Exception:  # noqa: BLE001 - a budget helper must not break imports
+        return 2
+
+
 def worst_case_search_seconds(config: "SourceConfig") -> float:
     """Worst-case wall clock for an `auto` search, from the live budgets.
 
@@ -166,8 +185,15 @@ def worst_case_search_seconds(config: "SourceConfig") -> float:
     a failing build instead of a subprocess kill in production.
     """
     per_attempt = (2 * config.preflight_timeout) + config.total_timeout
-    # LibGen's capped mirror walk, plus Anna's on top for `auto`.
-    return per_attempt * (MAX_LIBGEN_MIRROR_ATTEMPTS + 1)
+    # Derived from the router rather than counted by hand: when a provider joins
+    # the `auto` walk — Z-Library, under #40 — the sum has to move with it, and
+    # a literal `+ 1` here would keep reporting 220s while the real worst case
+    # became 275s (Codex on #153). The docstring promises this tracks the
+    # provider count; it now does.
+    providers = _auto_search_provider_count()
+    # LibGen contributes its capped mirror walk; every other provider one
+    # attempt each.
+    return per_attempt * (MAX_LIBGEN_MIRROR_ATTEMPTS + (providers - 1))
 
 
 def _positive_float(name: str, default: float) -> float:

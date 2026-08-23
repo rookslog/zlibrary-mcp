@@ -380,28 +380,40 @@ arithmetic: one provider attempt costs at worst `2 x preflight + total` = 55s,
 LibGen walks three mirrors, and today's worst case is 4 attempts = 220s against
 a 240-second `PYTHON_BRIDGE_TIMEOUT` — a 20-second margin.
 
-**LibGen does not always walk three mirrors.** `_mirror_candidates()` returns
-`[configured] + [m for m in ("li", "vg", "la") if m != configured]`, so a
-supported custom `LIBGEN_MIRROR` such as `rs` yields **four**. An order of
-`[zlibrary, annas_archive, libgen]` is therefore up to **six** attempts = 330s,
-not five — Node kills a legitimate walk 90 seconds before the router returns
-its structured result, and the operator sees a subprocess timeout instead of
-the attributed failures the whole error taxonomy exists to produce.
+**LibGen's mirror walk is capped, and that cap is load-bearing here.**
+`_mirror_candidates()` used to return `[configured] + [li, vg, la minus
+configured]`, so a supported custom `LIBGEN_MIRROR` such as `rs` yielded
+**four** — and a three-source order reached six attempts = 330s against a 240s
+ceiling. #153 capped the walk at `MAX_LIBGEN_MIRROR_ATTEMPTS`, which is what
+makes LibGen's contribution a constant rather than a function of operator
+configuration.
 
-The bound must be computed from the registry and the *configuration*, not from
-a constant: every source in the order, times that source's own worst-case
-attempt count, where LibGen's depends on whether `LIBGEN_MIRROR` names one of
-the fallbacks. Any arithmetic here that hardcodes three mirrors is wrong for a
-configuration this project supports.
+The bound must still be **computed, not written down**: every source in the
+order, times that source's own worst-case attempt count.
+`worst_case_search_seconds()` does this today for `auto`, deriving the provider
+count from `SourceRouter._search_candidates` and LibGen's from the cap, with a
+test comparing the result to the Node budget read out of `python-runner.ts`.
+The ordered walk extends the same computation over `BOOK_SOURCE_ORDER` rather
+than introducing a second one.
 
-**This is not only a future problem.** The same mistake is live on `master`
-today: `config.py`'s own documented sum assumes three mirrors, so an operator
-who sets `LIBGEN_MIRROR=rs` already reaches 5 attempts = 275s against the 240s
-bridge timeout on a plain `auto` search. Tracked as #152. A per-provider budget
-re-breaks the sum every time a source or mirror is added — the comment in
-`config.py` has now been wrong twice for that reason — which is the argument
-for sharing one budget across the ordered walk rather than recomputing a
-constant a third time.
+What must not happen is a **new** provider or mirror source arriving with a
+hand-counted total beside it. LibGen's cap removes one variable; it does not
+make the sum a constant, because the number of sources in an order is still
+operator input.
+
+**This was live on `master`, not only a future problem.** An operator who set
+`LIBGEN_MIRROR=rs` already reached 5 attempts = 275s against the 240s bridge
+timeout on a plain `auto` search. Filed as #152 and fixed in #153 by the cap
+plus a computed, tested bound.
+
+That fix makes the current numbers true; it does not remove the underlying
+fragility. A **per-provider** budget means the total is a function of how many
+sources and mirrors exist, so it needs re-deriving every time either grows —
+and `config.py`'s comment was wrong twice for exactly that reason before the
+computation replaced it. Sharing one budget across the ordered walk is the
+durable answer and remains a precondition of `BOOK_SOURCE_ORDER`: no cap on one
+provider's mirrors can bound a walk whose length the operator chooses. #152
+stays open for it.
 
 This is a precondition, not a follow-up. Before three-source orders become
 valid, the migration must either share one total budget across the ordered walk

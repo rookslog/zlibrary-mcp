@@ -525,17 +525,42 @@ class TestTheDocumentedTimeoutMarginIsEnforced:
     A comment cannot fail. These tests can.
     """
 
-    # Kept in step with src/lib/python-runner.ts::DEFAULT_BRIDGE_TIMEOUT_MS.
-    NODE_BRIDGE_TIMEOUT_SECONDS = 240.0
+    @staticmethod
+    def _node_bridge_timeout_seconds() -> float:
+        """Read the real Node budget out of the TypeScript source.
+
+        A literal copied here would be independently maintained, so lowering
+        `DEFAULT_BRIDGE_TIMEOUT_MS` would leave this test green while the walk
+        it approves gets killed — the guard reproducing the exact cross-language
+        drift it exists to prevent (Codex on #153). Parsed rather than copied,
+        and the parse failing is itself a failure: an unreadable budget means
+        the guard is not guarding.
+        """
+        import re
+        from pathlib import Path
+
+        source = (
+            Path(__file__).parent.parent.parent / "src" / "lib" / "python-runner.ts"
+        ).read_text()
+        match = re.search(
+            r"DEFAULT_BRIDGE_TIMEOUT_MS\s*=\s*positiveIntEnv\("
+            r"\s*'PYTHON_BRIDGE_TIMEOUT'\s*,\s*(\d+)\s*\)",
+            source,
+        )
+        assert match, (
+            "could not read DEFAULT_BRIDGE_TIMEOUT_MS from python-runner.ts — "
+            "the timeout guard cannot verify anything without it"
+        )
+        return int(match.group(1)) / 1000.0
 
     def test_the_documented_margin_still_holds(self):
         from lib.sources.config import SourceConfig, worst_case_search_seconds
 
         worst = worst_case_search_seconds(SourceConfig())
 
-        assert worst < self.NODE_BRIDGE_TIMEOUT_SECONDS, (
+        assert worst < self._node_bridge_timeout_seconds(), (
             f"an auto search can take {worst}s against a "
-            f"{self.NODE_BRIDGE_TIMEOUT_SECONDS}s bridge budget — Node will "
+            f"{self._node_bridge_timeout_seconds()}s bridge budget — Node will "
             f"kill a legitimate walk. Raise PYTHON_BRIDGE_TIMEOUT and this "
             f"constant together, or lower a provider budget."
         )
@@ -579,6 +604,35 @@ class TestTheDocumentedTimeoutMarginIsEnforced:
 
         generous = SourceConfig(total_timeout=90.0, preflight_timeout=15.0)
 
-        assert worst_case_search_seconds(generous) > self.NODE_BRIDGE_TIMEOUT_SECONDS, (
-            "the computation must be sensitive to the budgets it composes"
+        assert (
+            worst_case_search_seconds(generous) > self._node_bridge_timeout_seconds()
+        ), "the computation must be sensitive to the budgets it composes"
+
+    def test_the_node_budget_is_read_from_the_typescript_source(self):
+        """The guard must not carry its own copy of the number it checks.
+
+        A literal `240.0` here is independently maintained, so lowering
+        `DEFAULT_BRIDGE_TIMEOUT_MS` would leave this green while the walk it
+        approves gets killed — the guard reproducing the exact cross-language
+        drift it exists to prevent (Codex on #153).
+        """
+        assert self._node_bridge_timeout_seconds() == 240.0, (
+            "reading python-runner.ts should currently yield 240s; if that "
+            "default changed, this test and the margin move together, which "
+            "is the whole point of reading it"
+        )
+
+    def test_the_provider_count_is_derived_from_the_router(self):
+        """Adding a provider to `auto` must move the budget."""
+        from lib.sources.config import SourceConfig, _auto_search_provider_count
+        from lib.sources.router import SourceRouter
+
+        router = SourceRouter.__new__(SourceRouter)
+        router.config = SourceConfig(fallback_enabled=True)
+
+        assert _auto_search_provider_count() == len(
+            router._search_candidates("auto")
+        ), (
+            "a literal would keep reporting 220s after Z-Library joins the "
+            "auto walk, while the real worst case became 275s"
         )

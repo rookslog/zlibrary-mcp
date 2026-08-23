@@ -37,7 +37,8 @@ from bs4 import BeautifulSoup
 # copies that went stale).
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "zlibrary" / "src"))
-from lib.sources.config import get_source_config  # noqa: E402
+from lib.sources.config import get_source_config
+from lib.sources.libgen import LibgenAdapter  # noqa: E402
 from lib.sources.libgen import FALLBACK_MIRRORS as LIBGEN_FALLBACK_MIRRORS  # noqa: E402
 from lib.sources.libgen import _nginx_stub as _libgen_nginx_stub  # noqa: E402
 from lib.sources.libgen import get_user_agent as libgen_user_agent  # noqa: E402
@@ -66,8 +67,13 @@ LIBGEN_BASE_URL = f"https://libgen.{_source_config.libgen_mirror}"
 # mirrors hand off to *different* CDN nodes that fail independently — on
 # 2026-08-10 `li` -> cdn4.booksdl.lc failed TLS while `vg`/`la` -> cdn3 served
 # real bytes.
+# Derived from the adapter, not restated. Production caps its walk at
+# MAX_LIBGEN_MIRROR_ATTEMPTS, and a probe that walked one mirror further would
+# report the download path healthy on a mirror production never reaches — the
+# reachability-vs-capability gap this script exists to close, inverted (Codex
+# on #153).
 LIBGEN_MIRROR_CANDIDATES: tuple[str, ...] = tuple(
-    dict.fromkeys([_source_config.libgen_mirror, "li", "vg", "la"])
+    LibgenAdapter(_source_config)._mirror_candidates()
 )
 
 # A small, stable PDF used to exercise the download path end to end. Verified

@@ -492,12 +492,20 @@ the derived legacy order merely by registration; its named compatibility tools
 remain explicit. Invalid legacy or new order values fail configuration
 validation before a network call. Contract tests cover the derivation for
 keyed, unkeyed, fallback-disabled, explicit-default, and new-order cases, and
-must assert the search/acquisition asymmetry directly: **without a key, search
-derives `[libgen, annas_archive]` while acquisition derives `[libgen]`.** A
-single "unkeyed no-Anna's" assertion is what an earlier revision of this
-section asked for, and it is true of acquisition and false of search — a test
-suite that keeps it would enforce the loss of key-free Anna's search that this
-document elsewhere forbids.
+must assert two different things about search and acquisition, because the two
+are not the same kind of rule:
+
+- **Search derives an order.** Without a key it derives
+  `[libgen, annas_archive]`; a single "unkeyed no-Anna's" assertion, which an
+  earlier revision of this section asked for, would enforce the loss of
+  key-free Anna's search that this document elsewhere forbids.
+- **Acquisition derives nothing.** It dispatches to the adapter the selected
+  result names. So the assertion for an operator without a key who selected an
+  Anna's result from key-free search is that acquisition goes to **Anna's** and
+  returns its attributed `credentials_missing` — not that it derives
+  `[libgen]`. Asserting a derived acquisition order would either preserve the
+  result-less `_download_candidates` behaviour this ADR removes, or send
+  Anna's `source_ref` to LibGen.
 
 ### 5. Z-Library adapter lifecycle
 

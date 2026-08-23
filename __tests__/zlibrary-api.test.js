@@ -364,7 +364,10 @@ describe('Z-Library API', () => {
 
     // Updated for Spec v2.1: Uses bookDetails, expects absolute path, no processed_file_path
     test('should call Python bridge with correct args (no RAG)', async () => {
-        const pythonResult_dl1 = { file_path: '/abs/path/to/downloads/Success Book.epub' }; // Unique result var
+        const pythonResult_dl1 = {
+            file_path: '/abs/path/to/downloads/Success Book.epub',
+            provenance: { source: 'zlibrary', route: 'eapi', mirror: null, host: null },
+        }; // Unique result var
         mockGetManagedPythonPath.mockResolvedValue('/fake/python');
         // Corrected Mock: Simulate python printing the JSON string of the MCP response structure
         const mockPythonResultString_dl1 = JSON.stringify(pythonResult_dl1);
@@ -387,7 +390,8 @@ describe('Z-Library API', () => {
             })]
         }), expect.objectContaining({ label: expect.any(String) }));
         expect(result).toEqual({
-            file_path: '/abs/path/to/downloads/Success Book.epub'
+            file_path: '/abs/path/to/downloads/Success Book.epub',
+            provenance: { source: 'zlibrary', route: 'eapi', mirror: null, host: null },
             // No processed_file_path expected
         });
     });
@@ -404,7 +408,8 @@ describe('Z-Library API', () => {
                 body: '/abs/path/to/processed_rag_output/RAG Book.pdf.processed.md',
                 metadata: '/abs/path/to/processed_rag_output/RAG Book.pdf.metadata.json',
                 footnotes: '/abs/path/to/processed_rag_output/RAG Book.pdf.processed_footnotes.md'
-            }
+            },
+            provenance: { source: 'zlibrary', route: 'eapi', mirror: null, host: null },
         };
         mockGetManagedPythonPath.mockResolvedValue('/fake/python');
         // Corrected Mock: Simulate python printing the JSON string of the MCP response structure
@@ -437,7 +442,8 @@ describe('Z-Library API', () => {
                 body: '/abs/path/to/processed_rag_output/RAG Book.pdf.processed.md',
                 metadata: '/abs/path/to/processed_rag_output/RAG Book.pdf.metadata.json',
                 footnotes: '/abs/path/to/processed_rag_output/RAG Book.pdf.processed_footnotes.md'
-            }
+            },
+            provenance: { source: 'zlibrary', route: 'eapi', mirror: null, host: null },
         });
     });
 
@@ -449,7 +455,8 @@ describe('Z-Library API', () => {
             metadata_file_path: null,
             stats: null,
             content_types_produced: [],
-            output_files: {}
+            output_files: {},
+            provenance: { source: 'zlibrary', route: 'eapi', mirror: null, host: null },
         };
         mockGetManagedPythonPath.mockResolvedValue('/fake/python');
         // Corrected Mock: Simulate python printing the JSON string of the MCP response structure
@@ -477,7 +484,8 @@ describe('Z-Library API', () => {
             metadata_file_path: null,
             stats: null,
             content_types_produced: [],
-            output_files: {}
+            output_files: {},
+            provenance: { source: 'zlibrary', route: 'eapi', mirror: null, host: null },
         });
     });
 
@@ -501,9 +509,44 @@ describe('Z-Library API', () => {
         expect(mockRunPythonBridge).toHaveBeenCalledTimes(1);
     });
 
+    test('should reject a bridge download result missing provenance', async () => {
+        mockGetManagedPythonPath.mockResolvedValue('/fake/python');
+        mockRunPythonBridge.mockResolvedValueOnce([
+            JSON.stringify({ content: [{ type: 'text', text: JSON.stringify({
+                file_path: '/abs/path/book.pdf',
+            }) }] }),
+        ]);
+
+        await expect(zlibApi.downloadBookToFile({ bookDetails: { id: 'missing-provenance' } }))
+            .rejects
+            .toThrow('Invalid response from Python bridge: Missing provenance.');
+    });
+
+    test('should reject a bridge download result with malformed provenance', async () => {
+        mockGetManagedPythonPath.mockResolvedValue('/fake/python');
+        mockRunPythonBridge.mockResolvedValueOnce([
+            JSON.stringify({ content: [{ type: 'text', text: JSON.stringify({
+                file_path: '/abs/path/book.pdf',
+                provenance: {
+                    source: 'libgen',
+                    route: 'get.php',
+                    mirror: null,
+                    host: 42,
+                },
+            }) }] }),
+        ]);
+
+        await expect(zlibApi.downloadBookToFile({ bookDetails: { id: 'malformed-provenance' } }))
+            .rejects
+            .toThrow('Invalid response from Python bridge: provenance.host must be a string or null.');
+    });
+
     // Updated for Spec v2.1: Uses bookDetails
     test('should throw error if processing requested and Python response missing processed_file_path key', async () => {
-        const invalidPythonResult_dl5 = { file_path: '/abs/path/book.epub' }; // Unique result var, Missing processed_file_path key
+        const invalidPythonResult_dl5 = {
+            file_path: '/abs/path/book.epub',
+            provenance: { source: 'zlibrary', route: 'eapi', mirror: null, host: null },
+        }; // Unique result var, Missing processed_file_path key
         mockGetManagedPythonPath.mockResolvedValue('/fake/python');
         // Corrected Mock: Simulate python printing the JSON string of the MCP response structure
         const mockPythonResultString_dl5 = JSON.stringify(invalidPythonResult_dl5);
@@ -783,7 +826,10 @@ describe('Z-Library API', () => {
     });
 
     test('a download gets the long budget', async () => {
-      resolveWith({ file_path: '/abs/downloads/Book.epub' });
+      resolveWith({
+        file_path: '/abs/downloads/Book.epub',
+        provenance: { source: 'zlibrary', route: 'eapi', mirror: null, host: null },
+      });
       await zlibApi.downloadBookToFile({
         bookDetails: { id: 'x', url: 'http://example.com/book/x/s', title: 'Book' },
         outputDir: './downloads',

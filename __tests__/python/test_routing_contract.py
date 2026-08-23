@@ -386,6 +386,60 @@ class TestPerSourceDownloadLimits:
         assert "EAPI login failed" in zlibrary["note"]
 
     @pytest.mark.asyncio
+    async def test_initialization_failure_marks_zlibrary_unavailable(
+        self, monkeypatch, zlibrary_credentials
+    ):
+        """A rejected login means no advertised Z-Library route is usable."""
+        monkeypatch.setattr(
+            python_bridge,
+            "initialize_eapi_client",
+            AsyncMock(side_effect=RuntimeError("credentials rejected")),
+        )
+
+        entry = (await python_bridge.get_download_limits(sources=["zlibrary"]))[
+            "sources"
+        ]["zlibrary"]
+
+        assert entry["available"] is False
+        assert entry["routes"] == []
+        assert entry["daily_limit"]["state"] == LIMIT_NOT_APPLICABLE
+        assert entry["note"] == (
+            "Z-Library initialization failed: RuntimeError: credentials rejected"
+        )
+        assert entry["details"] == {
+            "stage": "initialization",
+            "error": "RuntimeError: credentials rejected",
+        }
+
+    @pytest.mark.asyncio
+    async def test_profile_failure_keeps_authenticated_routes_available(
+        self, monkeypatch, zlibrary_credentials
+    ):
+        """A later quota lookup failure does not undo a working login."""
+        eapi = SimpleNamespace(
+            get_profile=AsyncMock(side_effect=RuntimeError("profile unavailable"))
+        )
+        monkeypatch.setattr(python_bridge, "_eapi_client", eapi)
+        monkeypatch.setattr(
+            python_bridge, "get_eapi_client", AsyncMock(return_value=eapi)
+        )
+
+        entry = (await python_bridge.get_download_limits(sources=["zlibrary"]))[
+            "sources"
+        ]["zlibrary"]
+
+        assert entry["available"] is True
+        assert entry["routes"] == ["search", "download"]
+        assert entry["daily_limit"]["state"] == LIMIT_UNKNOWN
+        assert entry["note"] == (
+            "Z-Library profile lookup failed: RuntimeError: profile unavailable"
+        )
+        assert entry["details"] == {
+            "stage": "profile",
+            "error": "RuntimeError: profile unavailable",
+        }
+
+    @pytest.mark.asyncio
     async def test_unkeyed_annas_reports_search_only_without_erroring(self):
         entry = (await python_bridge.get_download_limits(sources=["annas"]))["sources"][
             "annas_archive"

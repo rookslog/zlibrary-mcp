@@ -32,6 +32,7 @@ from lib.sources.router import SourceRouter
 from lib.sources.capabilities import (
     SOURCE_ZLIBRARY,
     canonical_source,
+    daily_limit_not_applicable,
     describe_sources,
     known_daily_limit,
     resolve_requested_sources,
@@ -159,6 +160,12 @@ class InternalBookNotFoundError(Exception):
 
 class InternalParsingError(Exception):
     """Custom exception for errors during HTML parsing of book details."""
+
+    pass
+
+
+class EapiInitializationError(RuntimeError):
+    """The server could not establish an authenticated EAPI client."""
 
     pass
 
@@ -690,7 +697,10 @@ async def _zlibrary_daily_limit() -> tuple[dict, dict]:
     """
     global _eapi_client
     if _eapi_client is None:
-        await initialize_eapi_client()
+        try:
+            await initialize_eapi_client()
+        except Exception as exc:
+            raise EapiInitializationError() from exc
     eapi = await get_eapi_client()
     profile = await eapi.get_profile()
     user = profile.get("user", profile)
@@ -751,10 +761,11 @@ async def get_download_limits(sources=None):
     download) from *a concrete number* (Z-Library). Collapsing those onto
     `null` is the failure this shape prevents.
 
-    A Z-Library failure — absent credentials, a login the service refused, a
-    profile call that timed out — degrades that one entry to `unknown` with
-    the reason attached. It never fails the whole call, because a
-    credential-free LibGen setup is supported and must still get an answer.
+    Missing credentials and initialization/authentication failures report
+    Z-Library as unavailable with no routes and a `not_applicable` limit.
+    A profile call failure after authentication preserves the usable routes
+    and degrades only the quota to `unknown`. Neither failure blocks the
+    other sources, because a credential-free LibGen setup is supported.
 
     Args:
         sources: Source names to report, e.g. ["libgen"]. All of them when
@@ -783,11 +794,25 @@ async def get_download_limits(sources=None):
             continue
         try:
             entry["daily_limit"], entry["details"] = await _zlibrary_daily_limit()
-        except Exception as exc:
-            logger.warning(f"Z-Library limit lookup failed: {exc}")
-            entry["daily_limit"] = unknown_daily_limit(
-                f"Z-Library profile lookup failed: {type(exc).__name__}: {exc}"
+        except EapiInitializationError as exc:
+            cause = exc.__cause__ or exc
+            error = f"{type(cause).__name__}: {cause}"
+            logger.warning(f"Z-Library initialization failed: {error}")
+            entry["available"] = False
+            entry["routes"] = []
+            entry["daily_limit"] = daily_limit_not_applicable(
+                "Z-Library initialization failed; no authenticated route is usable"
             )
+            entry["note"] = f"Z-Library initialization failed: {error}"
+            entry["details"] = {"stage": "initialization", "error": error}
+        except Exception as exc:
+            error = f"{type(exc).__name__}: {exc}"
+            logger.warning(f"Z-Library profile lookup failed: {error}")
+            entry["daily_limit"] = unknown_daily_limit(
+                f"Z-Library profile lookup failed: {error}"
+            )
+            entry["note"] = f"Z-Library profile lookup failed: {error}"
+            entry["details"] = {"stage": "profile", "error": error}
 
     return {"requested": requested, "sources": entries}
 

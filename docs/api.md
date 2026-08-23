@@ -618,7 +618,7 @@ Each entry has the same fields as an entry in `search_multi_source`'s `routing.s
 | Z-Library | `state: "known"` with `total` / `used` / `remaining` from the account profile. Without credentials, `state: "not_applicable"` and `available: false` |
 | Anna's Archive | With `ANNAS_SECRET_KEY`, `state: "unknown"` — Anna's reports the keyed quota only in a fast-download response, so it cannot be read without spending a download. Without a key, `state: "not_applicable"` and search-only routes |
 
-A Z-Library failure — missing credentials, a refused login, a profile call that times out — degrades that one entry to `state: "unknown"` with the reason in `note`. The other sources still answer, because a credential-free Library Genesis setup is supported.
+Missing Z-Library credentials, or a refused login while initializing the EAPI client, make that source unavailable: `available: false`, no routes, and `daily_limit.state: "not_applicable"`. A profile lookup failure *after* authentication leaves the usable routes advertised and degrades only the quota to `state: "unknown"` with the reason in `note`. The other sources still answer, because a credential-free Library Genesis setup is supported.
 
 **Example Usage:**
 
@@ -633,7 +633,7 @@ A Z-Library failure — missing credentials, a refused login, a profile call tha
 
 ```json
 {
-  "requested": ["libgen", "zlibrary"],
+  "requested": ["libgen"],
   "sources": {
     "libgen": {
       "available": true,
@@ -642,13 +642,6 @@ A Z-Library failure — missing credentials, a refused login, a profile call tha
       "daily_limit": { "state": "none", "total": null, "used": null,
                        "remaining": null, "note": "LibGen applies no daily download limit" },
       "details": {}
-    },
-    "zlibrary": {
-      "available": true,
-      "routes": ["search", "download"],
-      "note": "credentials configured",
-      "daily_limit": { "state": "known", "total": 10, "used": 3, "remaining": 7, "note": "" },
-      "details": { "is_premium": false }
     }
   }
 }
@@ -658,7 +651,7 @@ A Z-Library failure — missing credentials, a refused login, a profile call tha
 - `sources` names something the server does not read from
 - `sources` is an empty array
 
-A Z-Library authentication or network failure is not an error case here. It appears as that source's `daily_limit.state: "unknown"` with the reason attached.
+A Z-Library initialization/authentication failure is not an error case here. It appears as that source being unavailable with `daily_limit.state: "not_applicable"`; a later profile lookup failure appears as `daily_limit.state: "unknown"` while its routes remain available.
 
 ---
 

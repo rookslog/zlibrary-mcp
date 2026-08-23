@@ -285,8 +285,16 @@ interface ProcessedDocumentBundle {
   output_files?: Record<string, string>;
 }
 
-interface DownloadBookResult extends ProcessedDocumentBundle {
+export interface DownloadProvenance {
+  source: string | null;
+  route: string | null;
+  mirror: string | null;
+  host: string | null;
+}
+
+export interface DownloadBookResult extends ProcessedDocumentBundle {
   file_path: string;
+  provenance: DownloadProvenance;
   processing_error?: string;
 }
 
@@ -316,6 +324,27 @@ function validateNullablePathField(result: Record<string, any>, fieldName: strin
   const value = result[fieldName];
   if (value !== null && typeof value !== 'string') {
     throw new Error(`Invalid response from Python bridge: ${fieldName} must be a string or null.`);
+  }
+}
+
+function validateDownloadProvenance(result: Record<string, any>): void {
+  if (!('provenance' in result)) {
+    throw new Error('Invalid response from Python bridge: Missing provenance.');
+  }
+  const provenance = result.provenance;
+  if (!provenance || typeof provenance !== 'object' || Array.isArray(provenance)) {
+    throw new Error('Invalid response from Python bridge: provenance must be an object.');
+  }
+  for (const field of ['source', 'route', 'mirror', 'host']) {
+    if (!(field in provenance)) {
+      throw new Error(`Invalid response from Python bridge: Missing provenance.${field}.`);
+    }
+    const value = provenance[field];
+    if (value !== null && typeof value !== 'string') {
+      throw new Error(
+        `Invalid response from Python bridge: provenance.${field} must be a string or null.`,
+      );
+    }
   }
 }
 
@@ -522,8 +551,10 @@ export async function downloadBookToFile({
     }
 
     if (typeof result.file_path !== 'string') {
-        throw new Error("Invalid response from Python bridge: file_path must be a string.");
+      throw new Error("Invalid response from Python bridge: file_path must be a string.");
     }
+
+    validateDownloadProvenance(result);
 
     if (process_for_rag && !('processed_file_path' in result)) {
         throw new Error("Invalid response from Python bridge: Processing requested but processed_file_path key is missing.");

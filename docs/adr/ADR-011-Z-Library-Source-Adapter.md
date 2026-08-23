@@ -228,10 +228,20 @@ Examples are `{id, hash}` for Z-Library and `{md5}` for Anna's Archive or
 LibGen. The router checks only that `book.source` selects the same adapter that
 will consume `book.source_ref`; it must not inspect identifier keys.
 
-For a compatibility interval, existing top-level `id`, `hash`, `book_hash`,
-and `md5` fields may remain in tool responses. New routing and acquisition code
-uses `source_ref`. Tests must prove that removing a compatibility field does
-not change adapter dispatch.
+For the compatibility interval, existing top-level `id`, `hash`, `book_hash`,
+and `md5` fields **must remain** in tool responses — "may" would license
+removing them immediately, inside a migration this ADR declares additive and
+whose rollback contract depends on those fields staying readable. Clients that
+consume search responses, or pass one back as a legacy `bookDetails`, break the
+moment a field disappears, and they break before the deprecation interval they
+were promised has run.
+
+New routing and acquisition code uses `source_ref`. Tests must prove two
+things, not one: that removing a compatibility field does not change adapter
+dispatch (routing does not secretly depend on them), and that the fields are
+still **present** in responses (clients still get what they were promised).
+The first without the second is how a field gets dropped while the suite stays
+green.
 
 The compatibility facade normalises a full pre-migration Z-Library
 `bookDetails` search result before router validation: it adds
@@ -270,7 +280,10 @@ unavailable. A separate per-operation availability check reports whether the
 current user can invoke a supported operation and, when not, the stable reason
 such as `credentials_missing` or `quota_exhausted`. Optional protocols cover:
 
-- general, full-text, author, term, and advanced search modes;
+- full-text, author, term, and advanced search modes (**not** general search,
+  which the base contract above makes mandatory for every adapter — listing it
+  as optional let one implementation reject registration of a source without it
+  while another registered the source and returned `unsupported_operation`);
 - metadata lookup from a search result;
 - per-user download limits;
 - account history;
@@ -406,15 +419,17 @@ cross-source lookup this ADR explicitly defers. So the orders above govern
 earlier in this document requires.
 
 The ordered walk still matters for acquisition, but *within* the named
-provider: LibGen's mirrors, and Anna's partner servers. Cross-provider
-acquisition fallback is only reachable when the caller asked for `auto` and no
-result has been selected yet, and even then it is bounded by the timeout
-arithmetic below:
+provider: LibGen's mirrors, and Anna's partner servers.
 
-- **`auto` acquisition, no key** → `[libgen]`. Anna's is not appended: its
-  key-free search cannot be followed by a supported key-free download.
-- **`auto` acquisition, key present** → `[annas_archive, libgen]` when fallback
-  is enabled, `[annas_archive]` when it is not.
+**There is no result-less acquisition route, and this ADR does not create
+one.** `download_book_to_file` requires full `bookDetails`, and the adapter
+contract is `acquire(book, output_dir)` — so a request with no selected result
+has no `source` and no `source_ref` for any adapter to consume. Reaching a
+cross-provider `auto` order from there would mean inventing the direct lookup
+ADR-003 rejected or the cross-source matching this ADR defers. Fallback belongs
+to **search and result selection**, where a caller who wanted `auto` gets
+results from whichever provider answers; by acquisition time a result has been
+chosen and it names its own source.
 - **`BOOK_SOURCE_DEFAULT` set to anything** → *ignored for ordering*, exactly as
   today, and logged once at startup as inert with a pointer to
   `BOOK_SOURCE_ORDER`. Silence would leave an operator believing a setting
@@ -424,7 +439,7 @@ Legacy fallback is one-way **for acquisition only**: with a key, Anna's is
 primary and LibGen is appended; without one, acquisition is `[libgen]` and
 Anna's is not appended, because its key-free search cannot be followed by a
 supported key-free download. **Search is not one-way** — the orders above give
-a keyless operator `[libgen, annas_archive]`, matching
+an operator without an Anna's key `[libgen, annas_archive]`, matching
 `_search_candidates` today, and removing that would drop key-free Anna's
 results for every operator without a key. Stating the restriction without its
 scope is what made this paragraph contradict the orders three lines above it. `BOOK_SOURCE_ORDER` is the single opt-in way to choose an order, and

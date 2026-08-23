@@ -318,6 +318,13 @@ class AnnasBrowserSession:
         self._limiter = _RateLimiter(
             min_interval=config.annas_browser_min_interval,
             daily_limit=config.annas_browser_daily_limit,
+            # Beside the profile rather than inside it, deliberately: the
+            # budget belongs to the operator, not to a browser profile. Two
+            # profiles under one directory share one day's allowance, which is
+            # the honest reading of "30 requests per day" — a per-profile
+            # counter would let anyone multiply the ceiling by making a second
+            # profile, which is the same hole as the per-process counter this
+            # replaced.
             usage=DailyUsage(
                 os.path.join(
                     config.annas_browser_profile_dir, "..", "annas-browser-usage.json"

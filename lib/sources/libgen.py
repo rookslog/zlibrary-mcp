@@ -18,7 +18,11 @@ import requests
 from bs4 import BeautifulSoup
 
 from .base import SourceAdapter
-from .config import DEFAULT_LIBGEN_USER_AGENT, SourceConfig
+from .config import (
+    DEFAULT_LIBGEN_USER_AGENT,
+    MAX_LIBGEN_MIRROR_ATTEMPTS,
+    SourceConfig,
+)
 from .errors import (
     AllSourcesFailedError,
     ProviderResponseError,
@@ -473,8 +477,21 @@ class LibgenAdapter(SourceAdapter):
         ]
 
     def _mirror_candidates(self) -> List[str]:
-        """Mirrors to try, configured one first, without duplicates."""
-        return [self.mirror] + [m for m in FALLBACK_MIRRORS if m != self.mirror]
+        """Mirrors to try, configured one first, capped at a constant count.
+
+        The cap is what keeps the timeout arithmetic in `config.py` a constant
+        instead of a function of configuration. Without it a custom
+        `LIBGEN_MIRROR` prepended a fourth mirror, pushing an `auto` search to
+        275s against a 240s bridge budget — so the subprocess was killed and
+        the operator got a generic timeout instead of the attributed per-mirror
+        failures (#152).
+
+        The configured mirror is first, so the cap costs the *last* fallback
+        rather than the operator's own choice: three attempts either way, and
+        the mirror they asked for is always among them.
+        """
+        ordered = [self.mirror] + [m for m in FALLBACK_MIRRORS if m != self.mirror]
+        return ordered[:MAX_LIBGEN_MIRROR_ATTEMPTS]
 
     async def _preflight(self, mirror: str) -> None:
         """Fail fast if a mirror is not reachable.

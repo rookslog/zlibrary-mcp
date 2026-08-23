@@ -26,11 +26,16 @@ from dataclasses import dataclass
 #
 # These compose. The preflight budget is per PHASE and there are two (DNS, then
 # TCP), so one provider attempt costs at worst 2*preflight + total = 55s. LibGen
-# walks up to three mirrors and an `auto` search adds Anna's on top, giving a
-# worst case of 4 x 55s = 220s. PYTHON_BRIDGE_TIMEOUT on the Node side (240s)
-# has to stay above that — a subprocess kill that fires first would preempt a
-# legitimate slow walk rather than catch a hang. Raising any value here without
-# raising that one narrows a margin that is already only 20s.
+# walks at most MAX_LIBGEN_MIRROR_ATTEMPTS mirrors and an `auto` search adds
+# Anna's on top, giving a worst case of 4 x 55s = 220s. PYTHON_BRIDGE_TIMEOUT on
+# the Node side (240s) has to stay above that — a subprocess kill that fires
+# first would preempt a legitimate slow walk rather than catch a hang.
+#
+# Do not maintain that sum by hand. `worst_case_search_seconds()` computes it
+# and a test compares it to the Node budget, so raising a budget here surfaces
+# in the suite rather than as an unexplained timeout in production. This comment
+# was wrong for months before #152: a custom LIBGEN_MIRROR added a fourth
+# mirror and nothing recomputed the total.
 DEFAULT_CONNECT_TIMEOUT = 10.0
 DEFAULT_READ_TIMEOUT = 30.0
 DEFAULT_TOTAL_TIMEOUT = 45.0
@@ -78,6 +83,12 @@ DEFAULT_ANNAS_BASE_URL = "https://annas-archive.gl"
 # https://libgen.{mirror}/ — keep scripts/check_upstream.py deriving its probe
 # host from here so the probe cannot drift from the runtime again.
 DEFAULT_LIBGEN_MIRROR = "li"
+
+# The mirror walk is capped so the timeout arithmetic above stays a constant
+# rather than a function of operator configuration. `_mirror_candidates()` puts
+# the configured mirror first, so a custom value costs the *last* fallback
+# rather than displacing failover: three attempts either way (#152).
+MAX_LIBGEN_MIRROR_ATTEMPTS = 3
 
 # LibGen's blocklist is a moving target and it fails SILENTLY: a blocked UA
 # gets HTTP 200 with nginx's ~640-byte default page, which is indistinguishable
@@ -142,6 +153,21 @@ class SourceConfig:
     def has_annas_key(self) -> bool:
         """Check if Anna's Archive API key is configured."""
         return bool(self.annas_secret_key)
+
+
+def worst_case_search_seconds(config: "SourceConfig") -> float:
+    """Worst-case wall clock for an `auto` search, from the live budgets.
+
+    Computed rather than asserted, because the hand-maintained version in the
+    comment above was wrong for months: it assumed three LibGen mirrors, and a
+    custom `LIBGEN_MIRROR` made it four (#152). Anything that changes a budget,
+    the mirror cap, or the number of providers in an `auto` walk changes this
+    number, and the test comparing it to `PYTHON_BRIDGE_TIMEOUT` turns that into
+    a failing build instead of a subprocess kill in production.
+    """
+    per_attempt = (2 * config.preflight_timeout) + config.total_timeout
+    # LibGen's capped mirror walk, plus Anna's on top for `auto`.
+    return per_attempt * (MAX_LIBGEN_MIRROR_ATTEMPTS + 1)
 
 
 def _positive_float(name: str, default: float) -> float:

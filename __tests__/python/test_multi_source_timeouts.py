@@ -510,3 +510,75 @@ class TestPartialFailureIsNotAnEmptyResult:
             setattr(router, name, adapter)
 
         assert await router.search("nothing matches", source="auto") == []
+
+
+class TestTheDocumentedTimeoutMarginIsEnforced:
+    """The composition in `config.py` must be checked, not asserted (#152).
+
+    That comment claimed `4 x 55s = 220s` against a 240-second
+    `PYTHON_BRIDGE_TIMEOUT`. It was wrong for months: `_mirror_candidates()`
+    prepends the configured mirror, so any `LIBGEN_MIRROR` outside the fallback
+    set produced four LibGen attempts and a 275-second worst case. Node then
+    killed the subprocess and the operator saw a generic bridge timeout instead
+    of the attributed per-mirror failures the error taxonomy exists to produce.
+
+    A comment cannot fail. These tests can.
+    """
+
+    # Kept in step with src/lib/python-runner.ts::DEFAULT_BRIDGE_TIMEOUT_MS.
+    NODE_BRIDGE_TIMEOUT_SECONDS = 240.0
+
+    def test_the_documented_margin_still_holds(self):
+        from lib.sources.config import SourceConfig, worst_case_search_seconds
+
+        worst = worst_case_search_seconds(SourceConfig())
+
+        assert worst < self.NODE_BRIDGE_TIMEOUT_SECONDS, (
+            f"an auto search can take {worst}s against a "
+            f"{self.NODE_BRIDGE_TIMEOUT_SECONDS}s bridge budget — Node will "
+            f"kill a legitimate walk. Raise PYTHON_BRIDGE_TIMEOUT and this "
+            f"constant together, or lower a provider budget."
+        )
+
+    def test_the_mirror_walk_is_capped_whatever_the_configured_mirror(self):
+        """The cap is what keeps the worst case independent of configuration."""
+        from lib.sources.config import (
+            MAX_LIBGEN_MIRROR_ATTEMPTS,
+            SourceConfig,
+        )
+        from lib.sources.libgen import LibgenAdapter
+
+        for mirror in ("li", "vg", "la", "rs", "is", "unknown-mirror"):
+            candidates = LibgenAdapter(
+                SourceConfig(libgen_mirror=mirror)
+            )._mirror_candidates()
+
+            assert len(candidates) <= MAX_LIBGEN_MIRROR_ATTEMPTS, (
+                f"{mirror!r} yields {len(candidates)} attempts; the timeout "
+                f"arithmetic assumes at most {MAX_LIBGEN_MIRROR_ATTEMPTS}"
+            )
+
+    def test_the_configured_mirror_is_never_the_one_dropped(self):
+        """The cap must cost a fallback, not the operator's own choice."""
+        from lib.sources.config import SourceConfig
+        from lib.sources.libgen import LibgenAdapter
+
+        for mirror in ("rs", "is", "unknown-mirror"):
+            candidates = LibgenAdapter(
+                SourceConfig(libgen_mirror=mirror)
+            )._mirror_candidates()
+
+            assert candidates[0] == mirror, (
+                f"{mirror!r} must be attempted first; capping the walk cannot "
+                f"mean ignoring what the operator configured"
+            )
+
+    def test_a_raised_provider_budget_fails_here_rather_than_in_production(self):
+        """The guard has to actually bind, or it is another dead comment."""
+        from lib.sources.config import SourceConfig, worst_case_search_seconds
+
+        generous = SourceConfig(total_timeout=90.0, preflight_timeout=15.0)
+
+        assert worst_case_search_seconds(generous) > self.NODE_BRIDGE_TIMEOUT_SECONDS, (
+            "the computation must be sensitive to the budgets it composes"
+        )

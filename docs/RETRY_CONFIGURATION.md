@@ -56,16 +56,25 @@ Preflight is skipped when `HTTP_PROXY` or `HTTPS_PROXY` covers the target, with
 letting that probe veto the real client would create a false outage.
 
 The preflight budget applies to two phases (DNS, then TCP). At the defaults, one
-provider attempt can cost at most `2 × 5s + 45s = 55s`. LibGen can walk three
-mirrors and `auto` can add Anna's Archive, so the worst-case search budget is
-`4 × 55s = 220s`, below the 240-second ordinary bridge budget. Raise
-`PYTHON_BRIDGE_TIMEOUT` whenever provider budgets make that composition larger;
-otherwise the outer process-tree kill can preempt legitimate fallback work.
+provider attempt can cost at most `2 × 5s + 45s = 55s`. LibGen walks **at most
+three** mirrors — capped by `MAX_LIBGEN_MIRROR_ATTEMPTS`, so the number does not
+change when an operator sets `LIBGEN_MIRROR` — and `auto` can add Anna's
+Archive, so the worst-case search budget is `4 × 55s = 220s`, below the
+240-second ordinary bridge budget. Raise `PYTHON_BRIDGE_TIMEOUT` whenever
+provider budgets make that composition larger; otherwise the outer process-tree
+kill can preempt legitimate fallback work.
+
+**Do not verify that composition by reading.** `lib/sources/config.py`
+provides `worst_case_search_seconds()` and
+`__tests__/python/test_multi_source_timeouts.py` compares it to the Node budget,
+so a raised provider budget fails the suite instead of producing an unexplained
+timeout. The prose above was wrong for months before #152, because it assumed
+three mirrors while a custom `LIBGEN_MIRROR` produced four.
 
 Source-file transfer has a separate 1,500-second default because a valid large
 book can exceed the 45-second search and URL-resolution budget. The 2,400-second
 long bridge default composes worst-case LibGen resolution
-(`3 × (2 × 5s + 45s) = 165s`), transfer (`1,500s`), the OCR subprocess default
+(`MAX_LIBGEN_MIRROR_ATTEMPTS × (2 × 5s + 45s) = 165s`), transfer (`1,500s`), the OCR subprocess default
 (`600s`), and finalization headroom (`135s`). If any component is overridden,
 keep `PYTHON_BRIDGE_LONG_TIMEOUT` at least as large as their sum after converting
 milliseconds to seconds.

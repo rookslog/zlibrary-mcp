@@ -1073,3 +1073,54 @@ class TestLibgenSearchProbeReportsUserAgentBlocks:
         result = self._run(check_upstream, empty)
 
         assert result.blocked is False
+
+
+class TestAnnasProbeDiagnosticsNameAnnas:
+    """A block report that names the wrong provider is worse than none (#150).
+
+    `_block_detail` hardcodes the Z-Library domain and tells the operator to
+    export `ZLIBRARY_EAPI_DOMAIN`. Reusing it for Anna's reported a Z-Library
+    host and an irrelevant remedy in the exact anti-bot scenario the probe
+    exists to distinguish.
+    """
+
+    def _run(self, check_upstream, handler):
+        import asyncio
+
+        async def go():
+            async with httpx.AsyncClient(
+                transport=httpx.MockTransport(handler)
+            ) as client:
+                return await check_upstream.probe_annas_download_dom(client)
+
+        return asyncio.run(go())
+
+    def test_a_403_names_annas_not_zlibrary(self, check_upstream):
+        result = self._run(check_upstream, lambda r: httpx.Response(403, text="nope"))
+
+        assert result.blocked is True
+        assert "annas" in result.detail.lower()
+        assert "zlibrary_eapi_domain" not in result.detail.lower(), (
+            "sending an operator to change a Z-Library variable for an Anna's "
+            "block is an actively wrong remedy"
+        )
+        assert "z-library" not in result.detail.lower()
+
+    def test_the_probe_uses_the_production_challenge_classifier(self, check_upstream):
+        """A partial marker copy called a challenge page DOM drift.
+
+        Production `_classify_page` knows five challenge markers; the probe
+        carried three. A 200 page saying only "enable JavaScript and cookies"
+        was therefore reported as a layout change.
+        """
+        page = (
+            "<html><body><p>Please enable JavaScript and cookies to continue</p>"
+            "</body></html>"
+        )
+
+        result = self._run(check_upstream, lambda r: httpx.Response(200, text=page))
+
+        assert result.blocked is True, (
+            "a challenge marker production recognises must not read as drift"
+        )
+        assert "UNVERIFIED" in result.detail

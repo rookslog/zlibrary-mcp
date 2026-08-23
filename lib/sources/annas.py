@@ -515,17 +515,28 @@ class AnnasArchiveAdapter(SourceAdapter):
             self._browser = AnnasBrowserSession(self.config)
         return self._browser
 
-    def _browser_result(self, url: str, remaining: int) -> DownloadResult:
-        return DownloadResult(
-            url=url,
-            source=SourceType.ANNAS_ARCHIVE,
-            quota_info=QuotaInfo(
+    def _browser_result(self, url: str, remaining) -> DownloadResult:
+        """Wrap a resolved URL, omitting quota entirely when it is unknown.
+
+        `remaining is None` means the counter could not be read, not that it is
+        zero. Putting a number there anyway is how the fail-open path came to
+        report an exhausted quota and have the router discard a URL it had
+        already paid for (Codex on #150). No quota block says "unknown", which
+        is the truth; a zero says something false and consequential.
+        """
+        quota = None
+        if remaining is not None:
+            quota = QuotaInfo(
                 downloads_left=remaining,
                 downloads_per_day=self.config.annas_browser_daily_limit,
                 downloads_done_today=max(
                     0, self.config.annas_browser_daily_limit - remaining
                 ),
-            ),
+            )
+        return DownloadResult(
+            url=url,
+            source=SourceType.ANNAS_ARCHIVE,
+            quota_info=quota,
         )
 
     async def _browser_download_url(self, md5: str) -> DownloadResult:

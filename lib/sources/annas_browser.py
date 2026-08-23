@@ -239,7 +239,7 @@ class _RateLimiter:
     def remaining_today(self) -> int:
         return self.usage.remaining(self.daily_limit)
 
-    async def acquire(self) -> int:
+    async def acquire(self) -> Optional[int]:
         """Take a slot from the day's budget, then wait out the interval.
 
         Returns the budget remaining afterwards. The budget check comes first:
@@ -372,9 +372,12 @@ class AnnasBrowserSession:
                 PROVIDER,
                 self.host,
                 "playwright is not installed. The browser-resident Anna's route "
-                "needs it: install the optional extra with "
-                "`uv sync --extra annas-browser`, then `playwright install "
-                "chrome`. Anna's keyed fast_download and every LibGen route are "
+                "needs it:\n"
+                "  uv sync --extra annas-browser\n"
+                "  uv run --extra annas-browser playwright install chrome\n"
+                "(`uv run` is required for the second line: uv sync puts the "
+                "console script in .venv/bin without putting it on PATH.) "
+                "Anna's keyed fast_download and every LibGen route are "
                 "unaffected and need none of this.",
             ) from exc
 
@@ -427,7 +430,7 @@ class AnnasBrowserSession:
         and defaults above the slower of the two.
         """
         self._remaining_today = await self._limiter.acquire()
-        if self._remaining_at_start is None:
+        if self._remaining_at_start is None and self._remaining_today is not None:
             # +1 because acquire() has already taken this resolution's first
             # slot. The number is a true statement: this many were available
             # when the download started.

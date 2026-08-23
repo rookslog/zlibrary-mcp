@@ -27,7 +27,7 @@ import logging
 import os
 import time
 from pathlib import Path
-from typing import Tuple
+from typing import Optional, Tuple
 
 logger = logging.getLogger(__name__)
 
@@ -56,7 +56,42 @@ class CrossProcessLock:
 
     def __init__(self, path: str, stale_after: float = 600.0):
         self.path = Path(path)
+        self.owner_path = self.path / "owner"
         self.stale_after = stale_after
+
+    def _owner_pid(self) -> Optional[int]:
+        try:
+            return int(self.owner_path.read_text().strip())
+        except (OSError, ValueError):
+            return None
+
+    def _owner_is_alive(self) -> bool:
+        """Whether the process that took this lock still exists.
+
+        Age alone is not evidence of staleness here: a payload transfer may
+        legitimately run for far longer than `stale_after` (the download budget
+        allows 25 minutes) while the holder sits suspended, still owning the
+        Chrome profile. Reclaiming on age would then launch a second Chrome
+        against a profile in use — defeating the serialisation and breaking
+        both downloads (Codex on #150). Liveness is the question that was
+        actually being asked.
+        """
+        pid = self._owner_pid()
+        if pid is None:
+            # No owner recorded: an older lock, or one whose write was
+            # interrupted. Fall back to age, which is what this class did
+            # before liveness existed.
+            return False
+        try:
+            os.kill(pid, 0)
+        except ProcessLookupError:
+            return False
+        except PermissionError:
+            # Alive, owned by another user. Not ours to reclaim.
+            return True
+        except OSError:
+            return True
+        return True
 
     def acquire(self, timeout: float) -> bool:
         deadline = time.monotonic() + timeout
@@ -64,17 +99,31 @@ class CrossProcessLock:
             try:
                 self.path.parent.mkdir(parents=True, exist_ok=True)
                 os.mkdir(self.path)
+                try:
+                    self.owner_path.write_text(str(os.getpid()))
+                except OSError:  # pragma: no cover - lock still held, just anonymous
+                    logger.debug(
+                        "Could not record the lock owner at %s", self.owner_path
+                    )
                 return True
             except FileExistsError:
+                if self._owner_is_alive():
+                    # Held by a running process. Wait however long the caller
+                    # allows; a live holder is never stale, whatever its age.
+                    if time.monotonic() >= deadline:
+                        return False
+                    time.sleep(0.25)
+                    continue
                 try:
                     age = time.time() - self.path.stat().st_mtime
                 except OSError:
                     age = 0.0
                 if age > self.stale_after:
                     logger.warning(
-                        "Reclaiming a stale browser lock (%.0fs old) at %s",
-                        age,
+                        "Reclaiming a browser lock at %s: owner is gone and the "
+                        "lock is %.0fs old",
                         self.path,
+                        age,
                     )
                     self.release()
                     continue
@@ -87,6 +136,10 @@ class CrossProcessLock:
                 return True
 
     def release(self) -> None:
+        try:
+            self.owner_path.unlink()
+        except OSError:
+            pass
         try:
             os.rmdir(self.path)
         except OSError:
@@ -161,12 +214,19 @@ class DailyUsage:
 
     # -- the operations the limiter needs ---------------------------------
 
-    def spend(self, limit: int) -> Tuple[bool, int]:
+    def spend(self, limit: int) -> Tuple[bool, Optional[int]]:
         """Take one request from today's budget.
 
-        Returns `(allowed, remaining_after)`. The whole read-modify-write runs
-        under the lock, because the interesting failure is two bridge processes
-        each reading `limit - 1` and each deciding it may proceed.
+        Returns `(allowed, remaining_after)`, where `remaining_after` is
+        **None** when the count could not be read — unknown, not zero. A
+        sentinel that looks like a number gets treated as one: `-1` reached
+        `QuotaInfo.downloads_left`, the router read it as exhausted, and the
+        fail-open path spent browser requests and then threw the result away
+        (Codex on #150).
+
+        The whole read-modify-write runs under the lock, because the
+        interesting failure is two bridge processes each reading `limit - 1`
+        and each deciding it may proceed.
         """
         if not self._acquire():
             # Failing open here is deliberate and narrow: the alternative is
@@ -178,7 +238,7 @@ class DailyUsage:
                 "not counted against the daily ceiling",
                 self.path,
             )
-            return True, -1
+            return True, None
         try:
             window_started, spent = self._read()
             now = time.time()

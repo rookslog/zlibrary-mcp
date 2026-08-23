@@ -122,6 +122,28 @@ class ProbeResult:
         return "FAIL" if self.required else "WARN"
 
 
+def _annas_block_detail(resp: httpx.Response) -> Optional[str]:
+    """A block report for Anna's, naming Anna's.
+
+    `_block_detail` hardcodes the Z-Library domain and tells the operator to
+    set `ZLIBRARY_EAPI_DOMAIN`. Reusing it here reported a Z-Library host and
+    an irrelevant remedy for an Anna's wall — actively misleading in the exact
+    anti-bot scenario this probe exists to distinguish (Codex on #150).
+    """
+    body_is_diamwall = "diamwall" in resp.text.lower()
+    if not body_is_diamwall and resp.status_code not in WALLED_STATUS_CODES:
+        return None
+    wall = "DiamWall anti-bot wall" if body_is_diamwall else "network-level block"
+    host = urlsplit(ANNAS_BASE_URL).hostname or "annas-archive"
+    return (
+        f"{wall} (HTTP {resp.status_code}) — {host} refuses this network's "
+        f"clients. From a datacenter or CI address this is expected IP "
+        f"blocking, not upstream drift. The browser-resident route (#143) "
+        f"clears Anna's wall with a real browser; this probe deliberately does "
+        f"not, so it cannot verify the DOM shape from here"
+    )
+
+
 def _block_detail(resp: httpx.Response) -> Optional[str]:
     """Detect a network-level block in a response, returning a report line.
 
@@ -301,7 +323,7 @@ async def probe_annas_download_dom(client: httpx.AsyncClient) -> ProbeResult:
     """
     from lib.sources.annas_browser import (  # noqa: PLC0415
         AnnasBrowserSession,
-        visible_text,
+        _classify_page,
     )
 
     url = f"{ANNAS_BASE_URL}/md5/{ANNAS_DOM_CANARY_MD5}"
@@ -315,16 +337,12 @@ async def probe_annas_download_dom(client: httpx.AsyncClient) -> ProbeResult:
             required=False,
         )
 
-    walled = _block_detail(resp)
+    walled = _annas_block_detail(resp)
     body = resp.text
-    challenged = any(
-        marker in visible_text(body).lower()
-        for marker in (
-            "checking your browser",
-            "just a moment",
-            "verifying you are human",
-        )
-    )
+    # The production classifier, not a copy of some of its markers: a partial
+    # copy reported a 200 challenge page as DOM drift, sending the maintainer
+    # to look for a layout change that is not there (Codex on #150).
+    challenged = _classify_page(body) == "challenge"
     if walled or challenged:
         return ProbeResult(
             name="annas-archive:download-dom",
@@ -361,13 +379,8 @@ async def probe_annas_download_dom(client: httpx.AsyncClient) -> ProbeResult:
             )
 
         partner_body = partner.text
-        partner_walled = _block_detail(partner) or any(
-            marker in visible_text(partner_body).lower()
-            for marker in (
-                "checking your browser",
-                "just a moment",
-                "verifying you are human",
-            )
+        partner_walled = (
+            _annas_block_detail(partner) or _classify_page(partner_body) == "challenge"
         )
         if partner_walled:
             return ProbeResult(

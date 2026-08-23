@@ -730,19 +730,73 @@ class TestCrossProcessSerialisation:
         )
         session._process_lock.release()
 
-    def test_a_stale_lock_is_reclaimed(self, tmp_path):
+    def test_a_lock_whose_owner_died_is_reclaimed(self, tmp_path):
         """A crashed process must not block the operator's tool forever."""
         import os
         import time
 
         from lib.sources.annas_usage import CrossProcessLock
 
-        lock = CrossProcessLock(str(tmp_path / "held.lock"), stale_after=0.05)
+        path = tmp_path / "held.lock"
+        os.makedirs(path)
+        # A PID that cannot be running: os.kill(0, 0) targets the process
+        # group, so use a recorded value that reads back as absent instead.
+        (path / "owner").write_text("999999999")
+        time.sleep(0.06)
+
+        lock = CrossProcessLock(str(path), stale_after=0.05)
+
         assert lock.acquire(1.0) is True
-        time.sleep(0.1)
+        lock.release()
+
+    def test_a_live_owner_is_never_reclaimed_however_old(self, tmp_path):
+        """Age is not evidence of staleness while the holder is running.
+
+        Codex on #150: a payload transfer may legitimately run for 25 minutes
+        with the holder suspended, still owning the Chrome profile. Reclaiming
+        on age alone would launch a second Chrome against a profile in use and
+        break both downloads.
+        """
+        import time
+
+        from lib.sources.annas_usage import CrossProcessLock
+
+        holder = CrossProcessLock(str(tmp_path / "held.lock"), stale_after=0.05)
+        assert holder.acquire(1.0) is True
+        time.sleep(0.1)  # well past stale_after
 
         other = CrossProcessLock(str(tmp_path / "held.lock"), stale_after=0.05)
 
-        assert other.acquire(1.0) is True
-        assert os.path.isdir(tmp_path / "held.lock")
-        other.release()
+        assert other.acquire(0.3) is False, (
+            "the owner of this lock is this very process; reclaiming it on age "
+            "would hand the browser to a second holder while the first is using it"
+        )
+        holder.release()
+
+    def test_an_unreadable_usage_count_is_unknown_not_zero(self, tmp_path):
+        """Fail-open must not look like an exhausted quota.
+
+        Codex on #150: the fail-open path returned -1, which reached
+        `QuotaInfo.downloads_left`, and the router reads a non-positive value
+        as exhausted — so it discarded a URL the walk had already paid for.
+        """
+        from lib.sources.annas_usage import DailyUsage
+
+        usage = DailyUsage(str(tmp_path / "usage.json"))
+        usage._acquire = lambda: False  # simulate a lock we cannot take
+
+        allowed, remaining = usage.spend(30)
+
+        assert allowed is True, "a lock problem must not block the operator"
+        assert remaining is None, "unknown must not be representable as a count"
+
+    def test_an_unknown_budget_omits_quota_rather_than_reporting_zero(self):
+        from lib.sources.annas import AnnasArchiveAdapter
+        from lib.sources.config import SourceConfig
+
+        adapter = AnnasArchiveAdapter(SourceConfig(annas_browser_enabled=True))
+
+        result = adapter._browser_result("https://cdn.example/x.pdf", None)
+
+        assert result.quota_info is None
+        assert result.url == "https://cdn.example/x.pdf"

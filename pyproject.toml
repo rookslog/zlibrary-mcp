@@ -51,6 +51,15 @@ ocr = [
     "pillow>=11.0.0",
 ]
 
+# Anna's Archive browser-resident download route (#143). Deliberately optional
+# and deliberately not in `dev`: it needs a real display and a human to solve
+# the DDoS-Guard challenge once, so it cannot run in CI and must never become a
+# requirement for the credential-free LibGen path that most users install for.
+# After `uv sync --extra annas-browser`, run `playwright install chrome`.
+annas-browser = [
+    "playwright>=1.55.0",
+]
+
 # Development and testing
 dev = [
     "pytest>=8.4.0",

@@ -148,6 +148,9 @@ class AnnasArchiveAdapter(SourceAdapter):
         self.port = port_of(self.base_url)
         self.scheme = urlsplit(self.base_url).scheme or "https"
         self._client: Optional[httpx.AsyncClient] = None
+        # Created on first use, not here: starting a browser is expensive and
+        # every credential-free LibGen caller constructs this adapter too.
+        self._browser = None
 
     async def _get_client(self) -> httpx.AsyncClient:
         """Get or create HTTP client.
@@ -360,10 +363,25 @@ class AnnasArchiveAdapter(SourceAdapter):
         """
         host = (urlsplit(self.base_url).hostname or "").lower()
         if not self.secret_key:
+            # The browser-resident route is the key-free alternative, in scope
+            # since the ruling recorded in #147 and measured in #142. It is
+            # tried only when explicitly enabled, because it needs a real
+            # display and a person to solve the challenge once — a server that
+            # reached for it unasked would hang on a window nobody can see.
+            if self.config.annas_browser_enabled:
+                return await self._browser_download_url(md5)
             raise ProviderConfigurationError(
                 PROVIDER,
                 host,
-                "ANNAS_SECRET_KEY not configured",
+                "ANNAS_SECRET_KEY not configured"
+                + (
+                    ""
+                    if self.config.annas_browser_enabled
+                    else ". The key-free browser-resident route exists (#143) "
+                    "but is off; set ANNAS_BROWSER_ENABLED=true to use it. It "
+                    "needs a visible browser window and one human challenge "
+                    "solve."
+                ),
             )
 
         if host not in ANNAS_TRUSTED_HOSTS:
@@ -459,7 +477,10 @@ class AnnasArchiveAdapter(SourceAdapter):
                     "account_fast_download_info must be an object",
                     reason="protocol_error",
                 )
-            if "downloads_left" in account_info and account_info["downloads_left"] is not None:
+            if (
+                "downloads_left" in account_info
+                and account_info["downloads_left"] is not None
+            ):
                 quota_info = QuotaInfo(
                     downloads_left=account_info["downloads_left"],
                     downloads_per_day=account_info.get("downloads_per_day", 0),
@@ -472,8 +493,38 @@ class AnnasArchiveAdapter(SourceAdapter):
             quota_info=quota_info,
         )
 
+    async def _browser_download_url(self, md5: str) -> DownloadResult:
+        """Resolve a payload URL through the browser-resident session (#143).
+
+        The browser hands back a URL and nothing else. The transfer stays on
+        the ordinary httpx path, which already verifies content md5, bounds
+        throughput and stages atomically — the spike measured that the signed
+        URL is fetchable outside the browser (HTTP 206, correct content), so
+        moving bytes through Playwright would have meant reimplementing three
+        pieces of working machinery for no gain.
+        """
+        from .annas_browser import AnnasBrowserSession  # noqa: PLC0415
+
+        if self._browser is None:
+            self._browser = AnnasBrowserSession(self.config)
+        url, remaining = await self._browser.resolve_download_url(md5)
+        return DownloadResult(
+            url=url,
+            source=SourceType.ANNAS_ARCHIVE,
+            quota_info=QuotaInfo(
+                downloads_left=remaining,
+                downloads_per_day=self.config.annas_browser_daily_limit,
+                downloads_done_today=(
+                    self.config.annas_browser_daily_limit - remaining
+                ),
+            ),
+        )
+
     async def close(self) -> None:
         """Clean up HTTP client resources."""
         if self._client:
             await self._client.aclose()
             self._client = None
+        if self._browser is not None:
+            await self._browser.close()
+            self._browser = None

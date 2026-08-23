@@ -200,10 +200,45 @@ An absent `also_available_on` field is not present in the result.
 the file can leave the other source later. Use it to prefer a source that has no daily
 limit. Do not depend on it.
 
-Anna's Archive downloads need a membership API key in `ANNAS_SECRET_KEY`. Without a key,
-the server cannot download from Anna's Archive. Anna's Archive protects its free download
-route with a browser verification challenge, and this server does not defeat that
-protection. Open the record URL in a web browser to download a file without a key.
+Anna's Archive has two download routes.
+
+**Keyed fast downloads** need a membership API key in `ANNAS_SECRET_KEY`. This is the
+route to use if you have a membership: it is fast, it needs no browser, and it works
+unattended.
+
+**The browser-resident route** needs no key, and needs you. Anna's protects its free
+download route with a browser verification challenge, and this server does not solve that
+challenge — a real Chrome window on your own machine does, once, with you in front of it.
+The server then reads the download links out of that same browser and fetches the file
+normally. Set `ANNAS_BROWSER_ENABLED=true` and install the extra:
+
+```bash
+uv sync --extra annas-browser && playwright install chrome
+```
+
+A visible browser window opens when a download starts. Solve the challenge if it appears;
+clearance then lasts about twenty minutes. **This route cannot run headless** — a headless
+browser fails even holding clearance a visible one earned minutes earlier.
+
+It is also deliberately slow. Anna's states its reason for the challenge plainly —
+*"browser verification for our slow downloads, because otherwise bots and scrapers will
+abuse them"* — so this route is rate-limited to personal reading pace and refuses rather
+than speeding up: one request at a time, 20 seconds apart, 30 per day. On a challenge or a
+refusal it backs off for five minutes instead of retrying. The limits are configurable
+(`ANNAS_BROWSER_MIN_INTERVAL`, `ANNAS_BROWSER_DAILY_LIMIT`, `ANNAS_BROWSER_BACKOFF`),
+which is not an invitation to raise them.
+
+| Variable | Default | Meaning |
+|---|---|---|
+| `ANNAS_BROWSER_ENABLED` | `false` | Turn the browser route on |
+| `ANNAS_BROWSER_PROFILE_DIR` | `~/.cache/zlibrary-mcp/annas-browser-profile` | Where clearance is kept between runs |
+| `ANNAS_BROWSER_MIN_INTERVAL` | `20` | Seconds between requests |
+| `ANNAS_BROWSER_DAILY_LIMIT` | `30` | Requests per day (a book costs about two) |
+| `ANNAS_BROWSER_BACKOFF` | `300` | Seconds to wait after a challenge or refusal |
+| `ANNAS_BROWSER_SETTLE` | `40` | Seconds to let the challenge hop finish |
+| `ANNAS_BROWSER_MAX_SERVERS` | `3` | Partner servers to try before giving up |
+
+LibGen needs neither key nor browser, and remains the credential-free default.
 
 **Warning:** the fast-download API sends `ANNAS_SECRET_KEY` as a URL parameter. Therefore
 the server sends the key only to hosts in `ANNAS_TRUSTED_HOSTS` in `lib/sources/config.py`.

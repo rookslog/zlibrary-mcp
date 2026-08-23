@@ -1,0 +1,414 @@
+"""Anna's Archive download-link resolution from a browser-resident session.
+
+Anna's free download route sits behind a DDoS-Guard challenge. The route this
+module implements is the one an operator ruling brought into scope (#142, #147):
+a **real browser on the operator's machine** holds the clearance, and this code
+drives that browser to read the links Anna's puts on its own pages. Nothing is
+exported to another client, so #84's finding — DDoS-Guard binds the challenge
+cookie to the issuing IP inside `__ddg9_`, making a transplanted cookie exactly
+as useless as no cookie — does not apply here.
+
+Two facts from the #142/#143 spike shape everything below.
+
+**The browser resolves links; it does not move the file.** The signed URL that
+Anna's partner-server page hands out is fetched successfully *outside* the
+browser (measured: HTTP 206, `bytes 0-4095/4762590`, body starting `%PDF-1.5`).
+So the browser's job ends at a URL, and the transfer stays on the existing httpx
+path in `python_bridge._download_url_to_file`, which already does content-md5
+verification, throughput bounding and atomic staging. Routing bytes through
+Playwright would have meant reimplementing all three, worse.
+
+**Headful is mandatory.** A headless launch fails while holding clearance that
+worked headful minutes earlier from the same profile. This is not a tuning
+parameter, so `launch_headless` exists only to be refused loudly rather than to
+be set.
+
+The politeness layer (#144) is not a separate module because it must not be
+separable: every navigation goes through `_RateLimiter`, one request is in
+flight at a time, and a challenge or refusal backs off rather than retrying
+into the wall. Anna's states its reason for the control plainly — *"browser
+verification for our slow downloads, because otherwise bots and scrapers will
+abuse them"* — and the limiter is what makes this path's claim to be on the
+right side of that true rather than rhetorical.
+"""
+
+from __future__ import annotations
+
+import asyncio
+import logging
+import re
+import time
+from dataclasses import dataclass, field
+from typing import List, Optional, Tuple
+from urllib.parse import urlsplit
+
+from .config import SourceConfig
+from .errors import (
+    ProviderConfigurationError,
+    ProviderResponseError,
+    ProviderTimeoutError,
+)
+
+logger = logging.getLogger(__name__)
+
+PROVIDER = "annas"
+
+# The partner-server links Anna's renders on a book page. Index 0 is the
+# "slow partner server" set; the trailing integer selects which one.
+_SLOW_LINK_RE = re.compile(r"/slow_download/([a-f0-9]{32})/(\d+)/(\d+)")
+
+# A direct file URL, as opposed to another Anna's page. The partner page's
+# payload link points off-site at a CDN node, which is what makes it fetchable
+# outside the browser at all.
+_FILE_EXTENSION_RE = re.compile(r"\.(pdf|epub|djvu|mobi|azw3|cbz|cbr|fb2|txt)\b", re.I)
+
+# Page text that means "the wall answered", not "the book is missing". These
+# must back off rather than retry: retrying into a challenge is the behaviour
+# the rate limit exists to prevent.
+_CHALLENGE_MARKERS = (
+    "checking your browser",
+    "ddos-guard",
+    "verifying you are human",
+    "enable javascript and cookies",
+)
+
+_EXHAUSTED_MARKERS = (
+    "you have downloaded too many",
+    "too many downloads",
+    "please wait",
+    "rate limit",
+)
+
+
+class BrowserUnavailableError(ProviderConfigurationError):
+    """Playwright, or a browser it can drive, is not installed.
+
+    A configuration failure rather than an outage: it is permanent until the
+    operator changes something, so it must not count as evidence that Anna's is
+    unhealthy. `reason` stays `configuration_error` for that reason.
+    """
+
+
+class ChallengeNotClearedError(ProviderResponseError):
+    """The wall answered instead of the page.
+
+    Distinct from an ordinary response error because the correct response is
+    the opposite one: back off and tell the operator to re-establish clearance
+    in the browser, rather than failing over to another host or retrying.
+    """
+
+
+class ProviderRateLimitedError(ProviderResponseError):
+    """Anna's declined further downloads for now — its limit, not ours.
+
+    A wall like the challenge, and handled like one: the walk stops rather than
+    trying the next partner server. Typed because the caller's move differs
+    from an ordinary response error, and because catching it by message would
+    put a string match on the abort path.
+    """
+
+    reason = "quota_exhausted"
+
+
+class DailyLimitReachedError(ProviderResponseError):
+    """This session's own per-day ceiling is spent.
+
+    Ours, not Anna's. Hitting it is the politeness layer working, so it says so
+    plainly rather than presenting as a provider failure.
+    """
+
+    reason = "quota_exhausted"
+
+
+@dataclass
+class _RateLimiter:
+    """Minimum spacing between requests, plus a ceiling on how many there are.
+
+    Deliberately crude. A token bucket would let a burst through after an idle
+    period, and a burst is the exact shape of traffic this exists to prevent —
+    the point is not to average out politely, it is to never be fast.
+    """
+
+    min_interval: float
+    daily_limit: int
+    _last_request: float = 0.0
+    _spent: int = 0
+    _window_started: float = field(default_factory=time.monotonic)
+
+    def _roll_window(self) -> None:
+        if time.monotonic() - self._window_started >= 86400:
+            self._window_started = time.monotonic()
+            self._spent = 0
+
+    @property
+    def remaining_today(self) -> int:
+        self._roll_window()
+        return max(0, self.daily_limit - self._spent)
+
+    async def acquire(self) -> None:
+        """Wait out the interval, or refuse if the day's budget is spent."""
+        self._roll_window()
+        if self._spent >= self.daily_limit:
+            raise DailyLimitReachedError(
+                PROVIDER,
+                "",
+                f"this session's own daily ceiling of {self.daily_limit} "
+                f"requests is spent. This is our limit, not Anna's — the "
+                f"browser route is deliberately bounded (#144). Raise "
+                f"ANNAS_BROWSER_DAILY_LIMIT only with a reason.",
+            )
+        elapsed = time.monotonic() - self._last_request
+        if self._last_request and elapsed < self.min_interval:
+            await asyncio.sleep(self.min_interval - elapsed)
+        self._last_request = time.monotonic()
+        self._spent += 1
+
+    def penalise(self, seconds: float) -> None:
+        """Push the next allowed request out, after a refusal.
+
+        Called on a challenge or a 429/403. Backing off is not the same as
+        waiting: it moves the *floor*, so the next request is late even if the
+        caller asks immediately.
+        """
+        self._last_request = time.monotonic() + max(0.0, seconds - self.min_interval)
+
+
+def _classify_page(text: str) -> Optional[str]:
+    """Name the wall in a page body, or None if it looks like a real page."""
+    low = text.lower()
+    for marker in _CHALLENGE_MARKERS:
+        if marker in low:
+            return "challenge"
+    for marker in _EXHAUSTED_MARKERS:
+        if marker in low:
+            return "exhausted"
+    return None
+
+
+class AnnasBrowserSession:
+    """A serialised, rate-limited handle on one browser-resident Anna's session.
+
+    One instance owns one browser profile. Every public method takes the same
+    lock, so there is exactly one request in flight per session no matter how
+    many callers there are — the repo has already learned what fanning lanes out
+    against a single-session provider costs (#144), and this is the structural
+    version of that lesson rather than a documented convention.
+    """
+
+    def __init__(self, config: SourceConfig):
+        self.config = config
+        self.base_url = config.annas_base_url.rstrip("/")
+        self.host = (urlsplit(self.base_url).hostname or "").lower()
+        self._lock = asyncio.Lock()
+        self._limiter = _RateLimiter(
+            min_interval=config.annas_browser_min_interval,
+            daily_limit=config.annas_browser_daily_limit,
+        )
+        self._playwright = None
+        self._context = None
+
+    # -- lifecycle ---------------------------------------------------------
+
+    async def _ensure_context(self):
+        """Start the browser once, headful, on the operator's own profile."""
+        if self._context is not None:
+            return self._context
+
+        try:
+            from playwright.async_api import async_playwright  # noqa: PLC0415
+        except ImportError as exc:
+            raise BrowserUnavailableError(
+                PROVIDER,
+                self.host,
+                "playwright is not installed. The browser-resident Anna's route "
+                "needs it: install the optional extra with "
+                "`uv sync --extra annas-browser`, then `playwright install "
+                "chrome`. Anna's keyed fast_download and every LibGen route are "
+                "unaffected and need none of this.",
+            ) from exc
+
+        self._playwright = await async_playwright().start()
+        try:
+            self._context = await self._playwright.chromium.launch_persistent_context(
+                self.config.annas_browser_profile_dir,
+                headless=False,
+                channel="chrome",
+                args=["--disable-blink-features=AutomationControlled"],
+            )
+        except Exception as exc:  # noqa: BLE001 - surfaced as configuration
+            await self._shutdown_playwright()
+            raise BrowserUnavailableError(
+                PROVIDER,
+                self.host,
+                f"could not start a browser on profile "
+                f"{self.config.annas_browser_profile_dir!r}: {exc}. This route "
+                f"requires a real display — #142 measured headless failing "
+                f"while holding clearance that worked headful from the same "
+                f"profile minutes earlier.",
+            ) from exc
+        return self._context
+
+    async def _shutdown_playwright(self) -> None:
+        if self._playwright is not None:
+            try:
+                await self._playwright.stop()
+            finally:
+                self._playwright = None
+
+    async def close(self) -> None:
+        if self._context is not None:
+            try:
+                await self._context.close()
+            finally:
+                self._context = None
+        await self._shutdown_playwright()
+
+    # -- navigation --------------------------------------------------------
+
+    async def _visit(self, page, url: str) -> str:
+        """Fetch one page politely and return its HTML, or name the wall.
+
+        The settle wait is not a guess dressed as a constant: the challenge hop
+        answers 403 *while succeeding*, so a status check immediately after
+        `goto` reports failure on a run that is about to work. #142 lost a
+        probe to exactly that reading before the wait was long enough. Cold
+        solves measured ~15s and re-solves ~35s, so the budget is configurable
+        and defaults above the slower of the two.
+        """
+        await self._limiter.acquire()
+        try:
+            await page.goto(
+                url,
+                wait_until="domcontentloaded",
+                timeout=self.config.annas_browser_nav_timeout * 1000,
+            )
+        except Exception as exc:  # noqa: BLE001 - normalised below
+            raise ProviderTimeoutError(
+                PROVIDER,
+                self.host,
+                f"navigation to {url} did not complete: {exc}",
+                reason="read_timeout",
+            ) from exc
+
+        await asyncio.sleep(self.config.annas_browser_settle_seconds)
+        html = await page.content()
+
+        wall = _classify_page(html)
+        if wall == "challenge":
+            self._limiter.penalise(self.config.annas_browser_backoff_seconds)
+            raise ChallengeNotClearedError(
+                PROVIDER,
+                self.host,
+                "the DDoS-Guard challenge answered instead of the page. "
+                "Clearance lapses after roughly 20 minutes (#142); solve it "
+                "once in the visible browser window and retry. Backing off "
+                f"{self.config.annas_browser_backoff_seconds:.0f}s rather than "
+                "retrying into the wall.",
+                reason="http_error",
+            )
+        if wall == "exhausted":
+            self._limiter.penalise(self.config.annas_browser_backoff_seconds)
+            raise ProviderRateLimitedError(
+                PROVIDER,
+                self.host,
+                "Anna's declined further downloads for now (its own limit, not "
+                "ours). Backing off rather than retrying.",
+                reason="quota_exhausted",
+            )
+        return html
+
+    # -- the actual job ----------------------------------------------------
+
+    @staticmethod
+    def _slow_download_paths(html: str, md5: str) -> List[str]:
+        """Partner-server links on a book page, in the order Anna's lists them.
+
+        Order is preserved rather than sorted: Anna's puts the servers it
+        expects to work first, and second-guessing that would be inventing
+        knowledge we do not have.
+        """
+        seen = []
+        for match in _SLOW_LINK_RE.finditer(html):
+            if match.group(1).lower() != md5.lower():
+                continue
+            path = match.group(0)
+            if path not in seen:
+                seen.append(path)
+        return seen
+
+    @staticmethod
+    def _direct_file_url(html: str, base_host: str) -> Optional[str]:
+        """The off-site payload link on a partner-server page.
+
+        Constrained to off-site hosts on purpose: every same-host candidate is
+        another Anna's page, and following one would walk the flow in a circle
+        while spending rate budget on each lap.
+        """
+        for match in re.finditer(r'href="([^"]+)"', html):
+            href = match.group(1)
+            if not href.startswith("http"):
+                continue
+            if not _FILE_EXTENSION_RE.search(href):
+                continue
+            host = (urlsplit(href).hostname or "").lower()
+            if host and host != base_host:
+                return href
+        return None
+
+    async def resolve_download_url(self, md5: str) -> Tuple[str, int]:
+        """Walk book page → partner server → signed URL. Returns (url, remaining).
+
+        Returns a URL for the caller to fetch with the ordinary httpx transfer,
+        which already verifies content md5, bounds throughput and stages
+        atomically. The browser deliberately never sees the bytes.
+        """
+        async with self._lock:
+            context = await self._ensure_context()
+            page = await context.new_page()
+            try:
+                book_html = await self._visit(page, f"{self.base_url}/md5/{md5}")
+                candidates = self._slow_download_paths(book_html, md5)
+                if not candidates:
+                    raise ProviderResponseError(
+                        PROVIDER,
+                        self.host,
+                        f"no partner-server link for md5 {md5} on its book "
+                        f"page. The page loaded and the challenge did not "
+                        f"fire, so this is a missing edition or a layout "
+                        f"change — not a wall, and not a reason to retry.",
+                        reason="not_found",
+                    )
+
+                attempts: List[str] = []
+                for path in candidates[: self.config.annas_browser_max_servers]:
+                    try:
+                        partner_html = await self._visit(page, f"{self.base_url}{path}")
+                    except (
+                        ChallengeNotClearedError,
+                        ProviderRateLimitedError,
+                        DailyLimitReachedError,
+                    ):
+                        # A wall answered. Every remaining partner server sits
+                        # behind the same wall, so trying them cannot succeed —
+                        # it can only spend the day's budget proving it, after
+                        # sleeping out the backoff each time (#144: back off on
+                        # a challenge or refusal rather than retrying into it).
+                        raise
+                    except Exception as exc:  # noqa: BLE001 - try the next server
+                        attempts.append(f"{path}: {type(exc).__name__}")
+                        continue
+
+                    url = self._direct_file_url(partner_html, self.host)
+                    if url:
+                        return url, self._limiter.remaining_today
+                    attempts.append(f"{path}: no payload link")
+
+                raise ProviderResponseError(
+                    PROVIDER,
+                    self.host,
+                    "no partner server yielded a payload link — "
+                    + " | ".join(attempts),
+                    reason="protocol_error",
+                )
+            finally:
+                await page.close()

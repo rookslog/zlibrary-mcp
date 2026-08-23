@@ -91,7 +91,7 @@ keep working. See `docs/api.md` for the full response shapes.
 |--------|---------------|
 | `base.py` | `SourceAdapter` ABC: `search()`, `get_download_url(md5)`, `close()` |
 | `models.py` | `UnifiedBookResult`, `DownloadResult` (shared result shapes) |
-| `config.py` | `SourceConfig` from env (`ANNAS_SECRET_KEY`, `ANNAS_BASE_URL`, `LIBGEN_MIRROR`, `BOOK_SOURCE_DEFAULT`, `BOOK_SOURCE_FALLBACK_ENABLED`) |
+| `config.py` | `SourceConfig` from env (`ANNAS_SECRET_KEY`, `ANNAS_BASE_URL`, `LIBGEN_MIRROR`, `BOOK_SOURCE_DEFAULT`, `BOOK_SOURCE_FALLBACK_ENABLED`, the `ANNAS_BROWSER_*` family) |
 | `annas.py` | Anna's Archive adapter — HTML scraping (BeautifulSoup); DOM-fragile surface |
 | `libgen.py` | LibGen adapter (fallback source) |
 | `router.py` | `SourceRouter`: Anna's primary when key configured, LibGen fallback on error/quota exhaustion; source selection `auto`/`annas`/`libgen` |
@@ -278,6 +278,11 @@ zlibrary-mcp/
 
 ### Alternative Sources
 - Anna's Archive: HTML-scraped; fast downloads gated on `ANNAS_SECRET_KEY`; quota-aware
+- Anna's Archive, key-free: `annas_browser.py` drives a headful browser on the operator's
+  machine to *resolve* download links, then hands the URL back for the ordinary httpx
+  transfer. The browser never sees the file bytes, so content-md5 verification, throughput
+  bounding and atomic staging stay in one place. Serialised and rate-limited in the same
+  module, because the route's scope is conditional on the limits (#143, #144)
 - LibGen: mirror-configurable fallback
 - Both monitored daily by the Upstream Contract Check workflow
 

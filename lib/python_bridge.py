@@ -923,6 +923,7 @@ async def _download_url_to_file(
     """
     import httpx
 
+    from lib.sources.config import DEFAULT_BROWSER_USER_AGENT
     from lib.sources.libgen import get_user_agent
 
     expected_md5 = md5.strip().lower()
@@ -936,6 +937,18 @@ async def _download_url_to_file(
     )
     os.close(descriptor)
     attempt_path = Path(attempt_name)
+
+    # LIBGEN_USER_AGENT is scoped to LibGen. This function is source-agnostic,
+    # so sending an operator's LibGen-specific string to Anna's host would both
+    # change an unrelated transfer's behaviour and hand a custom identifying
+    # string to a provider that never asked for it (Codex on #146). Other
+    # sources get the neutral browser default, which is what they sent before
+    # the override existed.
+    user_agent = (
+        get_user_agent(config)
+        if str(provider).lower() == "libgen"
+        else DEFAULT_BROWSER_USER_AGENT
+    )
 
     original_host = (urlsplit(url).hostname or "").lower()
     active_host = original_host
@@ -961,7 +974,7 @@ async def _download_url_to_file(
             async with httpx.AsyncClient(
                 timeout=build_timeout(config),
                 follow_redirects=True,
-                headers={"User-Agent": get_user_agent(config)},
+                headers={"User-Agent": user_agent},
             ) as client:
                 async with client.stream("GET", url) as response:
                     response_url = getattr(response, "url", None)

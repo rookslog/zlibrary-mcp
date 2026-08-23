@@ -336,7 +336,11 @@ async def probe_libgen(client: httpx.AsyncClient) -> ProbeResult:
     never a status code or byte count. ``client`` is unused by design: the
     adapter builds production's own HTTP stack.
     """
-    from lib.sources.libgen import LibgenAdapter  # noqa: PLC0415
+    from lib.sources.errors import AllSourcesFailedError  # noqa: PLC0415
+    from lib.sources.libgen import (  # noqa: PLC0415
+        LibgenAdapter,
+        LibgenUserAgentBlocked,
+    )
 
     canary = "Pride and Prejudice"
     config = get_source_config()
@@ -351,9 +355,22 @@ async def probe_libgen(client: httpx.AsyncClient) -> ProbeResult:
             timeout=libgen_probe_timeout(config, LibgenAdapter.MIN_REQUEST_INTERVAL),
         )
     except Exception as exc:  # noqa: BLE001
+        # A UA block is not upstream drift and must not be summarised as one.
+        # Without this the same refusal, on the same run, came back as WARN
+        # here and BLOCK from the download probe — and the summary counted it
+        # as an optional failure while the message said it was not drift
+        # (Codex on #146). The adapter raises a distinct type for exactly this.
+        blocked = isinstance(exc, LibgenUserAgentBlocked) or (
+            isinstance(exc, AllSourcesFailedError)
+            and any(
+                isinstance(failure, LibgenUserAgentBlocked)
+                for failure in getattr(exc, "failures", []) or []
+            )
+        )
         return ProbeResult(
             name="libgen:search",
             ok=False,
+            blocked=blocked,
             detail=f"adapter search failed: {type(exc).__name__}: {exc}",
             required=False,
         )

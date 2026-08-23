@@ -94,9 +94,17 @@ DEFAULT_LIBGEN_MIRROR = "li"
 # default is a browser string. `LIBGEN_USER_AGENT` exists so operators can set
 # their own policy — including going back to an identifying string — without
 # forking, and so the next widening is a config change rather than a release.
-DEFAULT_LIBGEN_USER_AGENT = (
+# The header every source sends unless something source-specific overrides it.
+# Not LibGen-specific: httpx's and requests' default UAs are on more than one
+# provider's blocklist, so "a browser string" is the neutral choice, not a
+# LibGen accommodation.
+DEFAULT_BROWSER_USER_AGENT = (
     "Mozilla/5.0 (X11; Linux x86_64; rv:128.0) Gecko/20100101 Firefox/128.0"
 )
+
+# LibGen starts from the neutral default and diverges only when an operator
+# sets LIBGEN_USER_AGENT, which is scoped to LibGen requests alone.
+DEFAULT_LIBGEN_USER_AGENT = DEFAULT_BROWSER_USER_AGENT
 
 
 @dataclass

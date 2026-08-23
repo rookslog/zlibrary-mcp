@@ -74,12 +74,19 @@ def get_user_agent(config: Optional[SourceConfig] = None) -> str:
     process, and a UA pinned at import would silently ignore the override
     that exists to answer the next blocklist widening.
     """
+    # Stripped, not merely truthiness-tested: the environment path strips its
+    # input, so an injected `SourceConfig(libgen_user_agent="   ")` would
+    # otherwise put whitespace on the wire where the same value from the
+    # environment would have fallen back to the default (Codex on #146). A
+    # blank UA earns the nginx stub, i.e. the exact failure this exists to
+    # avoid, and does so while the config looks like it addressed it.
     if config is not None:
-        return config.libgen_user_agent or DEFAULT_LIBGEN_USER_AGENT
+        return (config.libgen_user_agent or "").strip() or DEFAULT_LIBGEN_USER_AGENT
     try:
         from .config import get_source_config  # noqa: PLC0415
 
-        return get_source_config().libgen_user_agent or DEFAULT_LIBGEN_USER_AGENT
+        configured = (get_source_config().libgen_user_agent or "").strip()
+        return configured or DEFAULT_LIBGEN_USER_AGENT
     except Exception:  # noqa: BLE001 - a config fault must not remove the UA
         return DEFAULT_LIBGEN_USER_AGENT
 
@@ -224,6 +231,18 @@ def _nginx_stub(text: str) -> bool:
     """
     match = re.search(r"<title>([^<]*)</title>", text, re.I)
     return bool(match and "welcome to nginx" in match.group(1).lower())
+
+
+class LibgenUserAgentBlocked(ProviderResponseError):
+    """A mirror served nginx's default stub instead of the page we asked for.
+
+    A distinct type rather than a distinguishing message, because the doctor
+    has to tell this apart from ordinary upstream drift and a string sniff
+    across a process boundary is not a contract. `probe_libgen` catches
+    `AllSourcesFailedError` as an optional failure; without a type to test for,
+    a search refused on every mirror reported WARN while the download probe
+    reported BLOCK on the identical refusal (Codex on #146).
+    """
 
 
 def _blocked_ua_detail(context: str, config: Optional[SourceConfig] = None) -> str:
@@ -391,7 +410,11 @@ class LibgenAdapter(SourceAdapter):
             if not results:
                 unparseable = _unparseable_search_page(page, self.config)
                 if unparseable:
-                    failure = ProviderResponseError(
+                    blocked = _nginx_stub(getattr(page, "text", "") or "")
+                    failure_cls = (
+                        LibgenUserAgentBlocked if blocked else ProviderResponseError
+                    )
+                    failure = failure_cls(
                         PROVIDER, host, unparseable, reason="protocol_error"
                     )
                     logger.warning("LibGen search unusable on %s: %s", mirror, failure)

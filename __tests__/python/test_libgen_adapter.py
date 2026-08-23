@@ -1234,3 +1234,129 @@ class TestNginxStubMatchesTitleOnly:
         from lib.sources.libgen import _nginx_stub
 
         assert _nginx_stub("<TITLE>WELCOME TO NGINX!</TITLE>" + "x" * 50_000) is True
+
+
+class TestBlankConfiguredUserAgentFallsBack:
+    """A whitespace-only injected UA must not reach the wire.
+
+    Codex on #146: `get_source_config()` strips `LIBGEN_USER_AGENT` before
+    storing it, so the environment path already treated "   " as absent. A
+    caller constructing `SourceConfig` directly bypassed that strip, and the
+    truthiness test then let whitespace through as a valid header — earning the
+    nginx stub, which is the exact failure the override exists to escape, while
+    the configuration looked like it had addressed it.
+    """
+
+    def test_whitespace_only_config_value_yields_the_default(self):
+        from lib.sources.config import DEFAULT_LIBGEN_USER_AGENT, SourceConfig
+        from lib.sources.libgen import get_user_agent
+
+        blank = SourceConfig(libgen_user_agent="   ")
+
+        assert get_user_agent(blank) == DEFAULT_LIBGEN_USER_AGENT
+
+    def test_a_real_value_is_still_stripped_not_discarded(self):
+        from lib.sources.config import SourceConfig
+        from lib.sources.libgen import get_user_agent
+
+        padded = SourceConfig(libgen_user_agent="  operator/9.9  ")
+
+        assert get_user_agent(padded) == "operator/9.9"
+
+    def test_whitespace_only_environment_value_yields_the_default(self, monkeypatch):
+        from lib.sources.config import DEFAULT_LIBGEN_USER_AGENT
+        from lib.sources.libgen import get_user_agent
+
+        monkeypatch.setenv("LIBGEN_USER_AGENT", "   ")
+
+        assert get_user_agent() == DEFAULT_LIBGEN_USER_AGENT
+
+
+class TestSearchUserAgentBlockIsTyped:
+    """A UA-blocked search must be distinguishable by type, not by message.
+
+    Codex on #146: the doctor catches the search adapter's failure as an
+    ordinary optional failure, so a refusal every mirror served came back as
+    WARN from `libgen:search` while `libgen:download` reported BLOCK on the
+    identical refusal in the same run. Sniffing the message across that
+    boundary is not a contract; a type is.
+    """
+
+    @pytest.fixture
+    def config(self):
+        return SourceConfig(
+            libgen_mirror="li", default_source="libgen", fallback_enabled=False
+        )
+
+    @pytest.mark.asyncio
+    async def test_nginx_stub_raises_the_blocked_subclass(self, config):
+        from lib.sources import libgen as libgen_mod
+        from lib.sources.libgen import LibgenAdapter
+
+        adapter = LibgenAdapter(config)
+        adapter.MIN_REQUEST_INTERVAL = 0
+        stub_page = MagicMock()
+        stub_page.status_code = 200
+        stub_page.text = STUB_PAGE_HTML
+
+        def fake_search_default(query):
+            libgen_mod._search_requests.last_response = stub_page
+            return []
+
+        with patch("lib.sources.libgen.LibgenSearch") as mock_search_class:
+            mock_search_class.return_value.search_default.side_effect = (
+                fake_search_default
+            )
+            with pytest.raises(AllSourcesFailedError) as excinfo:
+                await adapter.search("anything")
+
+        assert excinfo.value.failures, "the stub must be recorded as a failure"
+        assert all(
+            isinstance(f, libgen_mod.LibgenUserAgentBlocked)
+            for f in excinfo.value.failures
+        ), (
+            "a stub-serving mirror must produce LibgenUserAgentBlocked; the "
+            "doctor has no other way to tell a UA block from upstream drift"
+        )
+
+    @pytest.mark.asyncio
+    async def test_a_layout_change_does_not_claim_a_ua_block(self, config):
+        """The subclass must be narrow, or it becomes a second false diagnosis.
+
+        A page that simply lost its results table is DOM drift, and calling it
+        a UA block would send an operator to change LIBGEN_USER_AGENT for a
+        problem no header can fix.
+        """
+        from lib.sources import libgen as libgen_mod
+        from lib.sources.libgen import LibgenAdapter
+
+        adapter = LibgenAdapter(config)
+        adapter.MIN_REQUEST_INTERVAL = 0
+        redesigned = MagicMock()
+        redesigned.status_code = 200
+        redesigned.text = "<html><title>Library Genesis</title><main></main></html>"
+
+        def fake_search_default(query):
+            libgen_mod._search_requests.last_response = redesigned
+            return []
+
+        with patch("lib.sources.libgen.LibgenSearch") as mock_search_class:
+            mock_search_class.return_value.search_default.side_effect = (
+                fake_search_default
+            )
+            with pytest.raises(AllSourcesFailedError) as excinfo:
+                await adapter.search("anything")
+
+        assert not any(
+            isinstance(f, libgen_mod.LibgenUserAgentBlocked)
+            for f in excinfo.value.failures
+        )
+
+    def test_the_blocked_subclass_is_still_a_provider_response_error(self):
+        from lib.sources.errors import ProviderResponseError
+        from lib.sources.libgen import LibgenUserAgentBlocked
+
+        assert issubclass(LibgenUserAgentBlocked, ProviderResponseError), (
+            "existing handlers catch ProviderResponseError; narrowing the "
+            "hierarchy here would silently change failover behaviour"
+        )

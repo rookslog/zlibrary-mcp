@@ -2653,3 +2653,69 @@ class TestDownloadHonoursTheLibgenUserAgentOverride:
         )
 
         assert seen["headers"].get("User-Agent") == "injected-should-win/3.0"
+
+    @pytest.mark.asyncio
+    async def test_the_libgen_override_does_not_leak_to_other_providers(
+        self, tmp_path, mocker, monkeypatch
+    ):
+        """`LIBGEN_USER_AGENT` is scoped to LibGen, and this function is not.
+
+        Codex round 3 on #146: an operator sets this variable to satisfy one
+        provider's blocklist. Sending that string to Anna's host changes an
+        unrelated transfer's behaviour and hands a custom identifying value to
+        a provider that never asked for it — and `auto` routing means the
+        operator does not choose which host receives it.
+        """
+        import httpx
+
+        from lib import python_bridge
+        from lib.sources.config import DEFAULT_BROWSER_USER_AGENT
+
+        body = b"%PDF-1.6" + b"\x00" * 2040
+        digest = hashlib.md5(body).hexdigest()
+        monkeypatch.setenv("LIBGEN_USER_AGENT", "libgen-only/4.0")
+
+        seen = {}
+
+        class Response:
+            url = httpx.URL("https://annas.example/get")
+            headers = {}
+
+            def raise_for_status(self):
+                pass
+
+            async def aiter_bytes(self, _chunk_size):
+                yield body
+
+        class Stream:
+            async def __aenter__(self):
+                return Response()
+
+            async def __aexit__(self, *_args):
+                return False
+
+        class Client:
+            def __init__(self, **kwargs):
+                seen["headers"] = kwargs.get("headers") or {}
+
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, *_args):
+                return False
+
+            def stream(self, *_args):
+                return Stream()
+
+        mocker.patch("httpx.AsyncClient", Client)
+
+        await python_bridge._download_url_to_file(
+            "https://annas.example/get", str(tmp_path), digest, "annas"
+        )
+
+        sent = seen["headers"].get("User-Agent")
+        assert sent == DEFAULT_BROWSER_USER_AGENT
+        assert sent != "libgen-only/4.0", (
+            "a LibGen-scoped override reaching Anna's is both a behaviour "
+            "change on an unrelated transfer and an identifier leak"
+        )

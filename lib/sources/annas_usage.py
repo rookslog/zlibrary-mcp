@@ -194,30 +194,50 @@ class DailyUsage:
 
     # -- state -------------------------------------------------------------
 
-    def _read(self) -> Tuple[float, int]:
+    def _read(self) -> Tuple[float, int, float]:
+        """`(window_started, spent, next_allowed)`, all wall-clock seconds.
+
+        `next_allowed` is the earliest a request may start. It lives here
+        rather than in the limiter for the same reason the count does: every
+        MCP operation is a fresh bridge process, so an in-memory timestamp
+        makes the minimum interval and the backoff hold *within* one call and
+        vanish between calls — which is the normal case, not the edge case.
+        """
         try:
             raw = json.loads(self.path.read_text())
-            return float(raw["window_started"]), int(raw["spent"])
+            return (
+                float(raw["window_started"]),
+                int(raw["spent"]),
+                float(raw.get("next_allowed", 0.0)),
+            )
         except (OSError, ValueError, KeyError, TypeError):
             # A corrupt or absent file starts a fresh window. It must not raise
             # — an unreadable counter that took the whole route down would make
             # the politeness layer a liability rather than a guard.
-            return time.time(), 0
+            return time.time(), 0, 0.0
 
-    def _write(self, window_started: float, spent: int) -> None:
+    def _write(self, window_started: float, spent: int, next_allowed: float) -> None:
         temporary = self.path.with_suffix(self.path.suffix + ".tmp")
         temporary.parent.mkdir(parents=True, exist_ok=True)
         temporary.write_text(
-            json.dumps({"window_started": window_started, "spent": spent})
+            json.dumps(
+                {
+                    "window_started": window_started,
+                    "spent": spent,
+                    "next_allowed": next_allowed,
+                }
+            )
         )
         os.replace(temporary, self.path)
 
     # -- the operations the limiter needs ---------------------------------
 
-    def spend(self, limit: int) -> Tuple[bool, Optional[int]]:
+    def spend(
+        self, limit: int, min_interval: float = 0.0
+    ) -> Tuple[bool, Optional[int], float]:
         """Take one request from today's budget.
 
-        Returns `(allowed, remaining_after)`, where `remaining_after` is
+        Returns `(allowed, remaining_after, wait_seconds)`, where `remaining_after` is
         **None** when the count could not be read — unknown, not zero. A
         sentinel that looks like a number gets treated as one: `-1` reached
         `QuotaInfo.downloads_left`, the router read it as exhausted, and the
@@ -238,23 +258,48 @@ class DailyUsage:
                 "not counted against the daily ceiling",
                 self.path,
             )
-            return True, None
+            return True, None, min_interval
         try:
-            window_started, spent = self._read()
+            window_started, spent, next_allowed = self._read()
             now = time.time()
             if now - window_started >= 86400 or now < window_started:
                 window_started, spent = now, 0
             if spent >= limit:
-                return False, 0
-            spent += 1
-            self._write(window_started, spent)
-            return True, max(0, limit - spent)
+                return False, 0, 0.0
+            start_at = max(now, next_allowed)
+            # The next slot is reserved *before* the wait, under the lock, so
+            # two processes queueing at once get consecutive slots rather than
+            # both computing the same start time and going together.
+            self._write(window_started, spent + 1, start_at + min_interval)
+            return True, max(0, limit - (spent + 1)), max(0.0, start_at - now)
+        finally:
+            self._release()
+
+    def penalise(self, seconds: float) -> None:
+        """Push the earliest allowed request out, across processes.
+
+        A backoff held in memory expired the moment the bridge process did, so
+        "back off five minutes rather than retrying into the wall" was true of
+        one call and false of the next one the operator made (#144).
+        """
+        if not self._acquire():
+            logger.warning(
+                "Could not lock the Anna's usage counter at %s; a backoff of "
+                "%.0fs applies to this process only",
+                self.path,
+                seconds,
+            )
+            return
+        try:
+            window_started, spent, next_allowed = self._read()
+            floor = time.time() + max(0.0, seconds)
+            self._write(window_started, spent, max(next_allowed, floor))
         finally:
             self._release()
 
     def remaining(self, limit: int) -> int:
         """Budget left, without spending any. Never blocks on the lock."""
-        window_started, spent = self._read()
+        window_started, spent, _ = self._read()
         now = time.time()
         if now - window_started >= 86400 or now < window_started:
             return limit

@@ -39,7 +39,6 @@ import html
 import logging
 import os
 import re
-import time
 from dataclasses import dataclass
 from typing import List, Optional, Tuple
 from urllib.parse import urlsplit
@@ -233,7 +232,6 @@ class _RateLimiter:
     min_interval: float
     daily_limit: int
     usage: "DailyUsage"
-    _last_request: float = 0.0
 
     @property
     def remaining_today(self) -> int:
@@ -246,7 +244,7 @@ class _RateLimiter:
         sleeping twenty seconds only to then refuse would be the wrong order to
         find out.
         """
-        allowed, remaining = self.usage.spend(self.daily_limit)
+        allowed, remaining, wait = self.usage.spend(self.daily_limit, self.min_interval)
         if not allowed:
             raise DailyLimitReachedError(
                 PROVIDER,
@@ -257,20 +255,22 @@ class _RateLimiter:
                 f"hours after the first request of the current window. Raise "
                 f"ANNAS_BROWSER_DAILY_LIMIT only with a reason.",
             )
-        elapsed = time.monotonic() - self._last_request
-        if self._last_request and elapsed < self.min_interval:
-            await asyncio.sleep(self.min_interval - elapsed)
-        self._last_request = time.monotonic()
+        # The wait was computed and the next slot reserved inside the lock, so
+        # sleeping it here cannot race another process into the same slot.
+        if wait > 0:
+            await asyncio.sleep(wait)
         return remaining
 
     def penalise(self, seconds: float) -> None:
-        """Push the next allowed request out, after a refusal.
+        """Push the earliest allowed request out, after a refusal.
 
         Called on a challenge or a 429/403. Backing off is not the same as
         waiting: it moves the *floor*, so the next request is late even if the
-        caller asks immediately.
+        caller asks immediately — and the floor is shared state, because a
+        backoff that died with its process was true of one call and false of
+        the next one an operator made.
         """
-        self._last_request = time.monotonic() + max(0.0, seconds - self.min_interval)
+        self.usage.penalise(seconds)
 
 
 def visible_text(html: str) -> str:

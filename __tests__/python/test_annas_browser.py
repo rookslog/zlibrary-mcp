@@ -307,10 +307,47 @@ class TestRateLimiter:
 
         limiter.penalise(60.0)
 
-        assert limiter._last_request > asyncio.get_running_loop().time() - 1, (
+        _, _, wait = limiter.usage.spend(limiter.daily_limit, limiter.min_interval)
+        assert wait > 50, (
             "penalise must push the next allowed request into the future; a "
             "no-op here means retrying straight back into the wall"
         )
+
+    @pytest.mark.asyncio
+    async def test_the_backoff_survives_a_new_process(self, tmp_path):
+        """The fifth instance of state-dies-with-the-process on this PR.
+
+        A backoff held in memory was true of the call that hit the wall and
+        false of the next one an operator made, so "back off five minutes
+        rather than retrying into it" held only within a single bridge process
+        — which is never where the next request comes from.
+        """
+        state = str(tmp_path / "usage.json")
+        first = _RateLimiter(min_interval=0.0, daily_limit=10, usage=DailyUsage(state))
+        await first.acquire()
+        first.penalise(120.0)
+
+        second = _RateLimiter(min_interval=0.0, daily_limit=10, usage=DailyUsage(state))
+        _, _, wait = second.usage.spend(10, 0.0)
+
+        assert wait > 100, "a fresh process walked straight back into the wall"
+
+    @pytest.mark.asyncio
+    async def test_spacing_survives_a_new_process(self, tmp_path):
+        """Two sequential MCP downloads are two processes, not two coroutines.
+
+        The 20-second minimum interval held inside one call and reset on the
+        next, so back-to-back downloads were not spaced at all — and
+        back-to-back is the ordinary case.
+        """
+        state = str(tmp_path / "usage.json")
+        first = _RateLimiter(min_interval=5.0, daily_limit=10, usage=DailyUsage(state))
+        await first.acquire()
+
+        second = _RateLimiter(min_interval=5.0, daily_limit=10, usage=DailyUsage(state))
+        _, _, wait = second.usage.spend(10, 5.0)
+
+        assert wait > 3, f"a second process must wait out the interval, got {wait:.1f}s"
 
     def test_remaining_is_reported_so_the_caller_can_see_the_budget(self, tmp_path):
         limiter = _limiter(tmp_path, daily_limit=4)
@@ -426,12 +463,11 @@ class TestResolveDownloadUrl:
         session = _session(
             [BOOK_PAGE, challenge], tmp_path, annas_browser_backoff_seconds=120.0
         )
-        before = session._limiter._last_request
-
         with pytest.raises(ChallengeNotClearedError):
             await session.resolve_download_url(MD5)
 
-        assert session._limiter._last_request > before + 60
+        _, _, wait = session._limiter.usage.spend(session._limiter.daily_limit, 0.0)
+        assert wait > 60, "the challenge must leave a durable backoff behind"
 
     @pytest.mark.asyncio
     async def test_annas_own_limit_is_reported_as_quota_not_as_a_challenge(
@@ -785,10 +821,14 @@ class TestCrossProcessSerialisation:
         usage = DailyUsage(str(tmp_path / "usage.json"))
         usage._acquire = lambda: False  # simulate a lock we cannot take
 
-        allowed, remaining = usage.spend(30)
+        allowed, remaining, wait = usage.spend(30, 20.0)
 
         assert allowed is True, "a lock problem must not block the operator"
         assert remaining is None, "unknown must not be representable as a count"
+        assert wait == 20.0, (
+            "spacing must still apply when the count is unknown; failing open "
+            "on the ceiling is not a reason to also stop being polite"
+        )
 
     def test_an_unknown_budget_omits_quota_rather_than_reporting_zero(self):
         from lib.sources.annas import AnnasArchiveAdapter

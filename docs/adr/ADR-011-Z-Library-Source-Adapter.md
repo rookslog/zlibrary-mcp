@@ -376,6 +376,15 @@ attempt count, where LibGen's depends on whether `LIBGEN_MIRROR` names one of
 the fallbacks. Any arithmetic here that hardcodes three mirrors is wrong for a
 configuration this project supports.
 
+**This is not only a future problem.** The same mistake is live on `master`
+today: `config.py`'s own documented sum assumes three mirrors, so an operator
+who sets `LIBGEN_MIRROR=rs` already reaches 5 attempts = 275s against the 240s
+bridge timeout on a plain `auto` search. Tracked as #152. A per-provider budget
+re-breaks the sum every time a source or mirror is added — the comment in
+`config.py` has now been wrong twice for that reason — which is the argument
+for sharing one budget across the ordered walk rather than recomputing a
+constant a third time.
+
 This is a precondition, not a follow-up. Before three-source orders become
 valid, the migration must either share one total budget across the ordered walk
 rather than granting each provider its own, or raise `PYTHON_BRIDGE_TIMEOUT`
@@ -481,9 +490,14 @@ another source retries the *search*.
 adopting it is what makes a previously inert preference take effect. Z-Library is not added to
 the derived legacy order merely by registration; its named compatibility tools
 remain explicit. Invalid legacy or new order values fail configuration
-validation before a network call. Contract tests cover the normaliser for
-keyed, unkeyed, fallback-disabled, explicit-default, and new-order cases,
-including the unkeyed no-Anna's invariant.
+validation before a network call. Contract tests cover the derivation for
+keyed, unkeyed, fallback-disabled, explicit-default, and new-order cases, and
+must assert the search/acquisition asymmetry directly: **without a key, search
+derives `[libgen, annas_archive]` while acquisition derives `[libgen]`.** A
+single "unkeyed no-Anna's" assertion is what an earlier revision of this
+section asked for, and it is true of acquisition and false of search — a test
+suite that keeps it would enforce the loss of key-free Anna's search that this
+document elsewhere forbids.
 
 ### 5. Z-Library adapter lifecycle
 

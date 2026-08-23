@@ -29,22 +29,22 @@ must enter through `SourceRouter`. No direct-from-ID download path is added.
 
 ## Decision state and tracker reconciliation
 
-The live tracker is authoritative for release placement:
+**This ADR records no release placement.** `AGENTS.md` requires priorities to be
+read from GitHub milestones rather than from any document in this repo, and a
+document that names one becomes a second, slower copy of the release plan — the
+exact drift the milestone scheme exists to prevent, and which this repo has
+already suffered once. Read #40's milestone from the tracker:
 
-- As observed on 2026-08-12, #40 is open in the live `v1.5 — Anna's Archive
-  is a real source` milestone.
-- The closed v1.4 map, #75, explicitly moved #40 out of v1.4 and called it
-  v1.5 work.
-- #109's current milestone description records the release-record repair: the
-  old roadmap-derived v1.4 milestone became `Source layer as a first-class
-  citizen (unslotted)`, while #40 moved to v1.5.
-- #95 still calls this work a successor leg named “v1.6.” That sentence is
-  historical narrative, not the release index. It does not override the live
-  milestone or the decision owner's instruction that #40 is current open
-  work.
+```bash
+gh issue view 40 --json milestone
+```
 
-This ADR therefore treats #40 as v1.5 work. It does not create or preserve a
-v1.6 promise.
+One reconciliation is worth recording, because it is a contradiction a reader
+will hit and cannot resolve from the tracker alone: **#95's prose calls this
+work a successor leg named "v1.6."** That sentence is historical narrative, not
+the release index, and it does not override #40's live milestone. It is noted
+here so the next reader stops at "the document is stale" rather than concluding
+the tracker is wrong — not to assert what the placement is.
 
 ## Context
 
@@ -64,12 +64,14 @@ The source abstraction is only partial on current `master`.
 - `lib/python_bridge.py::download_book` contains the architectural fork: an
   Anna's/LibGen result goes through `_fetch_from_source`, while a Z-Library
   result goes directly through `EAPIClient.download_file`.
-- `lib/python_bridge.py::main` eagerly calls `initialize_eapi_client` for every
-  operation except document processing and multi-source search. Consequently,
-  credential-free LibGen search works today, but `download_book` fails before
-  `_fetch_from_source` can run. The migration must make EAPI initialisation
-  operation- and source-specific before it can claim credential-free LibGen
-  acquisition as a working baseline.
+- `lib/python_bridge.py::main` gates EAPI initialisation on
+  `_requires_eapi_client`, which already exempts document processing,
+  multi-source search, **and** a `download_book` whose result came from a
+  multi-source search (#129). Credential-free LibGen search *and* acquisition
+  therefore both work today. This is existing behaviour the migration must
+  preserve, not a failure it must fix: the eager-initialisation defect this
+  section originally described was fixed before this ADR's rebase parent, and
+  Stage 0 records the working path as a baseline accordingly.
 - `lib/term_tools.py`, `lib/author_tools.py`, `lib/booklist_tools.py`, and
   `lib/enhanced_metadata.py` each know how to create and authenticate an EAPI
   client when a shared client is not supplied. Their public shapes are richer
@@ -499,9 +501,12 @@ until parity is demonstrated.
 
 ### Stage 2: add `ZLibraryAdapter` behind a dispatch gate
 
-- Make bridge EAPI initialisation lazy and source-specific: a LibGen result
-  reaches router acquisition without Z-Library credentials, while legacy
-  Z-Library operations still initialise the shared client when selected.
+- Preserve the source-conditional EAPI initialisation that already exists
+  (`_requires_eapi_client`): a LibGen result must keep reaching router
+  acquisition without Z-Library credentials, while legacy Z-Library operations
+  still initialise the shared client when selected. Routing Z-Library through
+  an adapter changes what `_requires_eapi_client` has to answer for, so this is
+  a regression to guard against, not a behaviour to introduce.
 - Remove raw bridge-payload, copied-argument, query-text, and secret-bearing URL
   logging before routing production traffic through adapters; retain only the
   bounded structured fields in the observability plan.
@@ -715,8 +720,8 @@ source-specific conditional to the common path.
 - ADR-005, EAPI migration
 - ADR-010, current `McpServer.tool()` registration surface
 - #40, Z-Library adapter work
-- #75, shipped v1.4 map and deferral of #40
-- #95, current v1.5 map
+- #75, the shipped map that deferred #40
+- #95, Anna's Archive map issue
 - #96, source/route reporting decision
 - #101 and #107, implementation of the #96 reporting contract
 - #103, optional dependency packaging and registration sequencing

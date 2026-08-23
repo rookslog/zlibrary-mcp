@@ -313,7 +313,7 @@ What other options did we evaluate?
 
 ### 4. Update This Index
 Add entry to:
-- Chronological list
+- The by-ADR-number list
 - Topic-based quick reference (if new category)
 
 ### 5. Link from Implementation

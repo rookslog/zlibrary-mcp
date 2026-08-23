@@ -418,8 +418,20 @@ class DailyUsage:
         try:
             window_started, spent, next_allowed = self._read()
             now = time.time()
-            if now - window_started >= 86400 or now < window_started:
+            # Forward past 24h: a genuine new window. Backward past the
+            # window start: an NTP correction, NOT a new day — resetting there
+            # granted a second full allowance inside one real 24-hour period,
+            # repeatedly, for as long as the clock kept being corrected (Codex
+            # on #150). Re-anchor the window instead, keeping the count.
+            if now - window_started >= 86400:
                 window_started, spent = now, 0
+            elif now < window_started:
+                logger.warning(
+                    "Clock moved backwards past the usage window start; "
+                    "re-anchoring without resetting the %d requests already spent",
+                    spent,
+                )
+                window_started = now
             if spent >= limit:
                 return False, 0, 0.0
             start_at = max(now, next_allowed)

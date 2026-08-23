@@ -122,16 +122,42 @@ class ProbeResult:
         return "FAIL" if self.required else "WARN"
 
 
-def _looks_like_html(sample: bytes) -> bool:
-    """Whether a body opens like an HTML document rather than a file.
+# The openings `_download_url_to_file` treats as an HTML error page rather than
+# file bytes. `<html`/`<!doctype` alone missed a fragment beginning `<head>`,
+# `<body>`, `<script>` or a comment — all of which production rejects and a
+# narrower probe reported as a healthy transfer (Codex on #150).
+_HTML_OPENINGS = (
+    b"<!doctype",
+    b"<html",
+    b"<head",
+    b"<body",
+    b"<script",
+    b"<!--",
+    b"<?xml",
+)
 
-    The same question `_download_url_to_file` asks before accepting bytes: a
-    CDN soft block, login page or interstitial arrives with HTTP 200 and an
-    HTML body, and production refuses it. A status-only check would have
-    reported the handoff healthy on exactly that response.
+
+def _payload_rejection(sample: bytes, content_type: str) -> Optional[str]:
+    """Why production would refuse these bytes, or None if it would accept them.
+
+    Mirrors the guards in `python_bridge.py::_download_url_to_file`: an empty
+    body, an HTML content type, or an HTML-looking opening are all rejected
+    there, so a probe that accepted them would report the browser-to-httpx
+    handoff healthy on exactly the responses that fail in production.
     """
+    if not sample:
+        return "an empty body"
+    if "html" in (content_type or "").lower():
+        return f"content-type {content_type!r}"
     head = sample[:512].lstrip().lower()
-    return head.startswith(b"<!doctype html") or head.startswith(b"<html")
+    if any(head.startswith(opening) for opening in _HTML_OPENINGS):
+        return "an HTML body rather than file bytes"
+    return None
+
+
+def _looks_like_html(sample: bytes) -> bool:
+    """Kept for the tests that assert the opening set directly."""
+    return _payload_rejection(sample, "") is not None
 
 
 def _annas_block_detail(resp: httpx.Response) -> Optional[str]:
@@ -443,7 +469,11 @@ async def probe_annas_download_dom(client: httpx.AsyncClient) -> ProbeResult:
         # The production classifier, not a copy of some of its markers: a partial
         # copy reported a 200 challenge page as DOM drift, sending the maintainer
         # to look for a layout change that is not there (Codex on #150).
-        challenged = _classify_page(body) == "challenge"
+        #
+        # Both of its verdicts, not just one: it also returns "exhausted" for
+        # Anna's own download-limit text on an ordinary HTTP 200, and dropping
+        # that meant throttling read as DOM drift and skipped the backoff.
+        challenged = _classify_page(body) in ("challenge", "exhausted")
         if walled or challenged:
             # Production penalises on a wall; a probe that does not would let the
             # next doctor run or download hit Anna's again after only the spacing
@@ -551,6 +581,7 @@ async def probe_annas_download_dom(client: httpx.AsyncClient) -> ProbeResult:
                     },
                 ) as response:
                     probe_status = response.status_code
+                    probe_content_type = response.headers.get("content-type", "")
                     sample = b""
                     async for chunk in response.aiter_bytes(4096):
                         sample = chunk
@@ -586,15 +617,15 @@ async def probe_annas_download_dom(client: httpx.AsyncClient) -> ProbeResult:
             # page, an interstitial — and verifies content md5. A probe that
             # stopped at the status would report the handoff healthy on exactly
             # the response production refuses (Codex on #150).
-            if _looks_like_html(sample):
+            rejection = _payload_rejection(sample, probe_content_type)
+            if rejection is not None:
                 return ProbeResult(
                     name="annas-archive:download-dom",
                     ok=False,
                     detail=(
                         f"payload link extracted and {payload_host} answered "
-                        f"HTTP {probe_status}, but the body is HTML rather than "
-                        f"file bytes — a soft block or interstitial, which "
-                        f"production rejects. Extraction is healthy and the "
+                        f"HTTP {probe_status}, but production would refuse the "
+                        f"response: {rejection}. Extraction is healthy and the "
                         f"transfer is not"
                     ),
                     required=False,

@@ -645,7 +645,27 @@ class AnnasBrowserSession:
             wait = self.config.download_timeout + (
                 self.config.annas_browser_nav_timeout * 3
             )
-            if not await asyncio.to_thread(self._process_lock.acquire, wait):
+            # `to_thread` keeps running after the awaiting coroutine is
+            # cancelled — and the enclosing download deadline can fire before
+            # this wait expires. The abandoned worker would then acquire the
+            # lock with nobody left to release it, wedging the browser until
+            # the stale reclaim (Codex on #150). Release it on the way out if
+            # it was taken after we stopped caring.
+            acquire = asyncio.create_task(
+                asyncio.to_thread(self._process_lock.acquire, wait)
+            )
+            try:
+                got_lock = await acquire
+            except asyncio.CancelledError:
+                acquire.add_done_callback(
+                    lambda task: (
+                        self._process_lock.release()
+                        if not task.cancelled() and task.result()
+                        else None
+                    )
+                )
+                raise
+            if not got_lock:
                 raise BrowserBusyError(
                     PROVIDER,
                     self.host,
@@ -725,8 +745,16 @@ class AnnasBrowserSession:
                 # release below it never ran, leaving the browser unusable for
                 # everyone until the 600s stale reclaim (Codex on #150). The
                 # release is the one thing here that must happen.
+                self._remaining_at_start = None
                 try:
-                    self._remaining_at_start = None
                     await page.close()
+                except Exception as exc:  # noqa: BLE001
+                    # Chrome can disconnect while the *external* transfer is
+                    # still running, so this raises as the candidate stream is
+                    # closed — after `_download_url_to_file` has published the
+                    # file. Propagating it turned a completed download into a
+                    # failed one, discarding bytes already on disk for a
+                    # browser we no longer need (Codex on #150).
+                    logger.warning("Anna's browser page did not close: %s", exc)
                 finally:
                     self._process_lock.release()

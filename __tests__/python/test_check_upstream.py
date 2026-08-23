@@ -1236,9 +1236,49 @@ class TestTheProbeReusesProductionRatherThanRedefiningIt:
             "that blocks it would report a healthy handoff as broken"
         )
 
-    def test_an_html_body_at_200_is_not_a_healthy_handoff(self, check_upstream):
-        """Production rejects an HTML body; the probe must ask the same question."""
-        assert check_upstream._looks_like_html(b"<!DOCTYPE html><html>...")
-        assert check_upstream._looks_like_html(b"  \n<html><body>login</body>")
-        assert not check_upstream._looks_like_html(b"%PDF-1.5\n%\xe2\xe3")
-        assert not check_upstream._looks_like_html(b"The_Feynman\x00\x00BOOKMOBI")
+    def test_every_response_production_rejects_is_rejected_here(self, check_upstream):
+        """The probe must refuse what `_download_url_to_file` refuses (#150).
+
+        `<html`/`<!doctype` alone missed a fragment opening with `<head>`,
+        `<body>`, `<script>` or a comment, an empty body, and an HTML
+        content-type on non-HTML-looking bytes — all of which production
+        rejects and a narrower probe reported as a healthy transfer.
+        """
+        reject = check_upstream._payload_rejection
+
+        assert reject(b"", "application/octet-stream"), "an empty body"
+        assert reject(b"%PDF-1.5", "text/html; charset=utf-8"), "html content-type"
+        for opening in (
+            b"<!DOCTYPE html><html>",
+            b"  \n<html><body>login</body>",
+            b"<head><title>Blocked</title>",
+            b"<body>Access denied</body>",
+            b"<script>location='/login'</script>",
+            b"<!-- soft block -->",
+            b"<?xml version='1.0'?><error/>",
+        ):
+            assert reject(opening, "application/octet-stream"), opening
+
+    def test_real_file_bytes_are_accepted(self, check_upstream):
+        """Both openings from live captures on this branch."""
+        reject = check_upstream._payload_rejection
+
+        assert reject(b"%PDF-1.5\n%\xe2\xe3", "application/octet-stream") is None
+        assert (
+            reject(b"The_Feynman\x00\x00BOOKMOBI", "application/octet-stream") is None
+        )
+
+    def test_the_probe_handles_both_classifier_verdicts(self, check_upstream):
+        """`_classify_page` returns "exhausted" as well as "challenge".
+
+        Accepting only "challenge" meant Anna's own download-limit page, served
+        at HTTP 200, was reported as DOM drift and skipped the backoff.
+        """
+        import inspect
+
+        source = inspect.getsource(check_upstream.probe_annas_download_dom)
+
+        assert '"exhausted"' in source, (
+            "throttling reported as a layout change sends a maintainer to fix "
+            "something that is not broken"
+        )

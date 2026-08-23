@@ -150,7 +150,10 @@ capabilities.
 |--------|---------|-------------|--------|----------|
 | Library Genesis | No | None | Yes | Yes |
 | Z-Library | Yes | Approximately 10 books | Yes | Yes |
-| Anna's Archive | API key for downloads | Set by membership | Yes | Only with an API key |
+| Anna's Archive | API key, or a browser you solve one challenge in | Membership, or 30 requests/day | Yes | Keyed, or key-free through your own browser |
+
+Anna's Archive has **two** download routes and the table compresses both; see
+[Anna's Archive](#annas-archive) below for which one you want.
 
 ### Library Genesis
 

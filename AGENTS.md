@@ -197,13 +197,39 @@ When a document and the code disagree, the code is right and the document is a b
 
 ## Two terms with sharp edges
 
-**"Keyless" is banned.** Anna's Archive has exactly one supported download route: keyed
-`fast_download`. The free route sits behind a DDoS-Guard challenge that is permanently
-out of scope (#76), and the operator-cookie route was ruled out in #84 — DDoS-Guard binds
-the cookie to the issuing IP inside `__ddg9_`, so a transplanted cookie is rejected
-exactly as an absent one is. Anna's **key-free search** works and is why Anna's remains a
-source at all. Writing "keyless" conflates *no API key* with *no human in the loop*, and
-that conflation already caused approved work to be recorded as cancelled.
+**"Keyless" is banned.** Anna's Archive has one *server-side* download route: keyed
+`fast_download`. The free route sits behind a DDoS-Guard challenge, and the
+operator-cookie route was ruled out in #84 — DDoS-Guard binds the cookie to the issuing
+IP inside `__ddg9_`, so a transplanted cookie is rejected exactly as an absent one is.
+Anna's **key-free search** works and is why Anna's remains a source at all. Writing
+"keyless" conflates *no API key* with *no human in the loop*, and that conflation already
+caused approved work to be recorded as cancelled.
+
+**A second route is in scope: the browser-resident session** (operator ruling, measured
+in #142). A real browser on the operator's machine holds the clearance and issues search
+and download requests from inside it — nothing is exported to another client, so #84's
+IP-binding finding does not apply to it. This reverses the "permanently out of scope"
+clause that #76 and #95 carried: non-API Anna's access is a hard requirement, because
+Anna's aggregates LibGen, Z-Library and IA and uniquely carries the scholarly editions
+that are the reason it is a source at all.
+
+Read that honestly rather than as a re-scoping. It does route around an anti-abuse control
+Anna's operates deliberately, and Anna's states its reason plainly — *"browser verification
+for our slow downloads, because otherwise bots and scrapers will abuse them."* What keeps
+this on the right side of that claim is that #144's rate limiting ships **in the same pass**
+as the route rather than after it, bounded to the personal-use scale #95 fixed: 10–15 books
+typical, 30 maximum, per roughly a four-hour reading session. A route that shipped without
+those limits would make the politeness claim rhetorical, which is the one outcome this
+paragraph exists to prevent. #76 stays closed as written; what changed is the clause, not
+the finding.
+
+The reversal is scoped to that route and nothing wider. Fingerprint work is in scope only
+where it keeps a real, person-established browser session from being walled for its
+automation markers. A **machine-solved challenge** — an unattended headless solver, or
+spoofing standing in for a browser session nobody opened — is still not the route being
+built, and it is not merely deferred: #142 measured that headless fails while holding
+clearance that works headful minutes earlier. "No human in the loop" remains ruled out, as
+the `CONTEXT.md` glossary says.
 
 **LibGen needs no account and has no daily limit**, which is why it matters: it is the
 fallback for Z-Library's ~10 downloads/day ceiling. Failover across mirrors (`li → vg →

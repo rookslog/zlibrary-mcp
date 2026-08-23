@@ -47,7 +47,7 @@ than describing a guarantee the server presently offers.
 
 ### Anna's Archive routes
 
-These three terms exist because "keyless" was ambiguous and the ambiguity caused a real
+These terms exist because "keyless" was ambiguous and the ambiguity caused a real
 planning error: work the maintainer had approved was recorded as ruled out.
 
 **Keyed fast_download**:
@@ -67,14 +67,33 @@ so a transplanted cookie is rejected byte-for-byte identically to no cookie at a
 keyed `fast_download` endpoint and raises without `ANNAS_SECRET_KEY`. **Anna's therefore
 has exactly one supported download route: keyed `fast_download`.** The term is retained
 here because the distinction it names is still needed to read #75, #84 and #97 — not
-because the route is planned. Guardrails for it (#97) are moot rather than deferred; if a
-sanctioned rate-limited route ever appears, reopen those rather than restarting.
+because the route is planned. Its guardrail work, #97, is closed as moot **and has a
+successor**: the sanctioned rate-limited route it anticipated did appear, as the
+browser-resident session below, and #144 carries the guardrails for it. Read #97 for the
+thresholds it settled; do not reopen it.
 _Avoid_: Keyless download (ambiguous — say this instead)
 
+**Browser-resident session**:
+A route where a *real browser on the operator's machine* holds the DDoS-Guard clearance and
+search and download requests are issued from inside it, rate-limited. Nothing is exported to
+a different client, so the IP binding that defeated the operator-cookie route above does not
+apply. #142 measured that clearance can be held this way — headful only, roughly 20 minutes
+per solve — and #143 and #144 build on that answer.
+
+**In scope** (operator ruling; the reasoning and its limits are in `AGENTS.md`
+§"Two terms with sharp edges", the measurement in #142). The entry below previously read
+"permanently out of scope" and #95 carried that clause forward to every successor map; what
+the ruling opened is *this* route, on the condition that #144's rate limiting ships in the
+same pass as it rather than after it. Fingerprint work counts as in scope only where it keeps
+this route working — a real browser whose automation markers would otherwise get it walled.
+
 **Machine-solved challenge**:
-Any route where the *server* defeats the browser verification itself — headless browser,
-fingerprint spoofing. Permanently out of scope: it defeats an anti-abuse control Anna's
-operates deliberately.
+Any route where the *server* defeats the browser verification itself with no browser session
+a person established — a headless solver run unattended, spoofing alone in place of a real
+browser. Still not the route being built, and the ruling above did not open it: #142
+measured that headless fails even holding valid clearance, so this is not a design being
+deferred but one that does not work. Read the reversal above as scoped to the
+browser-resident session; nothing here is licensed by it.
 _Avoid_: Keyless download, automated download
 
 Note that "keyless" alone should not be used. It has meant both *no API key* (a live

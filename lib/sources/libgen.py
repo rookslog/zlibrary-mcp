@@ -38,6 +38,7 @@ from .net import (
 # CRITICAL: Import is libgen_api_enhanced, NOT libgen_api
 from libgen_api_enhanced import LibgenSearch
 from libgen_api_enhanced import search_request as _lge_search_request
+from libgen_api_enhanced.book import Book as _LgeBook
 
 logger = logging.getLogger("zlibrary.sources")
 
@@ -194,6 +195,146 @@ class _RequestsWithUA:
 
 _search_requests = _RequestsWithUA()
 _lge_search_request.requests = _search_requests
+
+
+# libgen.li labels every result row with an object-type badge in the title
+# cell (`<span class="badge"><a title="Journal article">a</a></span>`). The
+# labels seen on a live capture are "Book" and "Journal article"; anything
+# else falls through to a slugified form of the badge's own text rather than
+# being guessed at.
+_OBJECT_TYPE_BY_BADGE = {
+    "book": "book",
+    "fiction book": "book",
+    "journal article": "article",
+    "magazine": "magazine",
+    "comics": "comics",
+    "standart": "standard",
+}
+
+
+def _row_object_type(title_cell) -> str:
+    """Object type for a results row, read from its badge. '' if unlabelled."""
+    for anchor in title_cell.select("span.badge a[title]"):
+        label = (anchor.get("title") or "").strip().lower()
+        if label:
+            return _OBJECT_TYPE_BY_BADGE.get(label, label.replace(" ", "_"))
+    return ""
+
+
+def _has_cover_cell(tds) -> bool:
+    """Whether a row's first cell is the cover column.
+
+    Structural, not cosmetic: the cover cell holds an image and no text of its
+    own. Upstream instead requires the literal string "covers" in the image
+    src, which is exactly what article rows fail (see `_get_books`).
+    """
+    first = tds[0]
+    return first.find("img") is not None and not first.get_text(strip=True)
+
+
+def _get_books(self, table):
+    """Replacement for `SearchRequest.get_books` that keeps columns aligned.
+
+    libgen-api-enhanced 1.3 locates the cover column by matching "covers" in
+    the first cell's `<img src>`. On libgen.li every result row carries a
+    cover cell, but journal-article rows carry `<img src="">` there, so the
+    match fails, the row is read with offset 0, and every field lands one
+    column to the left: empty title, the citation text in `author`, a file
+    size like "73 kB" in `extension`, "0" in `size`, a date in `language` —
+    and no md5 at all, because the mirror links are then read from the
+    extension cell, which holds no links (#132).
+
+    The compensation belongs here rather than in `_to_unified`: by the time a
+    `Book` object exists its md5 has already been dropped, so no post-hoc
+    un-shift can recover it and article rows would stay undownloadable.
+    Installed by the same monkeypatch mechanism as the UA shim above.
+
+    Book and article rows share one ten-column layout — verified against a
+    live libgen.li capture on 2026-08-23, trimmed into
+    `test_files/libgen/mixed_book_article_results.html`. They differ only in
+    the cover `<img src>` and in the object-type badge, which this parser
+    reads onto `Book.content_type` so callers can tell an article from a book
+    instead of inferring it from mangled fields.
+
+    Remove when libgen-api-enhanced detects the cover column structurally and
+    exposes the object type; `pyproject.toml` pins `libgen-api-enhanced>=1.3`.
+    """
+    for row in table.find_all("tr"):
+        tds = row.find_all("td")
+        if len(tds) < 9:
+            continue
+
+        offset = 1 if _has_cover_cell(tds) else 0
+        if len(tds) < offset + 9:
+            continue
+
+        cover_url = None
+        if offset:
+            cover_img = tds[0].find("img", src=True)
+            src = cover_img["src"] if cover_img else ""
+            if "covers" in src:
+                cover_url = urljoin(self.mirror, src).replace("_small", "")
+
+        title_cell = tds[offset]
+        edition_links = [
+            link
+            for link in title_cell.find_all("a", href=True, recursive=False)
+            if urlparse(link["href"]).path.rsplit("/", maxsplit=1)[-1] == "edition.php"
+            and parse_qs(urlparse(link["href"]).query).get("id", [""])[0].isdigit()
+            and link.get_text(" ", strip=True)
+        ]
+        if not edition_links:
+            continue
+
+        edition_link = edition_links[0]
+        raw_title = edition_link.get_text(" ", strip=True)
+        title = re.sub(r"\s+", " ", raw_title.strip())
+        title = re.sub(r"[^A-Za-z0-9 ]+", "", title.strip())
+        id_param = parse_qs(urlparse(edition_link["href"]).query)["id"][0]
+
+        author = tds[offset + 1].get_text(strip=True)
+        publisher = tds[offset + 2].get_text(strip=True)
+        year = tds[offset + 3].get_text(strip=True)
+        language = tds[offset + 4].get_text(strip=True)
+        pages = tds[offset + 5].get_text(strip=True)
+
+        size_link = tds[offset + 6].find("a")
+        size = (
+            size_link.get_text(strip=True)
+            if size_link
+            else tds[offset + 6].get_text(strip=True)
+        )
+
+        extension = tds[offset + 7].get_text(strip=True)
+
+        mirror_links = tds[offset + 8].find_all("a", href=True)
+        mirrors = self.get_mirrors(mirror_links[:4])
+
+        md5 = ""
+        if mirrors[0]:
+            md5 = parse_qs(urlparse(mirrors[0]).query).get("md5", [""])[0]
+
+        book = _LgeBook(
+            id_param,
+            title,
+            author,
+            publisher,
+            year,
+            language,
+            pages,
+            size,
+            extension,
+            md5,
+            mirrors[:4],
+            cover_url,
+            "",
+            "",
+        )
+        book.content_type = _row_object_type(title_cell)
+        yield book
+
+
+_lge_search_request.SearchRequest.get_books = _get_books
 
 # Mirrors tried in order when resolving a download. Different mirrors hand off
 # to different CDN nodes (cdn3/cdn4/... .booksdl.lc) and those nodes fail
@@ -428,14 +569,15 @@ class LibgenAdapter(SourceAdapter):
     def _to_unified(self, results) -> List[UnifiedBookResult]:
         """Convert libgen-api-enhanced books into UnifiedBookResult.
 
-        Rows whose md5 is not a full 32-hex digest are dropped:
-        journal-article rows come back column-shifted from the parser
-        (empty md5, or another column's value — an ISBN, a citation — in
-        the md5 field, #132), and anything short of a real md5 cannot be
-        resolved by ads.php. Same rule as the production canary's
-        usable-row check. The full per-object-type parse is #132's job;
-        this filter is the minimal slice that keeps #134's wider search
-        results usable.
+        Rows whose md5 is not a full 32-hex digest are still dropped —
+        anything short of a real md5 cannot be resolved by ads.php, the same
+        rule as the production canary's usable-row check. What changed in
+        #132 is which rows that catches: journal-article rows used to arrive
+        column-shifted and md5-less from the upstream parser and were dropped
+        wholesale, and now parse correctly (see `_get_books`), so they reach
+        callers as real results carrying `extra["content_type"] == "article"`.
+        The filter remains as the backstop for a row shape neither this
+        adapter nor upstream anticipated.
         """
         dropped = sum(
             1
@@ -466,6 +608,10 @@ class LibgenAdapter(SourceAdapter):
                     "id": getattr(book, "id", ""),
                     "language": getattr(book, "language", ""),
                     "pages": getattr(book, "pages", ""),
+                    # "book" | "article" | "" when the row carried no badge.
+                    # A caller that wants only monographs filters on this
+                    # rather than on the shape of a mangled title (#132).
+                    "content_type": getattr(book, "content_type", "") or "",
                 },
             )
             for book in results

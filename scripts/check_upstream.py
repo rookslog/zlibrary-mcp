@@ -290,6 +290,13 @@ LIBGEN_PROBE_MARGIN = 30.0
 # truthiness check would call that healthy (Codex on #133; the #132 shape).
 MD5_PATTERN = re.compile(r"[0-9a-fA-F]{32}")
 
+# This query yielded the article rows captured for #132. Unlike the former
+# Pride and Prejudice canary, it makes the doctor exercise the article title
+# selector, edition ID, and MD5 path in the production adapter.
+LIBGEN_ARTICLE_CANARY = "The Inner Citadel Meditations Marcus Aurelius"
+LIBGEN_ARTICLE_CANARY_EDITION_ID = "76430726"
+LIBGEN_ARTICLE_CANARY_TITLE_MARKER = "The Inner Citadel P Hadot"
+
 
 def libgen_probe_timeout(config, min_request_interval: float = 0.0) -> float:
     """Wall clock the production adapter may legitimately spend on one search.
@@ -322,8 +329,33 @@ def _usable_row(result) -> bool:
     )
 
 
-async def probe_libgen(client: httpx.AsyncClient) -> ProbeResult:
-    """LibGen is the router's fallback source; mirrors rotate frequently.
+def _usable_article_row(result) -> bool:
+    """Whether a parsed article row is one the downloader could act on."""
+    return _usable_row(result) and (
+        (getattr(result, "extra", {}) or {}).get("content_type") == "article"
+    )
+
+
+def _usable_article_canary_row(result) -> bool:
+    """Whether a parsed row proves this article canary retained its identity."""
+    extra = getattr(result, "extra", {}) or {}
+    return (
+        _usable_article_row(result)
+        and extra.get("id") == LIBGEN_ARTICLE_CANARY_EDITION_ID
+        and LIBGEN_ARTICLE_CANARY_TITLE_MARKER.casefold()
+        in (result.title or "").casefold()
+    )
+
+
+async def _probe_libgen_search(
+    client: httpx.AsyncClient,
+    adapter,
+    *,
+    canary: str,
+    name: str,
+    content_type: Optional[str] = None,
+) -> ProbeResult:
+    """Run a production-adapter LibGen canary against one expected row type.
 
     The probe goes through the PRODUCTION adapter, not a hand-rolled fetch.
     On 2026-08-17 (#124) the mirror served its UA-blocklist stub (default
@@ -337,13 +369,9 @@ async def probe_libgen(client: httpx.AsyncClient) -> ProbeResult:
     adapter builds production's own HTTP stack.
     """
     from lib.sources.errors import AllSourcesFailedError  # noqa: PLC0415
-    from lib.sources.libgen import (  # noqa: PLC0415
-        LibgenAdapter,
-        LibgenUserAgentBlocked,
-    )
+    from lib.sources.libgen import LibgenUserAgentBlocked  # noqa: PLC0415
 
-    canary = "Pride and Prejudice"
-    config = get_source_config()
+    config = adapter.config
     try:
         # #106's budgets bound the adapter internally, but the canary carries
         # its own deadline too: a canary that can hang has the exact defect
@@ -351,8 +379,8 @@ async def probe_libgen(client: httpx.AsyncClient) -> ProbeResult:
         # the adapter's own configured mirror-walk budget rather than fixed at
         # 90s, which was below the ~165s default worst case (Codex on #133).
         results = await asyncio.wait_for(
-            LibgenAdapter(config).search(canary),
-            timeout=libgen_probe_timeout(config, LibgenAdapter.MIN_REQUEST_INTERVAL),
+            adapter.search(canary),
+            timeout=libgen_probe_timeout(config, adapter.MIN_REQUEST_INTERVAL),
         )
     except Exception as exc:  # noqa: BLE001
         # A UA block is not upstream drift and must not be summarised as one.
@@ -374,7 +402,7 @@ async def probe_libgen(client: httpx.AsyncClient) -> ProbeResult:
             and all(isinstance(f, LibgenUserAgentBlocked) for f in failures)
         )
         return ProbeResult(
-            name="libgen:search",
+            name=name,
             ok=False,
             blocked=blocked,
             detail=f"adapter search failed: {type(exc).__name__}: {exc}",
@@ -385,13 +413,25 @@ async def probe_libgen(client: httpx.AsyncClient) -> ProbeResult:
     # a resolvable md5 can never be downloaded (Codex on #128; the article-row
     # column-shift in #132 is exactly this shape). Shape, not truthiness — a
     # shifted column can carry an ISBN or a citation here and still be truthy.
-    usable = [r for r in results if _usable_row(r)]
+    usable = [
+        r
+        for r in results
+        if (
+            _usable_article_canary_row(r)
+            if content_type == "article"
+            else _usable_row(r)
+        )
+    ]
+    row_description = f" {content_type}" if content_type else ""
     if usable:
         return ProbeResult(
-            name="libgen:search",
+            name=name,
             ok=True,
             detail=(
-                f"{len(usable)} usable result(s) (32-hex md5 + title) of "
+                f"{len(usable)} usable{row_description} result(s) "
+                f"({content_type + ' content type + ' if content_type else ''}"
+                f"{'expected edition ID + title marker + ' if content_type else ''}"
+                f"32-hex md5 + title) of "
                 f"{len(results)} parsed by the production adapter "
                 f"for canary {canary!r}"
             ),
@@ -399,17 +439,19 @@ async def probe_libgen(client: httpx.AsyncClient) -> ProbeResult:
         )
     if results:
         return ProbeResult(
-            name="libgen:search",
+            name=name,
             ok=False,
             detail=(
-                f"{len(results)} parsed result(s) but NONE usable "
-                f"(a 32-hex md5 and a nonblank title) for canary "
+                f"{len(results)} parsed result(s) but NONE usable{row_description} "
+                f"({content_type + ' content type, ' if content_type else ''}"
+                f"{'the expected edition ID, title marker, ' if content_type else ''}"
+                "a 32-hex md5 and a nonblank title) for canary "
                 f"{canary!r} — row-markup drift"
             ),
             required=False,
         )
     return ProbeResult(
-        name="libgen:search",
+        name=name,
         ok=False,
         detail=(
             f"0 parsed results for canary {canary!r} — page had a results "
@@ -417,6 +459,65 @@ async def probe_libgen(client: httpx.AsyncClient) -> ProbeResult:
         ),
         required=False,
     )
+
+
+async def probe_libgen(client: httpx.AsyncClient) -> ProbeResult:
+    """Check that the production adapter can parse a normal LibGen book row."""
+    from lib.sources.libgen import LibgenAdapter  # noqa: PLC0415
+
+    adapter = LibgenAdapter(get_source_config())
+    try:
+        return await _probe_libgen_search(
+            client,
+            adapter,
+            canary="Pride and Prejudice",
+            name="libgen:search",
+        )
+    finally:
+        await adapter.close()
+
+
+async def probe_libgen_article(client: httpx.AsyncClient) -> ProbeResult:
+    """Check that the production adapter parses an article row with an MD5."""
+    from lib.sources.libgen import LibgenAdapter  # noqa: PLC0415
+
+    adapter = LibgenAdapter(get_source_config())
+    try:
+        return await _probe_libgen_search(
+            client,
+            adapter,
+            canary=LIBGEN_ARTICLE_CANARY,
+            name="libgen:article-search",
+            content_type="article",
+        )
+    finally:
+        await adapter.close()
+
+
+async def probe_libgen_canaries(
+    client: httpx.AsyncClient,
+) -> tuple[ProbeResult, ProbeResult]:
+    """Run book and article canaries through one paced production adapter."""
+    from lib.sources.libgen import LibgenAdapter  # noqa: PLC0415
+
+    adapter = LibgenAdapter(get_source_config())
+    try:
+        book = await _probe_libgen_search(
+            client,
+            adapter,
+            canary="Pride and Prejudice",
+            name="libgen:search",
+        )
+        article = await _probe_libgen_search(
+            client,
+            adapter,
+            canary=LIBGEN_ARTICLE_CANARY,
+            name="libgen:article-search",
+            content_type="article",
+        )
+        return book, article
+    finally:
+        await adapter.close()
 
 
 def _extract_libgen_key(
@@ -616,13 +717,16 @@ async def run_probes() -> list[ProbeResult]:
         follow_redirects=True,
         headers={"User-Agent": "zlibrary-mcp-upstream-check"},
     ) as client:
-        zlib_results, annas, libgen, libgen_download = await asyncio.gather(
-            probe_zlibrary_eapi(client),
-            probe_annas(client),
-            probe_libgen(client),
-            probe_libgen_download(client),
+        zlib_task = asyncio.create_task(probe_zlibrary_eapi(client))
+        annas_task = asyncio.create_task(probe_annas(client))
+        download_task = asyncio.create_task(probe_libgen_download(client))
+        # Both canaries use one adapter so its per-instance rate limit applies
+        # between their searches. Keep the existing book canary first.
+        libgen, libgen_article = await probe_libgen_canaries(client)
+        zlib_results, annas, libgen_download = await asyncio.gather(
+            zlib_task, annas_task, download_task
         )
-    return [*zlib_results, annas, libgen, libgen_download]
+    return [*zlib_results, annas, libgen, libgen_article, libgen_download]
 
 
 def actionable_failures(results: list[ProbeResult]) -> list[ProbeResult]:

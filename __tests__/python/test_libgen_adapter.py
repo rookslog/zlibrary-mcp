@@ -542,7 +542,9 @@ class TestLibgenAdapterDownload:
         with (
             patch.object(adapter, "_preflight", new=AsyncMock(return_value=None)),
             patch.object(adapter, "_rate_limit", new=AsyncMock(return_value=None)),
-            patch.object(adapter, "_resolve_key", new=AsyncMock(return_value="KEY")),
+            patch.object(
+                adapter, "_resolve_key", new=AsyncMock(return_value=("KEY", ""))
+            ),
             patch.object(adapter, "_serves_bytes", side_effect=trickle),
         ):
             with pytest.raises(AllSourcesFailedError, match="every source"):
@@ -708,7 +710,7 @@ class TestLibgenAdapterParseFailure:
         """Zero results + no results table anywhere must raise, not return []."""
         from lib.sources import libgen as libgen_mod
         from lib.sources.errors import ProviderResponseError
-        from lib.sources.libgen import LibgenAdapter
+        from lib.sources.libgen import LibgenAdapter, get_user_agent
 
         adapter = LibgenAdapter(config)
         adapter.MIN_REQUEST_INTERVAL = 0
@@ -729,9 +731,17 @@ class TestLibgenAdapterParseFailure:
 
         # #124's message content survives the fold: title, status, byte count.
         assert "Welcome to nginx!" in str(excinfo.value)
-        assert "no results table" in str(excinfo.value)
         assert f"{len(STUB_PAGE_HTML)} bytes" in str(excinfo.value)
         assert "HTTP 200" in str(excinfo.value)
+
+        # #141 sharpened the diagnosis rather than restating it. "no results
+        # table" was true of the stub but described the symptom; the message
+        # must now name the blocklisted UA and rule out the two wrong readings
+        # a sweep actually made — that LibGen was down, or lacked the books.
+        assert "blocklisted" in str(excinfo.value)
+        assert "NOT an outage" in str(excinfo.value)
+        assert "LIBGEN_USER_AGENT" in str(excinfo.value)
+        assert get_user_agent() in str(excinfo.value)
 
         failures = excinfo.value.failures
         assert failures, "the stub must be recorded as a typed failure"
@@ -930,3 +940,154 @@ class TestMd5lessRowsFiltered:
 
         assert len(unified) == 1
         assert unified[0].md5 == mock_book.md5
+
+
+class TestLibgenBlockedUserAgent:
+    """A blocklisted UA must be named, never reported as drift or emptiness.
+
+    LibGen refuses a blocklisted User-Agent with HTTP 200 and nginx's default
+    page. That is the same shape as an empty catalogue on the search path and
+    the same shape as markup drift on the download path, so without explicit
+    classification the operator is told the wrong thing twice. #141 records
+    what that cost: a sweep read "no results table" as LibGen being down and
+    concluded the catalogue lacked books it in fact had.
+    """
+
+    STUB = (
+        "<html><head><title>Welcome to nginx!</title></head>"
+        "<body><h1>Welcome to nginx!</h1></body></html>"
+    )
+
+    @pytest.fixture
+    def adapter(self):
+        from lib.sources.libgen import LibgenAdapter
+
+        return LibgenAdapter(SourceConfig(libgen_mirror="li", default_source="libgen"))
+
+    def test_user_agent_defaults_to_the_admitted_browser_string(self, monkeypatch):
+        from lib.sources.config import DEFAULT_LIBGEN_USER_AGENT
+        from lib.sources.libgen import (
+            get_user_agent,
+        )
+
+        monkeypatch.delenv("LIBGEN_USER_AGENT", raising=False)
+        assert get_user_agent() == DEFAULT_LIBGEN_USER_AGENT
+
+    def test_user_agent_honours_the_operator_override(self, monkeypatch):
+        from lib.sources.libgen import (
+            get_user_agent,
+        )
+
+        monkeypatch.setenv("LIBGEN_USER_AGENT", "my-crawler/2.0")
+        assert get_user_agent() == "my-crawler/2.0"
+
+    def test_blank_override_falls_back_rather_than_sending_nothing(self, monkeypatch):
+        """An empty env var must not become an empty UA header."""
+        from lib.sources.config import DEFAULT_LIBGEN_USER_AGENT
+        from lib.sources.libgen import (
+            get_user_agent,
+        )
+
+        monkeypatch.setenv("LIBGEN_USER_AGENT", "   ")
+        assert get_user_agent() == DEFAULT_LIBGEN_USER_AGENT
+
+    def test_override_is_read_per_request_not_pinned_at_import(self, monkeypatch):
+        """The override exists to answer the next widening without a release."""
+        from lib.sources.libgen import (
+            get_user_agent,
+        )
+
+        monkeypatch.setenv("LIBGEN_USER_AGENT", "first/1.0")
+        assert get_user_agent() == "first/1.0"
+        monkeypatch.setenv("LIBGEN_USER_AGENT", "second/2.0")
+        assert get_user_agent() == "second/2.0"
+
+    def test_nginx_stub_recognised_regardless_of_length(self):
+        """Matched on the title: byte count is incidental and vhost-specific."""
+        from lib.sources.libgen import (
+            _nginx_stub,
+        )
+
+        assert _nginx_stub(self.STUB)
+        assert _nginx_stub(self.STUB + "x" * 5000)
+        assert not _nginx_stub("<html><title>Library Genesis</title></html>")
+
+    def test_search_stub_is_reported_as_a_blocked_ua(self, monkeypatch):
+        from lib.sources.libgen import (
+            _unparseable_search_page,
+        )
+
+        monkeypatch.setenv("LIBGEN_USER_AGENT", "blocked-agent/1.0")
+        page = MagicMock(text=self.STUB, status_code=200)
+        detail = _unparseable_search_page(page)
+        assert "blocked-agent/1.0" in detail
+        assert "blocklisted" in detail
+        assert "NOT an outage" in detail
+        assert "LIBGEN_USER_AGENT" in detail
+
+    def test_search_non_stub_parse_failure_keeps_its_own_wording(self):
+        """A redesign is not a block; the two must stay distinguishable."""
+        from lib.sources.libgen import (
+            _unparseable_search_page,
+        )
+
+        page = MagicMock(
+            text="<html><title>Library Genesis</title><body>redesigned</body></html>",
+            status_code=200,
+        )
+        detail = _unparseable_search_page(page)
+        assert "parse failure, not an empty result" in detail
+        assert "blocklisted" not in detail
+
+    def test_genuinely_empty_search_is_not_a_failure(self):
+        """An empty catalogue hit still renders the table, and must pass through."""
+        from lib.sources.libgen import (
+            _unparseable_search_page,
+        )
+
+        page = MagicMock(text="<table id='tablelibgen'></table>", status_code=200)
+        assert _unparseable_search_page(page) is None
+
+    @pytest.mark.asyncio
+    async def test_ads_php_stub_is_reported_as_a_blocked_ua(self, adapter, monkeypatch):
+        monkeypatch.setenv("LIBGEN_USER_AGENT", "blocked-agent/1.0")
+        client = MagicMock()
+        client.get = AsyncMock(
+            return_value=MagicMock(text=self.STUB, raise_for_status=MagicMock())
+        )
+        key, detail = await adapter._resolve_key(client, "li", MD5)
+        assert key is None
+        assert "blocked-agent/1.0" in detail
+        assert "blocklisted" in detail
+        assert "DOM drift" not in detail
+
+    @pytest.mark.asyncio
+    async def test_ads_php_without_anchor_still_reports_dom_drift(self, adapter):
+        """Real markup drift must not be relabelled as a UA block."""
+
+        client = MagicMock()
+        client.get = AsyncMock(
+            return_value=MagicMock(
+                text="<html><title>Library Genesis</title><a href='/x'>Other</a></html>",
+                raise_for_status=MagicMock(),
+            )
+        )
+        key, detail = await adapter._resolve_key(client, "li", MD5)
+        assert key is None
+        assert "DOM drift" in detail
+        assert "blocklisted" not in detail
+
+    @pytest.mark.asyncio
+    async def test_ads_php_with_key_returns_it(self, adapter):
+        client = MagicMock()
+        client.get = AsyncMock(
+            return_value=MagicMock(
+                text=(
+                    "<html><a href='get.php?md5=" + MD5 + "&key=ABC123'>GET</a></html>"
+                ),
+                raise_for_status=MagicMock(),
+            )
+        )
+        key, detail = await adapter._resolve_key(client, "li", MD5)
+        assert key == "ABC123"
+        assert detail == ""

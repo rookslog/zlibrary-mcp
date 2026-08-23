@@ -79,6 +79,25 @@ DEFAULT_ANNAS_BASE_URL = "https://annas-archive.gl"
 # host from here so the probe cannot drift from the runtime again.
 DEFAULT_LIBGEN_MIRROR = "li"
 
+# LibGen's blocklist is a moving target and it fails SILENTLY: a blocked UA
+# gets HTTP 200 with nginx's ~640-byte default page, which is indistinguishable
+# from an outage or an empty catalogue unless something classifies it (#141).
+#
+# #124 (2026-08-17) found an honest self-identifying UA was admitted where
+# python-requests' default was not, and this default was set to that honest
+# string. By 2026-08-23 the blocklist had widened to include it: measured
+# against libgen.li, libgen.vg and libgen.la, the self-identifying UA returned
+# the 641-byte stub for search AND the 637-byte stub for ads.php, while a
+# desktop Firefox string returned 265 KB and a key-bearing download page.
+#
+# The honest string therefore now costs total failure and buys nothing, so the
+# default is a browser string. `LIBGEN_USER_AGENT` exists so operators can set
+# their own policy — including going back to an identifying string — without
+# forking, and so the next widening is a config change rather than a release.
+DEFAULT_LIBGEN_USER_AGENT = (
+    "Mozilla/5.0 (X11; Linux x86_64; rv:128.0) Gecko/20100101 Firefox/128.0"
+)
+
 
 @dataclass
 class SourceConfig:
@@ -101,6 +120,7 @@ class SourceConfig:
     annas_secret_key: str = ""
     annas_base_url: str = DEFAULT_ANNAS_BASE_URL
     libgen_mirror: str = DEFAULT_LIBGEN_MIRROR
+    libgen_user_agent: str = DEFAULT_LIBGEN_USER_AGENT
     default_source: str = "auto"  # 'auto' | 'annas' | 'libgen'
     fallback_enabled: bool = True
     connect_timeout: float = DEFAULT_CONNECT_TIMEOUT
@@ -143,6 +163,9 @@ def get_source_config() -> SourceConfig:
         annas_secret_key=os.environ.get("ANNAS_SECRET_KEY", ""),
         annas_base_url=os.environ.get("ANNAS_BASE_URL", DEFAULT_ANNAS_BASE_URL),
         libgen_mirror=os.environ.get("LIBGEN_MIRROR", DEFAULT_LIBGEN_MIRROR),
+        libgen_user_agent=(
+            os.environ.get("LIBGEN_USER_AGENT", "").strip() or DEFAULT_LIBGEN_USER_AGENT
+        ),
         default_source=os.environ.get("BOOK_SOURCE_DEFAULT", "auto"),
         fallback_enabled=os.environ.get("BOOK_SOURCE_FALLBACK_ENABLED", "true").lower()
         == "true",

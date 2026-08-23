@@ -39,7 +39,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "zlibrary" / "src"))
 from lib.sources.config import get_source_config  # noqa: E402
 from lib.sources.libgen import FALLBACK_MIRRORS as LIBGEN_FALLBACK_MIRRORS  # noqa: E402
-from lib.sources.libgen import USER_AGENT as LIBGEN_PRODUCTION_UA  # noqa: E402
+from lib.sources.libgen import _nginx_stub as _libgen_nginx_stub  # noqa: E402
+from lib.sources.libgen import get_user_agent as libgen_user_agent  # noqa: E402
 from zlibrary.eapi import DEFAULT_EAPI_DOMAINS, WALLED_STATUS_CODES  # noqa: E402
 
 TIMEOUT = httpx.Timeout(20.0, connect=10.0)
@@ -422,6 +423,17 @@ def _libgen_block_detail(mirror: str, resp: httpx.Response) -> Optional[str]:
     wall and names ZLIB_DOMAIN. A refusal is not drift: the resolve-and-fetch
     contract may be intact for clients the wall lets through.
     """
+    # A blocklisted UA is refused with HTTP 200 and nginx's default page, so
+    # the status-code check below never sees it. Left unclassified it reaches
+    # the operator as "DOM drift" or "no results" — a parser bug or an outage,
+    # neither of which is true — which is what #141 cost a sweep to discover.
+    if _libgen_nginx_stub(resp.text):
+        return (
+            f"libgen.{mirror} served nginx's default stub for User-Agent "
+            f"{libgen_user_agent()!r} — this UA is blocklisted. Not an outage "
+            "and not upstream drift; set LIBGEN_USER_AGENT to a string the "
+            "mirror admits (#141)"
+        )
     if resp.status_code not in (403, 429, *WALLED_STATUS_CODES):
         return None
     return (
@@ -451,7 +463,7 @@ async def _probe_libgen_download_mirror(
         resp = await client.get(
             ads_url,
             params={"md5": LIBGEN_PROBE_MD5},
-            headers={"User-Agent": LIBGEN_PRODUCTION_UA},
+            headers={"User-Agent": libgen_user_agent()},
         )
         blocked = _libgen_block_detail(mirror, resp)
         if blocked:
@@ -479,7 +491,7 @@ async def _probe_libgen_download_mirror(
             get_url,
             headers={
                 "Range": f"bytes=0-{LIBGEN_PROBE_RANGE_BYTES - 1}",
-                "User-Agent": LIBGEN_PRODUCTION_UA,
+                "User-Agent": libgen_user_agent(),
             },
         )
     except Exception as exc:  # noqa: BLE001

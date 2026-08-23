@@ -18,7 +18,7 @@ import requests
 from bs4 import BeautifulSoup
 
 from .base import SourceAdapter
-from .config import SourceConfig
+from .config import DEFAULT_LIBGEN_USER_AGENT, SourceConfig
 from .errors import (
     AllSourcesFailedError,
     ProviderResponseError,
@@ -44,12 +44,36 @@ logger = logging.getLogger("zlibrary.sources")
 PROVIDER = "libgen"
 
 # libgen.li serves its default-nginx stub (HTTP 200, ~640 bytes, no results
-# table) to blocklisted tool User-Agents — python-requests' default, python-httpx's
-# default, and curl among them — while any identifying UA gets the real page
-# (measured 2026-08-17, issue #124). An honest self-identifying UA is admitted,
-# so no browser string is needed. Used by BOTH the search path (via the shim
-# below) and the download path (ads.php serves the same stub to blocked UAs).
-USER_AGENT = "zlibrary-mcp (+https://github.com/rookslog/zlibrary-mcp)"
+# table) to blocklisted tool User-Agents while an admitted UA gets the real
+# page. Used by BOTH the search path (via the shim below) and the download path
+# (ads.php serves the same stub to blocked UAs).
+#
+# The blocklist widened on 2026-08-23 to include the honest self-identifying
+# string that #124 had established as admitted, taking search AND ads.php down
+# together (#141). The policy, its default and the measurements now live on
+# `SourceConfig.libgen_user_agent` so a further widening is an env change
+# rather than a release; see lib/sources/config.py.
+#
+# Kept as a module constant for backwards compatibility — scripts/check_upstream.py
+# imports it — but every request reads the config so `LIBGEN_USER_AGENT` takes
+# effect without a reimport.
+USER_AGENT = DEFAULT_LIBGEN_USER_AGENT
+
+
+def get_user_agent() -> str:
+    """UA for every LibGen request, honouring `LIBGEN_USER_AGENT`.
+
+    Read per request rather than captured at import: `get_source_config` is
+    deliberately uncached so the environment can change under a running
+    process, and a UA pinned at import would silently ignore the override
+    that exists to answer the next blocklist widening.
+    """
+    try:
+        from .config import get_source_config  # noqa: PLC0415
+
+        return get_source_config().libgen_user_agent or DEFAULT_LIBGEN_USER_AGENT
+    except Exception:  # noqa: BLE001 - a config fault must not remove the UA
+        return DEFAULT_LIBGEN_USER_AGENT
 
 
 # Used only when the configuration cannot be read at all. Any real config
@@ -129,7 +153,7 @@ class _RequestsWithUA:
 
     def get(self, url: str, **kwargs) -> requests.Response:
         headers = kwargs.pop("headers", None) or {}
-        headers.setdefault("User-Agent", USER_AGENT)
+        headers.setdefault("User-Agent", get_user_agent())
         # libgen-api-enhanced omits the timeout on some calls; a mirror that
         # accepts the connection and never responds would otherwise hold the
         # search thread past every outer budget (Codex on #128).
@@ -159,6 +183,31 @@ def mirror_host(mirror: str) -> str:
     return f"libgen.{mirror}"
 
 
+def _nginx_stub(text: str) -> bool:
+    """True when a body is nginx's default page rather than LibGen's.
+
+    This is what a blocklisted User-Agent receives: HTTP 200, ~640 bytes,
+    `<title>Welcome to nginx!</title>`. It is not an error status and not an
+    empty result, so nothing upstream distinguishes it from a real outage or a
+    catalogue miss unless it is classified here (#141).
+
+    Matched on the title rather than the byte count: the length is incidental
+    and the same block on a different vhost may pad differently, while the
+    default-page title is the thing that identifies it.
+    """
+    return "welcome to nginx" in text.lower()
+
+
+def _blocked_ua_detail(context: str) -> str:
+    """Detail text naming the UA a mirror refused, and how to change it."""
+    return (
+        f"{context} served nginx's default stub for User-Agent "
+        f"{get_user_agent()!r} — this UA is blocklisted, which is NOT an "
+        f"outage and NOT an empty catalogue. Set LIBGEN_USER_AGENT to a "
+        f"string the mirror admits (#141)."
+    )
+
+
 def _unparseable_search_page(page) -> Optional[str]:
     """Detail text when a zero-result page is a parse failure, else None.
 
@@ -186,11 +235,20 @@ def _unparseable_search_page(page) -> Optional[str]:
     text = getattr(page, "text", "") or ""
     if "tablelibgen" in text:
         return None
+    status = getattr(page, "status_code", "?")
     title_match = re.search(r"<title>([^<]*)</title>", text, re.I)
     page_title = title_match.group(1).strip() if title_match else ""
+    if _nginx_stub(text):
+        # #124's diagnostics are retained verbatim alongside the new naming:
+        # title, status and byte count are what distinguish a stub from a
+        # redesign, and dropping them would trade one diagnosis for another.
+        return (
+            f"{_blocked_ua_detail('search page')} "
+            f"[HTTP {status}, {len(text)} bytes, title {page_title!r}]"
+        )
     return (
         f"search page had no results table (HTTP "
-        f"{getattr(page, 'status_code', '?')}, {len(text)} bytes, title "
+        f"{status}, {len(text)} bytes, title "
         f"{page_title!r}) — parse failure, not an empty result"
     )
 
@@ -416,16 +474,26 @@ class LibgenAdapter(SourceAdapter):
 
     async def _resolve_key(
         self, client: httpx.AsyncClient, mirror: str, md5: str
-    ) -> Optional[str]:
+    ) -> tuple[Optional[str], str]:
         """Scrape the one-time CDN key out of a mirror's ads.php page.
 
         `ads.php?md5=<md5>` is addressable directly from the hash — no search
         is involved — and carries a single `GET` anchor whose href holds the
-        key. Returns None if the page has no usable key.
+        key.
+
+        Returns:
+            (key, detail). `key` is None when the page carries no usable key;
+            `detail` says why, distinguishing a blocklisted UA from real
+            markup drift. Those two produce identical symptoms — HTTP 200 with
+            no `GET` anchor — and reporting the block as "DOM drift" sent an
+            operator looking for a parser bug that did not exist (#141).
         """
         url = f"https://libgen.{mirror}/ads.php?md5={md5}"
         response = await client.get(url)
         response.raise_for_status()
+
+        if _nginx_stub(response.text):
+            return None, _blocked_ua_detail("ads.php")
 
         soup = BeautifulSoup(response.text, "html.parser")
         for anchor in soup.find_all("a"):
@@ -437,8 +505,11 @@ class LibgenAdapter(SourceAdapter):
             params = parse_qs(urlparse(urljoin(url, href)).query)
             key = (params.get("key") or [None])[0]
             if key:
-                return key
-        return None
+                return key, ""
+        return None, (
+            "ads.php returned HTTP 200 with no key-bearing GET link "
+            "(DOM drift — the resolver scrapes this anchor for the CDN key)"
+        )
 
     async def _serves_bytes(
         self, client: httpx.AsyncClient, url: str
@@ -513,7 +584,7 @@ class LibgenAdapter(SourceAdapter):
         async with httpx.AsyncClient(
             timeout=build_timeout(self.config),
             follow_redirects=True,
-            headers={"User-Agent": USER_AGENT},
+            headers={"User-Agent": get_user_agent()},
         ) as client:
             for mirror in self._mirror_candidates():
                 try:
@@ -527,9 +598,9 @@ class LibgenAdapter(SourceAdapter):
 
                 async def resolve_attempt() -> tuple[Optional[str], str]:
                     """Resolve and validate one mirror under one total budget."""
-                    key = await self._resolve_key(client, mirror, md5)
+                    key, key_detail = await self._resolve_key(client, mirror, md5)
                     if not key:
-                        return None, "no GET link"
+                        return None, key_detail
 
                     candidate = f"https://libgen.{mirror}/get.php?md5={md5}&key={key}"
                     ok, detail = await self._serves_bytes(client, candidate)

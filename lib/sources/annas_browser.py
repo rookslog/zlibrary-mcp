@@ -155,6 +155,11 @@ _CHALLENGE_MARKERS = (
 # were here and are not, because a normal slow-download page legitimately asks
 # the reader to wait, and reading a countdown as an exhausted quota would abort
 # a request that was about to succeed.
+# Statuses that are a refusal whatever the body says. 401 is deliberately
+# absent: Anna's key-free routes never authenticate, so a 401 here would be a
+# contract change worth surfacing as an error rather than absorbing as a wall.
+_REFUSAL_STATUSES = frozenset({403, 429, 503})
+
 _EXHAUSTED_MARKERS = (
     "you have downloaded too many",
     "too many downloads",
@@ -444,7 +449,7 @@ class AnnasBrowserSession:
             # when the download started.
             self._remaining_at_start = self._remaining_today + 1
         try:
-            await page.goto(
+            response = await page.goto(
                 url,
                 wait_until="domcontentloaded",
                 timeout=self.config.annas_browser_nav_timeout * 1000,
@@ -460,7 +465,26 @@ class AnnasBrowserSession:
         await asyncio.sleep(self.config.annas_browser_settle_seconds)
         html = await page.content()
 
+        # A bare 429 or 403 carries no marker phrase, and Playwright reports the
+        # navigation as successful — so discarding the response meant a refusal
+        # looked like an ordinary page, the walk continued into the remaining
+        # partner servers, and the generic bridge retries followed (Codex on
+        # #150). The status is the plainest statement Anna's can make; it is
+        # only consulted after the challenge markers, so a challenge served with
+        # a refusal status still reads as a challenge.
+        status = getattr(response, "status", None)
         wall = _classify_page(html)
+        if wall is None and status in _REFUSAL_STATUSES:
+            self._limiter.penalise(self.config.annas_browser_backoff_seconds)
+            raise ProviderRateLimitedError(
+                PROVIDER,
+                self.host,
+                f"HTTP {status} with no challenge or quota text — a refusal "
+                f"either way. Backing off "
+                f"{self.config.annas_browser_backoff_seconds:.0f}s rather than "
+                f"walking the remaining servers into it.",
+                reason="quota_exhausted",
+            )
         if wall == "challenge":
             self._limiter.penalise(self.config.annas_browser_backoff_seconds)
             raise ChallengeNotClearedError(
@@ -563,15 +587,25 @@ class AnnasBrowserSession:
             # wait is generous: queueing behind another download is correct
             # behaviour, not a fault. `to_thread` keeps the blocking wait off
             # the event loop.
-            wait = self.config.annas_browser_nav_timeout * 3
+            # Derived from the *download* budget, not the navigation budget: the
+            # holder keeps this lock across the transfer, which is allowed to
+            # run for `download_timeout`. Sizing the wait to a browser walk made
+            # ordinary overlapping downloads fail with BrowserBusyError after
+            # 180s while the first was legitimately still running — refusing to
+            # serialise, in the function whose comment promises serialisation
+            # (Codex on #150).
+            wait = self.config.download_timeout + (
+                self.config.annas_browser_nav_timeout * 3
+            )
             if not await asyncio.to_thread(self._process_lock.acquire, wait):
                 raise BrowserBusyError(
                     PROVIDER,
                     self.host,
                     f"another process has held the Anna's browser for more "
-                    f"than {wait:.0f}s. One download at a time is deliberate "
-                    f"(#144) and Chrome will not share a profile anyway. Retry "
-                    f"once the other download finishes.",
+                    f"than {wait:.0f}s — longer than a whole permitted download, "
+                    f"so the holder is stuck rather than busy. One download at a "
+                    f"time is deliberate (#144) and Chrome will not share a "
+                    f"profile anyway.",
                 )
             # The release below must cover launch too: a browser that fails to
             # start would otherwise leave the lock held until it went stale,
@@ -638,6 +672,13 @@ class AnnasBrowserSession:
                         reason="protocol_error",
                     )
             finally:
-                self._remaining_at_start = None
-                await page.close()
-                self._process_lock.release()
+                # Two nested finallys, because `page.close()` can raise when
+                # Chrome has crashed or disconnected — and if it did, the lock
+                # release below it never ran, leaving the browser unusable for
+                # everyone until the 600s stale reclaim (Codex on #150). The
+                # release is the one thing here that must happen.
+                try:
+                    self._remaining_at_start = None
+                    await page.close()
+                finally:
+                    self._process_lock.release()

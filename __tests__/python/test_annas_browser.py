@@ -738,8 +738,15 @@ class TestCrossProcessSerialisation:
         from lib.sources.annas_browser import BrowserBusyError
 
         first = _session([BOOK_PAGE, PARTNER_PAGE], tmp_path)
+        # Both budgets shrunk: the wait is derived from `download_timeout`
+        # (25 minutes by default, deliberately — the holder keeps the lock
+        # across the whole transfer), so a test that overrode only the
+        # navigation timeout would sit there for the full budget.
         second = _session(
-            [BOOK_PAGE, PARTNER_PAGE], tmp_path, annas_browser_nav_timeout=0.1
+            [BOOK_PAGE, PARTNER_PAGE],
+            tmp_path,
+            annas_browser_nav_timeout=0.05,
+            download_timeout=0.05,
         )
 
         assert first._process_lock.path == second._process_lock.path, (
@@ -902,3 +909,91 @@ class TestCrossProcessSerialisation:
 
         assert result.quota_info is None
         assert result.url == "https://cdn.example/x.pdf"
+
+
+class TestLockWaitCoversAWholeDownload:
+    """Sizing the wait to a browser walk refused to serialise (#150).
+
+    The holder keeps the process lock across the transfer, which is allowed to
+    run for `download_timeout`. A wait of `3 * nav_timeout` gave up after 180s
+    while the first download was legitimately still running — so ordinary
+    overlapping downloads failed with a non-retryable `BrowserBusyError`, in
+    the function whose comment promises they will be serialised.
+    """
+
+    def test_the_wait_is_derived_from_the_download_budget(self):
+        import inspect
+
+        source = inspect.getsource(AnnasBrowserSession.iter_download_urls)
+
+        assert "self.config.download_timeout" in source, (
+            "a wait shorter than a permitted download turns serialisation into refusal"
+        )
+
+
+class TestBareRefusalStatuses:
+    """A 403 or 429 with no marker phrase is still a refusal (#150).
+
+    Playwright reports such a navigation as successful and the body carries no
+    challenge or quota text, so discarding the response made a refusal look
+    like an ordinary page: the walk continued into the remaining partner
+    servers and the generic bridge retries followed, spending the daily
+    allowance against a host that was actively saying no.
+    """
+
+    def _session_with(self, bodies, statuses, tmp_path, **overrides):
+        session = AnnasBrowserSession(_config(tmp_path, **overrides))
+        page = _FakePage(bodies)
+        pending = list(statuses)
+        original_goto = page.goto
+
+        async def goto(url, **kwargs):
+            await original_goto(url, **kwargs)
+            status = pending.pop(0) if pending else 200
+            return type("_Response", (), {"status": status})()
+
+        page.goto = goto
+
+        class _Ctx:
+            async def new_page(self):
+                return page
+
+        session._context = _Ctx()
+        session._page = page
+        return session
+
+    @pytest.mark.asyncio
+    async def test_a_bare_429_backs_off_instead_of_walking_on(self, tmp_path):
+        plain = "<html><body><p>Nothing to see.</p></body></html>"
+        session = self._session_with(
+            [BOOK_PAGE, plain, PARTNER_PAGE], [200, 429, 200], tmp_path
+        )
+
+        with pytest.raises(ProviderRateLimitedError):
+            await session.resolve_download_url(MD5)
+
+        assert len(session._page.visited) == 2, (
+            "a refusal must abort the walk, not cost a request per remaining "
+            "partner server"
+        )
+
+    @pytest.mark.asyncio
+    async def test_a_challenge_status_still_reads_as_a_challenge(self, tmp_path):
+        """Status is consulted after the markers, not instead of them.
+
+        A challenge served with 403 must keep its own type and message, which
+        tells the operator to re-solve rather than to wait out a quota.
+        """
+        challenge = "<html><body>Checking your browser before accessing</body></html>"
+        session = self._session_with([BOOK_PAGE, challenge], [200, 403], tmp_path)
+
+        with pytest.raises(ChallengeNotClearedError):
+            await session.resolve_download_url(MD5)
+
+    @pytest.mark.asyncio
+    async def test_an_ordinary_200_is_untouched(self, tmp_path):
+        session = self._session_with([BOOK_PAGE, PARTNER_PAGE], [200, 200], tmp_path)
+
+        url, _ = await session.resolve_download_url(MD5)
+
+        assert url.startswith("https://cdn3.example.net/")

@@ -27,6 +27,7 @@ from .errors import (
 )
 from .models import DownloadResult, SourceType, UnifiedBookResult
 from .net import (
+    WalkDeadline,
     bounded_await,
     build_timeout,
     classify_httpx_error,
@@ -212,6 +213,12 @@ def mirror_host(mirror: str) -> str:
     return f"libgen.{mirror}"
 
 
+def _attempt_minimum(config: SourceConfig) -> float:
+    """Least useful walk slice before starting a LibGen mirror attempt."""
+    preflight_budget = config.preflight_timeout if config.preflight_enabled else 0.0
+    return preflight_budget + 1.0
+
+
 def _nginx_stub(text: str) -> bool:
     """True when a body is nginx's default page rather than LibGen's.
 
@@ -324,17 +331,39 @@ class LibgenAdapter(SourceAdapter):
         self.mirror = config.libgen_mirror
         self._last_request = 0.0
 
-    async def _rate_limit(self) -> None:
+    async def _rate_limit(
+        self,
+        deadline: Optional[WalkDeadline] = None,
+        *,
+        minimum_after: float = 0.0,
+    ) -> bool:
         """Enforce rate limiting between requests.
 
-        Sleeps if the last request was less than MIN_REQUEST_INTERVAL ago.
+        Returns false rather than sleeping when pacing would consume the
+        deadline slice required for the actual resolution attempt.
         """
         elapsed = time.time() - self._last_request
-        if elapsed < self.MIN_REQUEST_INTERVAL:
-            await asyncio.sleep(self.MIN_REQUEST_INTERVAL - elapsed)
+        delay = max(0.0, self.MIN_REQUEST_INTERVAL - elapsed)
+        if delay:
+            if (
+                deadline is not None
+                and deadline.reserve(
+                    delay + minimum_after,
+                    minimum=delay + minimum_after,
+                )
+                is None
+            ):
+                return False
+            await asyncio.sleep(delay)
         self._last_request = time.time()
+        return True
 
-    async def search(self, query: str, **kwargs) -> List[UnifiedBookResult]:
+    async def search(
+        self,
+        query: str,
+        deadline: Optional[WalkDeadline] = None,
+        **kwargs,
+    ) -> List[UnifiedBookResult]:
         """Search for books matching query, failing over between mirrors.
 
         Two hazards are handled here that the previous implementation was not
@@ -354,8 +383,17 @@ class LibgenAdapter(SourceAdapter):
         hazard (#124): it is a parse failure, not an empty result, and it is
         recorded as a typed per-mirror failure so the walk continues.
 
+        A fourth is the walk's own length. Mirrors are no longer capped, so
+        the attempts all draw from one `WalkDeadline` — shared with the router,
+        so Anna's half of an `auto` search spends the same clock. When it runs
+        out the remaining mirrors are reported as unattempted rather than
+        rushed through with a sliver of a budget each (#152).
+
         Args:
             query: Search string (title, author, ISBN, etc.)
+            deadline: Wall-clock ceiling shared with the rest of the walk. A
+                private one is created when called directly, so an adapter
+                used outside the router is still bounded.
             **kwargs: Ignored (for interface compatibility)
 
         Returns:
@@ -364,10 +402,24 @@ class LibgenAdapter(SourceAdapter):
         Raises:
             AllSourcesFailedError: If no mirror could complete the search
         """
+        deadline = deadline or WalkDeadline(self.config.walk_budget)
         failures: List[SourceError] = []
+        mirrors = self._mirror_candidates()
 
-        for mirror in self._mirror_candidates():
+        for index, mirror in enumerate(mirrors):
             host = mirror_host(mirror)
+            # Enough left for one aggregate preflight plus something to search
+            # with, or the attempt is not worth starting.
+            if (
+                deadline.reserve(
+                    self.config.total_timeout,
+                    minimum=_attempt_minimum(self.config),
+                )
+                is None
+            ):
+                failures.append(self._unattempted(mirrors[index:], deadline))
+                break
+
             try:
                 await self._preflight(mirror)
             except ProviderUnreachableError as exc:
@@ -375,7 +427,17 @@ class LibgenAdapter(SourceAdapter):
                 failures.append(exc)
                 continue
 
-            await self._rate_limit()
+            if await self._rate_limit(deadline, minimum_after=1.0) is False:
+                failures.append(self._unattempted(mirrors[index:], deadline))
+                break
+
+            # Re-read after the preflight and the rate-limit sleep: both spend
+            # wall clock, and the budget handed to the search has to be what is
+            # left now, not what was left before them.
+            budget = deadline.reserve(self.config.total_timeout, minimum=1.0)
+            if budget is None:
+                failures.append(self._unattempted(mirrors[index:], deadline))
+                break
 
             def _search_sync(mirror=mirror):
                 # The fetched page is read back on the SAME thread that
@@ -396,7 +458,7 @@ class LibgenAdapter(SourceAdapter):
             try:
                 results, page = await run_bounded(
                     _search_sync,
-                    self.config.total_timeout,
+                    budget,
                     provider=PROVIDER,
                     host=host,
                     operation="search",
@@ -473,8 +535,41 @@ class LibgenAdapter(SourceAdapter):
         ]
 
     def _mirror_candidates(self) -> List[str]:
-        """Mirrors to try, configured one first, without duplicates."""
+        """Mirrors to try, configured one first, without duplicates.
+
+        Deliberately uncapped. Truncating this list was the first attempt at
+        #152 and it bought constant timeout arithmetic by deleting `la` from
+        the walk whenever an operator set a custom `LIBGEN_MIRROR` — including
+        from the DOWNLOAD walk, where the budget is generous and byte-driven
+        `li -> vg -> la` failover is a stated repo contract (Codex on #153).
+
+        What is bounded is the clock, not the list: every attempt draws from a
+        shared `WalkDeadline`, so the walk costs at most `config.walk_budget`
+        no matter how many mirrors are in it. A mirror the deadline never
+        reaches is reported as `walk_budget_exhausted` rather than silently
+        absent.
+        """
         return [self.mirror] + [m for m in FALLBACK_MIRRORS if m != self.mirror]
+
+    def _unattempted(self, mirrors: List[str], deadline: WalkDeadline) -> SourceError:
+        """One failure naming the mirrors the walk never reached.
+
+        Not a timeout: `read_timeout` and `search_timeout` are verdicts about a
+        HOST, and attributing an exhausted walk to the next mirror in the list
+        would report a healthy server as slow. The operator fixes this one by
+        raising `BOOK_SOURCE_WALK_BUDGET`, which is a different action, so it
+        gets a different reason code.
+        """
+        return SourceError(
+            PROVIDER,
+            "",
+            reason="walk_budget_exhausted",
+            detail=(
+                f"{len(mirrors)} mirror(s) not attempted "
+                f"({', '.join(mirrors)}); the walk's "
+                f"{deadline.budget:.0f}s budget was already spent"
+            ),
+        )
 
     async def _preflight(self, mirror: str) -> None:
         """Fail fast if a mirror is not reachable.
@@ -609,7 +704,11 @@ class LibgenAdapter(SourceAdapter):
             cdn = urlparse(str(response.url)).hostname or "?"
             return True, cdn
 
-    async def iter_download_candidates(self, md5: str) -> AsyncIterator[DownloadResult]:
+    async def iter_download_candidates(
+        self,
+        md5: str,
+        deadline: Optional[WalkDeadline] = None,
+    ) -> AsyncIterator[DownloadResult]:
         """Yield one working clearnet candidate per unique mirror.
 
         Walks `_mirror_candidates()` and yields each mirror that resolves and
@@ -638,12 +737,29 @@ class LibgenAdapter(SourceAdapter):
         # 2026-08-17, #124), which surfaces as "no GET link" on every mirror.
         # The timeout stays on the configured per-phase budget rather than a
         # bare 30s — bounding these calls is what #106 exists for.
+        deadline = deadline or WalkDeadline(self.config.walk_budget)
+        mirrors = self._mirror_candidates()
+
         async with httpx.AsyncClient(
             timeout=build_timeout(self.config),
             follow_redirects=True,
             headers={"User-Agent": get_user_agent(self.config)},
         ) as client:
-            for mirror in self._mirror_candidates():
+            for index, mirror in enumerate(mirrors):
+                # The walk is bounded by the clock, not by a mirror cap: every
+                # configured fallback stays a candidate, and `la` is reachable
+                # even when an operator has set a custom LIBGEN_MIRROR ahead of
+                # it — which capping the list took away (Codex on #153).
+                if (
+                    deadline.reserve(
+                        self.config.total_timeout,
+                        minimum=_attempt_minimum(self.config),
+                    )
+                    is None
+                ):
+                    failures.append(self._unattempted(mirrors[index:], deadline))
+                    break
+
                 try:
                     await self._preflight(mirror)
                 except ProviderUnreachableError as exc:
@@ -651,7 +767,14 @@ class LibgenAdapter(SourceAdapter):
                     logger.warning(f"LibGen mirror {mirror} unreachable: {exc}")
                     continue
 
-                await self._rate_limit()
+                if await self._rate_limit(deadline, minimum_after=1.0) is False:
+                    failures.append(self._unattempted(mirrors[index:], deadline))
+                    break
+
+                budget = deadline.reserve(self.config.total_timeout, minimum=1.0)
+                if budget is None:
+                    failures.append(self._unattempted(mirrors[index:], deadline))
+                    break
 
                 async def resolve_attempt() -> tuple[Optional[str], str]:
                     """Resolve and validate one mirror under one total budget."""
@@ -666,7 +789,7 @@ class LibgenAdapter(SourceAdapter):
                 try:
                     url, detail = await bounded_await(
                         resolve_attempt(),
-                        self.config.total_timeout,
+                        budget,
                         provider=PROVIDER,
                         host=mirror_host(mirror),
                         operation="download resolution",
@@ -705,9 +828,13 @@ class LibgenAdapter(SourceAdapter):
         if failures:
             raise AllSourcesFailedError("download resolution", failures)
 
-    async def get_download_url(self, md5: str) -> DownloadResult:
+    async def get_download_url(
+        self,
+        md5: str,
+        deadline: Optional[WalkDeadline] = None,
+    ) -> DownloadResult:
         """Return the first candidate for compatibility with existing callers."""
-        candidates = self.iter_download_candidates(md5)
+        candidates = self.iter_download_candidates(md5, deadline=deadline)
         try:
             return await anext(candidates)
         finally:

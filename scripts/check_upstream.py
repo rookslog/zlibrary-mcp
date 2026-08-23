@@ -360,12 +360,18 @@ async def probe_libgen(client: httpx.AsyncClient) -> ProbeResult:
         # here and BLOCK from the download probe — and the summary counted it
         # as an optional failure while the message said it was not drift
         # (Codex on #146). The adapter raises a distinct type for exactly this.
+        # ALL mirrors, not any: a run where one mirror served the stub and
+        # another timed out is a mixed result, and calling it BLOCK would drop
+        # the genuine transport failure out of the optional-failure count and
+        # describe drift as a wall (Codex on #146). This is the same
+        # all-mirrors rule `probe_libgen_download` applies via `blocked_count`,
+        # and the two probes have to agree or the doctor contradicts itself
+        # again in the opposite direction.
+        failures = list(getattr(exc, "failures", None) or [])
         blocked = isinstance(exc, LibgenUserAgentBlocked) or (
             isinstance(exc, AllSourcesFailedError)
-            and any(
-                isinstance(failure, LibgenUserAgentBlocked)
-                for failure in getattr(exc, "failures", []) or []
-            )
+            and bool(failures)
+            and all(isinstance(f, LibgenUserAgentBlocked) for f in failures)
         )
         return ProbeResult(
             name="libgen:search",

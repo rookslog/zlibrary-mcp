@@ -853,3 +853,45 @@ class TestLibgenSearchProbeReportsUserAgentBlocks:
         ]
 
         assert check_upstream.zlibrary_blocked(results) is False
+
+    def test_a_mixed_failure_set_is_not_reported_as_blocked(self, check_upstream):
+        """One stubbed mirror plus one real failure is not a wall.
+
+        Codex round 4 on #146: `any()` would have marked the whole probe BLOCK,
+        dropping the genuine transport failure out of the optional-failure
+        count and describing drift as network-level. `probe_libgen_download`
+        requires every mirror to be blocked; the search probe must match, or
+        the doctor contradicts itself in the other direction.
+        """
+        from lib.sources.errors import AllSourcesFailedError, ProviderUnreachableError
+        from lib.sources.libgen import LibgenUserAgentBlocked
+
+        async def mixed(_self, _query, **_kwargs):
+            raise AllSourcesFailedError(
+                "LibGen search",
+                [
+                    LibgenUserAgentBlocked(
+                        "libgen", "libgen.li", "nginx stub", reason="protocol_error"
+                    ),
+                    ProviderUnreachableError(
+                        "libgen", "libgen.vg", "no route", reason="connect_timeout"
+                    ),
+                ],
+            )
+
+        result = self._run(check_upstream, mixed)
+
+        assert result.ok is False
+        assert result.blocked is False
+        assert result.symbol == "WARN"
+
+    def test_an_empty_failure_list_is_not_reported_as_blocked(self, check_upstream):
+        """`all()` over an empty list is True, which would invent a wall."""
+        from lib.sources.errors import AllSourcesFailedError
+
+        async def empty(_self, _query, **_kwargs):
+            raise AllSourcesFailedError("LibGen search", [])
+
+        result = self._run(check_upstream, empty)
+
+        assert result.blocked is False

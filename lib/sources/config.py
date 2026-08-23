@@ -10,6 +10,7 @@ Environment variables:
     BOOK_SOURCE_READ_TIMEOUT: Response-read budget, seconds (default: 30)
     BOOK_SOURCE_TOTAL_TIMEOUT: Per-provider wall-clock budget, seconds (default: 45)
     BOOK_SOURCE_DOWNLOAD_TIMEOUT: Full source-file transfer budget, seconds (default: 1500)
+    BOOK_SOURCE_DOWNLOAD_RESUME_ATTEMPTS: Range-resume retries per URL (default: 2)
     BOOK_SOURCE_PREFLIGHT: Probe host reachability before searching (default: true)
     BOOK_SOURCE_PREFLIGHT_TIMEOUT: Budget per probe phase, seconds (default: 5)
 """
@@ -42,6 +43,18 @@ DEFAULT_TOTAL_TIMEOUT = 45.0
 # TypeScript constant.
 DEFAULT_DOWNLOAD_TIMEOUT = 1500.0
 DEFAULT_PREFLIGHT_TIMEOUT = 5.0
+
+# Extra attempts, per resolved URL, that a transfer gets after it dies part-way
+# through the body. Each one re-requests the remainder with a Range header
+# rather than starting over, so the cost of a retry is the bytes still missing
+# instead of the whole file (#135).
+#
+# This buys no extra wall clock: the resume attempts run INSIDE the existing
+# `download_timeout` budget, so a transfer that keeps dying still ends when
+# that budget does — it just ends further along. Two is deliberately small;
+# after that the candidate walk moves to the next mirror, which is the other
+# half of the fix and reaches a different CDN node.
+DEFAULT_DOWNLOAD_RESUME_ATTEMPTS = 2
 
 # Hosts operated by the Anna's Archive project, per the mirror list the live
 # site itself advertises (verified 2026-07-24: .gl/.pk/.gd serve real search
@@ -121,6 +134,7 @@ class SourceConfig:
         read_timeout: Seconds allowed to read a response
         total_timeout: Seconds allowed for a whole provider operation
         download_timeout: Seconds allowed for a complete source-file transfer
+        download_resume_attempts: Range-resume retries after a partial transfer
         preflight_enabled: Probe host reachability before the real request
         preflight_timeout: Seconds allowed for each probe phase
     """
@@ -135,6 +149,7 @@ class SourceConfig:
     read_timeout: float = DEFAULT_READ_TIMEOUT
     total_timeout: float = DEFAULT_TOTAL_TIMEOUT
     download_timeout: float = DEFAULT_DOWNLOAD_TIMEOUT
+    download_resume_attempts: int = DEFAULT_DOWNLOAD_RESUME_ATTEMPTS
     preflight_enabled: bool = True
     preflight_timeout: float = DEFAULT_PREFLIGHT_TIMEOUT
 
@@ -159,6 +174,23 @@ def _positive_float(name: str, default: float) -> float:
     except ValueError:
         return default
     return value if math.isfinite(value) and value > 0 else default
+
+
+def _non_negative_int(name: str, default: int) -> int:
+    """Read a count from the environment, falling back on nonsense.
+
+    Zero is a legitimate value — it turns resume off — so unlike the timeout
+    reader this accepts it. Anything unparseable or negative falls back to the
+    default rather than to an unbounded retry count.
+    """
+    raw = os.environ.get(name)
+    if raw is None or not raw.strip():
+        return default
+    try:
+        value = int(raw.strip())
+    except ValueError:
+        return default
+    return value if value >= 0 else default
 
 
 def get_source_config() -> SourceConfig:
@@ -186,6 +218,9 @@ def get_source_config() -> SourceConfig:
         ),
         download_timeout=_positive_float(
             "BOOK_SOURCE_DOWNLOAD_TIMEOUT", DEFAULT_DOWNLOAD_TIMEOUT
+        ),
+        download_resume_attempts=_non_negative_int(
+            "BOOK_SOURCE_DOWNLOAD_RESUME_ATTEMPTS", DEFAULT_DOWNLOAD_RESUME_ATTEMPTS
         ),
         preflight_enabled=os.environ.get("BOOK_SOURCE_PREFLIGHT", "true").lower()
         == "true",

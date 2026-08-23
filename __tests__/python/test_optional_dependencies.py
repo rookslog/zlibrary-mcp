@@ -149,6 +149,19 @@ def test_resolution_package_does_not_eagerly_import_heavy_implementations():
     assert result.returncode == 0, result.stderr
 
 
+def _nltk_tokenizer_data_present() -> bool:
+    """Whether this environment has NLTK's punkt data, without downloading it."""
+    try:
+        from nltk.tokenize import sent_tokenize
+    except ImportError:
+        return False
+    try:
+        sent_tokenize("Tokenizer readiness probe.")
+    except LookupError:
+        return False
+    return True
+
+
 def test_footnote_detection_falls_back_without_nltk_data_or_network(tmp_path):
     """RAG footnote continuation must remain deterministic with empty NLTK data."""
     script = textwrap.dedent(
@@ -198,6 +211,14 @@ def test_footnote_detection_falls_back_without_nltk_data_or_network(tmp_path):
     assert result.returncode == 0, result.stderr
 
 
+@pytest.mark.skipif(
+    not _nltk_tokenizer_data_present(),
+    reason=(
+        "NLTK punkt data absent. This test asserts the NLTK path is preferred "
+        "WHEN the data exists; asserting the data exists would make a CI "
+        "provisioning choice look like a footnote-detection defect."
+    ),
+)
 def test_footnote_detection_uses_nltk_when_tokenizer_data_is_available():
     """The higher-quality sentence tokenizer remains active when its data exists."""
     script = textwrap.dedent(

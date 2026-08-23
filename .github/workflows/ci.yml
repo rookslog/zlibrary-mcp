@@ -30,6 +30,13 @@ jobs:
       - uses: astral-sh/setup-uv@v7
       - run: npm ci
       - run: uv sync --all-extras
+      # NLTK's punkt data is not a package dependency and
+      # lib/footnote_continuation.py deliberately never downloads it at import
+      # time — a RAG operation has to be deterministic and usable offline. It
+      # is provisioned here instead, explicitly, so CI exercises the NLTK
+      # sentence-boundary path rather than silently testing only the
+      # deterministic fallback (#103).
+      - run: uv run python -m nltk.downloader -q punkt punkt_tab
       - run: npm run build
       - run: node --experimental-vm-modules node_modules/jest/bin/jest.js
       - run: uv run pytest -m "not slow and not integration and not performance" --benchmark-disable -rs
@@ -54,6 +61,13 @@ jobs:
       - uses: astral-sh/setup-uv@v7
       - run: npm ci
       - run: uv sync --all-extras
+      # NLTK's punkt data is not a package dependency and
+      # lib/footnote_continuation.py deliberately never downloads it at import
+      # time — a RAG operation has to be deterministic and usable offline. It
+      # is provisioned here instead, explicitly, so CI exercises the NLTK
+      # sentence-boundary path rather than silently testing only the
+      # deterministic fallback (#103).
+      - run: uv run python -m nltk.downloader -q punkt punkt_tab
       - run: npm run build
       - run: node --experimental-vm-modules node_modules/jest/bin/jest.js
       - run: uv run pytest -rs

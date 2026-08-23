@@ -588,6 +588,41 @@ describe('Z-Library API', () => {
       await expect(zlibApi.getDownloadLimits()).rejects.toThrow(`Python bridge execution failed for get_download_limits: ${apiError.message}`);
       expect(mockRunPythonBridge).toHaveBeenCalledWith('python_bridge.py', expect.objectContaining({ scriptPath: EXPECTED_SCRIPT_PATH, args: ['get_download_limits', JSON.stringify({})] }), expect.objectContaining({ label: expect.any(String) })); // Corrected script name and path
     });
+
+    // #107: `sources` is what lets a LibGen-only question skip the Z-Library
+    // profile round-trip. It has to reach the bridge to do that.
+    test('should forward an explicit source narrowing to the bridge', async () => {
+        mockGetManagedPythonPath.mockResolvedValue('/fake/python');
+        const payload = JSON.stringify({ requested: ['libgen'], sources: {} });
+        mockRunPythonBridge.mockResolvedValueOnce([
+            JSON.stringify({ content: [{ type: 'text', text: payload }] }),
+        ]);
+
+        await zlibApi.getDownloadLimits({ sources: ['libgen'] });
+
+        expect(mockRunPythonBridge).toHaveBeenCalledWith('python_bridge.py', expect.objectContaining({
+            scriptPath: EXPECTED_SCRIPT_PATH,
+            args: ['get_download_limits', JSON.stringify({ sources: ['libgen'] })]
+        }), expect.objectContaining({ label: expect.any(String) }));
+    });
+
+    test('should omit the key entirely when no narrowing is given', async () => {
+        mockGetManagedPythonPath.mockResolvedValue('/fake/python');
+        const payload = JSON.stringify({ requested: [], sources: {} });
+        mockRunPythonBridge.mockResolvedValueOnce([
+            JSON.stringify({ content: [{ type: 'text', text: payload }] }),
+        ]);
+
+        await zlibApi.getDownloadLimits({ sources: [] });
+
+        // An explicit empty list is the bridge's "you asked about nothing"
+        // error case; the API layer treats it as "no narrowing given" rather
+        // than sending a request that can only fail.
+        expect(mockRunPythonBridge).toHaveBeenCalledWith('python_bridge.py', expect.objectContaining({
+            scriptPath: EXPECTED_SCRIPT_PATH,
+            args: ['get_download_limits', JSON.stringify({})]
+        }), expect.objectContaining({ label: expect.any(String) }));
+    });
   });
 
   describe('processDocumentForRag', () => {

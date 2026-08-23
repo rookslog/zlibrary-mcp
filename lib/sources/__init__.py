@@ -15,6 +15,22 @@ Usage:
 
 from .annas import AnnasArchiveAdapter, QuotaExhaustedError
 from .base import SourceAdapter
+from .capabilities import (
+    KNOWN_SOURCES,
+    LIMIT_KNOWN,
+    LIMIT_NONE,
+    LIMIT_NOT_APPLICABLE,
+    LIMIT_UNKNOWN,
+    SOURCE_ANNAS,
+    SOURCE_LIBGEN,
+    SOURCE_ZLIBRARY,
+    canonical_source,
+    describe_sources,
+    known_daily_limit,
+    resolve_requested_sources,
+    unknown_daily_limit,
+    zlibrary_credentials_configured,
+)
 from .config import SourceConfig, get_source_config
 from .errors import (
     AllSourcesFailedError,
@@ -46,4 +62,18 @@ __all__ = [
     "ProviderConfigurationError",
     "ProviderResponseError",
     "AllSourcesFailedError",
+    "KNOWN_SOURCES",
+    "SOURCE_ANNAS",
+    "SOURCE_LIBGEN",
+    "SOURCE_ZLIBRARY",
+    "LIMIT_KNOWN",
+    "LIMIT_NONE",
+    "LIMIT_NOT_APPLICABLE",
+    "LIMIT_UNKNOWN",
+    "canonical_source",
+    "describe_sources",
+    "known_daily_limit",
+    "resolve_requested_sources",
+    "unknown_daily_limit",
+    "zlibrary_credentials_configured",
 ]

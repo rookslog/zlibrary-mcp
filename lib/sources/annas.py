@@ -480,6 +480,13 @@ class AnnasArchiveAdapter(SourceAdapter):
             url=download_url,
             source=SourceType.ANNAS_ARCHIVE,
             quota_info=quota_info,
+            route="fast_download",
+            # Anna's mirrors are whole domains rather than path suffixes, so
+            # the configured domain is what 'mirror' names here. The serving
+            # host is whatever the API handed back, which is a partner CDN and
+            # regularly not an Anna's domain at all.
+            mirror=self.host,
+            host=(urlsplit(download_url).hostname or "").lower(),
         )
 
     async def close(self) -> None:

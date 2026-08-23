@@ -14,6 +14,7 @@ import inspect
 from typing import AsyncIterator, List, Literal, Optional
 
 from .annas import AnnasArchiveAdapter, QuotaExhaustedError
+from .capabilities import canonical_source
 from .config import SourceConfig, get_source_config
 from .errors import AllSourcesFailedError, SourceError
 from .libgen import LibgenAdapter
@@ -100,6 +101,24 @@ class SourceRouter:
         if source == "auto":
             return "annas" if self.config.has_annas_key else "libgen"
         return source
+
+    def intended_source(self, source: SourceSelection = "auto") -> str:
+        """Canonical identity of the provider this request is expected to reach.
+
+        The reporting half of routing needs this, and cannot derive it from
+        the results: a caller who asks for `auto` and receives LibGen has no
+        way to tell a first-choice hit from a substitution unless the server
+        says which provider it meant to try first. That is precisely the gap
+        `sources_used` left open — it was computed from results, so a fallback
+        was indistinguishable from a direct hit (#96).
+
+        Args:
+            source: Requested source ('auto', 'annas', or 'libgen')
+
+        Returns:
+            A canonical source name from `lib.sources.capabilities`
+        """
+        return canonical_source(self._determine_source(source))
 
     def _search_candidates(self, source: SourceSelection) -> List[SourceSelection]:
         """Ordered providers to try for a search.

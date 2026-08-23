@@ -423,11 +423,26 @@ export async function getDownloadHistory({ count = 10 }: GetDownloadHistoryArgs,
 }
 
 /**
- * Get user's download limits
+ * Report each source's daily download limit.
+ *
+ * `sources` narrows the report. It is not a filter applied after the fact:
+ * Z-Library is the only source whose limit costs an authenticated profile
+ * call, so a request that does not name it makes no such call at all. That
+ * asymmetry of cost is why this half of the routing contract is pull-only
+ * rather than riding along with every search (#107).
+ *
+ * @param args - Optional canonical source names to report
+ * @param options - Timeout and abort signal
  */
-export async function getDownloadLimits(options: CallOptions = {}): Promise<any> {
-  // Pass arguments as an object matching Python function signature
-  return await callPythonFunction('get_download_limits', {}, options);
+export async function getDownloadLimits(
+  args: { sources?: string[] } = {},
+  options: CallOptions = {},
+): Promise<any> {
+  // Omit the key entirely when unset: the bridge reads `sources: null` as
+  // "every source", and sending an explicit null would be a second spelling
+  // of the default for no gain.
+  const pythonArgs = args?.sources?.length ? { sources: args.sources } : {};
+  return await callPythonFunction('get_download_limits', pythonArgs, options);
 }
 
 

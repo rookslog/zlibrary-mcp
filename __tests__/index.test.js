@@ -114,6 +114,39 @@ describe('MCP Server', () => {
     expect(registeredToolNames).toContain('search_by_author');
     expect(registeredToolNames).toContain('fetch_booklist');
     expect(registeredToolNames).toContain('search_advanced');
+    expect(registeredToolNames).toContain('search_multi_source');
+    // #96 held the count at 13 by extending existing tools. The routing
+    // contract adds two reporting surfaces and no fourteenth tool.
+    expect(registeredToolNames).toHaveLength(13);
+  });
+
+  describe('get_download_limits accepts a per-source narrowing (#107)', () => {
+    test('accepts canonical source names', async () => {
+      const { toolRegistry } = await import('../dist/index.js');
+      const parsed = toolRegistry.get_download_limits.schema.parse({
+        sources: ['libgen', 'annas_archive'],
+      });
+      expect(parsed.sources).toEqual(['libgen', 'annas_archive']);
+    });
+
+    test('omitting sources means every source', async () => {
+      const { toolRegistry } = await import('../dist/index.js');
+      expect(toolRegistry.get_download_limits.schema.parse({}).sources).toBeUndefined();
+    });
+
+    test('rejects a source this server does not read from', async () => {
+      const { toolRegistry } = await import('../dist/index.js');
+      expect(() =>
+        toolRegistry.get_download_limits.schema.parse({ sources: ['gutenberg'] }),
+      ).toThrow();
+    });
+
+    test('rejects an explicitly empty narrowing rather than widening it', async () => {
+      const { toolRegistry } = await import('../dist/index.js');
+      expect(() =>
+        toolRegistry.get_download_limits.schema.parse({ sources: [] }),
+      ).toThrow();
+    });
   });
 
   test('should handle McpServer instantiation exceptions gracefully', async () => {
@@ -365,7 +398,12 @@ describe('Tool Handlers (Direct)', () => {
 
        const response = await handler(validatedArgs);
 
-       expect(mockGetDownloadLimits).toHaveBeenCalledWith({ signal: undefined });
+       // Per-source since #107: the tool now takes an optional `sources`
+       // narrowing, and the API layer receives it alongside the signal.
+       expect(mockGetDownloadLimits).toHaveBeenCalledWith(
+         { sources: undefined },
+         { signal: undefined },
+       );
        expect(response).toEqual(mockResult);
 
        const error = new Error('Limits Error');

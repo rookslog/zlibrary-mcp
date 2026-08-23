@@ -68,6 +68,25 @@ All registered via `server.tool()` (McpServer API, MCP SDK 1.25+). The README to
 table is CI-enforced against `src/index.ts` by `scripts/validate-readme-tools.sh` —
 if the sets diverge, the build fails.
 
+### Source and route reporting (#96)
+
+Two reporting surfaces, split by what a fact costs to obtain, sharing one vocabulary in
+`lib/sources/capabilities.py`:
+
+| Surface | Carries | Cost |
+|---|---|---|
+| `routing` on every `search_multi_source` response | `requested`, `served_by`, `fell_back`, and a symmetric per-source entry (`available`, `routes`, `daily_limit`, `note`) | Local only — no network call may be added here |
+| `get_download_limits` | The same entries, plus `details`, with quotas filled in for the requested sources | Z-Library alone costs an EAPI profile call; `sources` narrows the request to avoid it |
+
+Acquisition returns nested `provenance` (`source`, `route`, `mirror`, `host`) — nested
+because `search_multi_source` spreads `**r.extra` into each book dict, so a flat `source`
+key would collide silently.
+
+Two rules the code enforces and a refactor can break quietly: every source carries the
+same key set (invariant 4 — report, never rank), and `daily_limit.state` keeps *no limit
+exists*, *not known here*, and *a concrete number* distinct rather than collapsing them
+onto `null`.
+
 ### Structured RAG Output Bundle (v1.2.1)
 
 `process_document_for_rag` and `download_book_to_file` (with `process_for_rag`)

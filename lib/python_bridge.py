@@ -29,6 +29,15 @@ from lib import enhanced_metadata
 
 # Import multi-source router
 from lib.sources.router import SourceRouter
+from lib.sources.capabilities import (
+    SOURCE_ZLIBRARY,
+    canonical_source,
+    describe_sources,
+    known_daily_limit,
+    resolve_requested_sources,
+    unknown_daily_limit,
+    zlibrary_credentials_configured,
+)
 from lib.sources.config import SourceConfig, get_source_config
 from lib.sources.errors import (
     AllSourcesFailedError,
@@ -659,8 +668,8 @@ async def get_download_history(count=10):
     return [normalize_eapi_book(b) for b in books]
 
 
-async def get_download_limits():
-    """Get user's download limits via EAPI profile.
+async def _zlibrary_daily_limit() -> tuple[dict, dict]:
+    """Read the Z-Library daily quota from the EAPI profile.
 
     /eapi/user/profile reports `downloads_limit` (the daily cap) and
     `downloads_today` (how many are spent). It has never carried
@@ -669,39 +678,118 @@ async def get_download_limits():
     tool could not answer the one question callers ask it — whether there is
     quota left to spend. Verified against a live profile response 2026-08-11.
 
-    `downloads_remaining` is derived, not reported; it is clamped at zero
-    because the server counts a download the moment it is issued and can report
+    `remaining` is derived, not reported; it is clamped at zero because the
+    server counts a download the moment it is issued and can report
     `downloads_today` above the cap.
 
     Returns:
-        dict with daily_limit, daily_remaining (both int, or "unknown" if the
-        response shape changes again), plus downloads_today and is_premium.
+        (daily_limit report, extra details) — the report is `known` only when
+        the profile carried the cap, and `unknown` with the reason otherwise.
+        A renamed field must degrade to "we do not know", never to a number
+        that happens to parse.
     """
+    global _eapi_client
+    if _eapi_client is None:
+        await initialize_eapi_client()
     eapi = await get_eapi_client()
     profile = await eapi.get_profile()
     user = profile.get("user", profile)
 
     limit = user.get("downloads_limit")
     used = user.get("downloads_today")
+    details = {"is_premium": bool(user.get("isPremium", 0))}
 
-    remaining = "unknown"
-    if isinstance(limit, int) and isinstance(used, int):
-        remaining = max(0, limit - used)
-    elif isinstance(limit, int):
-        remaining = limit
-
-    if limit is None:
+    if not isinstance(limit, int):
         logger.warning(
-            "EAPI profile has no 'downloads_limit' field; response keys: %s",
+            "EAPI profile has no integer 'downloads_limit' field; response keys: %s",
             sorted(user.keys()),
         )
+        return (
+            unknown_daily_limit(
+                "EAPI profile did not report 'downloads_limit'; the response "
+                "shape has changed"
+            ),
+            details,
+        )
 
-    return {
-        "daily_limit": limit if limit is not None else "unknown",
-        "daily_remaining": remaining,
-        "downloads_today": used if used is not None else "unknown",
-        "is_premium": bool(user.get("isPremium", 0)),
-    }
+    if isinstance(used, int):
+        return known_daily_limit(limit, used, max(0, limit - used)), details
+
+    # The cap is reported and the spend is not, so the remainder is not
+    # derivable. Reporting it as the full cap — which this function used to do
+    # — invents a number in the one surface that exists to stop that.
+    return (
+        known_daily_limit(
+            limit,
+            None,
+            None,
+            note=(
+                "EAPI profile did not report 'downloads_today'; remaining is "
+                "not derivable from the cap alone"
+            ),
+        ),
+        details,
+    )
+
+
+async def get_download_limits(sources=None):
+    """Report each source's daily download limit.
+
+    Extended from Z-Library-only to per-source by #107. The tool's name never
+    named a source, and answering it with only Z-Library's numbers privileged
+    one source in a surface that must not — invariant 4.
+
+    Cost is what splits this tool from the `routing` block on
+    `search_multi_source`: everything knowable from configuration rides along
+    with every search, and only what needs a round-trip lives here. Z-Library
+    is the sole source that costs one, so a caller asking only about LibGen
+    makes no EAPI profile call — the reason `sources` exists.
+
+    Each entry reports what it actually knows. `daily_limit.state` separates
+    *no limit exists* (LibGen) from *a limit exists but is not known here*
+    (Anna's keyed quota, which the API only discloses while spending a
+    download) from *a concrete number* (Z-Library). Collapsing those onto
+    `null` is the failure this shape prevents.
+
+    A Z-Library failure — absent credentials, a login the service refused, a
+    profile call that timed out — degrades that one entry to `unknown` with
+    the reason attached. It never fails the whole call, because a
+    credential-free LibGen setup is supported and must still get an answer.
+
+    Args:
+        sources: Source names to report, e.g. ["libgen"]. All of them when
+            omitted. Accepts 'annas' as well as 'annas_archive'.
+
+    Returns:
+        dict with `requested` (the canonical names reported, in order) and
+        `sources` (name -> entry with `available`, `routes`, `daily_limit`,
+        `note`, `details`)
+
+    Raises:
+        ValueError: If `sources` names something this server does not read
+            from, or narrows the request to nothing
+    """
+    requested = resolve_requested_sources(sources)
+    entries = describe_sources(sources=requested)
+
+    for name, entry in entries.items():
+        entry["details"] = {}
+        if name != SOURCE_ZLIBRARY:
+            continue
+        if not zlibrary_credentials_configured():
+            # describe_sources already reported this as not_applicable with
+            # the reason; spending a login attempt to confirm it would be a
+            # round-trip whose answer we already have.
+            continue
+        try:
+            entry["daily_limit"], entry["details"] = await _zlibrary_daily_limit()
+        except Exception as exc:
+            logger.warning(f"Z-Library limit lookup failed: {exc}")
+            entry["daily_limit"] = unknown_daily_limit(
+                f"Z-Library profile lookup failed: {type(exc).__name__}: {exc}"
+            )
+
+    return {"requested": requested, "sources": entries}
 
 
 # --- Core Bridge Functions ---
@@ -1097,8 +1185,55 @@ async def _download_url_to_file(
     return completed_path
 
 
-async def _fetch_from_source(book_details: dict, output_dir: str) -> str:
-    """Resolve and fetch a non-Z-Library book. Returns the raw file path."""
+def _canonical_source_name(name) -> str:
+    """Canonical source identity, or the raw name when it is not one of ours.
+
+    Reporting must never be able to fail an otherwise successful transfer, so
+    an unrecognised name is passed through rather than raised on.
+    """
+    try:
+        return canonical_source(name)
+    except ValueError:
+        return str(name)
+
+
+def _provenance(source: str, route: str = "", mirror: str = "", host: str = "") -> dict:
+    """One transfer's provenance, nested rather than flat.
+
+    Nested because `search_multi_source` spreads `**r.extra` into each book
+    dict, so a source that grew a field named `source` would collide with the
+    contract's own key and neither would be detectable (#96). The line is
+    drawn here before it is a problem rather than after.
+
+    Provenance describes the transfer, not the content — invariant 1. Values
+    the route genuinely has no analogue for are `None`, not invented.
+
+    Args:
+        source: Canonical source name that served the file
+        route: The named route taken, e.g. 'get.php' or 'eapi'
+        mirror: Mirror or domain the route was taken against
+        host: Host that actually served the bytes, after redirects
+
+    Returns:
+        dict with the same four keys whatever the source
+    """
+    return {
+        "source": source or None,
+        "route": route or None,
+        "mirror": mirror or None,
+        "host": host or None,
+    }
+
+
+async def _fetch_from_source(book_details: dict, output_dir: str) -> tuple[str, dict]:
+    """Resolve and fetch a non-Z-Library book.
+
+    Returns:
+        (raw file path, provenance) — the provenance names the mirror and the
+        host that actually served the bytes. Before #101 both were written to
+        `logger.warning` on stderr and discarded, so a caller could not tell
+        which of three LibGen mirrors had answered (found by review on #98).
+    """
     md5 = (book_details.get("md5") or "").strip().lower()
     source = (book_details.get("source") or "auto").lower()
     if not md5:
@@ -1125,18 +1260,21 @@ async def _fetch_from_source(book_details: dict, output_dir: str) -> str:
             seen_failure_ids.add(identity)
             failures.append(failure)
 
-    async def acquire() -> str:
+    async def acquire() -> tuple[str, dict]:
         nonlocal active_host
 
         candidate_stream = router.iter_download_candidates(md5, source=selection)
         try:
             async for result in candidate_stream:
-                provider = getattr(result.source, "value", result.source) or selection
-                if provider == "annas_archive":
-                    provider = "annas"
+                served_by = getattr(result.source, "value", result.source) or selection
+                # `provider` is the short name the transfer's user-agent and
+                # error attribution have always used; provenance reports the
+                # canonical identity instead, so one spelling keys `routing`,
+                # `get_download_limits` and this.
+                provider = "annas" if served_by == "annas_archive" else str(served_by)
                 active_host = (urlsplit(result.url).hostname or "").lower()
                 try:
-                    return await _download_url_to_file(
+                    path = await _download_url_to_file(
                         result.url,
                         output_dir,
                         md5,
@@ -1150,6 +1288,17 @@ async def _fetch_from_source(book_details: dict, output_dir: str) -> str:
                         record(failure)
                 except SourceError as exc:
                     record(exc)
+                else:
+                    # `active_host` over the adapter's own `host`: the adapter
+                    # observed the host that answered a probe, this observed
+                    # the one that served the bytes, and a CDN redirect can
+                    # make them differ. Provenance reports the transfer.
+                    return path, _provenance(
+                        _canonical_source_name(served_by),
+                        route=result.route,
+                        mirror=result.mirror,
+                        host=active_host or result.host,
+                    )
         except AllSourcesFailedError as exc:
             for failure in exc.failures:
                 record(failure)
@@ -1240,7 +1389,9 @@ async def download_book(
         processed_output_format: Format for RAG output ('txt' or 'markdown')
 
     Returns:
-        dict with 'file_path' and optional 'processed_file_path'
+        dict with 'file_path', 'provenance' (which source, route, mirror and
+        host actually served the bytes — see `_provenance`) and optional
+        'processed_file_path'
     """
     # A missing RAG tier is knowable before any bytes move, and finding out
     # afterwards is expensive: the file has already been fetched and published,
@@ -1281,11 +1432,17 @@ async def download_book(
     processed_file_path_str = None  # Path for RAG processed file
     process_result = None
 
+    zlibrary_served_by = ""
+
+    def _observe_zlibrary_host(host: str) -> None:
+        nonlocal zlibrary_served_by
+        zlibrary_served_by = host
+
     try:
         # Step 1: Fetch the file. Z-Library goes through the EAPI client;
         # every other source resolves a URL through the router and streams it.
         if from_source:
-            original_download_path_str = await _fetch_from_source(
+            original_download_path_str, provenance = await _fetch_from_source(
                 book_details, output_dir
             )
         else:
@@ -1293,6 +1450,15 @@ async def download_book(
                 book_id=int(book_id),
                 book_hash=book_hash,
                 output_dir=output_dir,
+                host_observer=_observe_zlibrary_host,
+            )
+            provenance = _provenance(
+                SOURCE_ZLIBRARY,
+                route="eapi",
+                # Z-Library's EAPI domain rotates, so which one answered is
+                # the same kind of fact as which LibGen mirror did.
+                mirror=getattr(eapi, "domain", ""),
+                host=zlibrary_served_by,
             )
 
         if (
@@ -1372,6 +1538,9 @@ async def download_book(
         if process_for_rag and process_result:
             result.update(process_result)
             result["file_path"] = downloaded_file_path_str
+        # Assigned after the RAG bundle merges in, so a processor that one day
+        # emits a key of this name cannot overwrite the transfer's own record.
+        result["provenance"] = provenance
         return result
 
     except Exception as e:
@@ -1560,6 +1729,45 @@ async def get_source_router() -> SourceRouter:
     return _source_router
 
 
+def _routing_report(router: SourceRouter, source: str, books: list) -> dict:
+    """What was requested, what served it, and what every source can do.
+
+    All four fields are local: the source constraints come from configuration
+    and the rest from the request and its results, so attaching this to every
+    search costs no round-trip. Facts that would cost one live in
+    `get_download_limits` instead (#96).
+
+    `fell_back` is the field this whole block exists for. `sources_used` was
+    derived from results alone, so a caller who asked for one provider and
+    received another could not tell a substitution from a direct hit — the
+    reporting half of the bug #74 fixed in routing. Comparing what served
+    against the provider the router *meant* to try first makes the
+    substitution visible without the caller diffing intent against output.
+
+    Args:
+        router: The router that ran the search, asked which provider it meant
+            to reach
+        source: The selector the caller passed, echoed verbatim as `requested`
+        books: The result dicts, whose `source` fields say who answered
+
+    Returns:
+        dict with `requested` (the selector, e.g. 'auto'), `served_by`
+        (canonical source names, sorted), `fell_back`, and `sources`
+    """
+    served_by = sorted(
+        {str(book.get("source", "")) for book in books if book.get("source")}
+    )
+    intended = router.intended_source(source)
+    return {
+        "requested": source,
+        "served_by": served_by,
+        # Nothing served means nothing was substituted. An empty result is a
+        # "no match" report, and calling it a fallback would invent an event.
+        "fell_back": bool(served_by) and intended not in served_by,
+        "sources": describe_sources(getattr(router, "config", None)),
+    }
+
+
 async def search_multi_source(
     query: str,
     source: str = "auto",
@@ -1583,7 +1791,9 @@ async def search_multi_source(
     Returns:
         dict with:
             - books: List of book dicts with md5, title, author, etc.
-            - sources_used: List of source names that provided results
+            - routing: What was asked for, what answered, and what every
+              source's locally knowable constraints are — see
+              `_routing_report`
 
     Environment:
         ANNAS_SECRET_KEY: API key for Anna's Archive fast downloads
@@ -1611,7 +1821,7 @@ async def search_multi_source(
 
     return {
         "books": books,
-        "sources_used": list(set(b["source"] for b in books)),
+        "routing": _routing_report(router, source, books),
     }
 
 
@@ -1625,6 +1835,14 @@ def _requires_eapi_client(function_name: str, args_dict: dict) -> bool:
     credential-free fallback — down with every Z-Library auth outage (#129).
     """
     if function_name in ("process_document", "search_multi_source"):
+        return False
+    if function_name == "get_download_limits":
+        # Per-source since #107: LibGen and Anna's answer from configuration,
+        # so a caller asking only about them must not pay for a Z-Library
+        # login. Z-Library's own entry logs in lazily and reports the failure
+        # as that one entry's `unknown` reason, which is why this is False
+        # even when Z-Library IS requested — an auth outage degrades one
+        # source's answer rather than the whole tool's.
         return False
     if function_name == "download_book":
         source = str((args_dict.get("book_details") or {}).get("source") or "").lower()

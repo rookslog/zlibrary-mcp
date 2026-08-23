@@ -1161,6 +1161,42 @@ async def _fetch_from_source(book_details: dict, output_dir: str) -> str:
         raise
 
 
+def _require_rag_tier_for(book_details: dict) -> None:
+    """Fail before downloading when the format's processor is not installed.
+
+    Only the extension the result advertises is checked. A core-only user
+    downloading a `.txt` with `process_for_rag` needs neither PyMuPDF nor
+    EbookLib, and refusing that would be a worse bug than the one this
+    prevents — a preflight that blocks working operations is not a preflight,
+    it is an outage.
+
+    An unknown or absent extension is allowed through: the tier check still
+    runs inside `process_document`, so the guarantee is unchanged. What is lost
+    in that case is only the early exit, and guessing wrong in the other
+    direction would cost the user a download they could have had.
+    """
+    from lib.rag.utils.deps import (  # noqa: PLC0415
+        EBOOKLIB_AVAILABLE,
+        PYMUPDF_AVAILABLE,
+        require_optional_dependency,
+    )
+
+    name = str(
+        book_details.get("name")
+        or book_details.get("title")
+        or book_details.get("filename")
+        or ""
+    )
+    extension = str(book_details.get("extension") or "").strip().lower().lstrip(".")
+    if not extension and "." in name:
+        extension = name.rsplit(".", 1)[-1].strip().lower()
+
+    if extension == "pdf":
+        require_optional_dependency(PYMUPDF_AVAILABLE, "PyMuPDF (fitz)", "rag")
+    elif extension == "epub":
+        require_optional_dependency(EBOOKLIB_AVAILABLE, "EbookLib", "rag")
+
+
 async def download_book(
     book_details: dict,
     output_dir: str,
@@ -1181,6 +1217,14 @@ async def download_book(
     Returns:
         dict with 'file_path' and optional 'processed_file_path'
     """
+    # A missing RAG tier is knowable before any bytes move, and finding out
+    # afterwards is expensive: the file has already been fetched and published,
+    # the call then errors WITHOUT returning the path, and on Z-Library it has
+    # spent one of roughly ten downloads the account gets that day (Codex on
+    # #114). Nothing about the answer changes by waiting, so it is checked here.
+    if process_for_rag:
+        _require_rag_tier_for(book_details)
+
     # Route by source. A result from search_multi_source carries md5 + source
     # and has no Z-Library id/hash, so it takes the source path — which also
     # means a LibGen download needs no Z-Library credentials at all.

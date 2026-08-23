@@ -264,18 +264,18 @@ git clone https://github.com/rookslog/zlibrary-mcp.git
 cd zlibrary-mcp
 git lfs pull         # Hydrates LFS-tracked test PDFs (don't run `git lfs install`;
                      # it conflicts with the repo's Husky-managed hooks)
-bash setup-uv.sh    # Creates .venv/ and installs the PEP 735 dev group
+bash setup-uv.sh    # Creates .venv/ with every tier plus the dev group
 npm install          # Installs Node.js dependencies
 npm run build        # Compiles TypeScript to dist/
 ```
 
-The source bootstrap installs contributor tools while keeping document processing
-optional. Before working on the RAG pipeline or running the complete Python suite,
-install all optional tiers:
+The source bootstrap installs **every optional tier along with the contributor
+tools**, because part of the fast test suite imports scholar-tier modules while
+collecting — a core-only contributor environment cannot run the project's own
+verification. Nothing further is needed to work on the RAG pipeline or to run
+the complete Python suite.
 
-```bash
-uv sync --all-extras
-```
+End users want a smaller install: see [Optional Python dependencies](docs/optional-dependencies.md).
 
 **MCP client configuration (stdio transport):**
 

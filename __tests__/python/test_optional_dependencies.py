@@ -434,3 +434,70 @@ def test_rag_tier_processes_real_pdf_without_scholar_dependencies(
     )
 
     assert result.returncode == 0, result.stderr
+
+
+class TestRagTierIsCheckedBeforeDownloading:
+    """A missing tier must not cost a download to discover (#114).
+
+    Codex: `download_book` fetched the file, published it, and only then failed
+    inside `process_document` — erroring *without* returning the path it had
+    just acquired, after spending one of roughly ten Z-Library downloads the
+    account gets per day. Nothing about the answer changes by waiting.
+    """
+
+    def test_a_pdf_without_pymupdf_fails_before_any_download(self, monkeypatch):
+        import lib.python_bridge as bridge
+        from lib.rag.utils.deps import OptionalDependencyError
+
+        monkeypatch.setattr("lib.rag.utils.deps.PYMUPDF_AVAILABLE", False)
+
+        with pytest.raises(OptionalDependencyError) as excinfo:
+            bridge._require_rag_tier_for({"name": "Book.pdf", "extension": "pdf"})
+
+        assert "rag" in str(excinfo.value)
+
+    def test_an_epub_without_ebooklib_fails_before_any_download(self, monkeypatch):
+        import lib.python_bridge as bridge
+        from lib.rag.utils.deps import OptionalDependencyError
+
+        monkeypatch.setattr("lib.rag.utils.deps.EBOOKLIB_AVAILABLE", False)
+
+        with pytest.raises(OptionalDependencyError):
+            bridge._require_rag_tier_for({"name": "Book.epub"})
+
+    def test_a_txt_download_is_not_blocked_by_a_missing_pdf_tier(self, monkeypatch):
+        """The preflight must not refuse work the core tier can actually do.
+
+        A guard that blocks working operations is not a preflight, it is an
+        outage — and a worse bug than the one it prevents.
+        """
+        import lib.python_bridge as bridge
+
+        monkeypatch.setattr("lib.rag.utils.deps.PYMUPDF_AVAILABLE", False)
+        monkeypatch.setattr("lib.rag.utils.deps.EBOOKLIB_AVAILABLE", False)
+
+        bridge._require_rag_tier_for({"name": "Notes.txt", "extension": "txt"})
+
+    def test_an_unknown_extension_is_allowed_through(self, monkeypatch):
+        """Guessing wrong here costs a download the user could have had.
+
+        `process_document` still enforces the tier, so the guarantee is
+        unchanged; only the early exit is lost.
+        """
+        import lib.python_bridge as bridge
+
+        monkeypatch.setattr("lib.rag.utils.deps.PYMUPDF_AVAILABLE", False)
+
+        bridge._require_rag_tier_for({"name": "Mystery volume"})
+        bridge._require_rag_tier_for({})
+
+    def test_the_extension_field_wins_over_the_filename(self, monkeypatch):
+        import lib.python_bridge as bridge
+        from lib.rag.utils.deps import OptionalDependencyError
+
+        monkeypatch.setattr("lib.rag.utils.deps.PYMUPDF_AVAILABLE", False)
+
+        with pytest.raises(OptionalDependencyError):
+            bridge._require_rag_tier_for(
+                {"name": "no extension here", "extension": ".PDF"}
+            )

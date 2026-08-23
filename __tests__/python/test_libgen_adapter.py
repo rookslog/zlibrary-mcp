@@ -6,6 +6,7 @@ LibgenSearch calls in asyncio.to_thread().
 """
 
 import asyncio
+from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 import httpx
 import pytest
@@ -1360,3 +1361,125 @@ class TestSearchUserAgentBlockIsTyped:
             "existing handlers catch ProviderResponseError; narrowing the "
             "hierarchy here would silently change failover behaviour"
         )
+
+
+class TestLibgenMixedBookAndArticleRows:
+    """Journal-article rows must parse against the real column layout (#132).
+
+    These run against `test_files/libgen/mixed_book_article_results.html`,
+    trimmed from a live libgen.li capture rather than hand-written, because
+    the bug is caused by real markup a hand-written mock does not reproduce:
+    an article row's cover cell holds `<img src="">`, which defeats the
+    upstream parser's "covers"-in-src cover detection and shifts every field
+    one column left.
+    """
+
+    FIXTURE = (
+        Path(__file__).resolve().parents[2]
+        / "test_files"
+        / "libgen"
+        / "mixed_book_article_results.html"
+    )
+
+    # From the captured page: the Classical Review review-article row and the
+    # Hadot monograph, which sit in the same results table.
+    ARTICLE_MD5 = "e3f85ebc6faa062bceb95b349f369672"
+    BOOK_MD5 = "3b516fa296c861195bc94fad9bddda9e"
+
+    @pytest.fixture
+    def results(self):
+        """Drive the real adapter search over the fixture page.
+
+        Patching `requests.get` (rather than the library's parser) keeps the
+        UA shim, the bounded thread and `_to_unified` in the path, so this
+        pins the behaviour a caller actually sees.
+        """
+        from lib.sources.config import SourceConfig
+        from lib.sources.libgen import LibgenAdapter
+
+        adapter = LibgenAdapter(
+            SourceConfig(
+                libgen_mirror="li",
+                default_source="libgen",
+                fallback_enabled=False,
+                preflight_enabled=False,
+            )
+        )
+
+        response = MagicMock()
+        response.text = self.FIXTURE.read_text()
+        response.status_code = 200
+        response.raise_for_status = MagicMock()
+
+        with patch("requests.get", return_value=response):
+            return asyncio.run(adapter.search("inner citadel"))
+
+    def test_fixture_reproduces_the_srcless_article_cover_cell(self):
+        """Guard the guard.
+
+        A fixture whose article rows carry a normal cover image parses fine
+        under the broken parser too, so assert the precondition rather than
+        trusting it: both kinds of row are present, both are ten columns
+        wide, and only the book rows have a "covers" src.
+        """
+        from bs4 import BeautifulSoup
+
+        soup = BeautifulSoup(self.FIXTURE.read_text(), "html.parser")
+        table = soup.find("table", {"id": "tablelibgen"})
+        rows = [r for r in table.find_all("tr") if len(r.find_all("td")) >= 9]
+
+        kinds = []
+        for row in rows:
+            tds = row.find_all("td")
+            assert len(tds) == 10, "book and article rows share one layout"
+            badge = [
+                a.get("title")
+                for a in row.select("span.badge a[title]")
+                if a.get("title") in ("Book", "Journal article")
+            ]
+            assert badge, "every row must carry its object-type badge"
+            image = tds[0].find("img")
+            assert image is not None, "every row must carry a cover cell"
+            has_cover_src = "covers" in (image.get("src") or "")
+            assert has_cover_src == (badge[0] == "Book"), (
+                "the bug needs article rows with an empty cover src and book "
+                "rows with a real one"
+            )
+            kinds.append(badge[0])
+
+        assert kinds.count("Book") == 2
+        assert kinds.count("Journal article") == 2
+
+    def test_article_rows_survive_the_md5_filter(self, results):
+        """The headline symptom: article rows arrived md5-less and were lost."""
+        md5s = {r.md5 for r in results}
+        assert self.ARTICLE_MD5 in md5s
+        assert len(results) == 4, "two books and two articles, none dropped"
+
+    def test_article_row_fields_are_not_column_shifted(self, results):
+        article = next(r for r in results if r.md5 == self.ARTICLE_MD5)
+
+        assert article.author == "Rutherford, R. B."
+        assert article.extension == "pdf", "used to hold the file size"
+        assert article.size == "73 kB", "used to hold the page count"
+        assert article.year == "2001 October"
+        assert article.extra["language"] == "English"
+        assert article.extra["pages"] == "0"
+        assert "Classical Review" in article.title, "used to be empty"
+
+    def test_rows_declare_their_object_type(self, results):
+        by_md5 = {r.md5: r for r in results}
+
+        assert by_md5[self.ARTICLE_MD5].extra["content_type"] == "article"
+        assert by_md5[self.BOOK_MD5].extra["content_type"] == "book"
+
+    def test_book_rows_are_unchanged(self, results):
+        """The fix must not disturb the rows that already parsed."""
+        book = next(r for r in results if r.md5 == self.BOOK_MD5)
+
+        assert book.author == "Pierre Hadot, Michael Chase"
+        assert book.extension == "pdf"
+        assert book.size == "5 MB"
+        assert book.year == "2001"
+        assert book.extra["language"] == "English"
+        assert "Inner Citadel" in book.title

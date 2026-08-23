@@ -78,15 +78,20 @@ a different client, so the IP binding that defeated the operator-cookie route ab
 apply. #142 measured that clearance can be held this way — headful only, roughly 20 minutes
 per solve — and #143 and #144 build on that answer.
 
-**Machine-solved challenge**:
-Any route where the *server* defeats the browser verification itself — headless browser,
-fingerprint spoofing.
+**In scope as of 2026-08-23** (operator ruling; the reasoning and its limits are in
+`AGENTS.md` §"Two terms with sharp edges"). Until then the entry below read "permanently out
+of scope" and #95 carried that clause forward to every successor map. What the ruling opened
+is *this* route, on the condition that #144's rate limiting ships in the same pass as it
+rather than after it. Fingerprint work counts as in scope only where it keeps this route
+working — a real browser whose automation markers would otherwise get it walled.
 
-**Scope reversed 2026-08-23** (operator ruling; the reasoning and its limits are in
-`AGENTS.md` §"Two terms with sharp edges"). This entry read "permanently out of scope" from
-2026-08-11 until then, and #95 carried the clause forward to every successor map. Both are
-retired for the purpose of reaching Anna's search and download, on the condition that #144's
-rate limiting ships in the same pass as the route rather than after it.
+**Machine-solved challenge**:
+Any route where the *server* defeats the browser verification itself with no browser session
+a person established — a headless solver run unattended, spoofing alone in place of a real
+browser. Still not the route being built, and the 2026-08-23 ruling did not open it: #142
+measured that headless fails even holding valid clearance, so this is not a design being
+deferred but one that does not work. Read the reversal above as scoped to the
+browser-resident session; nothing here is licensed by it.
 _Avoid_: Keyless download, automated download
 
 Note that "keyless" alone should not be used. It has meant both *no API key* (a live

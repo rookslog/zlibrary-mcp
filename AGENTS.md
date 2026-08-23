@@ -223,6 +223,14 @@ those limits would make the politeness claim rhetorical, which is the one outcom
 paragraph exists to prevent. #76 stays closed as written; what changed is the clause, not
 the finding.
 
+The reversal is scoped to that route and nothing wider. Fingerprint work is in scope only
+where it keeps a real, person-established browser session from being walled for its
+automation markers. A **machine-solved challenge** — an unattended headless solver, or
+spoofing standing in for a browser session nobody opened — is still not the route being
+built, and it is not merely deferred: #142 measured that headless fails while holding
+clearance that works headful minutes earlier. "No human in the loop" remains ruled out, as
+the `CONTEXT.md` glossary says.
+
 **LibGen needs no account and has no daily limit**, which is why it matters: it is the
 fallback for Z-Library's ~10 downloads/day ceiling. Failover across mirrors (`li → vg →
 la`) is driven by bytes actually served, not by key resolution — a mirror can return a

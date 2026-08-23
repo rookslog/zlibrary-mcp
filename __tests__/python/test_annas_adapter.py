@@ -466,15 +466,33 @@ class TestAnnasArchiveFastDownload:
             ({"downloads_done_today": 2}, None),
             ({"downloads_per_day": 25, "downloads_done_today": 2}, None),
             (
-                {"downloads_left": 5, "downloads_per_day": 25, "downloads_done_today": 20},
-                QuotaInfo(downloads_left=5, downloads_per_day=25, downloads_done_today=20),
+                {
+                    "downloads_left": 5,
+                    "downloads_per_day": 25,
+                    "downloads_done_today": 20,
+                },
+                QuotaInfo(
+                    downloads_left=5, downloads_per_day=25, downloads_done_today=20
+                ),
             ),
             (
-                {"downloads_left": 0, "downloads_per_day": 25, "downloads_done_today": 25},
-                QuotaInfo(downloads_left=0, downloads_per_day=25, downloads_done_today=25),
+                {
+                    "downloads_left": 0,
+                    "downloads_per_day": 25,
+                    "downloads_done_today": 25,
+                },
+                QuotaInfo(
+                    downloads_left=0, downloads_per_day=25, downloads_done_today=25
+                ),
             ),
         ],
-        ids=["empty_dict", "partial_done_today", "partial_per_day_and_done", "full_quota_positive", "full_quota_zero"],
+        ids=[
+            "empty_dict",
+            "partial_done_today",
+            "partial_per_day_and_done",
+            "full_quota_positive",
+            "full_quota_zero",
+        ],
     )
     async def test_get_download_url_handles_empty_or_partial_quota_info(
         self, account_info, expected_quota
@@ -482,7 +500,7 @@ class TestAnnasArchiveFastDownload:
         """Empty or partial quota info with valid download_url should not default to 0."""
         from lib.sources.annas import AnnasArchiveAdapter
         from lib.sources.config import SourceConfig
-        from lib.sources.models import QuotaInfo, SourceType
+        from lib.sources.models import SourceType
 
         adapter = AnnasArchiveAdapter(
             SourceConfig(
@@ -1009,3 +1027,117 @@ class TestAnnasMetadataExtraction:
         )
 
         assert result.extra["publisher"] == "Oxford University Press, 1977"
+
+
+class TestKeyedDownloadTracebacksCannotCarryTheKey:
+    """The fast-download API takes ANNAS_SECRET_KEY as a URL query parameter.
+
+    So `httpx` exceptions raised on that request carry the key inside
+    `.request.url`, and chaining one as `__cause__` puts it into every
+    formatted traceback — logs, crash reports, an error surfaced to an MCP
+    client. The adapter's own message already says what went wrong.
+
+    Recovered from the unlanded `fix/106-envelope-followup` stack (#137); the
+    fix was written, verified, and never merged.
+    """
+
+    SECRET = "s3cr3t-key-that-must-not-appear"
+
+    def _adapter(self):
+        from lib.sources.annas import AnnasArchiveAdapter
+        from lib.sources.config import SourceConfig
+
+        return AnnasArchiveAdapter(
+            SourceConfig(
+                annas_secret_key=self.SECRET,
+                annas_base_url="https://annas-archive.org",
+                preflight_enabled=False,
+            )
+        )
+
+    @staticmethod
+    def _formatted(exc: BaseException) -> str:
+        import traceback
+
+        return "".join(traceback.format_exception(type(exc), exc, exc.__traceback__))
+
+    @pytest.mark.asyncio
+    async def test_an_http_error_does_not_chain_the_keyed_request(self, mocker):
+        import httpx
+
+        adapter = self._adapter()
+        url = f"https://annas-archive.org/dyn/api/fast_download.json?key={self.SECRET}"
+        request = httpx.Request("GET", url)
+        response = httpx.Response(403, request=request)
+
+        mocker.patch.object(
+            adapter,
+            "_fetch",
+            side_effect=httpx.HTTPStatusError(
+                "403", request=request, response=response
+            ),
+        )
+        mocker.patch.object(adapter, "_preflight", return_value=None)
+
+        with pytest.raises(Exception) as excinfo:
+            await adapter.get_download_url("a" * 32)
+
+        assert excinfo.value.__cause__ is None, (
+            "chaining the httpx error puts the key-bearing request URL into "
+            "the traceback"
+        )
+        assert self.SECRET not in self._formatted(excinfo.value)
+
+    @pytest.mark.asyncio
+    async def test_an_unexpected_error_does_not_chain_it_either(self, mocker):
+        """The catch-all path is the one most likely to be forgotten."""
+        import httpx
+
+        adapter = self._adapter()
+        url = f"https://annas-archive.org/dyn/api/fast_download.json?key={self.SECRET}"
+        request = httpx.Request("GET", url)
+
+        mocker.patch.object(
+            adapter,
+            "_fetch",
+            side_effect=httpx.ConnectError("boom", request=request),
+        )
+        mocker.patch.object(adapter, "_preflight", return_value=None)
+
+        with pytest.raises(Exception) as excinfo:
+            await adapter.get_download_url("a" * 32)
+
+        assert excinfo.value.__cause__ is None
+        assert self.SECRET not in self._formatted(excinfo.value)
+
+    @pytest.mark.asyncio
+    async def test_search_still_chains_its_cause(self, mocker):
+        """Search sends no key, so it keeps the diagnostic chain.
+
+        Suppressing causes everywhere would trade a real leak for a real loss
+        of debuggability. The distinction is whether the request carried the
+        secret, not whether the code path is an error path.
+        """
+        import httpx
+
+        adapter = self._adapter()
+        mocker.patch.object(adapter, "_preflight", return_value=None)
+        mocker.patch.object(
+            adapter,
+            "_fetch",
+            side_effect=httpx.ConnectError(
+                "boom",
+                request=httpx.Request(
+                    "GET", "https://annas-archive.org/search?q=anything"
+                ),
+            ),
+        )
+
+        with pytest.raises(Exception) as excinfo:
+            await adapter.search("anything")
+
+        assert excinfo.value.__cause__ is not None, (
+            "the search request carries no secret, so its cause is pure "
+            "diagnostic value and must not be suppressed along with the "
+            "download path's"
+        )

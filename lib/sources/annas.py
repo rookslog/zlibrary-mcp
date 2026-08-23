@@ -416,10 +416,17 @@ class AnnasArchiveAdapter(SourceAdapter):
                     self.host,
                     f"ANNAS_SECRET_KEY rejected by fast-download endpoint "
                     f"(HTTP {exc.response.status_code})",
-                ) from exc
-            raise self._as_source_error(exc) from exc
+                    # `from None`, not `from exc`, on every path out of this
+                    # method: the fast-download API takes ANNAS_SECRET_KEY as a
+                    # URL *query parameter*, and httpx exceptions carry
+                    # `.request.url`. A chained cause therefore puts the key
+                    # into any formatted traceback — logs, crash reports, an
+                    # error surfaced to an MCP client. The adapter's own
+                    # message already says what went wrong without it.
+                ) from None
+            raise self._as_source_error(exc) from None
         except Exception as exc:
-            raise self._as_source_error(exc) from exc
+            raise self._as_source_error(exc) from None
 
         if not isinstance(data, dict):
             raise ProviderResponseError(
@@ -459,7 +466,10 @@ class AnnasArchiveAdapter(SourceAdapter):
                     "account_fast_download_info must be an object",
                     reason="protocol_error",
                 )
-            if "downloads_left" in account_info and account_info["downloads_left"] is not None:
+            if (
+                "downloads_left" in account_info
+                and account_info["downloads_left"] is not None
+            ):
                 quota_info = QuotaInfo(
                     downloads_left=account_info["downloads_left"],
                     downloads_per_day=account_info.get("downloads_per_day", 0),

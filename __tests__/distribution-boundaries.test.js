@@ -92,4 +92,38 @@ describe('distribution boundaries', () => {
     expect(runSetupUv(['--no-dev'])).toBe('sync --no-dev');
     expect(runSetupUv([])).toBe('sync --group dev');
   });
+
+  test('packed CI runs the documented core setup and rejects contributor packages', () => {
+    const workflow = readFileSync(
+      path.join(projectRoot, '.github', 'workflows', 'ci.yml'),
+      'utf8',
+    );
+
+    expect(workflow).toMatch(
+      /cd "\$EXTRACT\/package"[\s\S]*bash setup-uv\.sh --no-dev[\s\S]*importlib\.util\.find_spec\('pytest'\) is None/,
+    );
+    expect(workflow).not.toMatch(
+      /cd "\$EXTRACT\/package"[\s\S]*\n\s+uv sync\s*(?:\n|$)/,
+    );
+  });
+
+  test('end-user guides keep development tools out of core setup', () => {
+    const systemWide = readFileSync(
+      path.join(projectRoot, 'docs', 'installation', 'system-wide-setup.md'),
+      'utf8',
+    );
+    const troubleshooting = readFileSync(
+      path.join(projectRoot, 'docs', 'TROUBLESHOOTING.md'),
+      'utf8',
+    );
+
+    expect(systemWide).toContain('bash setup-uv.sh --no-dev');
+    expect(troubleshooting).toContain('uv sync --no-dev');
+    expect(troubleshooting).toContain('uv sync --no-dev --extra rag');
+    expect(troubleshooting).toContain('uv sync --no-dev --extra scholar');
+    expect(troubleshooting).toContain('uv sync --group dev');
+    expect(troubleshooting).not.toContain(
+      'uv sync            # creates .venv/ and installs all Python dependencies',
+    );
+  });
 });

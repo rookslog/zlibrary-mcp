@@ -74,20 +74,26 @@ logger = logging.getLogger(__name__)
 # to module load time, reducing per-page overhead by ~44ms.
 
 try:
-    import nltk
     from nltk.tokenize import sent_tokenize as _sent_tokenize
 
-    # Ensure punkt tokenizer is available (download if needed)
+    # Calling the tokenizer is the readiness check: current NLTK releases need
+    # both punkt and punkt_tab. Never download data at import/runtime; a RAG
+    # operation must remain deterministic and usable offline.
     try:
-        nltk.data.find('tokenizers/punkt')
+        _sent_tokenize('Tokenizer readiness probe.')
     except LookupError:
-        logger.info("Downloading NLTK punkt tokenizer data (one-time setup)...")
-        nltk.download('punkt', quiet=True)
-        nltk.download('punkt_tab', quiet=True)  # Required for NLTK 3.9+
-
-    _nltk_ready = True
+        logger.warning(
+            "NLTK tokenizer data is unavailable. Using deterministic sentence "
+            "boundary fallback for incomplete footnote detection."
+        )
+        _nltk_ready = False
+    else:
+        _nltk_ready = True
 except ImportError:
-    logger.warning("NLTK not available. Incomplete footnote detection will be disabled.")
+    logger.warning(
+        "NLTK is unavailable. Using deterministic sentence boundary fallback "
+        "for incomplete footnote detection."
+    )
     _nltk_ready = False
     _sent_tokenize = None
 
@@ -100,6 +106,35 @@ def _ensure_nltk_data() -> None:
     The global _nltk_ready flag indicates if NLTK is available.
     """
     pass  # NLTK initialization happens at module load
+
+
+def _fallback_sent_tokenize(text: str) -> List[str]:
+    """Split on explicit sentence endings without external tokenizer data."""
+    return [
+        sentence.strip()
+        for sentence in re.split(r'(?<=[.!?])\s+', text)
+        if sentence.strip()
+    ]
+
+
+def _tokenize_sentences(text: str) -> Tuple[List[str], bool]:
+    """Return sentences plus whether the NLTK tokenizer produced them."""
+    global _nltk_ready
+
+    if _nltk_ready and _sent_tokenize is not None:
+        try:
+            return (_sent_tokenize(text), True)
+        except LookupError:
+            # Tokenizer data can disappear after import (for example, a
+            # short-lived mounted data directory). Only that known condition
+            # falls back; unrelated NLTK errors remain visible.
+            logger.warning(
+                "NLTK tokenizer data became unavailable. Using deterministic "
+                "sentence boundary fallback."
+            )
+            _nltk_ready = False
+
+    return (_fallback_sent_tokenize(text), False)
 
 
 # =============================================================================
@@ -189,18 +224,12 @@ def is_footnote_incomplete(text: str) -> Tuple[bool, float, str]:
         if not CONTINUATION_WORDS.search(text):
             return (False, 0.85, 'short_gloss_complete')
 
-    # 2. Incomplete phrases (strong signal)
+    # 2. Incomplete phrases (strong signal independent of tokenizer data)
     if INCOMPLETE_PHRASES.search(text):
-        # Check NLTK to confirm
-        sentences = _sent_tokenize(text)
-        if sentences:
-            last_sent = sentences[-1].strip()
-            # If last sentence doesn't end with terminal punctuation
-            if not last_sent or last_sent[-1] not in '.!?':
-                return (True, 0.90, 'incomplete_phrase')
+        return (True, 0.90, 'incomplete_phrase')
 
-    # 3. NLTK sentence boundary analysis
-    sentences = _sent_tokenize(text)
+    # 3. Sentence boundary analysis (NLTK when ready; deterministic fallback)
+    sentences, used_nltk = _tokenize_sentences(text)
 
     if not sentences:
         return (False, 0.5, 'no_sentences_detected')
@@ -214,9 +243,12 @@ def is_footnote_incomplete(text: str) -> Tuple[bool, float, str]:
     if not has_terminal_punctuation:
         # Check for continuation words to strengthen signal
         if CONTINUATION_WORDS.search(text):
-            return (True, 0.88, 'nltk_incomplete+continuation_word')
-        else:
+            if used_nltk:
+                return (True, 0.88, 'nltk_incomplete+continuation_word')
+            return (True, 0.82, 'fallback_incomplete+continuation_word')
+        if used_nltk:
             return (True, 0.80, 'nltk_incomplete')
+        return (True, 0.75, 'fallback_incomplete')
 
     # Has terminal punctuation - check for continuation words anyway
     # (could be mid-sentence punctuation like "Dr." or "e.g.")
@@ -227,13 +259,25 @@ def is_footnote_incomplete(text: str) -> Tuple[bool, float, str]:
         # Heuristic: If the last "sentence" is very short and ends with continuation word,
         # likely incomplete despite punctuation
         if len(last_sentence.split()) <= 4:
-            return (True, 0.70, 'continuation_word_with_punctuation')
+            reason = (
+                'continuation_word_with_punctuation'
+                if used_nltk
+                else 'fallback_continuation_word_with_punctuation'
+            )
+            return (True, 0.70, reason)
         else:
             # Longer sentence with terminal punctuation - likely complete
-            return (False, 0.85, 'nltk_complete_despite_continuation_word')
+            reason = (
+                'nltk_complete_despite_continuation_word'
+                if used_nltk
+                else 'fallback_complete_despite_continuation_word'
+            )
+            return (False, 0.85, reason)
 
     # Clean sentence boundary with terminal punctuation
-    return (False, 0.92, 'nltk_complete')
+    if used_nltk:
+        return (False, 0.92, 'nltk_complete')
+    return (False, 0.85, 'fallback_complete')
 
 
 def analyze_footnote_batch(footnotes: List[str]) -> List[Tuple[bool, float, str]]:

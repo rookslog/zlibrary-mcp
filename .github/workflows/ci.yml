@@ -133,11 +133,11 @@ jobs:
           echo "OK: No excluded patterns found in tarball"
       # The packed layout differs from the repo (no src/, no test dirs), and
       # setuptools package discovery behaves differently in it: v1.3.1 shipped
-      # with `uv sync` broken for every npm-installed user because the repo's
+      # with Python setup broken for every npm-installed user because the repo's
       # src/ dir had been masking a flat-layout discovery failure. Run the
       # Python environment setup inside the extracted tarball, exactly as the
       # README quickstart does.
-      - name: Verify uv sync works in the packed layout
+      - name: Verify documented core setup works in the packed layout
         shell: bash
         run: |
           TARBALL=$(ls zlibrary-mcp-*.tgz | head -1)
@@ -145,9 +145,11 @@ jobs:
           tar xzf "$TARBALL" -C "$EXTRACT"
           rm -f "$TARBALL"
           cd "$EXTRACT/package"
-          uv sync
-          .venv/bin/python -c "import sys, zlibrary; sys.path.insert(0, 'lib'); import python_bridge" \
-            && echo "OK: packed core layout installs and bridge imports resolve"
+          test ! -d src
+          test ! -d __tests__
+          bash setup-uv.sh --no-dev
+          .venv/bin/python -c "import importlib.util, pathlib, sys, zlibrary; root = pathlib.Path.cwd().resolve(); assert importlib.util.find_spec('pytest') is None; assert root in pathlib.Path(zlibrary.__file__).resolve().parents; sys.path.insert(0, 'lib'); import python_bridge" \
+            && echo "OK: packed core setup excludes dev tools and bridge imports resolve"
 
   docs-check:
     runs-on: ubuntu-latest

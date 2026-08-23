@@ -23,5 +23,9 @@ of the box. It does not install `scholar`: the image is Alpine-based, and the Op
 dependency used for X-mark detection has no compatible musl wheel. This does not change
 the lightweight core default for source and npm installations.
 
+NLTK-backed sentence boundaries are used when the tokenizer data is already installed.
+The server never downloads NLTK data during import or document processing; when that
+data is absent, footnote continuation uses a deterministic punctuation fallback.
+
 The extras install Python libraries only. OCR execution also requires the relevant
 system tools, such as Tesseract and Ghostscript, to be available on `PATH`.

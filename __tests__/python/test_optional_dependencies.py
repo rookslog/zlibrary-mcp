@@ -149,6 +149,96 @@ def test_resolution_package_does_not_eagerly_import_heavy_implementations():
     assert result.returncode == 0, result.stderr
 
 
+def test_footnote_detection_falls_back_without_nltk_data_or_network(tmp_path):
+    """RAG footnote continuation must remain deterministic with empty NLTK data."""
+    script = textwrap.dedent(
+        """
+        import os
+        import nltk
+
+        nltk.data.path[:] = [os.environ["NLTK_DATA"]]
+
+        def unexpected_download(*args, **kwargs):
+            raise AssertionError("footnote import attempted an NLTK data download")
+
+        nltk.download = unexpected_download
+
+        import lib.footnote_continuation as footnotes
+
+        assert footnotes._nltk_ready is False
+        assert footnotes.is_footnote_incomplete("This note continues") == (
+            True,
+            0.75,
+            "fallback_incomplete",
+        )
+        assert footnotes.is_footnote_incomplete("This note is complete.") == (
+            False,
+            0.85,
+            "fallback_complete",
+        )
+        assert footnotes.is_footnote_incomplete("This concept refers to") == (
+            True,
+            0.90,
+            "incomplete_phrase",
+        )
+        """
+    )
+    env = os.environ.copy()
+    env["NLTK_DATA"] = str(tmp_path)
+
+    result = subprocess.run(
+        [sys.executable, "-c", script],
+        cwd=REPO_ROOT,
+        env=env,
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+
+    assert result.returncode == 0, result.stderr
+
+
+def test_footnote_detection_uses_nltk_when_tokenizer_data_is_available():
+    """The higher-quality sentence tokenizer remains active when its data exists."""
+    script = textwrap.dedent(
+        """
+        import lib.footnote_continuation as footnotes
+
+        assert footnotes._nltk_ready is True
+        assert footnotes.is_footnote_incomplete("See Dr. Smith") == (
+            True,
+            0.80,
+            "nltk_incomplete",
+        )
+        """
+    )
+
+    result = subprocess.run(
+        [sys.executable, "-c", script],
+        cwd=REPO_ROOT,
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+
+    assert result.returncode == 0, result.stderr
+
+
+def test_footnote_detection_does_not_hide_unrelated_nltk_errors(monkeypatch):
+    """Only missing tokenizer data may select the deterministic fallback."""
+    import lib.footnote_continuation as footnotes
+
+    def unexpected_tokenizer_error(text):
+        raise RuntimeError("unexpected tokenizer failure")
+
+    footnotes.is_footnote_incomplete.cache_clear()
+    monkeypatch.setattr(footnotes, "_nltk_ready", True)
+    monkeypatch.setattr(footnotes, "_sent_tokenize", unexpected_tokenizer_error)
+
+    with pytest.raises(RuntimeError, match="unexpected tokenizer failure"):
+        footnotes.is_footnote_incomplete("A footnote with enough words.")
+
+
 def test_core_only_bridge_starts_and_completes_offline_search():
     """Core bridge dispatch must work when every RAG/scholar import is unavailable."""
     script = textwrap.dedent(
@@ -241,8 +331,10 @@ async def test_rag_operation_without_rag_extra_names_install_command(
 
 @pytest.mark.slow
 @pytest.mark.ground_truth
-def test_rag_tier_processes_real_pdf_without_scholar_dependencies(lfs_fixture):
-    """The RAG tier must preserve real-PDF extraction without scholar packages."""
+def test_rag_tier_processes_real_pdf_without_scholar_dependencies(
+    lfs_fixture, tmp_path
+):
+    """The RAG tier must preserve real-PDF extraction with offline NLTK fallback."""
     pdf_path = REPO_ROOT / "test_files" / "sample.pdf"
     lfs_fixture(pdf_path)
 
@@ -250,9 +342,19 @@ def test_rag_tier_processes_real_pdf_without_scholar_dependencies(lfs_fixture):
         """
         import importlib.abc
         import json
+        import os
         from pathlib import Path
         import sys
         import time
+
+        import nltk
+
+        nltk.data.path[:] = [os.environ["NLTK_DATA"]]
+
+        def unexpected_download(*args, **kwargs):
+            raise AssertionError("real-PDF processing attempted an NLTK data download")
+
+        nltk.download = unexpected_download
 
         SCHOLAR_ONLY = {
             "PIL", "cv2", "ocrmypdf", "pdf2image", "pytesseract"
@@ -268,7 +370,10 @@ def test_rag_tier_processes_real_pdf_without_scholar_dependencies(lfs_fixture):
 
         sys.meta_path.insert(0, BlockScholar())
 
+        import lib.footnote_continuation as footnotes
         from lib.rag.orchestrator_pdf import process_pdf
+
+        assert footnotes._nltk_ready is False
 
         repo_root = Path.cwd()
         baseline = json.loads(
@@ -292,9 +397,15 @@ def test_rag_tier_processes_real_pdf_without_scholar_dependencies(lfs_fixture):
         """
     )
 
+    nltk_data = tmp_path / "nltk_data"
+    nltk_data.mkdir()
+    env = os.environ.copy()
+    env["NLTK_DATA"] = str(nltk_data)
+
     result = subprocess.run(
         [sys.executable, "-c", script],
         cwd=REPO_ROOT,
+        env=env,
         text=True,
         capture_output=True,
         check=False,

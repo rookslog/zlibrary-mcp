@@ -62,21 +62,44 @@ _SLOW_LINK_RE = re.compile(r"/slow_download/([a-f0-9]{32})/(\d+)/(\d+)")
 # outside the browser at all.
 _FILE_EXTENSION_RE = re.compile(r"\.(pdf|epub|djvu|mobi|azw3|cbz|cbr|fb2|txt)\b", re.I)
 
-# Page text that means "the wall answered", not "the book is missing". These
-# must back off rather than retry: retrying into a challenge is the behaviour
-# the rate limit exists to prevent.
+# Any Anna's book link. Used as positive evidence that a page is genuinely
+# Anna's rather than an interstitial standing in front of it.
+_BOOK_LINK_RE = re.compile(r"/md5/[a-f0-9]{32}")
+
+# Everything that is not rendered prose. Classification runs on visible text
+# only, and that is not a nicety — a live run on 2026-08-23 rejected a
+# perfectly good 295KB book page because every Anna's page carries the literal
+# JavaScript comment `// "text/css" for DDOS-GUARD caching.`, three times on a
+# book page. Matching raw HTML meant the wall detector fired on 100% of
+# successful requests, and no amount of mocked-page unit testing was going to
+# show that.
+_SCRIPT_RE = re.compile(r"<script\b.*?</script>", re.S | re.I)
+_STYLE_RE = re.compile(r"<style\b.*?</style>", re.S | re.I)
+_COMMENT_RE = re.compile(r"<!--.*?-->", re.S)
+_TAG_RE = re.compile(r"<[^>]+>")
+_WHITESPACE_RE = re.compile(r"\s+")
+
+# Phrases that mean "the wall answered", not "the book is missing". Verified
+# absent from the visible text of known-good book and partner-server pages
+# captured live, which is the bar a marker has to clear before it goes in here:
+# a false positive costs every request, a false negative costs one.
 _CHALLENGE_MARKERS = (
     "checking your browser",
-    "ddos-guard",
     "verifying you are human",
     "enable javascript and cookies",
+    "just a moment",
+    "ddos-guard protection",
 )
 
+# Anna's own refusal. Deliberately specific: "please wait" and "rate limit"
+# were here and are not, because a normal slow-download page legitimately asks
+# the reader to wait, and reading a countdown as an exhausted quota would abort
+# a request that was about to succeed.
 _EXHAUSTED_MARKERS = (
     "you have downloaded too many",
     "too many downloads",
-    "please wait",
-    "rate limit",
+    "download limit reached",
+    "daily download limit",
 )
 
 
@@ -173,9 +196,34 @@ class _RateLimiter:
         self._last_request = time.monotonic() + max(0.0, seconds - self.min_interval)
 
 
-def _classify_page(text: str) -> Optional[str]:
-    """Name the wall in a page body, or None if it looks like a real page."""
-    low = text.lower()
+def visible_text(html: str) -> str:
+    """The prose a reader would see, with scripts, styles and markup removed.
+
+    Public because it is the thing the wall detector is actually about: match
+    raw HTML and Anna's own source comments become evidence of a wall.
+    """
+    text = _SCRIPT_RE.sub(" ", html)
+    text = _STYLE_RE.sub(" ", text)
+    text = _COMMENT_RE.sub(" ", text)
+    text = _TAG_RE.sub(" ", text)
+    return _WHITESPACE_RE.sub(" ", text).strip()
+
+
+def _classify_page(html: str) -> Optional[str]:
+    """Name the wall in a page, or None if it looks like a real page.
+
+    Two guards, because a false positive here is far more expensive than a
+    false negative: it makes every request fail, and it fails them with a
+    message telling the operator to go solve a challenge that is not there.
+
+    1. Only visible text is searched (see `visible_text`).
+    2. A page carrying this site's own navigation links is a real page whatever
+       else it says. A challenge interstitial has no book links in it, so their
+       presence is positive evidence that cannot coexist with a wall.
+    """
+    if _SLOW_LINK_RE.search(html) or _BOOK_LINK_RE.search(html):
+        return None
+    low = visible_text(html).lower()
     for marker in _CHALLENGE_MARKERS:
         if marker in low:
             return "challenge"

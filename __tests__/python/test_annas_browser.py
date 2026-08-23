@@ -23,6 +23,7 @@ sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 
 from lib.sources.annas_browser import (  # noqa: E402
     AnnasBrowserSession,
+    visible_text,
     BrowserUnavailableError,
     ChallengeNotClearedError,
     DailyLimitReachedError,
@@ -157,8 +158,9 @@ class TestWallClassification:
         "body",
         [
             "<h1>Checking your browser before accessing</h1>",
-            "<p>DDoS-Guard</p>",
+            "<p>DDoS-Guard protection. Please wait...</p>",
             "<div>Please enable JavaScript and cookies to continue</div>",
+            "<title>Just a moment...</title><p>Just a moment</p>",
         ],
     )
     def test_challenge_bodies_are_named(self, body):
@@ -169,6 +171,76 @@ class TestWallClassification:
 
     def test_an_ordinary_page_is_not_a_wall(self):
         assert _classify_page(BOOK_PAGE) is None
+
+
+class TestTheWallDetectorDoesNotFireOnRealPages:
+    """The bug a live run found and twenty-six mocked tests did not.
+
+    Every Anna's page carries the literal JavaScript comment
+    `// "text/css" for DDOS-GUARD caching.` — three times on a book page.
+    Matching raw HTML meant the wall detector fired on a real, HTTP 200,
+    295KB book page with eight partner-server links on it. It would have failed
+    100% of successful requests, and told the operator to go solve a challenge
+    that was not there.
+
+    Mocked pages could not have shown this, because a mock only contains what
+    the person writing it thought was relevant. That is the stated limitation
+    of the rest of this module's tests; these two exist to close the specific
+    hole it left.
+    """
+
+    # Verbatim from a live capture on 2026-08-23 (annas-archive.gl book page,
+    # HTTP 200, 295643 bytes). Shortened, but the marker context is untouched.
+    REAL_PAGE = """
+    <html><head><title>The Feynman Lectures on Physics - Anna’s Archive</title></head>
+    <body>
+      <a href="/md5/e2055de39f1c745d606301917fe66344">The Feynman Lectures</a>
+      <a href="/slow_download/e2055de39f1c745d606301917fe66344/0/0">Slow Partner Server #1</a>
+      <script>
+        function refreshRecentDownloads(cb) {
+          setTimeout(() => {
+            // "text/css" for DDOS-GUARD caching.
+            fetch("/dyn/recent_downloads/", { headers: { 'Accept': 'text/css' } })
+          });
+        }
+        window.md5ReloadSummary = function() {
+          // "text/css" for DDOS-GUARD caching.
+          fetch("/dyn/md5/summary/" + md5);
+        };
+      </script>
+    </body></html>
+    """
+
+    def test_a_real_book_page_is_not_a_wall(self):
+        assert _classify_page(self.REAL_PAGE) is None, (
+            "Anna's own source comments mention DDOS-GUARD on every page; "
+            "reading them as a wall fails every successful request"
+        )
+
+    def test_script_comments_are_not_visible_text(self):
+        assert "ddos-guard" not in visible_text(self.REAL_PAGE).lower()
+        assert "Feynman" in visible_text(self.REAL_PAGE)
+
+    def test_a_page_with_book_links_is_never_a_wall(self):
+        """Positive evidence outranks a phrase match.
+
+        A challenge interstitial has no book links in it. If they are present
+        the page is Anna's own, whatever prose it also happens to carry — a
+        book whose *title* contains a marker phrase must not brick the route.
+        """
+        awkward = '<a href="/md5/' + "c" * 32 + '">Checking Your Browser: A History</a>'
+
+        assert _classify_page(awkward) is None
+
+    def test_a_genuine_interstitial_still_registers(self):
+        """The guards must not have turned the detector off entirely."""
+        interstitial = (
+            "<html><head><title>Just a moment...</title></head>"
+            "<body><h1>Checking your browser before accessing "
+            "annas-archive.gl</h1></body></html>"
+        )
+
+        assert _classify_page(interstitial) == "challenge"
 
 
 class TestRateLimiter:
@@ -290,7 +362,7 @@ class TestResolveDownloadUrl:
 
     @pytest.mark.asyncio
     async def test_a_challenge_backs_the_limiter_off(self):
-        challenge = "<html><body>DDoS-Guard</body></html>"
+        challenge = "<html><body>Checking your browser before accessing</body></html>"
         session = _session([BOOK_PAGE, challenge], annas_browser_backoff_seconds=120.0)
         before = session._limiter._last_request
 

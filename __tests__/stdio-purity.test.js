@@ -45,7 +45,7 @@ describe('stdio purity', () => {
     expect(offenders).toEqual([]);
   });
 
-  test('every stdout line from a real handshake is valid JSON-RPC', async () => {
+  test.each(['legacy', 'pool'])('every stdout line from a real %s handshake is valid JSON-RPC', async (mode) => {
     if (!existsSync(distEntry)) {
       throw new Error(`dist/index.js missing — run "npm run build" before this test`);
     }
@@ -66,14 +66,17 @@ describe('stdio purity', () => {
       const child = spawn(process.execPath, [distEntry], {
         env: {
           ...process.env,
-          ZLIBRARY_EMAIL: 'ci@test.com',
-          ZLIBRARY_PASSWORD: 'ci-test-password',
+          ZLIBRARY_EMAIL: mode === 'legacy' ? 'ci@test.com' : '',
+          ZLIBRARY_PASSWORD: mode === 'legacy' ? 'ci-test-password' : '',
+          ZLIBRARY_ACCOUNT_CREDENTIALS: mode === 'pool' ? JSON.stringify([{ email: 'ci@test.com', password: 'ci-test-password' }]) : '',
           LOG_LEVEL: 'debug', // strictest case: even debug output must avoid stdout
         },
         stdio: ['pipe', 'pipe', 'pipe'],
       });
 
       let out = '';
+      let err = '';
+      child.stderr.on('data', (chunk) => { err += chunk.toString(); });
       child.stdout.on('data', (chunk) => {
         out += chunk.toString();
       });
@@ -81,17 +84,18 @@ describe('stdio purity', () => {
 
       const done = setTimeout(() => {
         child.kill();
-        resolve(out);
+        resolve({ out, err });
       }, 8000);
       child.on('close', () => {
         clearTimeout(done);
-        resolve(out);
+        resolve({ out, err });
       });
 
       child.stdin.write(`${initialize}\n${initialized}\n`);
     });
 
-    const lines = stdout.split('\n').filter((line) => line.trim() !== '');
+    expect(stdout.err).not.toContain('Missing environment variable(s)');
+    const lines = stdout.out.split('\n').filter((line) => line.trim() !== '');
     expect(lines.length).toBeGreaterThan(0);
 
     for (const line of lines) {

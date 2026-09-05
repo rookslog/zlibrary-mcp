@@ -262,7 +262,8 @@ class TestSelectAdvertisedDomain:
 
 
 @pytest.fixture
-def eapi_env(monkeypatch):
+def eapi_env(monkeypatch, tmp_path):
+    monkeypatch.setenv("ZLIBRARY_SESSION_DIR", str(tmp_path / "sessions"))
     monkeypatch.setenv("ZLIBRARY_EMAIL", "test@example.com")
     monkeypatch.setenv("ZLIBRARY_PASSWORD", "secret")
 
@@ -281,6 +282,7 @@ def make_client_mock():
         return_value={"domains": ["z-library.sk", "z-library.mx"]}
     )
     client.close = AsyncMock()
+    client.domain = "z-library.ec"
     client.remix_userid = "1"
     client.remix_userkey = "k"
     return client

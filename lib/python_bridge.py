@@ -26,6 +26,8 @@ from lib import rag_processing
 
 # Import enhanced metadata extraction
 from lib import enhanced_metadata
+from lib.eapi_session import authenticated_client
+from lib.eapi_accounts import configured_accounts, download_client, pool_limits
 
 # Import multi-source router
 from lib.sources.router import SourceRouter
@@ -264,25 +266,23 @@ async def get_eapi_client() -> EAPIClient:
 
 
 async def initialize_eapi_client() -> EAPIClient:
-    """
-    Initialize the shared EAPI client using environment credentials.
+    """Reuse the first account for search, health, and history operations."""
+    return await _initialize_account(configured_accounts()[0])
 
-    Creates an EAPIClient, logs in, discovers domains, and stores
-    the client for reuse by all tool functions.
 
-    Returns:
-        Authenticated EAPIClient instance
-    """
+async def _initialize_account(account) -> EAPIClient:
     global _eapi_client
+    _eapi_client = await authenticated_client(
+        account.email,
+        account.password,
+        lambda: _login_eapi_client(account.email, account.password),
+        EAPIClient,
+    )
+    return _eapi_client
 
-    email = os.environ.get("ZLIBRARY_EMAIL")
-    password = os.environ.get("ZLIBRARY_PASSWORD")
 
-    if not email or not password:
-        raise ValueError(
-            "ZLIBRARY_EMAIL and ZLIBRARY_PASSWORD environment variables required"
-        )
-
+async def _login_eapi_client(email: str, password: str) -> EAPIClient:
+    """Perform one login and retain the existing domain-discovery behavior."""
     # ISSUE-API-002: the old single default (z-library.sk) is fronted by the
     # DiamWall anti-bot wall. resolve_eapi_domain() honours an explicit
     # ZLIBRARY_EAPI_DOMAIN override without probing; otherwise it probes the
@@ -292,10 +292,15 @@ async def initialize_eapi_client() -> EAPIClient:
     initial_domain = await resolve_eapi_domain()
 
     client = EAPIClient(initial_domain)
-    login_result = await client.login(email, password)
+    try:
+        login_result = await client.login(email, password)
+    except BaseException:
+        await client.close()
+        raise
 
     if login_result.get("success") != 1:
-        raise RuntimeError(f"EAPI login failed: {login_result}")
+        await client.close()
+        raise RuntimeError("EAPI login failed")
 
     logger.info(f"EAPI client authenticated (userid={client.remix_userid})")
 
@@ -326,8 +331,7 @@ async def initialize_eapi_client() -> EAPIClient:
         except Exception as e:
             logger.warning(f"Domain discovery failed, using initial domain: {e}")
 
-    _eapi_client = client
-    return _eapi_client
+    return client
 
 
 def _classify_health_error(error: Exception) -> str:
@@ -677,6 +681,8 @@ async def get_download_limits():
         dict with daily_limit, daily_remaining (both int, or "unknown" if the
         response shape changes again), plus downloads_today and is_premium.
     """
+    if os.environ.get("ZLIBRARY_ACCOUNT_CREDENTIALS", "").strip():
+        return await pool_limits(configured_accounts(), _initialize_account)
     eapi = await get_eapi_client()
     profile = await eapi.get_profile()
     user = profile.get("user", profile)
@@ -1669,7 +1675,17 @@ async def main():
         # during asyncio.run() shutdown.
         resolver_timeout = get_source_config().preflight_timeout
         async with bounded_resolver(resolver_timeout):
-            if needs_eapi:
+            pooled_download = (
+                needs_eapi
+                and function_name == "download_book"
+                and bool(os.environ.get("ZLIBRARY_ACCOUNT_CREDENTIALS", "").strip())
+            )
+            pooled_limits = (
+                needs_eapi
+                and function_name == "get_download_limits"
+                and bool(os.environ.get("ZLIBRARY_ACCOUNT_CREDENTIALS", "").strip())
+            )
+            if needs_eapi and not pooled_download and not pooled_limits:
                 await initialize_eapi_client()
 
             # Standardize 'language' key to 'languages' for search functions.
@@ -1680,7 +1696,15 @@ async def main():
                     args_dict["languages"] = []
                 if not args_dict.get("content_types"):
                     args_dict["content_types"] = []
-            result = await _dispatch_bridge_function(function_name, args_dict)
+            if pooled_download:
+                async with download_client(
+                    configured_accounts(), _initialize_account
+                ) as (index, _):
+                    result = await _dispatch_bridge_function(function_name, args_dict)
+                    if isinstance(result, dict):
+                        result["account_index"] = index
+            else:
+                result = await _dispatch_bridge_function(function_name, args_dict)
 
         # Print only confirmation and path to stdout to avoid large content
         mcp_style_response = {"content": [{"type": "text", "text": json.dumps(result)}]}

@@ -1,7 +1,12 @@
-import { jest, describe, beforeEach, test, expect } from '@jest/globals';
+import { jest, describe, beforeEach, afterEach, test, expect } from '@jest/globals';
+import { Client } from '@modelcontextprotocol/sdk/client/index.js';
+import { InMemoryTransport } from '@modelcontextprotocol/sdk/inMemory.js';
 
 const mockRunPythonBridge = jest.fn();
 const mockGetManagedPythonPath = jest.fn();
+
+let clientTransport;
+let serverTransport;
 
 // Mock dependencies before importing
 jest.unstable_mockModule('../lib/venv-manager.js', () => ({
@@ -17,10 +22,16 @@ jest.unstable_mockModule('../lib/python-runner.js', () => ({
   LONG_BRIDGE_TIMEOUT_MS: 2400000,
 }));
 
-describe('get_recent_books regression suite', () => {
+// Substitute InMemoryTransport for StdioServerTransport in start() while keeping
+// the real McpServer, tool registration, and Zod schema validation completely intact.
+jest.unstable_mockModule('@modelcontextprotocol/sdk/server/stdio.js', () => ({
+  StdioServerTransport: jest.fn(() => serverTransport),
+}));
+
+describe('get_recent_books suite', () => {
   let zlibApi;
-  let registeredTools;
-  let startServer;
+  let client;
+  let serverInstance;
 
   const sampleBooks = [
     { id: '1', title: 'Book 1', author: 'Author A', extension: 'epub' },
@@ -39,40 +50,33 @@ describe('get_recent_books regression suite', () => {
     jest.clearAllMocks();
 
     mockGetManagedPythonPath.mockResolvedValue('/fake/python');
-    registeredTools = new Map();
 
-    const mockServer = {
-      connect: jest.fn().mockResolvedValue(undefined),
-      tool: jest.fn((...args) => registeredTools.set(args[0], {
-        name: args[0],
-        description: args[1],
-        schema: args[2],
-        annotations: args[3],
-        handler: args[4],
-      })),
-      close: jest.fn(),
-    };
-
-    jest.unstable_mockModule('@modelcontextprotocol/sdk/server/mcp.js', () => ({
-      McpServer: jest.fn(() => mockServer),
-    }));
-    jest.unstable_mockModule('@modelcontextprotocol/sdk/server/stdio.js', () => ({
-      StdioServerTransport: jest.fn(() => ({})),
-    }));
+    [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
 
     zlibApi = await import('../dist/lib/zlibrary-api.js');
     const indexModule = await import('../dist/index.js');
-    startServer = indexModule.start;
+
+    const startResult = await indexModule.start({ testing: true });
+    serverInstance = startResult.server;
+
+    client = new Client({ name: 'test-client', version: '1.0.0' }, { capabilities: {} });
+    await client.connect(clientTransport);
+  });
+
+  afterEach(async () => {
+    if (client) {
+      await client.close();
+    }
+    if (serverInstance) {
+      await serverInstance.close();
+    }
   });
 
   describe('TypeScript API Wrapper: zlibraryApi.getRecentBooks', () => {
-    test('is exported as a function on zlibrary-api', () => {
+    test('is exported as a function on zlibrary-api and defaults count to 10', async () => {
       expect(typeof zlibApi.getRecentBooks).toBe('function');
-    });
 
-    test('defaults to count=10 when called without args', async () => {
       mockRunPythonBridge.mockResolvedValueOnce(makeBridgeOutput(sampleBooks));
-
       const result = await zlibApi.getRecentBooks();
 
       expect(mockRunPythonBridge).toHaveBeenCalledTimes(1);
@@ -82,29 +86,16 @@ describe('get_recent_books regression suite', () => {
       expect(result).toEqual({ books: sampleBooks });
     });
 
-    test('passes explicit count to Python bridge', async () => {
-      mockRunPythonBridge.mockResolvedValueOnce(makeBridgeOutput(sampleBooks.slice(0, 2)));
-
-      const result = await zlibApi.getRecentBooks({ count: 2 });
-
-      expect(mockRunPythonBridge).toHaveBeenCalledTimes(1);
-      const bridgeCallArgs = mockRunPythonBridge.mock.calls[0][1].args;
-      expect(bridgeCallArgs[0]).toBe('get_recent_books');
-      expect(JSON.parse(bridgeCallArgs[1])).toEqual({ count: 2 });
-      expect(result.books).toHaveLength(2);
-    });
-
-    test('filters by format in TypeScript and does NOT pass format kwarg to Python', async () => {
+    test('passes explicit count and filters by format without passing format to Python', async () => {
       mockRunPythonBridge.mockResolvedValueOnce(makeBridgeOutput(sampleBooks));
 
-      const result = await zlibApi.getRecentBooks({ count: 10, format: 'epub' });
+      const result = await zlibApi.getRecentBooks({ count: 4, format: 'epub' });
 
       expect(mockRunPythonBridge).toHaveBeenCalledTimes(1);
       const bridgeCallArgs = mockRunPythonBridge.mock.calls[0][1].args;
       expect(bridgeCallArgs[0]).toBe('get_recent_books');
-      // Python bridge only accepts count, format must not be in kwargs
-      expect(JSON.parse(bridgeCallArgs[1])).toEqual({ count: 10 });
-      // Both 'epub' and 'EPUB' books should match
+      expect(JSON.parse(bridgeCallArgs[1])).toEqual({ count: 4 });
+      // Case-insensitive format match: 'epub' and 'EPUB'
       expect(result.books).toEqual([
         { id: '1', title: 'Book 1', author: 'Author A', extension: 'epub' },
         { id: '3', title: 'Book 3', author: 'Author C', extension: 'EPUB' },
@@ -112,8 +103,7 @@ describe('get_recent_books regression suite', () => {
     });
 
     test('propagates errors when Python bridge fails', async () => {
-      const bridgeError = new Error('Subprocess crashed');
-      mockRunPythonBridge.mockRejectedValueOnce(bridgeError);
+      mockRunPythonBridge.mockRejectedValueOnce(new Error('Subprocess crashed'));
 
       await expect(zlibApi.getRecentBooks({ count: 5 })).rejects.toThrow(
         /Python bridge execution failed for get_recent_books/,
@@ -132,18 +122,24 @@ describe('get_recent_books regression suite', () => {
     });
   });
 
-  describe('MCP Dispatch & Handler Wiring: server.tool("get_recent_books")', () => {
-    test('registers get_recent_books tool with McpServer', async () => {
-      await startServer({ testing: true });
-      expect(registeredTools.has('get_recent_books')).toBe(true);
+  describe('Real MCP Client + McpServer exchange over InMemoryTransport', () => {
+    test('advertises get_recent_books in listTools with description and parameter schema', async () => {
+      const response = await client.listTools();
+      const tool = response.tools.find((t) => t.name === 'get_recent_books');
+
+      expect(tool).toBeDefined();
+      expect(tool.description).toContain('recently added books');
+      expect(tool.inputSchema.properties).toHaveProperty('count');
+      expect(tool.inputSchema.properties).toHaveProperty('format');
     });
 
-    test('dispatches get_recent_books with defaults and returns wrapped MCP result', async () => {
-      await startServer({ testing: true });
+    test('executes callTool with defaults over real MCP protocol and returns structured content', async () => {
       mockRunPythonBridge.mockResolvedValueOnce(makeBridgeOutput(sampleBooks));
 
-      const tool = registeredTools.get('get_recent_books');
-      const response = await tool.handler({}, {});
+      const response = await client.callTool({
+        name: 'get_recent_books',
+        arguments: {},
+      });
 
       expect(mockRunPythonBridge).toHaveBeenCalledTimes(1);
       const bridgeCallArgs = mockRunPythonBridge.mock.calls[0][1].args;
@@ -156,12 +152,18 @@ describe('get_recent_books regression suite', () => {
       });
     });
 
-    test('dispatches get_recent_books with explicit count and format', async () => {
-      await startServer({ testing: true });
+    test('executes callTool with explicit count and format over real MCP protocol', async () => {
       mockRunPythonBridge.mockResolvedValueOnce(makeBridgeOutput(sampleBooks));
 
-      const tool = registeredTools.get('get_recent_books');
-      const response = await tool.handler({ count: 4, format: 'pdf' }, {});
+      const response = await client.callTool({
+        name: 'get_recent_books',
+        arguments: { count: 4, format: 'pdf' },
+      });
+
+      expect(mockRunPythonBridge).toHaveBeenCalledTimes(1);
+      const bridgeCallArgs = mockRunPythonBridge.mock.calls[0][1].args;
+      expect(bridgeCallArgs[0]).toBe('get_recent_books');
+      expect(JSON.parse(bridgeCallArgs[1])).toEqual({ count: 4 });
 
       const expected = {
         books: [{ id: '2', title: 'Book 2', author: 'Author B', extension: 'pdf' }],
@@ -172,29 +174,67 @@ describe('get_recent_books regression suite', () => {
       });
     });
 
-    test('handles error in MCP dispatch and returns isError response', async () => {
-      await startServer({ testing: true });
-      mockRunPythonBridge.mockRejectedValueOnce(new Error('Process execution failed'));
+    test('rejects invalid schema input before calling Python runner', async () => {
+      const response = await client.callTool({
+        name: 'get_recent_books',
+        arguments: { count: 'not-a-number' },
+      });
 
-      const tool = registeredTools.get('get_recent_books');
-      const response = await tool.handler({}, {});
+      expect(response.isError).toBe(true);
+      expect(response.content[0].text).toContain('Invalid arguments');
+      expect(mockRunPythonBridge).not.toHaveBeenCalled();
+    });
+
+    test('handles Python runner error and surfaces isError MCP response to client', async () => {
+      mockRunPythonBridge.mockRejectedValueOnce(new Error('Subprocess crash failure'));
+
+      const response = await client.callTool({
+        name: 'get_recent_books',
+        arguments: {},
+      });
 
       expect(response.isError).toBe(true);
       expect(response.content[0].type).toBe('text');
       expect(response.content[0].text).toContain('Error:');
     });
 
-    test('passes cancellation signal through MCP extra to bridge runner', async () => {
-      await startServer({ testing: true });
-      mockRunPythonBridge.mockResolvedValueOnce(makeBridgeOutput([]));
+    test('propagates real client cancellation to Python bridge runner without arbitrary sleep', async () => {
+      let runnerStartedResolve;
+      const runnerStartedPromise = new Promise((resolve) => {
+        runnerStartedResolve = resolve;
+      });
+
+      mockRunPythonBridge.mockImplementationOnce((_scriptName, _options, runnerOpts) => {
+        runnerStartedResolve(runnerOpts);
+        return new Promise((_resolve, reject) => {
+          if (runnerOpts?.signal) {
+            runnerOpts.signal.addEventListener('abort', () => {
+              const abortErr = new Error('This operation was aborted');
+              abortErr.name = 'AbortError';
+              reject(abortErr);
+            });
+          }
+        });
+      });
+
       const controller = new AbortController();
+      const callPromise = client.callTool(
+        { name: 'get_recent_books', arguments: {} },
+        undefined,
+        { signal: controller.signal },
+      );
 
-      const tool = registeredTools.get('get_recent_books');
-      await tool.handler({}, { signal: controller.signal });
+      // Wait deterministically for the mock runner to receive the call (no arbitrary sleep)
+      const runnerOpts = await runnerStartedPromise;
+      expect(runnerOpts.signal).toBeDefined();
+      expect(runnerOpts.signal.aborted).toBe(false);
 
-      expect(mockRunPythonBridge).toHaveBeenCalledTimes(1);
-      const runnerOptions = mockRunPythonBridge.mock.calls[0][2];
-      expect(runnerOptions.signal).toBe(controller.signal);
+      // Issue cancellation from client
+      controller.abort();
+
+      // Ensure callTool rejects with abort and the runner's signal was marked aborted
+      await expect(callPromise).rejects.toThrow();
+      expect(runnerOpts.signal.aborted).toBe(true);
     });
   });
 });

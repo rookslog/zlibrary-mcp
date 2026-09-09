@@ -198,9 +198,51 @@ def _entry(
     }
 
 
+def _annas_usable_host(base_url: Optional[str]) -> Optional[str]:
+    """Extract a usable hostname for Anna's Archive from base URL.
+
+    Validate the raw configured base: the adapter only removes trailing slashes
+    before appending endpoint paths. Controls are rejected by HTTPX, while a
+    query or fragment would swallow the appended path. Do not normalize those
+    defects away in the report. Return None for malformed or unusable bases.
+    """
+    if not base_url or not isinstance(base_url, str):
+        return None
+    if (
+        base_url != base_url.strip()
+        or any(ord(char) < 32 or ord(char) == 127 for char in base_url)
+        or "?" in base_url
+        or "#" in base_url
+    ):
+        return None
+    try:
+        parsed = urlsplit(base_url)
+        scheme = (parsed.scheme or "").lower()
+        if scheme not in ("http", "https"):
+            return None
+        host = (parsed.hostname or "").lower()
+        if not host or any(char.isspace() for char in host):
+            return None
+        port = parsed.port
+        if port is not None and not (1 <= port <= 65535):
+            return None
+        return host
+    except (ValueError, AttributeError):
+        return None
+
+
 def describe_annas(config: SourceConfig) -> Dict:
     """Anna's Archive constraints, from configuration alone."""
-    host = (urlsplit(config.annas_base_url).hostname or "").lower()
+    host = _annas_usable_host(config.annas_base_url)
+    if not host:
+        return _entry(
+            available=False,
+            routes=[],
+            daily_limit=daily_limit_not_applicable(
+                "no valid ANNAS_BASE_URL configured"
+            ),
+            note="no valid ANNAS_BASE_URL configured",
+        )
     if config.has_annas_key and host in ANNAS_TRUSTED_HOSTS:
         return _entry(
             available=True,
@@ -224,7 +266,7 @@ def describe_annas(config: SourceConfig) -> Dict:
             ),
             note=(
                 "ANNAS_SECRET_KEY configured, but configured host "
-                f"'{host or '<missing>'}' is not trusted for keyed download; "
+                f"'{host}' is not trusted for keyed download; "
                 "search only"
             ),
         )

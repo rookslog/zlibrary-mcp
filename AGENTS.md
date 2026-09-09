@@ -14,6 +14,28 @@ files a RAG pipeline can use. Node.js/TypeScript MCP layer (`src/`) over a Pytho
 anything architectural — it is short, and it is the document that says what this project
 refuses to become.
 
+## Agent skills
+
+### Issue tracker
+
+GitHub Issues and native sub-issues/dependencies are the planning surface. See
+[docs/agents/issue-tracker.md](docs/agents/issue-tracker.md). Release priorities
+remain in GitHub milestones and their map issues, per `docs/RELEASE_PROCESS.md`.
+
+### Triage labels
+
+Use the category and state mapping in
+[docs/agents/triage-labels.md](docs/agents/triage-labels.md). Readiness is not
+authorization to merge, publish, use credentials, or discard existing work.
+
+### Domain docs
+
+Single context: `CONTEXT.md` and `docs/adr/`. Follow
+[docs/agents/domain.md](docs/agents/domain.md) when using Wayfinder, triage,
+grilling, domain-modeling, to-spec, or to-tickets. Wayfinder decision tickets
+remain distinct from implementation tickets; unresolved choices are not
+agent-ready specifications.
+
 ## Setup and commands
 
 Prerequisites: Node 22+, Python 3.10+, and [uv](https://docs.astral.sh/uv/). The Python

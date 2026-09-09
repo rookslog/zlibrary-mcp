@@ -4,10 +4,10 @@ Issues and specs for this repo live as GitHub issues. Use the `gh` CLI for all o
 
 ## Conventions
 
-- **Create an issue**: `gh issue create --title "..." --body "..."`. Use a heredoc for multi-line bodies.
+- **Create an issue**: prepare a UTF-8 body file, then use `gh issue create --title "..." --body-file <path>`. Preserve actual newlines; never interpolate untrusted text into shell code.
 - **Read an issue**: `gh issue view <number> --comments`, filtering comments by `jq` and also fetching labels.
 - **List issues**: `gh issue list --state open --json number,title,body,labels,comments --jq '[.[] | {number, title, body, labels: [.labels[].name], comments: [.comments[].body]}]'` with appropriate `--label` and `--state` filters.
-- **Comment on an issue**: `gh issue comment <number> --body "..."`
+- **Comment on an issue**: `gh issue comment <number> --body-file <path>`
 - **Apply / remove labels**: `gh issue edit <number> --add-label "..."` / `--remove-label "..."`
 - **Close**: `gh issue close <number> --comment "..."`
 
@@ -43,3 +43,19 @@ Used by `/wayfinder`. The **map** is a single issue with **child** issues as tic
 - **Frontier query**: list the map's open children (`gh issue list --state open`, scoped to the map's sub-issues / task list), drop any with an open blocker (`issue_dependencies_summary.blocked_by > 0`, or an open issue in the `Blocked by` line) or an assignee; first in map order wins.
 - **Claim**: `gh issue edit <n> --add-assignee @me` — the session's first write.
 - **Resolve**: `gh issue comment <n> --body "<answer>"`, then `gh issue close <n>`, then append a context pointer (gist + link) to the map's Decisions-so-far.
+
+## Release planning and publication
+
+Use existing milestone/map pairs before creating another release slot. A release
+milestone description contains `Map: #N`; the map belongs to that milestone.
+Unslotted themes carry no version promise. Consult `docs/RELEASE_PROCESS.md`.
+
+When scope changes, update the milestone, map, affected issue memberships and
+supersession notes together. Store before-state receipts and intended changes
+in a dated planning artifact. Query child issues and native blockers to find
+the frontier; do not maintain a duplicate open-ticket list in the map body.
+
+`ready-for-agent` requires an accepted behavioral brief, not just a milestone
+assignment. Explicit human decisions remain open until the human answers. Do
+not merge PRs, enable auto-merge, cut releases, request new reviews, or discard
+dirty work as a consequence of planning alone.

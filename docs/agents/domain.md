@@ -1,4 +1,6 @@
-# Domain documentation
+# Domain guidance for maintainers and assistants
+
+This guidance can be followed without installing any skills.
 
 This repository has one domain context. Read `CONTEXT.md` for source, adapter,
 route, provenance, acquisition and processing terminology. Read `VISION.md`
@@ -18,6 +20,7 @@ issues. Dated material under `claudedocs/` is evidence or a snapshot, not a
 second release plan. Preserve alternative readings until the owner resolves
 them. Skills must not answer human-in-the-loop decision tickets for the owner.
 
-The deferred browser-resident route remains required follow-up work. Deferral
-from a release is not rejection of the route. Machine-solved challenges and
-cookie transplantation retain their existing boundaries in `AGENTS.md`.
+For current scheduling, consult GitHub milestones and their map issues.
+Deferring work from a release does not reject it or amend its architectural
+constraints. Source-access boundaries remain in `AGENTS.md` and `CONTEXT.md`;
+this guide does not maintain a second copy of the release plan.

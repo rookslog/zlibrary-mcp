@@ -250,6 +250,11 @@ interface GetDownloadHistoryArgs {
     count?: number;
 }
 
+export interface GetRecentBooksArgs {
+    count?: number;
+    format?: string;
+}
+
 interface DownloadBookToFileArgs {
     // id: string; // Replaced by bookDetails
     // format?: string | null; // Replaced by bookDetails
@@ -428,6 +433,38 @@ export async function getDownloadHistory({ count = 10 }: GetDownloadHistoryArgs,
 export async function getDownloadLimits(options: CallOptions = {}): Promise<any> {
   // Pass arguments as an object matching Python function signature
   return await callPythonFunction('get_download_limits', {}, options);
+}
+
+/**
+ * Get recently added books from Z-Library.
+ *
+ * Calls the Python bridge `get_recent_books` operation with the requested count
+ * (default 10) and optional cancellation signal. When format filtering is specified,
+ * filters the returned books by file extension in TypeScript to preserve the advertised
+ * format contract while respecting Python's single-argument `count` signature.
+ */
+export async function getRecentBooks(
+  args: GetRecentBooksArgs = {},
+  options: CallOptions = {},
+): Promise<any> {
+  const count = args.count ?? 10;
+  const format = args.format;
+
+  const result = await callPythonFunction('get_recent_books', { count }, options);
+
+  if (format && result && Array.isArray(result.books)) {
+    const targetFormat = format.trim().toLowerCase().replace(/^\./, '');
+    const filtered = result.books.filter((book: any) => {
+      const ext = (book.extension || '').trim().toLowerCase().replace(/^\./, '');
+      return ext === targetFormat;
+    });
+    return {
+      ...result,
+      books: filtered,
+    };
+  }
+
+  return result;
 }
 
 

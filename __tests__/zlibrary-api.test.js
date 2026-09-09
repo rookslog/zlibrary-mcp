@@ -590,6 +590,57 @@ describe('Z-Library API', () => {
     });
   });
 
+  describe('getRecentBooks', () => {
+    test('should call Python bridge with default count=10 when no arguments are passed', async () => {
+      const mockApiResult_rec1 = { books: [{ id: '1', title: 'Recent 1', extension: 'epub' }] };
+      mockGetManagedPythonPath.mockResolvedValue('/fake/python');
+      const mockPythonResultString = JSON.stringify(mockApiResult_rec1);
+      const mockMcpResponseString = JSON.stringify({ content: [{ type: 'text', text: mockPythonResultString }] });
+      mockRunPythonBridge.mockResolvedValueOnce([mockMcpResponseString]);
+
+      result = await zlibApi.getRecentBooks();
+
+      expect(mockRunPythonBridge).toHaveBeenCalledWith('python_bridge.py', expect.objectContaining({
+        scriptPath: EXPECTED_SCRIPT_PATH,
+        args: ['get_recent_books', JSON.stringify({ count: 10 })],
+      }), expect.objectContaining({ label: expect.any(String) }));
+      expect(result).toEqual(mockApiResult_rec1);
+    });
+
+    test('should call Python bridge with explicit count and filter by format in JS', async () => {
+      const mockApiResult_rec2 = {
+        books: [
+          { id: '1', title: 'Recent 1', extension: 'epub' },
+          { id: '2', title: 'Recent 2', extension: 'pdf' },
+        ],
+      };
+      mockGetManagedPythonPath.mockResolvedValue('/fake/python');
+      const mockPythonResultString = JSON.stringify(mockApiResult_rec2);
+      const mockMcpResponseString = JSON.stringify({ content: [{ type: 'text', text: mockPythonResultString }] });
+      mockRunPythonBridge.mockResolvedValueOnce([mockMcpResponseString]);
+
+      result = await zlibApi.getRecentBooks({ count: 5, format: 'epub' });
+
+      expect(mockRunPythonBridge).toHaveBeenCalledWith('python_bridge.py', expect.objectContaining({
+        scriptPath: EXPECTED_SCRIPT_PATH,
+        args: ['get_recent_books', JSON.stringify({ count: 5 })],
+      }), expect.objectContaining({ label: expect.any(String) }));
+      expect(result.books).toEqual([{ id: '1', title: 'Recent 1', extension: 'epub' }]);
+    });
+
+    test('should handle errors from Python bridge during getRecentBooks', async () => {
+      const apiError = new Error('Python Recent Books Failed');
+      mockGetManagedPythonPath.mockResolvedValue('/fake/python');
+      mockRunPythonBridge.mockRejectedValue(apiError);
+
+      await expect(zlibApi.getRecentBooks({ count: 5 })).rejects.toThrow(`Python bridge execution failed for get_recent_books: ${apiError.message}`);
+      expect(mockRunPythonBridge).toHaveBeenCalledWith('python_bridge.py', expect.objectContaining({
+        scriptPath: EXPECTED_SCRIPT_PATH,
+        args: ['get_recent_books', JSON.stringify({ count: 5 })],
+      }), expect.objectContaining({ label: expect.any(String) }));
+    });
+  });
+
   describe('processDocumentForRag', () => {
     // test.todo('[FAILING] should call Python bridge with correct args and return processed_file_path'); // Remove todo
     test('should call Python bridge with correct args and return the additive bundle contract', async () => { // Uncomment test

@@ -198,9 +198,46 @@ def _entry(
     }
 
 
+def _annas_usable_host(base_url: Optional[str]) -> Optional[str]:
+    """Extract a usable hostname for Anna's Archive from base URL.
+
+    Returns the lowercase hostname if the URL is non-empty, has an http/https
+    scheme, a non-empty host, and a valid port (if specified). Otherwise
+    returns None. Never raises on malformed inputs (e.g. unclosed brackets).
+    """
+    if not base_url or not isinstance(base_url, str):
+        return None
+    raw = base_url.strip()
+    if not raw:
+        return None
+    try:
+        parsed = urlsplit(raw)
+        scheme = (parsed.scheme or "").lower()
+        if scheme not in ("http", "https"):
+            return None
+        host = (parsed.hostname or "").strip().lower()
+        if not host:
+            return None
+        port = parsed.port
+        if port is not None and not (1 <= port <= 65535):
+            return None
+        return host
+    except (ValueError, AttributeError):
+        return None
+
+
 def describe_annas(config: SourceConfig) -> Dict:
     """Anna's Archive constraints, from configuration alone."""
-    host = (urlsplit(config.annas_base_url).hostname or "").lower()
+    host = _annas_usable_host(config.annas_base_url)
+    if not host:
+        return _entry(
+            available=False,
+            routes=[],
+            daily_limit=daily_limit_not_applicable(
+                "no valid ANNAS_BASE_URL configured"
+            ),
+            note="no valid ANNAS_BASE_URL configured",
+        )
     if config.has_annas_key and host in ANNAS_TRUSTED_HOSTS:
         return _entry(
             available=True,
@@ -224,7 +261,7 @@ def describe_annas(config: SourceConfig) -> Dict:
             ),
             note=(
                 "ANNAS_SECRET_KEY configured, but configured host "
-                f"'{host or '<missing>'}' is not trusted for keyed download; "
+                f"'{host}' is not trusted for keyed download; "
                 "search only"
             ),
         )

@@ -167,3 +167,98 @@ class TestNoNetwork:
         monkeypatch.setattr(socket, "socket", refuse)
         monkeypatch.setattr(socket, "getaddrinfo", refuse)
         assert set(describe_sources(SourceConfig())) == set(KNOWN_SOURCES)
+
+
+class TestAnnasCapabilityURLValidation:
+    """Anna's capability report must handle malformed/unusable URLs safely (#157).
+
+    A malformed or unusable ANNAS_BASE_URL must report Anna's as unavailable
+    with no routes, not_applicable limit, and must not throw an exception.
+    """
+
+    @pytest.mark.parametrize(
+        "bad_url",
+        [
+            "",
+            "   ",
+            "\t\n",
+            "http://",
+            "https://",
+            "/path/only",
+            "urn:isbn:0451450523",
+            "ftp://annas-archive.gl",
+            "annas-archive.gl",
+            "http://[",
+            "http://]",
+            "http://[invalid",
+            "https://[::1",
+            "http://example.com:notaport",
+            "http://example.com:0",
+            "http://example.com:65536",
+            "http://example.com:-1",
+        ],
+    )
+    @pytest.mark.parametrize("secret_key", ["", "synthetic-secret-key-12345"])
+    def test_unusable_annas_url_reports_unavailable_without_raising(
+        self, bad_url, secret_key
+    ):
+        config = SourceConfig(annas_base_url=bad_url, annas_secret_key=secret_key)
+        entry = describe_sources(config)[SOURCE_ANNAS]
+
+        assert entry["available"] is False
+        assert entry["routes"] == []
+        assert entry["daily_limit"]["state"] == LIMIT_NOT_APPLICABLE
+        if secret_key:
+            assert secret_key not in entry["note"]
+            assert secret_key not in entry["daily_limit"]["note"]
+        if bad_url:
+            assert bad_url not in entry["note"]
+            assert bad_url not in entry["daily_limit"]["note"]
+
+    def test_valid_default_annas_url_is_available(self):
+        config = SourceConfig()
+        entry = describe_sources(config)[SOURCE_ANNAS]
+        assert entry["available"] is True
+        assert entry["routes"] == ["search"]
+        assert entry["daily_limit"]["state"] == LIMIT_NOT_APPLICABLE
+
+    def test_valid_trusted_keyed_annas_url_has_download_route(self):
+        config = SourceConfig(
+            annas_base_url="https://annas-archive.gl", annas_secret_key="secret-key"
+        )
+        entry = describe_sources(config)[SOURCE_ANNAS]
+        assert entry["available"] is True
+        assert entry["routes"] == ["search", "download"]
+        assert entry["daily_limit"]["state"] == LIMIT_UNKNOWN
+
+    def test_valid_untrusted_annas_url_is_search_only(self):
+        config = SourceConfig(
+            annas_base_url="https://annas-archive.li", annas_secret_key="secret-key"
+        )
+        entry = describe_sources(config)[SOURCE_ANNAS]
+        assert entry["available"] is True
+        assert entry["routes"] == ["search"]
+        assert entry["daily_limit"]["state"] == LIMIT_NOT_APPLICABLE
+        assert "not trusted" in entry["note"]
+
+    @pytest.mark.parametrize(
+        "valid_url, trusted, keyed, expected_routes, expected_limit",
+        [
+            ("http://localhost:8080", False, False, ["search"], LIMIT_NOT_APPLICABLE),
+            ("http://localhost:8080", False, True, ["search"], LIMIT_NOT_APPLICABLE),
+            ("https://mirror.example:8443", False, False, ["search"], LIMIT_NOT_APPLICABLE),
+            ("https://annas-archive.pk", True, True, ["search", "download"], LIMIT_UNKNOWN),
+            ("https://annas-archive.gd", True, False, ["search"], LIMIT_NOT_APPLICABLE),
+        ],
+    )
+    def test_valid_ports_and_schemes_behave_as_expected(
+        self, valid_url, trusted, keyed, expected_routes, expected_limit
+    ):
+        config = SourceConfig(
+            annas_base_url=valid_url,
+            annas_secret_key="secret-key" if keyed else "",
+        )
+        entry = describe_sources(config)[SOURCE_ANNAS]
+        assert entry["available"] is True
+        assert entry["routes"] == expected_routes
+        assert entry["daily_limit"]["state"] == expected_limit

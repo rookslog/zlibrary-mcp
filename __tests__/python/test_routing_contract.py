@@ -219,6 +219,37 @@ class TestRoutingBlock:
             LIMIT_NOT_APPLICABLE
         )
 
+    @pytest.mark.parametrize(
+        "bad_annas_url",
+        ["", "   ", "http://", "http://[", "http://[invalid", "http://example.com:0"],
+    )
+    @pytest.mark.asyncio
+    async def test_libgen_search_succeeds_despite_malformed_annas_config(
+        self, monkeypatch, bad_annas_url
+    ):
+        """A broken Anna's Archive configuration must not break LibGen search (#157)."""
+        config = SourceConfig(
+            annas_base_url=bad_annas_url, annas_secret_key="synthetic-key"
+        )
+        libgen_book = book("f" * 32, SourceType.LIBGEN)
+        install_router(monkeypatch, [libgen_book], config=config)
+
+        result = await python_bridge.search_multi_source("hegel", source="libgen")
+
+        assert len(result["books"]) == 1
+        assert result["books"][0]["source"] == "libgen"
+        routing = result["routing"]
+        assert routing["requested"] == "libgen"
+        assert routing["served_by"] == ["libgen"]
+        assert routing["sources"]["annas_archive"]["available"] is False
+        assert routing["sources"]["annas_archive"]["routes"] == []
+        assert (
+            routing["sources"]["annas_archive"]["daily_limit"]["state"]
+            == LIMIT_NOT_APPLICABLE
+        )
+        assert routing["sources"]["libgen"]["available"] is True
+
+
 
 class TestPerSourceDownloadLimits:
     @pytest.mark.asyncio

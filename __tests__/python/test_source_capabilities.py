@@ -5,8 +5,10 @@ every source carries the same key set, and a daily limit is three-valued
 rather than nullable.
 """
 
+import httpx
 import pytest
 
+from lib.sources.annas import AnnasArchiveAdapter
 from lib.sources.capabilities import (
     KNOWN_SOURCES,
     LIMIT_KNOWN,
@@ -21,7 +23,7 @@ from lib.sources.capabilities import (
     known_daily_limit,
     resolve_requested_sources,
 )
-from lib.sources.config import SourceConfig
+from lib.sources.config import SourceConfig, get_source_config
 
 pytestmark = pytest.mark.unit
 
@@ -262,3 +264,60 @@ class TestAnnasCapabilityURLValidation:
         assert entry["available"] is True
         assert entry["routes"] == expected_routes
         assert entry["daily_limit"]["state"] == expected_limit
+
+
+@pytest.mark.parametrize("secret_key", ["", "synthetic-secret-key"])
+@pytest.mark.parametrize(
+    "suffix", ["\n", "\r", "\t", "\x1f", "\x7f", "?x=1", "#x", "?", "#"]
+)
+def test_raw_environment_base_cannot_advertise_a_broken_search_url(
+    monkeypatch, secret_key, suffix
+):
+    """A report-only normalization hides rejected or misdirected search URLs."""
+    base_url = "https://annas-archive.gl" + suffix
+    monkeypatch.setenv("ANNAS_BASE_URL", base_url)
+    monkeypatch.setenv("ANNAS_SECRET_KEY", secret_key)
+    config = get_source_config()
+    adapter = AnnasArchiveAdapter(config)
+    assert adapter.base_url == base_url
+    if suffix.startswith(("?", "#")):
+        request = httpx.Request("GET", f"{adapter.base_url}/search?q=hegel")
+        assert request.url.path == "/"
+    else:
+        with pytest.raises(httpx.InvalidURL):
+            httpx.Request("GET", f"{adapter.base_url}/search?q=hegel")
+
+    entry = describe_sources(config)[SOURCE_ANNAS]
+    assert entry["available"] is False
+    assert entry["routes"] == []
+    assert entry["daily_limit"]["state"] == LIMIT_NOT_APPLICABLE
+    assert base_url not in str(entry)
+    if secret_key:
+        assert secret_key not in str(entry)
+
+
+@pytest.mark.parametrize("secret_key", ["", "synthetic-secret-key"])
+@pytest.mark.parametrize(
+    "base_url, expected_path, trusted",
+    [
+        ("https://annas-archive.gl/", "/search", True),
+        ("http://annas-archive.gl:8080/prefix/", "/prefix/search", True),
+        ("https://mirror.example:8443/prefix/nested", "/prefix/nested/search", False),
+        ("http://[::1]:8080/prefix/", "/prefix/search", False),
+    ],
+)
+def test_valid_environment_base_preserves_adapter_search_path(
+    monkeypatch, secret_key, base_url, expected_path, trusted
+):
+    monkeypatch.setenv("ANNAS_BASE_URL", base_url)
+    monkeypatch.setenv("ANNAS_SECRET_KEY", secret_key)
+    config = get_source_config()
+    adapter = AnnasArchiveAdapter(config)
+    request = httpx.Request("GET", f"{adapter.base_url}/search?q=hegel")
+    assert request.url.path == expected_path
+    assert request.url.params["q"] == "hegel"
+    entry = describe_sources(config)[SOURCE_ANNAS]
+    assert entry["available"] is True
+    assert entry["routes"] == (
+        ["search", "download"] if secret_key and trusted else ["search"]
+    )

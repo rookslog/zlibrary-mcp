@@ -201,22 +201,27 @@ def _entry(
 def _annas_usable_host(base_url: Optional[str]) -> Optional[str]:
     """Extract a usable hostname for Anna's Archive from base URL.
 
-    Returns the lowercase hostname if the URL is non-empty, has an http/https
-    scheme, a non-empty host, and a valid port (if specified). Otherwise
-    returns None. Never raises on malformed inputs (e.g. unclosed brackets).
+    Validate the raw configured base: the adapter only removes trailing slashes
+    before appending endpoint paths. Controls are rejected by HTTPX, while a
+    query or fragment would swallow the appended path. Do not normalize those
+    defects away in the report. Return None for malformed or unusable bases.
     """
     if not base_url or not isinstance(base_url, str):
         return None
-    raw = base_url.strip()
-    if not raw:
+    if (
+        base_url != base_url.strip()
+        or any(ord(char) < 32 or ord(char) == 127 for char in base_url)
+        or "?" in base_url
+        or "#" in base_url
+    ):
         return None
     try:
-        parsed = urlsplit(raw)
+        parsed = urlsplit(base_url)
         scheme = (parsed.scheme or "").lower()
         if scheme not in ("http", "https"):
             return None
-        host = (parsed.hostname or "").strip().lower()
-        if not host:
+        host = (parsed.hostname or "").lower()
+        if not host or any(char.isspace() for char in host):
             return None
         port = parsed.port
         if port is not None and not (1 <= port <= 65535):

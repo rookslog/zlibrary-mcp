@@ -32,7 +32,7 @@ def get_ground_truth_files():
 @pytest.fixture(scope="module")
 def v3_schema():
     """Load the v3 schema once for all tests in this module."""
-    with open(SCHEMA_PATH) as f:
+    with open(SCHEMA_PATH, encoding="utf-8") as f:
         return json.load(f)
 
 
@@ -46,7 +46,7 @@ class TestGroundTruthSchemaConformance:
     )
     def test_conforms_to_v3_schema(self, v3_schema, gt_file):
         """Validate a single ground truth file against v3 schema."""
-        with open(gt_file) as f:
+        with open(gt_file, encoding="utf-8") as f:
             data = json.load(f)
         try:
             validate(instance=data, schema=v3_schema)
@@ -64,7 +64,7 @@ class TestGroundTruthSchemaConformance:
     )
     def test_referenced_pdf_exists(self, gt_file):
         """Every ground truth file must reference a PDF that exists on disk."""
-        with open(gt_file) as f:
+        with open(gt_file, encoding="utf-8") as f:
             data = json.load(f)
         pdf_path = Path(data["pdf_file"])
         assert pdf_path.exists(), (

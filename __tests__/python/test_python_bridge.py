@@ -344,8 +344,8 @@ class TestNodePythonDispatchContract:
         import re
 
         repo_root = Path(__file__).resolve().parents[2]
-        node_src = (repo_root / "src" / "lib" / "zlibrary-api.ts").read_text()
-        bridge_src = (repo_root / "lib" / "python_bridge.py").read_text()
+        node_src = (repo_root / "src" / "lib" / "zlibrary-api.ts").read_text(encoding="utf-8")
+        bridge_src = (repo_root / "lib" / "python_bridge.py").read_text(encoding="utf-8")
 
         node_names = set(re.findall(r"callPythonFunction\(\s*'([^']+)'", node_src))
         assert node_names, "no callPythonFunction() names found — regex drifted?"

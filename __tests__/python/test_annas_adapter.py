@@ -823,7 +823,7 @@ class TestAnnasMetadataExtraction:
         )
 
         mock_response = MagicMock()
-        mock_response.text = self.FIXTURE.read_text()
+        mock_response.text = self.FIXTURE.read_text(encoding="utf-8")
         mock_response.status_code = 200
         mock_response.raise_for_status = MagicMock()
 
@@ -844,7 +844,7 @@ class TestAnnasMetadataExtraction:
         anchor passes against the broken implementation too, so assert the
         precondition rather than trusting it.
         """
-        soup = BeautifulSoup(self.FIXTURE.read_text(), "html.parser")
+        soup = BeautifulSoup(self.FIXTURE.read_text(encoding="utf-8"), "html.parser")
         groups = {}
         for anchor in soup.select("a[href^='/md5/']"):
             groups.setdefault(anchor.get("href", "").split("/")[-1], []).append(anchor)

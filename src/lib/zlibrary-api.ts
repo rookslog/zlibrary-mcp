@@ -430,6 +430,24 @@ export async function getDownloadLimits(options: CallOptions = {}): Promise<any>
   return await callPythonFunction('get_download_limits', {}, options);
 }
 
+/**
+ * Get recently added books
+ *
+ * The `get_recent_books` tool handler calls this function, but it was never
+ * defined here — every invocation failed with "zlibraryApi.getRecentBooks is
+ * not a function" (#154). The Python bridge's get_recent_books only accepts
+ * `count`; the optional `format` filter from the tool schema is applied
+ * client-side after the fetch (EAPI has no format filter on this endpoint).
+ */
+export async function getRecentBooks(args: { count?: number; format?: string } = {}, options: CallOptions = {}): Promise<any> {
+  const result = await callPythonFunction('get_recent_books', { count: args.count ?? 10 }, options);
+  if (args.format && result && Array.isArray(result.books)) {
+    const wanted = String(args.format).toLowerCase().replace(/^\./, '');
+    result.books = result.books.filter((b: any) => String(b.extension || '').toLowerCase() === wanted);
+  }
+  return result;
+}
+
 
 /**
  * Process a downloaded document for RAG

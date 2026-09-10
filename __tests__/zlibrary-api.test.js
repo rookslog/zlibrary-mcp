@@ -562,6 +562,36 @@ describe('Z-Library API', () => {
     });
   });
 
+  describe('getRecentBooks', () => {
+    test('should call Python bridge for getRecentBooks', async () => {
+        const mockApiResult_rec1 = { books: [{ id: '9', title: 'New Book', extension: 'pdf' }] };
+        mockGetManagedPythonPath.mockResolvedValue('/fake/python');
+        const mockPythonResultString_rec1 = JSON.stringify(mockApiResult_rec1);
+        const mockMcpResponseString_rec1 = JSON.stringify({ content: [{ type: 'text', text: mockPythonResultString_rec1 }] });
+        mockRunPythonBridge.mockResolvedValueOnce([mockMcpResponseString_rec1]);
+
+        result = await zlibApi.getRecentBooks({ count: 3 });
+
+        expect(mockRunPythonBridge).toHaveBeenCalledWith('python_bridge.py', expect.objectContaining({
+            scriptPath: EXPECTED_SCRIPT_PATH,
+            // The Python bridge's get_recent_books only accepts `count`.
+            args: ['get_recent_books', JSON.stringify({ count: 3 })]
+        }), expect.objectContaining({ label: expect.any(String) }));
+        expect(result).toEqual(mockApiResult_rec1);
+    });
+
+    test('should filter results by extension when format is given', async () => {
+        const mockApiResult_rec2 = { books: [{ id: '9', extension: 'pdf' }, { id: '10', extension: 'epub' }] };
+        mockGetManagedPythonPath.mockResolvedValue('/fake/python');
+        const mockMcpResponseString_rec2 = JSON.stringify({ content: [{ type: 'text', text: JSON.stringify(mockApiResult_rec2) }] });
+        mockRunPythonBridge.mockResolvedValueOnce([mockMcpResponseString_rec2]);
+
+        const result = await zlibApi.getRecentBooks({ format: 'epub' });
+
+        expect(result.books).toEqual([{ id: '10', extension: 'epub' }]);
+    });
+  });
+
   describe('getDownloadLimits', () => {
     test('should call Python bridge for getDownloadLimits', async () => {
         const mockApiResult_lim1 = { daily_limit: 10, daily_downloads: 2 }; // Unique result var

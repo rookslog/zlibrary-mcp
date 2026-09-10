@@ -643,9 +643,14 @@ function wrapResult(result: any, toolName: string) {
       isError: true as const,
     };
   }
+  // MCP requires structuredContent to be a record; a bare array (get_download_history
+  // returns one) is rejected by clients with invalid_type: "expected record,
+  // received array" before the caller ever sees the data. Keep the JSON text
+  // payload byte-identical and wrap only the structured mirror.
+  const structured = Array.isArray(result) ? { items: result } : result;
   return {
     content: [{ type: 'text' as const, text: JSON.stringify(result) }],
-    structuredContent: result,
+    structuredContent: structured,
   };
 }
 

@@ -405,6 +405,28 @@ describe('Tool Handlers - Extended Coverage', () => {
         isError: true,
       });
     });
+
+    test('wraps array results in {items} for structuredContent (MCP record contract)', async () => {
+      // MCP requires structuredContent to be a record. A bare array — what
+      // search_multi_source and get_download_history produce — was rejected
+      // by clients with invalid_type before the caller saw any data.
+      const mockMulti = jest.fn().mockResolvedValue([
+        { title: 'Multi Book', source: 'libgen' },
+      ]);
+      const { start, registeredTools } = await setupWithMocks({ searchMultiSource: mockMulti });
+      await start({ testing: true });
+
+      const callback = registeredTools.get('search_multi_source');
+      const response = await callback({ query: 'test', source: 'libgen', count: 10 }, {});
+
+      // The text payload keeps the raw array; only the structured mirror is wrapped.
+      expect(response.content[0].text).toBe(
+        JSON.stringify([{ title: 'Multi Book', source: 'libgen' }]),
+      );
+      expect(response.structuredContent).toEqual({
+        items: [{ title: 'Multi Book', source: 'libgen' }],
+      });
+    });
   });
 
   describe('toolRegistry entries for newer tools', () => {

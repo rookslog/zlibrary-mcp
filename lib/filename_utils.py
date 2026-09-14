@@ -12,6 +12,7 @@ Design Decisions:
 - Maximum filename length: 255 characters (filesystem limit)
 """
 
+import os
 import re
 import unicodedata
 from pathlib import Path
@@ -271,6 +272,62 @@ def create_unified_filename(
         filename = f"{base_name}{suffix}"
 
     return filename
+
+
+# Placeholders create_unified_filename substitutes when the caller's metadata
+# cannot identify the book at all.
+_PLACEHOLDER_TOKENS = frozenset({"UnknownAuthor", "UntitledBook", "NoID"})
+
+# A bare content hash (with or without the .download staging suffix) carries
+# no human-usable identity worth preserving.
+_MD5_ARTIFACT_RE = re.compile(r"^[0-9a-f]{32}(?:\.download)?$", re.IGNORECASE)
+
+
+def is_degraded_unified_filename(filename: str) -> bool:
+    """True when a unified filename had to invent an identity placeholder.
+
+    "UnknownAuthor_UntitledBook_12345.pdf" is deterministic but information
+    the server handed us has been destroyed: the download response usually
+    named the file from real metadata. Callers use this to decide whether to
+    keep that server-provided name instead.
+    """
+    stem = Path(filename).stem
+    return any(token in _PLACEHOLDER_TOKENS for token in stem.split("_"))
+
+
+def sanitize_preserved_filename(filename: str, max_total_length: int = 200) -> str:
+    """Make a server-provided filename safe to keep as the final artifact name.
+
+    Keeps the server's wording (unlike the CamelCase unified scheme, this is
+    the "we have nothing better" path), while stripping path separators,
+    control characters, and reserved punctuation, and capping length with
+    the extension preserved. Returns "" when nothing usable remains.
+    """
+    name = os.path.basename(str(filename).replace("\\", "/"))
+    name = re.sub(r'[\\/:*?"<>|\x00-\x1f]', "_", name).strip(" .")
+    if not name:
+        return ""
+    stem, ext = os.path.splitext(name)
+    if len(name) > max_total_length:
+        stem = stem[: max(1, max_total_length - len(ext))].rstrip(" .")
+        name = stem + ext
+    return name
+
+
+def is_preservable_server_filename(filename: str) -> bool:
+    """Is a downloaded file's name real server metadata worth keeping?
+
+    Staging artifacts are not: mkstemp temporaries are dot-prefixed, and the
+    source adapters stage under the content hash. Anything that sanitizes to
+    nothing is not a name either.
+    """
+    name = str(filename).strip()
+    if not name or name.startswith("."):
+        return False
+    stem = Path(name).stem
+    if _MD5_ARTIFACT_RE.fullmatch(stem):
+        return False
+    return bool(sanitize_preserved_filename(name))
 
 
 def create_metadata_filename(original_filename: str) -> str:

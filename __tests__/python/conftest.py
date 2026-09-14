@@ -53,6 +53,20 @@ def _clear_pymupdf_cache():
 
 
 @pytest.fixture(autouse=True)
+def _isolated_eapi_session_cache(monkeypatch, tmp_path):
+    """Keep the EAPI session cache off the developer's real config directory.
+
+    initialize_eapi_client() persists login cookies so the next bridge
+    process can skip the rate-limited /eapi/user/login. Pointed at its real
+    default, a unit test with a mocked EAPIClient would write mock garbage
+    into ~/.config/zlibrary-mcp/ — polluting the machine and leaking state
+    into every later test that initializes a client. Each test gets its own
+    private, initially absent cache file.
+    """
+    monkeypatch.setenv("ZLIBRARY_SESSION_FILE", str(tmp_path / "eapi-session.json"))
+
+
+@pytest.fixture(autouse=True)
 def _no_preflight_probes(request, monkeypatch):
     """Keep the multi-source pre-flight probe off the network in unit tests.
 

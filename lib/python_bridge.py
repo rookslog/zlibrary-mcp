@@ -19,6 +19,7 @@ import signal
 
 from pathlib import Path
 from filename_utils import create_unified_filename, normalize_document_extension
+from eapi_session import clear_eapi_session, load_eapi_session, save_eapi_session
 import logging
 
 # Import the new RAG processing functions
@@ -263,12 +264,30 @@ async def get_eapi_client() -> EAPIClient:
     return _eapi_client
 
 
+def _profile_accepts_cookies(profile: object) -> bool:
+    """Does a /eapi/user/profile response say the cookies still authenticate?
+
+    An authenticated profile is a JSON object carrying the account body —
+    wrapped as {"user": {...}} per the login response's shape, or flat, or
+    with an explicit success flag. An expired cookie pair comes back as an
+    error object (or raises on the HTTP layer); any shape without an account
+    body or success flag means the cached session is dead.
+    """
+    if not isinstance(profile, dict):
+        return False
+    if profile.get("success") == 1:
+        return True
+    user = profile.get("user")
+    return isinstance(user, dict) and bool(user)
+
+
 async def initialize_eapi_client() -> EAPIClient:
     """
     Initialize the shared EAPI client using environment credentials.
 
-    Creates an EAPIClient, logs in, discovers domains, and stores
-    the client for reuse by all tool functions.
+    Restores a cached session when one validates, else creates an
+    EAPIClient, logs in, discovers domains, and stores the client for
+    reuse by all tool functions.
 
     Returns:
         Authenticated EAPIClient instance
@@ -282,6 +301,39 @@ async def initialize_eapi_client() -> EAPIClient:
         raise ValueError(
             "ZLIBRARY_EMAIL and ZLIBRARY_PASSWORD environment variables required"
         )
+
+    # Every bridge invocation is a fresh process, so /eapi/user/login runs
+    # once per tool call — and login is the rate-limited endpoint. A cached
+    # cookie pair from a previous login skips it entirely when a cheap
+    # authenticated profile read still accepts it.
+    cached_session = load_eapi_session()
+    if cached_session:
+        # An explicit domain override wins over the cached one: pinning is
+        # an operator instruction, never silently second-guessed.
+        cached_domain = (
+            os.environ.get("ZLIBRARY_EAPI_DOMAIN", "").strip()
+            or cached_session["domain"]
+        )
+        candidate = EAPIClient(
+            cached_domain,
+            remix_userid=cached_session["remix_userid"],
+            remix_userkey=cached_session["remix_userkey"],
+        )
+        try:
+            profile = await candidate.get_profile()
+            if not _profile_accepts_cookies(profile):
+                raise ValueError("profile response rejected the cached cookies")
+            logger.info(
+                "EAPI session restored from cache (userid=%s, domain=%s)",
+                candidate.remix_userid,
+                candidate.domain,
+            )
+            _eapi_client = candidate
+            return _eapi_client
+        except Exception as exc:
+            logger.info("Cached EAPI session unusable (%s); logging in again", exc)
+            await candidate.close()
+            clear_eapi_session()
 
     # ISSUE-API-002: the old single default (z-library.sk) is fronted by the
     # DiamWall anti-bot wall. resolve_eapi_domain() honours an explicit
@@ -325,6 +377,8 @@ async def initialize_eapi_client() -> EAPIClient:
                 )
         except Exception as e:
             logger.warning(f"Domain discovery failed, using initial domain: {e}")
+
+    save_eapi_session(client.domain, client.remix_userid, client.remix_userkey)
 
     _eapi_client = client
     return _eapi_client

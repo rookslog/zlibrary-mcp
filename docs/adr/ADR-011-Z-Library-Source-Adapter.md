@@ -380,36 +380,42 @@ arithmetic: one provider attempt costs at worst `2 x preflight + total` = 55s,
 LibGen walks three mirrors, and today's worst case is 4 attempts = 220s against
 a 240-second `PYTHON_BRIDGE_TIMEOUT` — a 20-second margin.
 
-**LibGen does not always walk three mirrors.** `_mirror_candidates()` returns
-`[configured] + [m for m in ("li", "vg", "la") if m != configured]`, so a
-supported custom `LIBGEN_MIRROR` such as `rs` yields **four**. An order of
-`[zlibrary, annas_archive, libgen]` is therefore up to **six** attempts = 330s,
-not five — Node kills a legitimate walk 90 seconds before the router returns
-its structured result, and the operator sees a subprocess timeout instead of
-the attributed failures the whole error taxonomy exists to produce.
+**The walk is bounded by a shared deadline, and that is what makes an ordered
+walk possible.** `_mirror_candidates()` returns `[configured] + [li, vg, la
+minus configured]`, so a supported custom `LIBGEN_MIRROR` such as `rs` yields
+**four** mirrors, and a three-source order would reach six attempts = 330s
+against a 240s ceiling. #153 first capped that list at three, which made the
+sum constant by removing `la` from the walk — including from the *download*
+walk, where the budget is generous and byte-driven `li → vg → la` failover is a
+stated repo contract. That trade was rejected.
 
-The bound must be computed from the registry and the *configuration*, not from
-a constant: every source in the order, times that source's own worst-case
-attempt count, where LibGen's depends on whether `LIBGEN_MIRROR` names one of
-the fallbacks. Any arithmetic here that hardcodes three mirrors is wrong for a
-configuration this project supports.
+What shipped instead is `WalkDeadline`: `SourceRouter` creates one per search or
+download, every provider and every mirror draws its per-attempt budget from what
+that deadline has left, and a mirror it never reaches is reported as
+`walk_budget_exhausted` rather than silently absent. The worst case is
+`BOOK_SOURCE_WALK_BUDGET` — 165s, the figure both Node budgets already allowed
+for resolution — and it does not move when a mirror or a provider is added.
 
-**This is not only a future problem.** The same mistake is live on `master`
-today: `config.py`'s own documented sum assumes three mirrors, so an operator
-who sets `LIBGEN_MIRROR=rs` already reaches 5 attempts = 275s against the 240s
-bridge timeout on a plain `auto` search. Tracked as #152. A per-provider budget
-re-breaks the sum every time a source or mirror is added — the comment in
-`config.py` has now been wrong twice for that reason — which is the argument
-for sharing one budget across the ordered walk rather than recomputing a
-constant a third time.
+That independence is the precondition `BOOK_SOURCE_ORDER` needed. A per-provider
+budget makes the total a function of how many sources and mirrors exist, so it
+needs re-deriving every time either grows; `config.py`'s comment was wrong twice
+for exactly that reason. No cap on one provider's mirrors could ever bound a
+walk whose length the operator chooses, which is why the cap was the wrong shape
+of fix even where its arithmetic was right. An ordered walk of N sources now
+costs the same 165s as a walk of two, and the sources late in the order are the
+ones that get squeezed — which is the correct behaviour for an ordering the
+operator wrote down in priority order.
 
-This is a precondition, not a follow-up. Before three-source orders become
-valid, the migration must either share one total budget across the ordered walk
-rather than granting each provider its own, or raise `PYTHON_BRIDGE_TIMEOUT`
-with the margin recomputed and written down where the existing arithmetic
-lives. A full-order timeout test covering the longest permitted order lands in
-the same stage; without it the regression is invisible until a slow walk in
-production.
+`worst_case_search_seconds()` and `worst_case_download_seconds()` compute the
+totals against the Node budgets parsed out of `python-runner.ts`, so both
+ceilings fail the suite rather than production. #152 is closed by this.
+
+This was a precondition, not a follow-up, and it is now met: the shared budget
+exists, so a three-source order is bounded by construction rather than by a
+recomputed margin. What still lands in the same stage as `BOOK_SOURCE_ORDER` is
+a full-order timeout test covering the longest permitted order — the deadline
+makes the bound hold in principle, and the test is what shows the ordered walk
+actually threads it to every provider.
 
 **`BOOK_SOURCE_ORDER` is comma-separated, case-insensitive, whitespace-
 tolerant.** It is an environment variable, so it reaches Python as a string,

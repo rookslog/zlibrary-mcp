@@ -40,7 +40,7 @@ class TestSourceAdapterABC:
             async def search(self, query, **kwargs):
                 return []
 
-            async def get_download_url(self, md5):
+            async def get_download_url(self, md5, **kwargs):
                 return DownloadResult(
                     url="http://example.com", source=SourceType.LIBGEN
                 )
@@ -63,7 +63,7 @@ class TestSourceAdapterABC:
                     )
                 ]
 
-            async def get_download_url(self, md5):
+            async def get_download_url(self, md5, **kwargs):
                 return DownloadResult(
                     url="http://example.com", source=SourceType.LIBGEN
                 )
@@ -88,7 +88,7 @@ class TestSourceAdapterABC:
                     )
                 ]
 
-            async def get_download_url(self, md5):
+            async def get_download_url(self, md5, **kwargs):
                 return DownloadResult(
                     url=f"http://dl.example.com/{md5}",
                     source=SourceType.ANNAS_ARCHIVE,
@@ -117,7 +117,7 @@ class TestSourceAdapterABC:
             async def search(self, query, **kwargs):
                 return []
 
-            async def get_download_url(self, md5):
+            async def get_download_url(self, md5, **kwargs):
                 return DownloadResult(url="", source=SourceType.LIBGEN)
 
             async def close(self):

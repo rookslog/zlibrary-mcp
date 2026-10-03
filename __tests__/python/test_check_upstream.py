@@ -654,9 +654,9 @@ class TestLibgenSearchProbeUsesProductionAdapter:
         deadline = check_upstream.libgen_probe_timeout(
             get_source_config(), LibgenAdapter.MIN_REQUEST_INTERVAL
         )
-        # 3 mirrors x (2 x 5s preflight phases + 45s total + 2s rate limit)
+        # 3 mirrors x (5s aggregate preflight + 45s total + 2s rate limit)
         assert deadline >= 165
-        assert deadline == pytest.approx(3 * 57 + check_upstream.LIBGEN_PROBE_MARGIN)
+        assert deadline == pytest.approx(3 * 52 + check_upstream.LIBGEN_PROBE_MARGIN)
 
     def test_probe_deadline_follows_operator_tuning(self, check_upstream, monkeypatch):
         """An operator who raises the per-provider budget must not thereby make
@@ -667,7 +667,7 @@ class TestLibgenSearchProbeUsesProductionAdapter:
         monkeypatch.setenv("BOOK_SOURCE_PREFLIGHT_TIMEOUT", "20")
         deadline = check_upstream.libgen_probe_timeout(get_source_config(), 2.0)
         assert deadline == pytest.approx(
-            3 * (180 + 2 + 40) + check_upstream.LIBGEN_PROBE_MARGIN
+            3 * (180 + 2 + 20) + check_upstream.LIBGEN_PROBE_MARGIN
         )
 
     def test_probe_passes_the_computed_deadline_to_wait_for(self, check_upstream):

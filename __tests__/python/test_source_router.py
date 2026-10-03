@@ -246,7 +246,7 @@ class TestRouterDownload:
             async def search(self, query, **kwargs):
                 return []
 
-            async def get_download_url(self, md5):
+            async def get_download_url(self, md5, **kwargs):
                 return DownloadResult(
                     url=f"https://single.example/{md5}", source=SourceType.LIBGEN
                 )
@@ -267,12 +267,12 @@ class TestRouterDownload:
         """Stopping after the first provider candidate would hide later mirrors."""
         router = SourceRouter(config_with_annas)
 
-        async def annas_candidates(_md5):
+        async def annas_candidates(_md5, **kwargs):
             yield DownloadResult(
                 url="https://annas.example/book", source=SourceType.ANNAS_ARCHIVE
             )
 
-        async def libgen_candidates(_md5):
+        async def libgen_candidates(_md5, **kwargs):
             yield DownloadResult(url="https://libgen.li/book", source=SourceType.LIBGEN)
             yield DownloadResult(url="https://libgen.vg/book", source=SourceType.LIBGEN)
 
@@ -293,6 +293,91 @@ class TestRouterDownload:
         ]
 
     @pytest.mark.asyncio
+    async def test_candidate_transfer_time_does_not_consume_next_provider_budget(
+        self, config_with_annas, monkeypatch
+    ):
+        """A failed transfer happens outside the resolution walk's active time.
+
+        Production mutation caught: omit the pause/rebase around ``yield`` in
+        ``SourceRouter.iter_download_candidates``.  Then a consumer's slow
+        failed transfer expires the shared deadline before the next provider
+        can resolve its candidate.
+        """
+        from lib.sources import router as router_module
+        from lib.sources.net import WalkDeadline as RealWalkDeadline
+
+        now = [0.0]
+        monkeypatch.setattr(
+            router_module,
+            "WalkDeadline",
+            lambda budget: RealWalkDeadline(budget, clock=lambda: now[0]),
+        )
+        router = SourceRouter(
+            SourceConfig(
+                annas_secret_key="test-key", fallback_enabled=True, walk_budget=2
+            )
+        )
+
+        async def annas_candidates(_md5, **_kwargs):
+            yield DownloadResult(
+                url="https://annas.example/book", source=SourceType.ANNAS_ARCHIVE
+            )
+
+        async def libgen_candidates(_md5, deadline, **_kwargs):
+            # This models a real resolver: it refuses to start after the
+            # shared resolution budget has expired.
+            if deadline.reserve(1.0, minimum=1.0) is not None:
+                yield DownloadResult(
+                    url="https://libgen.li/book", source=SourceType.LIBGEN
+                )
+
+        router._annas = AsyncMock()
+        router._annas.iter_download_candidates = annas_candidates
+        router._libgen = AsyncMock()
+        router._libgen.iter_download_candidates = libgen_candidates
+
+        stream = router.iter_download_candidates("abc", source="auto")
+        assert (await anext(stream)).url == "https://annas.example/book"
+
+        # A downstream transfer can be arbitrarily slow; it should not age the
+        # deadline governing *future URL resolution*.
+        now[0] = 10.0
+
+        assert (await anext(stream)).url == "https://libgen.li/book"
+        await stream.aclose()
+
+    @pytest.mark.asyncio
+    async def test_closing_after_a_candidate_rebases_the_shared_deadline(
+        self, monkeypatch
+    ):
+        """Generator close must leave the deadline usable for later resolution."""
+        from lib.sources import router as router_module
+        from lib.sources.net import WalkDeadline as RealWalkDeadline
+
+        now = [0.0]
+        monkeypatch.setattr(
+            router_module,
+            "WalkDeadline",
+            lambda budget: RealWalkDeadline(budget, clock=lambda: now[0]),
+        )
+        router = SourceRouter(SourceConfig(walk_budget=2.0))
+        seen_deadlines = []
+
+        async def libgen_candidates(_md5, deadline, **_kwargs):
+            seen_deadlines.append(deadline)
+            yield DownloadResult(url="https://libgen.li/book", source=SourceType.LIBGEN)
+
+        router._libgen = AsyncMock()
+        router._libgen.iter_download_candidates = libgen_candidates
+
+        stream = router.iter_download_candidates("abc", source="libgen")
+        assert (await anext(stream)).url == "https://libgen.li/book"
+        now[0] = 10.0
+        await stream.aclose()
+
+        assert seen_deadlines[0].reserve(1.0, minimum=1.0) == 1.0
+
+    @pytest.mark.asyncio
     async def test_closing_router_stream_closes_suspended_provider_stream(
         self, config_with_annas
     ):
@@ -301,7 +386,7 @@ class TestRouterDownload:
         closed = False
 
         class ResourceAdapter:
-            async def iter_download_candidates(self, _md5):
+            async def iter_download_candidates(self, _md5, **kwargs):
                 nonlocal closed
                 try:
                     yield DownloadResult(
@@ -333,12 +418,12 @@ class TestRouterDownload:
         """An explicit source selection must never invoke the other adapter."""
         router = SourceRouter(config_with_annas)
 
-        async def annas_candidates(_md5):
+        async def annas_candidates(_md5, **kwargs):
             yield DownloadResult(
                 url="https://annas.example/book", source=SourceType.ANNAS_ARCHIVE
             )
 
-        async def libgen_candidates(_md5):
+        async def libgen_candidates(_md5, **kwargs):
             yield DownloadResult(
                 url="https://libgen.example/book", source=SourceType.LIBGEN
             )

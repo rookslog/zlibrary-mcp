@@ -238,6 +238,39 @@ class TestProbeHost:
         assert excinfo.value.reason != "dns_failure", "must not blur into DNS failure"
 
     @pytest.mark.asyncio
+    async def test_probe_uses_one_deadline_for_slow_dns_and_tcp(self, monkeypatch):
+        """DNS cannot spend the whole preflight budget and restart TCP's."""
+        address = ("192.0.2.1", 443)
+
+        async def slow_dns(*_args, **_kwargs):
+            await asyncio.sleep(0.06)
+            return [(socket.AF_INET, socket.SOCK_STREAM, 6, "", address)]
+
+        async def slow_connect(_loop, sock, _target):
+            await asyncio.sleep(0.06)
+            return object(), _Writer(sock)
+
+        class _Writer:
+            def __init__(self, sock):
+                self.sock = sock
+
+            def close(self):
+                self.sock.close()
+
+            async def wait_closed(self):
+                return None
+
+        monkeypatch.setattr(net, "run_bounded", slow_dns)
+        monkeypatch.setattr(net, "_open_resolved_connection", slow_connect)
+
+        with pytest.raises(ProviderUnreachableError) as excinfo:
+            await net.probe_host(
+                "annas", "slow-probe.example", timeout=0.1, use_cache=False
+            )
+
+        assert excinfo.value.reason == "connect_timeout"
+
+    @pytest.mark.asyncio
     async def test_tcp_probe_reuses_the_daemon_resolved_address(self, monkeypatch):
         """The TCP phase must not ask open_connection to resolve the host again."""
         address = ("192.0.2.25", 443)

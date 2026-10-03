@@ -89,12 +89,12 @@ keep working. See `docs/api.md` for the full response shapes.
 
 | Module | Responsibility |
 |--------|---------------|
-| `base.py` | `SourceAdapter` ABC: `search()`, `get_download_url(md5)`, `close()` |
+| `base.py` | `SourceAdapter` ABC: `search()`, `get_download_url(md5)`, `close()` — each takes the walk's shared `deadline` |
 | `models.py` | `UnifiedBookResult`, `DownloadResult` (shared result shapes) |
-| `config.py` | `SourceConfig` from env (`ANNAS_SECRET_KEY`, `ANNAS_BASE_URL`, `LIBGEN_MIRROR`, `LIBGEN_USER_AGENT`, `BOOK_SOURCE_DEFAULT`, `BOOK_SOURCE_FALLBACK_ENABLED`) |
+| `config.py` | `DEFAULT_WALK_BUDGET`, `worst_case_search_seconds()`, `worst_case_download_seconds()`, and `SourceConfig` from env (`ANNAS_SECRET_KEY`, `ANNAS_BASE_URL`, `LIBGEN_MIRROR`, `LIBGEN_USER_AGENT`, `BOOK_SOURCE_DEFAULT`, `BOOK_SOURCE_FALLBACK_ENABLED`) |
 | `annas.py` | Anna's Archive adapter — HTML scraping (BeautifulSoup); DOM-fragile surface |
 | `libgen.py` | LibGen adapter (fallback source) |
-| `router.py` | `SourceRouter`: Anna's primary when key configured, LibGen fallback on error/quota exhaustion; source selection `auto`/`annas`/`libgen` |
+| `router.py` | `SourceRouter`: Anna's primary when key configured, LibGen fallback on error/quota exhaustion; source selection `auto`/`annas`/`libgen`. Creates one `WalkDeadline` per walk and every provider and mirror spends it |
 
 Exposed through the `search_multi_source` tool. Z-Library itself does **not** yet
 route through `SourceRouter` — promoting it to a `SourceAdapter` is planned work.

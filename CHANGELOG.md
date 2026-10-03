@@ -56,6 +56,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **A download that died part-way through restarted from byte zero, so a CDN
+  node that drops large transfers could never finish one.** Measured during a
+  ~30-text sweep on 2026-08-17: `cdn3.booksdl.lc` behind the `li` mirror cut
+  ~10 transfers of files over roughly 10 MB at varying offsets, costing the
+  sweep two books despite valid resolved keys. A transfer that stops early now
+  re-requests the remainder with a `Range` header
+  (`BOOK_SOURCE_DOWNLOAD_RESUME_ATTEMPTS`, default 2, inside the existing
+  `BOOK_SOURCE_DOWNLOAD_TIMEOUT` rather than extending it), and the bytes it
+  staged survive into the next mirror's attempt, so rotating CDN nodes costs
+  the remainder instead of the whole file. Mid-transfer death is now its own
+  reason code, `partial_transfer`, distinct from a host that never answered. A
+  resumed file is re-digested whole against the catalog MD5 before it is
+  published, a resume is refused unless the server answers `206` with a
+  `Content-Range` that continues exactly where the staged bytes end, and a
+  server that ignores `Range` and answers `200` restarts cleanly rather than
+  appending to a prefix the body already contains (#135).
 - **`search_multi_source` could hang forever, and leave the Python process
   behind when it did.** Three defects compounded: the vendored
   `libgen_api_enhanced` calls `requests.get` with no `timeout=` (and catches a

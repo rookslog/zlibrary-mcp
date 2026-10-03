@@ -40,6 +40,7 @@ the outer Node budget must remain larger than the worst-case inner provider walk
 | `BOOK_SOURCE_READ_TIMEOUT` | `30` | Response-read budget per phase, in seconds |
 | `BOOK_SOURCE_TOTAL_TIMEOUT` | `45` | Wall-clock budget for one provider operation, in seconds |
 | `BOOK_SOURCE_DOWNLOAD_TIMEOUT` | `1500` | One wall-clock budget for the complete source candidate walk (resolution plus full-transfer attempts), in seconds |
+| `BOOK_SOURCE_DOWNLOAD_RESUME_ATTEMPTS` | `2` | Extra attempts, per resolved URL, that re-request the remainder with a `Range` header after a transfer dies part-way through the body. `0` disables resume |
 | `BOOK_SOURCE_PREFLIGHT` | `true` | Probe DNS and TCP before a provider request |
 | `BOOK_SOURCE_PREFLIGHT_TIMEOUT` | `5` | Budget per DNS or TCP probe phase, in seconds |
 | `PYTHON_BRIDGE_TIMEOUT` | `240000` | Ordinary Python bridge wall-clock budget, in milliseconds |
@@ -69,6 +70,21 @@ long bridge default composes worst-case LibGen resolution
 (`600s`), and finalization headroom (`135s`). If any component is overridden,
 keep `PYTHON_BRIDGE_LONG_TIMEOUT` at least as large as their sum after converting
 milliseconds to seconds.
+
+A transfer that dies part-way through the body is retried with a `Range` request
+for the remainder rather than from byte zero, up to
+`BOOK_SOURCE_DOWNLOAD_RESUME_ATTEMPTS` times per resolved URL. Those attempts run
+**inside** `BOOK_SOURCE_DOWNLOAD_TIMEOUT`, so resume adds no wall clock — raising
+the attempt count buys more tries within the same budget, not a longer one. When
+they are exhausted the candidate walk moves to the next mirror, which resolves to
+a different CDN node, and the bytes already staged are carried across to it.
+
+Staging for a partial transfer is a hidden `.source-<md5>.part` file in the
+output directory, and it is the only record that a resumable partial exists —
+the bridge is a fresh process per call, so nothing about it can be held in
+memory. A partial smaller than 1 MiB, older than 24 hours, or beginning with an
+HTML error page is discarded rather than resumed, and every resumed file is
+re-digested whole against the catalog MD5 before it is published.
 
 LibGen download resolution inspects at most the first 2 KiB of a candidate
 response. Some CDNs ignore `Range` and answer `200`; the probe streams and closes

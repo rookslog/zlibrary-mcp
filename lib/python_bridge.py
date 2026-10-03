@@ -4,8 +4,9 @@ import os
 import json
 import hashlib
 import re
-import tempfile
+import time
 import traceback
+import uuid
 from typing import Optional
 from email.message import Message
 from urllib.parse import unquote, urlsplit
@@ -850,6 +851,219 @@ def _md5_digest():
         return hashlib.md5()
 
 
+# --- Partial-transfer recovery (#135) ---------------------------------------
+#
+# A CDN node behind a LibGen mirror drops connections part-way through large
+# transfers at varying offsets. Restarting from byte zero throws away every
+# byte already on disk, and on a node that keeps dropping it never converges.
+# What follows lets an attempt pick up where the last one stopped.
+#
+# The state this needs cannot live in a module global: the bridge is a fresh
+# process per MCP call, so anything held in memory is gone before the next
+# attempt. The ONLY record that a partial exists is the parked staging file
+# itself — its name carries the md5 it belongs to, its size carries how far the
+# transfer got, and its mtime carries how old that progress is. There is no
+# sidecar, so there is nothing that can fall out of step with the bytes.
+#
+# Correctness rests on the whole-file digest, not on the resume bookkeeping: a
+# resumed file is re-read from disk end to end and compared against the catalog
+# md5 before it is published. A resume that concatenated a different file — a
+# fresh key, another mirror, an error page — fails there.
+
+# Below this, a partial is not worth carrying: the round-trip to resume it
+# costs more than re-fetching it, and keeping every stub of a failed transfer
+# would litter the download directory. It also keeps small transfers behaving
+# exactly as they did before this existed.
+RESUMABLE_PARTIAL_MIN_BYTES = 1 << 20
+
+# A parked partial older than this is discarded rather than resumed. Nothing
+# guarantees the catalog still serves identical bytes for an md5 a day later,
+# and an un-resumable partial that never expires would be a permanent trap.
+RESUMABLE_PARTIAL_MAX_AGE_SECONDS = 24 * 60 * 60
+
+# Pause before re-requesting the remainder. The cause of the observed drops is
+# unconfirmed, so this is deliberately small: enough that a resume is not an
+# instant re-hammer, not enough to matter against the transfer budget.
+RESUME_BACKOFF_SECONDS = 1.0
+
+# RFC 7233 single-range response header, e.g. `bytes 1048576-5242879/5242880`.
+_CONTENT_RANGE_RE = re.compile(r"\s*bytes\s+(\d+)-(\d+)/(\d+|\*)\s*$", re.IGNORECASE)
+
+
+class _PartialTransfer(Exception):
+    """The body stopped early with usable bytes already staged on disk."""
+
+    def __init__(self, written: int, detail: str):
+        self.written = written
+        self.detail = detail
+        super().__init__(detail)
+
+
+class _RestartFresh(Exception):
+    """The staged bytes cannot be resumed; this transfer must start over."""
+
+
+def _staging_token() -> str:
+    """Unique component of one attempt's staging filename.
+
+    Every attempt writes to its own path so two bridge processes downloading
+    the same book into the same directory can never append to one file.
+    """
+    return uuid.uuid4().hex
+
+
+def _parked_partial_path(output_path: Path, expected_md5: str) -> Path:
+    """Where a resumable partial for this md5 waits between attempts."""
+    return output_path / f".source-{expected_md5}.part"
+
+
+def _file_head(path: Path, size: int = 4096) -> bytes:
+    """Leading bytes of a staged file, or b'' if it cannot be read."""
+    try:
+        with open(path, "rb") as handle:
+            return handle.read(size)
+    except OSError:
+        return b""
+
+
+def _digest_and_head(path: Path, head_size: int = 4096) -> tuple[str, bytes]:
+    """Digest a staged file whole and return its leading bytes.
+
+    Read back from disk rather than accumulated while streaming. A resumed
+    transfer only ever sees the bytes of its own range, so a digest built from
+    what this attempt received would cover a suffix and attest to nothing —
+    which is exactly how a resume that spliced in a different file would come
+    to report success.
+    """
+    digest = _md5_digest()
+    head = b""
+    with open(path, "rb") as handle:
+        for chunk in iter(lambda: handle.read(65536), b""):
+            if len(head) < head_size:
+                head += chunk[: head_size - len(head)]
+            digest.update(chunk)
+    return digest.hexdigest(), head
+
+
+def _truncate_to(path: Path, size: int) -> None:
+    """Drop everything a staged file holds beyond `size`."""
+    try:
+        with open(path, "r+b") as handle:
+            handle.truncate(size)
+    except OSError:
+        pass
+
+
+def _claim_parked_partial(parked: Path, working: Path) -> int:
+    """Take ownership of a resumable partial, returning its byte count.
+
+    The claim is a rename, and a rename is atomic: two processes cannot both
+    end up appending to one file, and the loser simply starts from zero on its
+    own uniquely-named attempt. Nothing blocks, and a process that dies holding
+    a claim leaves a working file that ages out rather than a lock nobody can
+    release.
+
+    Returns:
+        Bytes already staged and now owned by `working`, or 0 to start fresh.
+    """
+    try:
+        stat = parked.stat()
+    except OSError:
+        return 0
+    if (
+        stat.st_size < RESUMABLE_PARTIAL_MIN_BYTES
+        or (time.time() - stat.st_mtime) > RESUMABLE_PARTIAL_MAX_AGE_SECONDS
+    ):
+        parked.unlink(missing_ok=True)
+        return 0
+    try:
+        os.rename(parked, working)
+        return working.stat().st_size
+    except OSError:
+        return 0
+
+
+def _park_partial(working: Path, parked: Path) -> None:
+    """Keep a failed transfer's bytes for the next attempt, or discard them.
+
+    Called on every exit from a transfer, successful or not: a published
+    transfer has already consumed its working file, so this is a no-op there.
+    Everything that survives to here is a contiguous prefix of the requested
+    file — each failure path either truncates back to a verified offset or
+    deletes the file outright — so the only judgment left is whether the prefix
+    is worth keeping.
+    """
+    try:
+        size = working.stat().st_size
+    except OSError:
+        return
+    if size < RESUMABLE_PARTIAL_MIN_BYTES or _looks_like_html(_file_head(working)):
+        working.unlink(missing_ok=True)
+        return
+    try:
+        if parked.exists() and parked.stat().st_size >= size:
+            # Another attempt parked at least as much. Two prefixes of the same
+            # file are interchangeable, so keep the longer one.
+            working.unlink(missing_ok=True)
+            return
+    except OSError:
+        pass
+    try:
+        os.replace(working, parked)
+    except OSError:
+        working.unlink(missing_ok=True)
+
+
+def _declared_length(headers) -> Optional[int]:
+    """Body length a response declares, when it can be compared to disk bytes.
+
+    Ignored under a transfer encoding: `Content-Length` then counts encoded
+    bytes while the client writes decoded ones, and comparing the two would
+    report a complete transfer as truncated.
+    """
+    if _content_encoded(headers):
+        return None
+    try:
+        value = int(str(headers.get("content-length", "")).strip())
+    except (AttributeError, TypeError, ValueError):
+        return None
+    return value if value >= 0 else None
+
+
+def _content_encoded(headers) -> bool:
+    """Whether a response body is encoded rather than served as stored."""
+    try:
+        encoding = str(headers.get("content-encoding", "")).strip().lower()
+    except AttributeError:
+        return False
+    return bool(encoding) and encoding != "identity"
+
+
+def _resume_window(headers, start_at: int) -> tuple[Optional[int], Optional[int]]:
+    """Offset and total size a 206 response actually grants.
+
+    Returns (None, None) when the response cannot be appended to what is
+    already staged — a range starting somewhere other than where we asked, an
+    unparseable header, or an encoded body whose offsets do not correspond to
+    the bytes on disk. The caller discards the partial in that case rather than
+    guessing, because a mis-offset append is a corrupt file that would still
+    carry a plausible size.
+    """
+    if _content_encoded(headers):
+        return None, None
+    try:
+        raw = str(headers.get("content-range", ""))
+    except AttributeError:
+        return None, None
+    match = _CONTENT_RANGE_RE.match(raw)
+    if not match:
+        return None, None
+    first, _last, total = match.groups()
+    if int(first) != start_at:
+        return None, None
+    return start_at, (None if total == "*" else int(total))
+
+
 def _publish_no_replace(source: Path, destination: Path) -> None:
     """Atomically publish one owned file without replacing an existing path."""
     os.link(source, destination)
@@ -918,8 +1132,17 @@ async def _download_url_to_file(
     any source, so this is the only piece that had to exist for LibGen and
     Anna's results to become downloadable.
 
-    Guards against the two ways these CDNs fail without erroring: an HTML
-    error/interstitial page served with HTTP 200, and a truncated body.
+    Guards against the three ways these CDNs fail without erroring: an HTML
+    error/interstitial page served with HTTP 200, a truncated body, and — the
+    one this function used to lose the whole transfer to — a connection that
+    dies part-way through a large file. A body that stops early is retried with
+    a `Range` request for the remainder instead of from byte zero, and whatever
+    it managed to stage is parked for the next attempt, which may be the next
+    mirror in the candidate walk (#135).
+
+    Resuming buys no extra wall clock. The retries run inside the same
+    `download_timeout` the whole transfer already had, so a URL that keeps
+    dying still ends when that budget does.
     """
     import httpx
 
@@ -932,11 +1155,19 @@ async def _download_url_to_file(
 
     output_path = Path(output_dir)
     output_path.mkdir(parents=True, exist_ok=True)
-    descriptor, attempt_name = tempfile.mkstemp(
-        prefix=".source-", suffix=".part", dir=output_path
-    )
-    os.close(descriptor)
-    attempt_path = Path(attempt_name)
+
+    # The parked path is addressed by md5 so a later attempt — including one in
+    # a later bridge process — can find it. The working path is unique per
+    # attempt, and ownership of the parked bytes is taken by renaming one onto
+    # the other, which is atomic.
+    parked_path = _parked_partial_path(output_path, expected_md5)
+    # The token is joined with a dash, not a dot: the published name is this
+    # path with its suffix replaced, and a dotted token would survive that as
+    # a bogus extension on an artifact whose type could not be determined.
+    attempt_path = output_path / f".source-{expected_md5}-{_staging_token()}.part"
+    resume_from = _claim_parked_partial(parked_path, attempt_path)
+    if not resume_from:
+        os.close(os.open(attempt_path, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600))
 
     # LIBGEN_USER_AGENT is scoped to LibGen. This function is source-agnostic,
     # so sending an operator's LibGen-specific string to Anna's host would both
@@ -957,97 +1188,236 @@ async def _download_url_to_file(
     # from one object and move the file with another (Codex on #146).
     config = config or get_source_config()
 
-    async def stream_to_disk() -> tuple[int, str]:
+    async def transfer_once(client, start_at: int) -> tuple[int, "_DownloadedPath"]:
+        """Issue one request and stage its body, appending from `start_at`.
+
+        Every exit leaves `attempt_path` holding a contiguous prefix of the
+        requested file or nothing at all — appended bytes that turn out to be
+        an error page are truncated away, and anything that condemns the whole
+        staged file deletes it. That invariant is what makes parking the
+        survivor safe.
+        """
         nonlocal active_host
-        try:
-            # The admitted UA is load-bearing: libgen's hosts serve an HTML
-            # stub to blocklisted tool UAs including python-httpx's default
-            # (#124), which the HTML guard below then misreads as an expired
-            # key — the adapter verifies the URL with the right UA and the
-            # transfer dies here with the wrong one.
-            #
-            # Resolved from `config`, not the module constant: an operator who
-            # sets LIBGEN_USER_AGENT because the default went onto the
-            # blocklist would otherwise have search and key resolution honour
-            # the override while this transfer — the one request that moves the
-            # file — kept sending the blocked default (Codex on #146).
-            async with httpx.AsyncClient(
-                timeout=build_timeout(config),
-                follow_redirects=True,
-                headers={"User-Agent": user_agent},
-            ) as client:
-                async with client.stream("GET", url) as response:
-                    response_url = getattr(response, "url", None)
-                    if response_url is not None:
-                        active_host = (
-                            urlsplit(str(response_url)).hostname or active_host
-                        ).lower()
-                    if host_observer is not None:
-                        host_observer(active_host)
-                    response.raise_for_status()
 
-                    content_type = response.headers.get("content-type", "")
-                    if "text/html" in content_type:
+        # Only sent when resuming, so a fresh transfer issues exactly the
+        # request it always did.
+        stream_kwargs = {"headers": {"Range": f"bytes={start_at}-"}} if start_at else {}
+        async with client.stream("GET", url, **stream_kwargs) as response:
+            response_url = getattr(response, "url", None)
+            if response_url is not None:
+                active_host = (
+                    urlsplit(str(response_url)).hostname or active_host
+                ).lower()
+            if host_observer is not None:
+                host_observer(active_host)
+
+            status = int(getattr(response, "status_code", 200) or 200)
+            write_offset = start_at
+            expected_total: Optional[int] = None
+
+            if start_at:
+                if status == 416:
+                    # The server says our offset is past the end of the file,
+                    # so the staged bytes are not a prefix of what it serves.
+                    # Discarding them is what stops an unusable partial from
+                    # failing every future attempt for this md5.
+                    attempt_path.unlink(missing_ok=True)
+                    raise _RestartFresh(
+                        f"resume from byte {start_at} was rejected as unsatisfiable"
+                    )
+                response.raise_for_status()
+                if status == 206:
+                    write_offset, expected_total = _resume_window(
+                        response.headers, start_at
+                    )
+                    if write_offset is None:
+                        attempt_path.unlink(missing_ok=True)
                         raise ProviderResponseError(
                             provider,
                             active_host,
-                            f"HTML response for {md5}; download key may have expired",
+                            f"resume of {md5} from byte {start_at} answered 206 "
+                            f"with a Content-Range that does not continue it: "
+                            f"{response.headers.get('content-range', '')!r}",
                             reason="protocol_error",
                         )
+                else:
+                    # Range was not honoured — the body is the whole file, so
+                    # write it from the top rather than appending it to a
+                    # prefix it already contains.
+                    logger.info(
+                        "%s did not honour a Range request for %s (HTTP %d); "
+                        "restarting the transfer from the beginning",
+                        active_host,
+                        md5,
+                        status,
+                    )
+                    write_offset = 0
+            else:
+                response.raise_for_status()
 
-                    written = 0
-                    digest = _md5_digest()
-                    signature = bytearray()
-                    with open(attempt_path, "wb") as handle:
-                        async for chunk in response.aiter_bytes(65536):
-                            handle.write(chunk)
-                            digest.update(chunk)
-                            if len(signature) < 4096:
-                                signature.extend(chunk[: 4096 - len(signature)])
-                            written += len(chunk)
-                    if _looks_like_html(bytes(signature)):
-                        raise ProviderResponseError(
-                            provider,
-                            active_host,
-                            f"HTML body for {md5}; download key may have expired",
-                            reason="protocol_error",
-                        )
-                    actual_md5 = digest.hexdigest()
-                    if actual_md5 != expected_md5:
-                        raise ProviderResponseError(
-                            provider,
-                            active_host,
-                            f"expected={expected_md5} actual={actual_md5}",
-                            reason="integrity_mismatch",
-                        )
+            content_type = response.headers.get("content-type", "")
+            if "text/html" in content_type:
+                raise ProviderResponseError(
+                    provider,
+                    active_host,
+                    f"HTML response for {md5}; download key may have expired",
+                    reason="protocol_error",
+                )
 
-                    extension, extension_evidence = _response_extension(
-                        response.headers, str(response_url or url), bytes(signature)
+            if expected_total is None and write_offset == 0:
+                expected_total = _declared_length(response.headers)
+
+            new_signature = bytearray()
+            written_now = 0
+            try:
+                # Opened for update WITHOUT truncation, and created if a
+                # previous attempt in this loop discarded it — the seek and
+                # explicit truncate below set the length, so an implicit one
+                # here would silently drop a prefix we mean to keep.
+                descriptor = os.open(attempt_path, os.O_CREAT | os.O_RDWR, 0o600)
+                with open(descriptor, "r+b") as handle:
+                    handle.seek(write_offset)
+                    handle.truncate(write_offset)
+                    async for chunk in response.aiter_bytes(65536):
+                        handle.write(chunk)
+                        if len(new_signature) < 4096:
+                            new_signature.extend(chunk[: 4096 - len(new_signature)])
+                        written_now += len(chunk)
+            except Exception as exc:
+                # Bytes already on disk are worth resuming; a request that
+                # produced none tells us nothing about the transfer and belongs
+                # to the ordinary transport classifier below.
+                if written_now:
+                    raise _PartialTransfer(
+                        write_offset + written_now,
+                        f"transfer from {active_host} stopped after "
+                        f"{write_offset + written_now} bytes "
+                        f"({type(exc).__name__})",
+                    ) from exc
+                raise
+
+            written_total = write_offset + written_now
+
+            if _looks_like_html(bytes(new_signature)):
+                # An interstitial served in place of the remainder. The prefix
+                # staged before this request is untouched by it.
+                _truncate_to(attempt_path, write_offset)
+                raise ProviderResponseError(
+                    provider,
+                    active_host,
+                    f"HTML body for {md5}; download key may have expired",
+                    reason="protocol_error",
+                )
+
+            if expected_total is not None and written_total != expected_total:
+                if written_total < expected_total:
+                    raise _PartialTransfer(
+                        written_total,
+                        f"{active_host} sent {written_total} of "
+                        f"{expected_total} bytes for {md5}",
                     )
-                    completed_path = attempt_path.with_suffix(
-                        f".{extension}" if extension else ""
+                attempt_path.unlink(missing_ok=True)
+                raise ProviderResponseError(
+                    provider,
+                    active_host,
+                    f"body for {md5} ran past its declared "
+                    f"{expected_total} bytes to {written_total}",
+                    reason="protocol_error",
+                )
+
+            # Whole-file, from disk. A resumed transfer received only its own
+            # range, so this is the only check that covers the bytes an earlier
+            # attempt (or an earlier mirror) contributed.
+            actual_md5, signature = _digest_and_head(attempt_path)
+            if _looks_like_html(signature):
+                attempt_path.unlink(missing_ok=True)
+                raise ProviderResponseError(
+                    provider,
+                    active_host,
+                    f"HTML body for {md5}; download key may have expired",
+                    reason="protocol_error",
+                )
+            if actual_md5 != expected_md5:
+                attempt_path.unlink(missing_ok=True)
+                raise ProviderResponseError(
+                    provider,
+                    active_host,
+                    f"expected={expected_md5} actual={actual_md5}",
+                    reason="integrity_mismatch",
+                )
+
+            extension, extension_evidence = _response_extension(
+                response.headers, str(response_url or url), signature
+            )
+            completed_path = attempt_path.with_suffix(
+                f".{extension}" if extension else ""
+            )
+            try:
+                _publish_no_replace(attempt_path, completed_path)
+            except OSError:
+                attempt_path.unlink(missing_ok=True)
+                raise
+            return written_total, _DownloadedPath(
+                str(completed_path), extension_evidence
+            )
+
+    async def transfer() -> tuple[int, "_DownloadedPath"]:
+        """Run attempts against this URL until one completes or they run out."""
+        attempts = 1 + max(0, int(getattr(config, "download_resume_attempts", 0) or 0))
+        start_at = resume_from
+        staged = resume_from
+        detail = "transfer did not start"
+
+        async with httpx.AsyncClient(
+            timeout=build_timeout(config),
+            follow_redirects=True,
+            headers={"User-Agent": user_agent},
+        ) as client:
+            for attempt in range(attempts):
+                if attempt:
+                    await asyncio.sleep(RESUME_BACKOFF_SECONDS)
+                try:
+                    return await transfer_once(client, start_at)
+                except _RestartFresh as restart:
+                    detail = str(restart)
+                    start_at = 0
+                    staged = 0
+                except _PartialTransfer as partial:
+                    detail = partial.detail
+                    progressed = partial.written > start_at
+                    start_at = partial.written
+                    staged = partial.written
+                    if not progressed or start_at < RESUMABLE_PARTIAL_MIN_BYTES:
+                        # No forward progress, or too little staged to be worth
+                        # a round trip. Stop spending this URL's share of the
+                        # budget and let the caller try the next mirror, which
+                        # resolves to a different CDN node.
+                        break
+                    logger.warning(
+                        "Resuming %s from byte %d after a partial transfer: %s",
+                        md5,
+                        start_at,
+                        detail,
                     )
-                    _publish_no_replace(attempt_path, completed_path)
-                    return written, _DownloadedPath(
-                        str(completed_path), extension_evidence
-                    )
-        except BaseException:
-            # Cancellation and every classified failure must leave no partial
-            # artifact for a later retry to mistake for a completed download.
-            attempt_path.unlink(missing_ok=True)
-            raise
+
+        raise ProviderResponseError(
+            provider,
+            active_host,
+            f"{detail}; {staged} bytes staged for resume",
+            reason="partial_transfer",
+        )
 
     try:
         if enforce_timeout:
             written, completed_path = await bounded_await(
-                stream_to_disk(),
+                transfer(),
                 config.download_timeout,
                 provider=provider,
                 host=original_host,
                 operation="download",
             )
         else:
-            written, completed_path = await stream_to_disk()
+            written, completed_path = await transfer()
     except SourceError as exc:
         if isinstance(exc, ProviderTimeoutError) and exc.reason == "search_timeout":
             raise ProviderTimeoutError(
@@ -1086,6 +1456,12 @@ async def _download_url_to_file(
             else ProviderResponseError
         )
         raise error_type(provider, failure_host, detail, reason=reason) from exc
+    finally:
+        # Cancellation and every classified failure leave the staged prefix
+        # here. `_park_partial` keeps it only if it is large enough to be worth
+        # resuming and does not start with an error page; a published transfer
+        # has already consumed the file, so this is a no-op on success.
+        _park_partial(attempt_path, parked_path)
 
     if written == 0:
         Path(completed_path).unlink(missing_ok=True)

@@ -274,11 +274,11 @@ class TestRealWorldRegression:
         if not snapshot_file.exists():
             # First run: create snapshot
             snapshot_file.parent.mkdir(parents=True, exist_ok=True)
-            snapshot_file.write_text(result)
+            snapshot_file.write_text(result, encoding="utf-8")
             pytest.skip("Snapshot created - run again to validate")
 
         # Compare with snapshot
-        expected = snapshot_file.read_text()
+        expected = snapshot_file.read_text(encoding="utf-8")
 
         # Require 95% similarity (allow minor differences)
         similarity = _calculate_similarity(result, expected)

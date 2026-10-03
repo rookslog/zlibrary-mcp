@@ -700,6 +700,12 @@ class LibgenAdapter(SourceAdapter):
                     url=url,
                     source=SourceType.LIBGEN,
                     quota_info=None,  # LibGen has no quota
+                    route="get.php",
+                    mirror=mirror,
+                    # On the success path `_serves_bytes` returns the host that
+                    # actually answered the probe, which is the CDN node rather
+                    # than the mirror — the distinction failover exists for.
+                    host=detail,
                 )
 
         if failures:

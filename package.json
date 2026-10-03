@@ -12,7 +12,8 @@
     "zlibrary-mcp": "dist/index.js"
   },
   "scripts": {
-    "build": "tsc",
+    "build": "tsc && npm run test:types",
+    "test:types": "tsc --project tsconfig.types.json",
     "postbuild": "node scripts/validate-python-bridge.js",
     "validate": "node scripts/validate-python-bridge.js",
     "audit:release": "node scripts/release-audit.mjs",

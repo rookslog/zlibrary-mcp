@@ -250,6 +250,10 @@ interface GetDownloadHistoryArgs {
     count?: number;
 }
 
+interface GetDownloadLimitsArgs {
+    sources?: string[];
+}
+
 interface DownloadBookToFileArgs {
     // id: string; // Replaced by bookDetails
     // format?: string | null; // Replaced by bookDetails
@@ -281,8 +285,16 @@ interface ProcessedDocumentBundle {
   output_files?: Record<string, string>;
 }
 
-interface DownloadBookResult extends ProcessedDocumentBundle {
+export interface DownloadProvenance {
+  source: string | null;
+  route: string | null;
+  mirror: string | null;
+  host: string | null;
+}
+
+export interface DownloadBookResult extends ProcessedDocumentBundle {
   file_path: string;
+  provenance: DownloadProvenance;
   processing_error?: string;
 }
 
@@ -312,6 +324,27 @@ function validateNullablePathField(result: Record<string, any>, fieldName: strin
   const value = result[fieldName];
   if (value !== null && typeof value !== 'string') {
     throw new Error(`Invalid response from Python bridge: ${fieldName} must be a string or null.`);
+  }
+}
+
+function validateDownloadProvenance(result: Record<string, any>): void {
+  if (!('provenance' in result)) {
+    throw new Error('Invalid response from Python bridge: Missing provenance.');
+  }
+  const provenance = result.provenance;
+  if (!provenance || typeof provenance !== 'object' || Array.isArray(provenance)) {
+    throw new Error('Invalid response from Python bridge: provenance must be an object.');
+  }
+  for (const field of ['source', 'route', 'mirror', 'host']) {
+    if (!(field in provenance)) {
+      throw new Error(`Invalid response from Python bridge: Missing provenance.${field}.`);
+    }
+    const value = provenance[field];
+    if (value !== null && typeof value !== 'string') {
+      throw new Error(
+        `Invalid response from Python bridge: provenance.${field} must be a string or null.`,
+      );
+    }
   }
 }
 
@@ -423,11 +456,38 @@ export async function getDownloadHistory({ count = 10 }: GetDownloadHistoryArgs,
 }
 
 /**
- * Get user's download limits
+ * Report each source's daily download limit.
+ *
+ * `sources` narrows the report. It is not a filter applied after the fact:
+ * Z-Library is the only source whose limit costs an authenticated profile
+ * call, so a request that does not name it makes no such call at all. That
+ * asymmetry of cost is why this half of the routing contract is pull-only
+ * rather than riding along with every search (#107).
+ *
+ * @param args - Optional canonical source names to report
+ * @param options - Timeout and abort signal
  */
-export async function getDownloadLimits(options: CallOptions = {}): Promise<any> {
-  // Pass arguments as an object matching Python function signature
-  return await callPythonFunction('get_download_limits', {}, options);
+export function getDownloadLimits(options?: CallOptions): Promise<any>;
+export function getDownloadLimits(
+  args: GetDownloadLimitsArgs,
+  options?: CallOptions,
+): Promise<any>;
+export async function getDownloadLimits(
+  argsOrOptions: GetDownloadLimitsArgs | CallOptions = {},
+  options?: CallOptions,
+): Promise<any> {
+  const hasSources = Object.prototype.hasOwnProperty.call(argsOrOptions, 'sources');
+  const args = hasSources ? argsOrOptions as GetDownloadLimitsArgs : {};
+  const callOptions = options ?? (hasSources
+    ? {
+        timeoutMs: (argsOrOptions as CallOptions).timeoutMs,
+        signal: (argsOrOptions as CallOptions).signal,
+      }
+    : argsOrOptions as CallOptions);
+  // Omit the key only when it is unset. An explicit empty list has different
+  // semantics: the bridge rejects it rather than widening it to every source.
+  const pythonArgs = args.sources === undefined ? {} : { sources: args.sources };
+  return await callPythonFunction('get_download_limits', pythonArgs, callOptions);
 }
 
 
@@ -491,8 +551,10 @@ export async function downloadBookToFile({
     }
 
     if (typeof result.file_path !== 'string') {
-        throw new Error("Invalid response from Python bridge: file_path must be a string.");
+      throw new Error("Invalid response from Python bridge: file_path must be a string.");
     }
+
+    validateDownloadProvenance(result);
 
     if (process_for_rag && !('processed_file_path' in result)) {
         throw new Error("Invalid response from Python bridge: Processing requested but processed_file_path key is missing.");

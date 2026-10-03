@@ -563,7 +563,7 @@ describe('Tool Handlers - Extended Coverage', () => {
       ['search_books', 'searchBooks', { query: 'x' }, 1],
       ['full_text_search', 'fullTextSearch', { query: 'x' }, 1],
       ['get_download_history', 'getDownloadHistory', {}, 1],
-      ['get_download_limits', 'getDownloadLimits', {}, 0],
+      ['get_download_limits', 'getDownloadLimits', {}, 1],
       ['download_book_to_file', 'downloadBookToFile', { bookDetails: { id: '1' } }, 1],
       ['process_document_for_rag', 'processDocumentForRag', { file_path: '/a.epub' }, 1],
       ['get_book_metadata', 'getBookMetadata', { bookId: '1', bookHash: 'h' }, 3],

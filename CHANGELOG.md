@@ -9,6 +9,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **The source/route reporting contract** decided on #96, in three surfaces
+  (#101, #107). `search_multi_source` now returns a `routing` block naming what
+  was requested, what served it, whether a fallback happened, and each source's
+  current routes and daily limit — every field read from configuration, so it
+  costs no extra request. `download_book_to_file` returns nested `provenance`
+  with the source, route, mirror, and host that actually served the file;
+  before this those went to `logger.warning` on stderr and never reached the
+  caller. `get_download_limits` reports every source rather than Z-Library
+  alone, and takes an optional `sources` parameter so a Library Genesis
+  question makes no Z-Library profile call. A daily limit is three-valued — *no
+  limit exists*, *a limit exists and is not known here*, *a concrete number* —
+  and never collapses onto `null`. The tool count stays 13.
+
 - `npm run audit:release` ([scripts/release-audit.mjs](scripts/release-audit.mjs)) and a
   weekly `Release Record Audit` workflow, checking that the project's record of itself is
   still true. **Drift:** every tag has a GitHub Release and a CHANGELOG section, every
@@ -87,7 +100,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   source.
 - The scheduled upstream contract check no longer fails spuriously (#71).
 
+### Removed
+
+- **`sources_used` on `search_multi_source` responses.** It was derived from the
+  results, so an `annas`-requested search that fell back reported `["libgen"]`
+  with no trace of the substitution — the reporting half of the bug #74 fixed in
+  routing. Superseded by `routing.served_by` and `routing.fell_back` (#96).
+
 ### Changed
+
+- **`get_download_limits` reports per source.** Its old top-level `daily_limit`
+  / `daily_remaining` / `downloads_today` / `is_premium` keys are replaced by
+  `sources.zlibrary`, whose numbers live under `daily_limit` and whose
+  `is_premium` lives under `details`. A tool whose name never named a source
+  was answering as though it had (#107). A Z-Library outage now degrades that
+  one entry to `unknown` with the reason attached rather than failing the whole
+  call, so a credential-free Library Genesis setup still gets an answer.
 
 - `CONTEXT.md` added as the terminology glossary, splitting the overloaded term
   "keyless" into *keyed fast_download*, *operator-cookie slow_download*, and

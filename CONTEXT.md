@@ -40,10 +40,15 @@ _Avoid_: Method, channel, path
 **Provenance**:
 The record of which source, route, mirror, and host served a given result.
 
-Note that provenance is currently **written to the logs, not returned to the caller**.
-`DownloadResult` carries `url`, `source`, and quota only. Making it part of the returned
-result is an open design decision (#96), so treat this entry as naming the concept rather
-than describing a guarantee the server presently offers.
+Returned to the caller as a nested `provenance` object on every acquisition, alongside
+the file path — `{source, route, mirror, host}`, with `null` where a route has no
+analogue for a field. It describes the transfer and never the document. `DownloadResult`
+carries `route`, `mirror`, and `host` for the adapters to fill in; before #101 it carried
+`url`, `source`, and quota only, and provenance reached the logs and stopped there.
+
+The discovery-time counterpart is the `routing` block on every `search_multi_source`
+response: `requested`, `served_by`, `fell_back`, and a symmetric per-source entry naming
+each source's routes and daily limit. Both shapes were decided on #96.
 
 ### Anna's Archive routes
 

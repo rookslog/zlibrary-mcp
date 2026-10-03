@@ -289,9 +289,14 @@ def test_core_only_bridge_starts_and_completes_offline_search():
         import python_bridge as bridge
 
         class OfflineRouter:
+            config = None
+
             async def search(self, query, source="auto", **kwargs):
                 assert query == "offline boundary probe"
                 return []
+
+            def intended_source(self, source="auto"):
+                return "libgen"
 
             async def close(self):
                 return None
@@ -327,7 +332,12 @@ def test_core_only_bridge_starts_and_completes_offline_search():
     assert result.returncode == 0, result.stderr
     envelope = json.loads(result.stdout)
     payload = json.loads(envelope["content"][0]["text"])
-    assert payload == {"books": [], "sources_used": []}
+    assert payload["books"] == []
+    # The #101 routing report is built from configuration alone, so a
+    # core-only install must still receive it.
+    assert payload["routing"]["served_by"] == []
+    assert payload["routing"]["fell_back"] is False
+    assert set(payload["routing"]["sources"]) == {"annas_archive", "libgen", "zlibrary"}
 
 
 @pytest.mark.asyncio

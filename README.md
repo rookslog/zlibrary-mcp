@@ -136,7 +136,7 @@ flowchart LR
 
 | Tool | Description |
 |------|-------------|
-| `get_download_limits` | Check daily download quota |
+| `get_download_limits` | Check each source's daily download quota |
 | `get_download_history` | View recent downloads |
 
 For complete parameter documentation, types, and examples, see [API Reference](docs/api.md).
@@ -151,6 +151,13 @@ capabilities.
 | Library Genesis | No | None | Yes | Yes |
 | Z-Library | Yes | Approximately 10 books | Yes | Yes |
 | Anna's Archive | API key for downloads | Set by membership | Yes | Only with an API key |
+
+The server reports these constraints rather than choosing between them. Every
+`search_multi_source` response carries a `routing` block naming which source you asked
+for, which one answered, whether a substitution happened, and what each source can
+currently do. Every download response carries a `provenance` block naming the source,
+route, mirror, and host that served the file. Neither ranks the sources: the calling
+agent decides. See [API Reference](docs/api.md) for the field shapes.
 
 ### Library Genesis
 
@@ -186,7 +193,9 @@ config. Without these variables, the Z-Library tools fail when you call them. Th
 tools continue to work.
 
 Z-Library applies a daily download limit of approximately 10 books. Call
-`get_download_limits` to check your remaining quota.
+`get_download_limits` to check your remaining quota. That tool reports every source, not
+only Z-Library; Z-Library is the one whose answer costs a round-trip, so pass
+`sources: ["libgen"]` when Z-Library is not the source you are asking about.
 
 ### Anna's Archive
 

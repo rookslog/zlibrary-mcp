@@ -56,6 +56,16 @@ scholar = [
     "pillow>=11.0.0",
 ]
 
+# Anna's Archive browser-resident download route (#143). Deliberately optional
+# and deliberately not in `dev`: it needs a real display and a human to solve
+# the DDoS-Guard challenge once, so it cannot run in CI and must never become a
+# requirement for the credential-free LibGen path that most users install for.
+# After syncing a tier with `--extra annas-browser`, run
+# `uv run --no-sync playwright install chrome` so uv does not change that tier.
+annas-browser = [
+    "playwright>=1.55.0",
+]
+
 # Development and testing
 dev = [
     "pytest>=8.4.0",

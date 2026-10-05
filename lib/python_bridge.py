@@ -18,7 +18,13 @@ import asyncio
 import signal
 
 from pathlib import Path
-from filename_utils import create_unified_filename, normalize_document_extension
+from filename_utils import (
+    create_unified_filename,
+    is_degraded_unified_filename,
+    is_preservable_server_filename,
+    normalize_document_extension,
+    sanitize_preserved_filename,
+)
 import logging
 
 # Import the new RAG processing functions
@@ -1320,7 +1326,27 @@ async def download_book(
             year=book_details.get("year", ""),
             language=book_details.get("language", ""),
         )
-        final_file_path = Path(output_dir) / unified_filename
+        final_filename = unified_filename
+        # A degraded unified name means the caller's metadata could not
+        # identify the book — but the download response usually could, and
+        # already named the file on disk from real metadata (EAPI carries it
+        # in Content-Disposition). Renaming that to
+        # "UnknownAuthor_UntitledBook_12345.pdf" destroys information the
+        # server handed us; keep the server's wording instead. Determinism
+        # is preserved in practice: the server derives the name from the
+        # book's own metadata, so re-downloads land on the same target.
+        if is_degraded_unified_filename(unified_filename):
+            server_name = Path(original_download_path_str).name
+            if is_preservable_server_filename(server_name):
+                preserved = sanitize_preserved_filename(server_name)
+                if preserved:
+                    logger.info(
+                        "Sparse book metadata degraded the unified filename; "
+                        "keeping server-provided name %r",
+                        preserved,
+                    )
+                    final_filename = preserved
+        final_file_path = Path(output_dir) / final_filename
         final_file_path_str = str(final_file_path)
 
         if process_for_rag and final_file_path.suffix.lower() not in {

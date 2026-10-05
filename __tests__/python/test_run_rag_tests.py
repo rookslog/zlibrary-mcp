@@ -856,7 +856,8 @@ async def test_run_single_test_downloads_file_from_manifest(mocker, tmp_path):
         "EAPIClient.download_file should be called for download"
     )
     # Check processing uses downloaded path for both text and markdown
-    # Note: download_book() renames file to standardized format (UnknownAuthor_UntitledBook_12345.pdf)
+    # Note: sparse manifest metadata degrades the unified filename, so the
+    # server-provided name is kept instead of UnknownAuthor_UntitledBook_12345.pdf
     assert mock_process.call_count == 2
     # Verify both text and markdown output formats were processed (actual path will be renamed)
     # Check evaluate is called twice (for text and markdown)
@@ -871,10 +872,11 @@ async def test_run_single_test_downloads_file_from_manifest(mocker, tmp_path):
     # Assert the expected keys are present and 'status' is absent at call time
     assert "id" in actual_arg_dict and actual_arg_dict["id"] == "12345"
     assert "format" in actual_arg_dict and actual_arg_dict["format"] == "pdf"
-    # Note: download_book() renames file to standardized format, so path will differ from mock_downloaded_path
+    # Note: with sparse manifest metadata download_book keeps the
+    # server-provided filename rather than collapsing to a placeholder
     assert "downloaded_path" in actual_arg_dict and actual_arg_dict[
         "downloaded_path"
-    ].endswith("_12345.pdf")
+    ].endswith("downloaded_book.pdf")
     assert "text_eval" in actual_arg_dict and actual_arg_dict["text_eval"] == {
         "text_length": 100,
         "word_count": 20,
@@ -891,8 +893,7 @@ async def test_run_single_test_downloads_file_from_manifest(mocker, tmp_path):
 
     # Assert the final result dictionary contains the status string returned by the mock
     assert result["status"] == "PASS"  # Expect simple string
-    # Note: download_book() renames file, so check that downloaded_path ends with correct ID
-    assert result["downloaded_path"].endswith("_12345.pdf")
+    assert result["downloaded_path"].endswith("downloaded_book.pdf")
     assert (
         result["processed_text_preview"] == "Processed PDF text"[:100]
     )  # Check preview uses processed text

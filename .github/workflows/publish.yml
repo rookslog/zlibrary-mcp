@@ -45,7 +45,7 @@ jobs:
             exit 1
           fi
           echo "Extracted $(wc -l < release-notes.md) lines of notes for $VERSION"
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: release-notes
           path: release-notes.md

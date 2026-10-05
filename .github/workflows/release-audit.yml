@@ -39,7 +39,7 @@ jobs:
         with:
           lfs: false
           fetch-depth: 0 # the audit reads tags and counts commits since the last one
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v7
         with:
           node-version: '22'
 

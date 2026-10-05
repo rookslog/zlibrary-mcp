@@ -2,6 +2,26 @@
 
 Thank you for your interest in contributing! This guide covers everything you need to get started.
 
+## Choose a contribution path
+
+You can contribute through GitHub using any editor or assistant, or no assistant.
+You do not need Wayfinder, installed skills, the GitHub CLI, or permission to
+manage labels, assignments, milestones or dependencies.
+
+- **Small bug fix or documentation change:** open a PR describing the problem,
+  the change and the relevant checks. A separate issue or planning map is not
+  required. Report any checks you could not run.
+- **Substantial feature or interface change:** open an issue first to agree on
+  intended behavior, scope and compatibility before investing in implementation.
+  Maintainers help identify relevant architectural decisions and test requirements.
+- **An existing PR:** reviewers assess the submitted change and give actionable
+  feedback. You do not need to recreate it as a Wayfinder plan.
+
+Maintainers handle tracker organization and release planning. They may use
+optional automation, but the same code quality and review expectations apply
+regardless of how a contribution was authored. For sensitive security reports,
+follow [SECURITY.md](SECURITY.md).
+
 ## Getting Started
 
 ### Prerequisites
@@ -204,7 +224,7 @@ These are hard rules; PRs that break them will be sent back:
 
 1. Create a feature branch from `master`
 2. Make your changes, following existing code patterns
-3. Ensure tests pass locally: `npm test` and the fast pytest suite (see [Test tiers](#test-tiers-and-credentials))
+3. For code changes, run `npm test` and the fast pytest suite (see [Test tiers](#test-tiers-and-credentials)); for documentation-only changes, check the changed instructions and links. Report checks you could not run.
 4. lint-staged hooks will run automatically on commit (ESLint, Prettier, Ruff, TypeScript type-check)
 5. Push your branch and open a PR
 6. CI will run tests, linting, and coverage checks

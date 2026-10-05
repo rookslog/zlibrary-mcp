@@ -782,7 +782,7 @@ async function start(
       ann('search_books'),
       async (args, extra) => {
         try {
-          const result = await (zlibraryApi as any).getRecentBooks(args, {
+          const result = await zlibraryApi.getRecentBooks(args, {
             signal: extra?.signal,
           });
           return wrapResult(result, 'get_recent_books');

@@ -151,7 +151,7 @@ jobs:
       # Reuse the artifact validate-release-notes produced rather than
       # re-extracting. Two copies of the awk would be two things to drift, and
       # the notes published here must be exactly the bytes that were validated.
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v8
         with:
           name: release-notes
       - name: Create the GitHub Release

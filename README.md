@@ -390,11 +390,38 @@ The server requires Z-Library credentials, set as environment variables:
 
 | Variable | Required | Description |
 |----------|----------|-------------|
-| `ZLIBRARY_EMAIL` | Yes | Z-Library account email |
-| `ZLIBRARY_PASSWORD` | Yes | Z-Library account password |
+| `ZLIBRARY_EMAIL` | Unless using an account pool | Z-Library account email |
+| `ZLIBRARY_PASSWORD` | Unless using an account pool | Z-Library account password |
+| `ZLIBRARY_ACCOUNT_CREDENTIALS` | No | Secret JSON array of email/password objects; overrides the single-account pair |
+| `ZLIBRARY_SESSION_DIR` | No | Private session directory; defaults to `~/.cache/zlibrary-mcp/sessions` |
 | `ZLIBRARY_MIRROR` | No | Custom Z-Library mirror URL |
 
-The server validates credentials at startup and emits a clear error if they are missing.
+Z-Library operations validate credentials when called; credential-free sources remain available.
+
+### Sessions and automatic account selection
+
+Successful logins are reused across Python bridge invocations. Session cookies are
+stored outside downloads, with directory mode 0700 and file mode 0600 on POSIX.
+Keep this directory on persistent local storage if the MCP runs in a container.
+A profile request validates a cached session; only an explicit login rejection
+causes reauthentication. Network failures do not cause repeated logins. When the
+upstream rejects excessive logins, a five-minute local cooldown prevents immediate
+retries; the upstream may require longer before it accepts another login.
+
+For multiple accounts, set `ZLIBRARY_ACCOUNT_CREDENTIALS` to a JSON array of objects
+with `email` and `password` fields, using your MCP client's secret/environment
+configuration. Never put real credentials in repository files or tool arguments.
+The array replaces the legacy single-account pair when present.
+
+Search and history use the first account. `get_download_limits` reports the pool
+total and per-account quotas. Before a pooled Z-Library download, the
+bridge reads each account's actual daily limit and usage and selects the first
+account with remaining quota. Selection and download are serialized across bridge
+processes sharing the session directory. The result's `account_index` is the
+one-based position of the selected account; email addresses are not returned.
+Unknown quota, login restrictions, and download errors stop the operation without
+rotating accounts or replaying a download. When all quotas are exhausted, the error
+says so. Activity outside this MCP can still consume quota concurrently.
 
 ### Logging
 

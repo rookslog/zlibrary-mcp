@@ -21,6 +21,8 @@ const projectRoot = resolve(__dirname, '..');
 // Required Python bridge files
 const requiredPythonFiles = [
   { path: 'lib/python_bridge.py', critical: true, description: 'Main Python bridge script' },
+  { path: 'lib/eapi_session.py', critical: true, description: 'Shared EAPI authentication' },
+  { path: 'lib/eapi_accounts.py', critical: true, description: 'EAPI account selection' },
   { path: 'lib/rag_processing.py', critical: true, description: 'RAG document processing' },
   { path: 'lib/enhanced_metadata.py', critical: true, description: 'Enhanced metadata extraction' },
   { path: 'lib/author_tools.py', critical: false, description: 'Author-specific search tools' },

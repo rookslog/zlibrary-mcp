@@ -663,6 +663,8 @@ function wrapResult(result: any, toolName: string) {
  * Z-Library tools still fail with their own clear error when invoked.
  */
 function validateCredentials(): void {
+  // The Python bridge validates pool entries without logging their contents.
+  if (process.env.ZLIBRARY_ACCOUNT_CREDENTIALS?.trim()) return;
   const email = process.env.ZLIBRARY_EMAIL;
   const password = process.env.ZLIBRARY_PASSWORD;
 

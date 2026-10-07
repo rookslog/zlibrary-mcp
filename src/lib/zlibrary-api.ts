@@ -7,7 +7,7 @@ import { appendFile as appendFileAsyncFS, mkdir as mkdirAsyncFS } from 'fs/promi
 import { fileURLToPath } from 'url';
 import { withRetry, isRetryableError } from './retry-manager.js';
 import { CircuitBreaker } from './circuit-breaker.js';
-import { ZLibraryError, PythonBridgeError } from './errors.js';
+import { BridgeSpawnError, ZLibraryError, PythonBridgeError } from './errors.js';
 import { logger } from './logger.js';
 import { runPythonBridge, LONG_BRIDGE_TIMEOUT_MS } from './python-runner.js';
 import {
@@ -39,6 +39,7 @@ const pythonBridgeCircuitBreaker = new CircuitBreaker({
   // turning a user's own impatience into an outage.
   isFailure: (error) =>
     error?.context?.reason !== 'aborted' &&
+    !(error instanceof BridgeSpawnError && error.code === 'ENOENT') &&
     !isPermanentBridgeDetail(error?.context?.details),
 });
 

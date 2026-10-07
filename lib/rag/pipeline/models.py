@@ -13,6 +13,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
 from lib.filename_utils import create_metadata_filename
+from lib.rag.utils.atomic_write import atomic_write_text
 
 
 class ContentType(Enum):
@@ -99,7 +100,7 @@ class DocumentOutput:
         written: Dict[str, Path] = {}
 
         # Body text (always written)
-        body_path.write_text(self.body_text, encoding="utf-8")
+        atomic_write_text(body_path, self.body_text)
         written["body"] = body_path
 
         # Optional content streams
@@ -110,7 +111,7 @@ class DocumentOutput:
         ]:
             if content:
                 p = out_dir / f"{stem}_{name}{ext}"
-                p.write_text(content, encoding="utf-8")
+                atomic_write_text(p, content)
                 written[name] = p
 
         # Metadata (always written)
@@ -133,7 +134,7 @@ class DocumentOutput:
                 "outputs": outputs,
             }
         )
-        meta_path.write_text(json.dumps(meta, indent=2, default=str), encoding="utf-8")
+        atomic_write_text(meta_path, json.dumps(meta, indent=2, default=str))
         written["metadata"] = meta_path
 
         return written

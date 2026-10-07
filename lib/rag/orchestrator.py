@@ -7,14 +7,14 @@ analysis, formatting, and output generation.
 """
 
 import asyncio
+import hashlib
 import logging
 import os  # noqa: F401 - used by submodules
 import subprocess  # noqa: F401 - used by submodules
 from pathlib import Path
 
-import aiofiles
-
 from lib.rag.utils.constants import SUPPORTED_FORMATS, PROCESSED_OUTPUT_DIR  # noqa: F401
+from lib.rag.utils.atomic_write import atomic_write, atomic_write_text
 from lib.rag.utils.exceptions import (
     FileSaveError,
 )  # noqa: F401
@@ -197,9 +197,9 @@ async def process_document(
             corrections_applied=corrections,
         )
 
-        saved_path_obj = Path(saved_path)
-        metadata_path = PROCESSED_OUTPUT_DIR / create_metadata_filename(
-            saved_path_obj.name
+        saved_path_obj = Path(saved_path).resolve()
+        metadata_path = saved_path_obj.with_name(
+            create_metadata_filename(saved_path_obj.name)
         )
         written = {"body": saved_path_obj}
 
@@ -281,18 +281,28 @@ async def save_processed_text(
         else:
             # Fallback if no book_details
             base_name = _slugify(original_filename)
+            if base_name == "file" and not any(
+                character.isascii() and character.isalnum()
+                for character in original_filename
+            ):
+                base_name = "doc"
+            source_digest = hashlib.sha256(
+                str(original_path.resolve()).encode("utf-8")
+            ).hexdigest()[:8]
+            base_name = f"{base_name}-{source_digest}"
             processed_filename = (
                 f"{base_name}{original_extension}.processed.{output_format}"
             )
 
         # --- Ensure Output Directory Exists ---
         PROCESSED_OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
-        output_path = PROCESSED_OUTPUT_DIR / processed_filename
+        output_path = (PROCESSED_OUTPUT_DIR / processed_filename).resolve()
 
         # --- Write Content Asynchronously (NO YAML frontmatter) ---
         # Main markdown should be CLEAN for RAG (only content + page markers)
-        async with aiofiles.open(output_path, mode="w", encoding="utf-8") as f:
-            await f.write(processed_content)
+        await asyncio.to_thread(
+            atomic_write_text, output_path, processed_content, "utf-8"
+        )
 
         logging.info(f"Successfully saved processed content to: {output_path}")
 
@@ -396,8 +406,12 @@ async def save_processed_text(
 
             # Save metadata sidecar
             metadata_filename = create_metadata_filename(processed_filename)
-            metadata_path = PROCESSED_OUTPUT_DIR / metadata_filename
-            save_metadata_sidecar(metadata, metadata_path)
+            metadata_path = output_path.with_name(metadata_filename)
+
+            def write_metadata(temporary_path: Path) -> None:
+                save_metadata_sidecar(metadata, temporary_path)
+
+            atomic_write(metadata_path, write_metadata)
 
             logging.info(f"Successfully saved metadata sidecar to: {metadata_path}")
         except Exception as meta_err:

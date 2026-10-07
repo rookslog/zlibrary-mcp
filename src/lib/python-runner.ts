@@ -26,7 +26,7 @@ import type { Options as PythonShellOptions } from 'python-shell';
 import { spawnSync } from 'child_process';
 import { readdirSync, readFileSync } from 'fs';
 import { logger } from './logger.js';
-import { BridgeTimeoutError } from './errors.js';
+import { BridgeKilledError, BridgeSpawnError, BridgeTimeoutError } from './errors.js';
 
 /**
  * Read a positive-integer millisecond budget within Node's timer range.
@@ -396,6 +396,28 @@ export function runPythonBridge(
   }
 
   return new Promise<string[]>((resolve, reject) => {
+    let settled = false;
+    const processState: { tree?: ProcessTreeRecord } = {};
+    let cleanupCall = () => {};
+    let failWith: (error: Error, why: string) => void = () => {};
+
+    const onShellError = (error: NodeJS.ErrnoException) => {
+      const errnoCode = error.code ?? 'UNKNOWN_SPAWN_ERROR';
+      const spawnError = new BridgeSpawnError(
+        `${label} could not start the Python bridge (${errnoCode}): ${error.message}`,
+        errnoCode,
+        { label, path: error.path, errno: error.errno, originalError: error },
+      );
+
+      if (processState.tree) {
+        failWith(spawnError, 'spawn error');
+      } else if (!settled) {
+        settled = true;
+        cleanupCall();
+        reject(spawnError);
+      }
+    };
+
     const shell = new PythonShell(scriptName, {
       ...options,
       // On POSIX this creates a new session/process group whose id is the
@@ -403,16 +425,20 @@ export function runPythonBridge(
       // bridge-owned tree addressable without walking /proc.
       detached: process.platform === 'win32' ? options.detached : true,
     });
+    shell.on('error', onShellError);
+
     const pid = shell.childProcess?.pid;
     if (!pid) {
-      return reject(new Error(`${label} did not expose a child process id`));
+      // A failed spawn has no pid; PythonShell forwards its ChildProcess error
+      // asynchronously through the listener registered above.
+      return;
     }
-    const tree: ProcessTreeRecord = { shell, pid, label };
-    liveTrees.add(tree);
+    const treeRecord: ProcessTreeRecord = { shell, pid, label };
+    processState.tree = treeRecord;
+    liveTrees.add(treeRecord);
 
     const output: string[] = [];
     const stderrLines: string[] = [];
-    let settled = false;
 
     // Armed here so `cleanup` below can close over it. Its callback calls
     // `failWith`, which is declared further down — safe because a setTimeout
@@ -430,7 +456,7 @@ export function runPythonBridge(
     }, timeoutMs);
     if (typeof timer.unref === 'function') timer.unref();
 
-    const cleanupCall = () => {
+    cleanupCall = () => {
       clearTimeout(timer);
       if (runOptions.signal) runOptions.signal.removeEventListener('abort', onAbort);
     };
@@ -442,10 +468,10 @@ export function runPythonBridge(
      * which is the case this exists for.
      */
     const terminate = (why: string) => {
-      terminateProcessTree(tree, why);
+      terminateProcessTree(treeRecord, why);
     };
 
-    const failWith = (error: Error, why: string) => {
+    failWith = (error: Error, why: string) => {
       if (settled) return;
       settled = true;
       terminate(why);
@@ -482,7 +508,7 @@ export function runPythonBridge(
     shell.end((err: any) => {
       if (settled) {
         cleanupCall();
-        monitorTree(tree);
+        monitorTree(treeRecord);
         return;
       }
       settled = true;
@@ -490,8 +516,22 @@ export function runPythonBridge(
       // A successful direct child can leave detached-stdio descendants in its
       // process group. Preserve its output/result, but bound ownership of the
       // surviving group with the same TERM/grace/KILL lifecycle as a timeout.
-      if (processTreeIsAlive(tree)) terminate('direct parent exit');
-      else monitorTree(tree);
+      if (processTreeIsAlive(treeRecord)) terminate('direct parent exit');
+      else monitorTree(treeRecord);
+
+      const signal = shell.childProcess.signalCode;
+      if (signal) {
+        const oomHint = signal === 'SIGKILL' ? ' SIGKILL may indicate an out-of-memory (OOM) kill.' : '';
+        reject(
+          new BridgeKilledError(`${label} was terminated by ${signal}.${oomHint}`, signal, {
+            label,
+            signal,
+            stderr: stderrLines.join('\n'),
+          }),
+        );
+        return;
+      }
+
       if (err) {
         if (stderrLines.length > 0 && !err.stderr) {
           err.stderr = stderrLines.join('\n');

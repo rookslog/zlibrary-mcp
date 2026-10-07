@@ -38,7 +38,25 @@ jobs:
       # deterministic fallback (#103).
       - run: uv run python -m nltk.downloader -q punkt punkt_tab
       - run: npm run build
+      - name: Verify targeted Jest scripts select tests
+        shell: bash
+        run: |
+          for script in test:integration test:e2e:local; do
+            if ! selected_files="$(npm run --silent "$script" -- --listTests)"; then
+              echo "$script could not list its tests" >&2
+              exit 1
+            fi
+            if [ -z "$selected_files" ]; then
+              echo "$script selected no test files" >&2
+              exit 1
+            fi
+            printf '%s\n' "$selected_files"
+          done
       - run: node --experimental-vm-modules node_modules/jest/bin/jest.js
+      - name: Run recorded bridge integration tests
+        env:
+          TEST_LIVE: 'false'
+        run: npm run test:integration
       - run: uv run pytest -m "not slow and not integration and not performance" --benchmark-disable -rs
 
   test-full:

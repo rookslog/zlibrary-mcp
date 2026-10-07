@@ -28,6 +28,8 @@ npm run build        # tsc + validates that every Python bridge file exists
 | What | Command |
 |---|---|
 | Node tests | `node --experimental-vm-modules node_modules/jest/bin/jest.js` |
+| Recorded bridge integration tests | `npm run test:integration` |
+| Local E2E Jest tests | `npm run test:e2e:local` |
 | Python tests | `uv run pytest -m "not slow and not integration and not performance" --benchmark-disable -rs` |
 | Full Python suite | `uv run pytest -rs` |
 | Lint | `npx eslint src/` and `npx prettier --check src/` |

@@ -19,10 +19,10 @@
     "doctor": "uv run --no-dev python scripts/check_upstream.py && node scripts/release-audit.mjs",
     "start": "node dist/index.js",
     "test": "node --experimental-vm-modules node_modules/jest/bin/jest.js --coverage --forceExit",
-    "test:integration": "node --experimental-vm-modules node_modules/jest/bin/jest.js --testPathPattern 'integration/bridge' --forceExit",
+    "test:integration": "node --experimental-vm-modules node_modules/jest/bin/jest.js --config jest.integration.config.js --testPathPatterns 'integration/bridge' --forceExit",
     "test:integration:live": "TEST_LIVE=true npm run test:integration",
     "test:e2e": "docker compose -f docker-compose.test.yml up --build --abort-on-container-exit --exit-code-from e2e-test",
-    "test:e2e:local": "node --experimental-vm-modules node_modules/jest/bin/jest.js --testPathPattern 'e2e' --forceExit",
+    "test:e2e:local": "node --experimental-vm-modules node_modules/jest/bin/jest.js --config jest.integration.config.js --testPathPatterns 'e2e' --forceExit",
     "prepublishOnly": "npm run build",
     "prepare": "husky || true"
   },

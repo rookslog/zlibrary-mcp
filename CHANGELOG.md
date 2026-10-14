@@ -7,8 +7,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.4.1] - 2026-10-14
+
+Interim fixes before reliable acquisition (#201). This release carries the process,
+download-integrity and MCP compatibility fixes already on master; it does not complete
+the v1.5 reliability milestone.
+
 ### Added
 
+- **Core / `rag` / `scholar` Python dependency tiers.** Basic search and download no
+  longer require the document-processing and OCR stack. Missing RAG dependencies produce
+  an actionable install instruction, and CI checks core-only bridge imports and the
+  optional-import boundary (#103, #114).
+- **Acquisition integrity and staging.** Downloads are staged, checked against the
+  requested MD5 when available and inspected for content signatures, then published
+  without overwriting an existing artifact. Incomplete and cancelled EAPI downloads are
+  removed; HTML error bodies cannot masquerade as books (#131, #130).
+- A real SDK-client test harness calls every advertised MCP tool against mocked bridge
+  responses and checks the tool-list size budget (#196, #212).
 - `npm run audit:release` ([scripts/release-audit.mjs](scripts/release-audit.mjs)) and a
   weekly `Release Record Audit` workflow, checking that the project's record of itself is
   still true. **Drift:** every tag has a GitHub Release and a CHANGELOG section, every
@@ -56,6 +72,51 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **A Python spawn failure no longer crashes the MCP server.** Calls reject with a
+  typed spawn error; externally signalled exits report the signal, with an OOM hint for
+  `SIGKILL`. Missing-interpreter errors do not count toward the shared circuit breaker
+  under the interim policy pending #192 (#198, #208).
+- **`get_recent_books` is callable again.** Count must be a positive integer; cancellation
+  reaches the bridge. Format filtering applies after fetching the requested window, so
+  the result may contain fewer than `count` books (#171, #176; replaces #178).
+- **`get_download_history` and other array results validate as MCP results.** Arrays are
+  wrapped as `{items: [...]}` only in `structuredContent`; text remains unchanged. Null
+  and scalar backend results become valid tool errors (#197, #214; adopts #179).
+- Typed timeout, abort and killed-process errors survive the download facade, and the
+  invalid-login contract test now asserts the actual authentication call (#195, #213).
+- Sparse book metadata preserves usable server-provided filenames. Filename sanitization
+  and collision handling retain usable names without overwriting existing downloads
+  (#183, #185).
+- **RAG outputs have predictable absolute paths and atomic writes.** Inputs without book
+  metadata use a readable slug plus a digest of their resolved source path, distinguishing
+  non-Latin and same-named files; repeat processing keeps the same path. Body, metadata
+  and footnote artifacts are each written atomically (#199, #207).
+- **LibGen downloads no longer require Z-Library login.** The bridge initializes EAPI
+  only for operations that need it, keeping LibGen usable during a Z-Library login outage
+  (#129, #128).
+- LibGen searches use the default search mode for author-plus-title queries and discard
+  rows without usable MD5 identifiers. The canary exercises the production adapter,
+  requires usable parsed rows and has its own deadline (#124, #128, #133, #134, #138).
+- LibGen uses a browser User-Agent by default, supports a scoped override, and reports a
+  typed block when the mirror serves its nginx stub (#141, #146; supersedes #128's initial
+  identifying User-Agent policy).
+- Keyed Anna's download errors no longer chain the key-bearing HTTP request into
+  tracebacks (#151).
+- **Domain rotation probes the guarded search endpoint.** One unauthenticated,
+  single-row POST with redirects disabled rejects walled or malformed candidates before
+  replacing a working client. Explicit domain pins still win. This fixes the probe
+  portion of #125; login-400 retry/fallback remains open (#234).
+- Importing footnote-continuation support no longer downloads NLTK data; provisioning is
+  explicit and an offline fallback remains available (#106).
+- Jest 30 integration and local E2E scripts use the supported selection flag and a
+  separate configuration. CI detects empty selections and exercises the recorded bridge
+  fixtures; Jest also ignores nested agent worktrees (#200, #209, #111).
+- Python tests specify UTF-8 for text fixture I/O (#180).
+- Docker builds pin managed Python to the supported 3.14 minor, avoiding unsupported
+  CPython 3.15 wheel resolution; the production image build now runs on PRs (#230, #232).
+- **GHCR publication waits for npm's tests and publication to succeed.** Release-note
+  validation runs before either publisher; GitHub Release creation still follows npm
+  and can run alongside the Docker job (#211, #233).
 - **`search_multi_source` could hang forever, and leave the Python process
   behind when it did.** Three defects compounded: the vendored
   `libgen_api_enhanced` calls `requests.get` with no `timeout=` (and catches a
@@ -86,23 +147,38 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   *retrievable*, which makes Anna's a cross-source index rather than only a fourth
   source.
 - The scheduled upstream contract check no longer fails spuriously (#71).
+- Anna's doctor probe asserts an extracted non-placeholder title rather than only page
+  reachability (#102, #113).
 
 ### Changed
 
+- Accepted the source-scoped reference and capability design in ADR-011, with caller- or
+  operator-ordered fallback. This is a design record, not the Z-Library adapter migration;
+  implementation is tracked separately in #174 (#40, #112).
+- Recorded the full-book fixture dependency audit and migration prerequisites. The PDFs
+  remain in the repository; neither fixture removal nor history rewriting shipped
+  (#105, #115).
+- `AGENTS.md` is the single working contract, imported by `CLAUDE.md` (#111).
+- Development dependencies use PEP 735 dependency groups, with a minimum uv version
+  guard (#41, #48).
 - `CONTEXT.md` added as the terminology glossary, splitting the overloaded term
   "keyless" into *keyed fast_download*, *operator-cookie slow_download*, and
   *machine-solved challenge*. The ambiguity had caused approved work to be recorded as
   cancelled. "Keyless" is now a banned term; prefer "key-free" (#98).
-- **Anna's Archive has exactly one supported download route: keyed `fast_download`.**
-  The operator-cookie route is dead rather than deferred — DDoS-Guard binds the challenge
-  cookie to the issuing IP inside `__ddg9_`, so a transplanted cookie is rejected
-  byte-for-byte identically to no cookie at all (#84). Guardrails for that route (#97)
-  are moot rather than deferred.
+- **Anna's Archive's shipped download route remains keyed `fast_download`.** The
+  operator-cookie transplant route remains rejected (#84). The headful-browser search
+  feasibility finding changed the approved follow-up scope to a human-established,
+  browser-resident session with personal-use guardrails; that download route has not
+  shipped (#142, #147).
 - Removed the vestigial `ts-jest` dev dependency, which was configured in
   `jest.config.js` but transformed nothing (#93).
-- Dependency bumps: `@modelcontextprotocol/sdk` 1.25.3 → 1.30.0, `opencv-python-headless`
+- Dependency bumps: `@modelcontextprotocol/sdk` 1.25.3 → 1.32.1, `opencv-python-headless`
   4.13 → 5.0, `libgen-api-enhanced` 1.2.4 → 1.3, `cffi` 2.0.0 → 2.1.1, `yarl` 1.22.0 →
-  1.24.5, `pytest-benchmark` 5.1.0 → 5.2.3, plus dev-tooling and CI action updates.
+  1.24.5, `pytest-benchmark` 5.1.0 → 5.2.3, NLTK 3.10.2 → 3.10.3, plus dev-tooling and
+  CI action updates, including Docker registry login (#66, #158). Production npm/Python
+  audit repairs update SDK and transitive dependencies; CI retains the documented
+  PyMuPDF exceptions and adds a reappraisable NLTK exception (#149, #215; supersedes
+  the standalone pip and SDK lock updates in #122, #188, #203, #210).
 - **An explicit `source` is no longer silently rerouted.** `source="annas"` that
   fails now raises with the provider and reason named, instead of returning
   LibGen's results. Fallback remains the behaviour of `source="auto"`, which is
@@ -120,6 +196,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   fail every unrelated tool for `CIRCUIT_BREAKER_TIMEOUT` — turning a user's
   own impatience into an outage. `CircuitBreaker` gained an `isFailure` option
   for this.
+
+### Known limitations
+
+- This is an interim release, not completion of v1.5. Login-400 fallback (#125), persistent
+  session reuse (#182), broader breaker semantics (#192), and the source-neutral adapter
+  migration (#174) remain open.
+- Anna's browser-resident download route has not shipped. Keyed `fast_download` is the
+  supported download route in this release.
+- Windows process-tree termination remains best-effort; five real-PDF tests are skipped
+  where LFS objects are unavailable (#85). The documented PyMuPDF pin and NLTK audit
+  exceptions remain; passing the configured audit does not mean those packages are patched.
 
 ## [1.4.0] - 2026-08-10
 
@@ -429,7 +516,8 @@ source is privileged").
 - BUG-X/FIX comments cleaned from production code
 - Debug print statements converted to proper logging
 
-[Unreleased]: https://github.com/rookslog/zlibrary-mcp/compare/v1.4.0...HEAD
+[Unreleased]: https://github.com/rookslog/zlibrary-mcp/compare/v1.4.1...HEAD
+[1.4.1]: https://github.com/rookslog/zlibrary-mcp/compare/v1.4.0...v1.4.1
 [1.4.0]: https://github.com/rookslog/zlibrary-mcp/compare/v1.3.2...v1.4.0
 [1.3.2]: https://github.com/rookslog/zlibrary-mcp/compare/v1.3.1...v1.3.2
 [1.3.1]: https://github.com/rookslog/zlibrary-mcp/compare/v1.3.0...v1.3.1

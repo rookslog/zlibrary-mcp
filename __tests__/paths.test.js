@@ -24,14 +24,23 @@ describe('Path Resolution Helpers', () => {
 
       expect(root).toBeTruthy();
       expect(path.isAbsolute(root)).toBe(true);
-      expect(root).toContain('zlibrary-mcp');
     });
 
-    test('project root should contain package.json', () => {
+    // Identity is checked by what the directory CONTAINS, never by what it is
+    // NAMED. `expect(root).toContain('zlibrary-mcp')` was a claim about the
+    // checkout's directory name, so it failed in every worktree at a neutral
+    // path — and on 2026-08-17 a delegated lane made its environment pass by
+    // loosening the assertion instead. Caught in review and reverted, but the
+    // test was an attractive nuisance: it turned "my checkout has a different
+    // name" into "weaken the repo's tests" (#136).
+    test('project root should contain this project package.json', () => {
       const root = getProjectRoot();
       const pkgPath = path.join(root, 'package.json');
 
       expect(existsSync(pkgPath)).toBe(true);
+
+      const pkg = JSON.parse(readFileSync(pkgPath, 'utf8'));
+      expect(pkg.name).toBe('zlibrary-mcp');
     });
 
     test('project root should contain dist/ directory', () => {

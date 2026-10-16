@@ -725,6 +725,359 @@ class TestLibgenSearchProbeUsesProductionAdapter:
         assert "Welcome to nginx!" in result.detail
 
 
+class TestAnnasDownloadDomProbe:
+    """The browser route's DOM shape needs its own drift check (#150).
+
+    `probe_annas` only exercises `/search`. Anna's could change the book page
+    and every browser download would fail while the doctor still reported the
+    adapter healthy — the reachability-vs-capability gap this script exists to
+    close, reintroduced on a new surface.
+    """
+
+    @pytest.fixture(autouse=True)
+    def _isolated_usage_counter(self, tmp_path, monkeypatch):
+        """Never spend the operator's real Anna's budget from a test.
+
+        The probe is metered by the same persistent counter as production
+        (#144), so without this a test run consumes real daily slots and, once
+        they are gone, every later test sees "budget spent" instead of the
+        behaviour it is checking. Found exactly that way.
+        """
+        monkeypatch.setenv("ANNAS_BROWSER_PROFILE_DIR", str(tmp_path / "profile"))
+        monkeypatch.setenv("ANNAS_BROWSER_MIN_INTERVAL", "0.001")
+
+    PARTNER_PAGE = (
+        '<html><body><a href="/faq">FAQ</a>'
+        '<a href="https://cdn9.example.net/d/x/Book.pdf?sig=1">Download now</a>'
+        "</body></html>"
+    )
+
+    def _run(self, check_upstream, handler):
+        import asyncio
+
+        async def go():
+            async with httpx.AsyncClient(
+                transport=httpx.MockTransport(handler)
+            ) as client:
+                return await check_upstream.probe_annas_download_dom(client)
+
+        return asyncio.run(go())
+
+    def _two_page(
+        self,
+        book,
+        partner=None,
+        payload_status=206,
+        *,
+        book_status=200,
+        partner_status=200,
+    ):
+        """Book page, then partner page, then the payload range request."""
+        partner = self.PARTNER_PAGE if partner is None else partner
+
+        def handler(request):
+            url = str(request.url)
+            if "cdn9.example.net" in url:
+                return httpx.Response(payload_status, content=b"%PDF-1.5" + b"\0" * 64)
+            if "/slow_download/" in url:
+                return httpx.Response(partner_status, text=partner)
+            return httpx.Response(book_status, text=book)
+
+        return handler
+
+    def test_partner_links_in_the_expected_shape_pass(self, check_upstream):
+        md5 = check_upstream.ANNAS_DOM_CANARY_MD5
+        page = (
+            f'<html><body><a href="/slow_download/{md5}/0/0">Server 1</a>'
+            f'<a href="/slow_download/{md5}/0/1">Server 2</a></body></html>'
+        )
+
+        result = self._run(check_upstream, self._two_page(page))
+
+        assert result.ok is True
+        assert "2 partner-server link" in result.detail
+        assert "cdn9.example.net" in result.detail, (
+            "the probe must report the payload host it actually reached, or "
+            "green says nothing about the half of the flow that moves the file"
+        )
+
+    def test_a_page_without_partner_links_is_drift_not_a_block(self, check_upstream):
+        """Loaded, unchallenged, and missing the links the extractor needs."""
+        page = "<html><body><h1>The Feynman Lectures</h1><p>No links.</p></body></html>"
+
+        result = self._run(check_upstream, lambda r: httpx.Response(200, text=page))
+
+        assert result.ok is False
+        assert result.blocked is False
+        assert "DOM drift" in result.detail
+
+    def test_a_challenge_reports_block_and_says_the_shape_is_unverified(
+        self, check_upstream
+    ):
+        """Being walled is not evidence the DOM changed, and must not say so."""
+        page = (
+            "<html><head><title>Just a moment...</title></head><body>"
+            "<h1>Checking your browser before accessing</h1></body></html>"
+        )
+
+        result = self._run(check_upstream, lambda r: httpx.Response(200, text=page))
+
+        assert result.ok is False
+        assert result.blocked is True
+        assert result.symbol == "BLOCK"
+        assert "UNVERIFIED" in result.detail
+        assert "not \nevidence" in result.detail or "not " in result.detail
+
+    def test_annas_own_script_comments_do_not_read_as_a_challenge(self, check_upstream):
+        """The live bug from #150, guarded on this surface too.
+
+        Every Anna's page carries `// "text/css" for DDOS-GUARD caching.` in a
+        script block. A probe that matched raw HTML would report BLOCK on every
+        healthy run, which is worse than no probe: it teaches the operator to
+        ignore the row.
+        """
+        md5 = check_upstream.ANNAS_DOM_CANARY_MD5
+        page = (
+            f'<html><body><a href="/slow_download/{md5}/0/0">Server 1</a>'
+            '<script>// "text/css" for DDOS-GUARD caching.\n'
+            'fetch("/dyn/recent_downloads/");</script></body></html>'
+        )
+
+        result = self._run(check_upstream, self._two_page(page))
+
+        assert result.ok is True
+        assert result.blocked is False
+
+    def test_a_partner_page_without_a_payload_link_is_drift(self, check_upstream):
+        """The half of the flow that was previously unmonitored (#150).
+
+        A book page can be perfectly intact while the partner page redesigns
+        underneath it, and the probe used to return green on the book page
+        alone — reporting the adapter healthy while every download failed.
+        """
+        md5 = check_upstream.ANNAS_DOM_CANARY_MD5
+        book = f'<html><body><a href="/slow_download/{md5}/0/0">S1</a></body></html>'
+        redesigned = '<html><body><button id="dl">Get it</button></body></html>'
+
+        result = self._run(check_upstream, self._two_page(book, redesigned))
+
+        assert result.ok is False
+        assert result.blocked is False
+        assert "partner-page drift" in result.detail
+
+    def test_a_walled_partner_page_is_blocked_not_drift(self, check_upstream):
+        md5 = check_upstream.ANNAS_DOM_CANARY_MD5
+        book = f'<html><body><a href="/slow_download/{md5}/0/0">S1</a></body></html>'
+        wall = "<html><body><h1>Checking your browser</h1></body></html>"
+
+        result = self._run(check_upstream, self._two_page(book, wall))
+
+        assert result.blocked is True
+        assert result.symbol == "BLOCK"
+        assert "UNVERIFIED" in result.detail
+
+    @pytest.mark.parametrize(
+        ("status", "body"),
+        [
+            (200, "<h1>Checking your browser before accessing</h1>"),
+            (200, "<p>You have downloaded too many files today</p>"),
+            (403, "<p>refused</p>"),
+            (429, "<p>slow down</p>"),
+            (503, "<p>temporarily refused</p>"),
+        ],
+    )
+    def test_every_book_page_wall_is_blocked_and_persistently_penalised(
+        self, check_upstream, monkeypatch, status, body
+    ):
+        from lib.sources.annas_usage import DailyUsage
+
+        penalties = []
+        monkeypatch.setattr(
+            DailyUsage,
+            "penalise",
+            lambda _usage, seconds: penalties.append(seconds),
+        )
+
+        result = self._run(
+            check_upstream, lambda _request: httpx.Response(status, text=body)
+        )
+
+        assert result.blocked is True
+        assert penalties == [pytest.approx(300.0)]
+
+    @pytest.mark.parametrize(
+        ("status", "body"),
+        [
+            (200, "<h1>Checking your browser before accessing</h1>"),
+            (200, "<p>You have downloaded too many files today</p>"),
+            (403, "<p>refused</p>"),
+            (429, "<p>slow down</p>"),
+            (503, "<p>temporarily refused</p>"),
+        ],
+    )
+    def test_every_partner_page_wall_is_blocked_and_persistently_penalised(
+        self, check_upstream, monkeypatch, status, body
+    ):
+        from lib.sources.annas_usage import DailyUsage
+
+        md5 = check_upstream.ANNAS_DOM_CANARY_MD5
+        book = f'<a href="/slow_download/{md5}/0/0">S1</a>'
+        penalties = []
+        monkeypatch.setattr(
+            DailyUsage,
+            "penalise",
+            lambda _usage, seconds: penalties.append(seconds),
+        )
+
+        result = self._run(
+            check_upstream,
+            self._two_page(book, body, partner_status=status),
+        )
+
+        assert result.blocked is True
+        assert penalties == [pytest.approx(300.0)]
+
+    @pytest.mark.parametrize("stage", ["book", "partner"])
+    @pytest.mark.parametrize("status", [401, 500])
+    def test_http_errors_are_provider_failures_not_dom_drift_or_backoff(
+        self, check_upstream, monkeypatch, stage, status
+    ):
+        from lib.sources.annas_usage import DailyUsage
+
+        md5 = check_upstream.ANNAS_DOM_CANARY_MD5
+        book = f'<a href="/slow_download/{md5}/0/0">S1</a>'
+        error = "<p>temporary upstream error</p>"
+        penalties = []
+        monkeypatch.setattr(
+            DailyUsage,
+            "penalise",
+            lambda _usage, seconds: penalties.append(seconds),
+        )
+        handler = (
+            (lambda _request: httpx.Response(status, text=error))
+            if stage == "book"
+            else self._two_page(book, error, partner_status=status)
+        )
+
+        result = self._run(check_upstream, handler)
+
+        assert result.ok is False
+        assert result.blocked is False
+        assert "HTTP error" in result.detail
+        assert "DOM drift" not in result.detail
+        assert penalties == []
+
+    def test_a_challenge_hop_status_cannot_veto_a_real_book_page(self, check_upstream):
+        """Production trusts settled Anna content over the first-hop 403."""
+        md5 = check_upstream.ANNAS_DOM_CANARY_MD5
+        book = f'<a href="/slow_download/{md5}/0/0">S1</a>'
+
+        result = self._run(
+            check_upstream,
+            self._two_page(book, book_status=403),
+        )
+
+        assert result.ok is True
+        assert result.blocked is False
+
+    def test_a_challenge_hop_status_cannot_veto_an_opaque_payload_link(
+        self, check_upstream
+    ):
+        """A signed CDN route can be a real payload without a file extension."""
+        md5 = check_upstream.ANNAS_DOM_CANARY_MD5
+        book = f'<a href="/slow_download/{md5}/0/0">S1</a>'
+        partner = (
+            '<a href="https://cdn9.example.net/download?id=opaque-token">Download</a>'
+        )
+
+        result = self._run(
+            check_upstream,
+            self._two_page(book, partner, partner_status=403),
+        )
+
+        assert result.ok is True
+        assert result.blocked is False
+
+    def test_an_unfetchable_payload_is_not_healthy(self, check_upstream):
+        """Extraction is not the end of the flow (#150).
+
+        The browser hands the URL to httpx, and that handoff is what every
+        download depends on. A signed URL that started requiring browser
+        cookies or a referrer would extract cleanly while every production
+        transfer failed — so a probe that stopped at extraction would report
+        green through a total outage of the thing it exists to watch.
+        """
+        md5 = check_upstream.ANNAS_DOM_CANARY_MD5
+        book = f'<html><body><a href="/slow_download/{md5}/0/0">S1</a></body></html>'
+
+        result = self._run(check_upstream, self._two_page(book, payload_status=403))
+
+        assert result.ok is False
+        assert result.blocked is False
+        assert "outside the browser" in result.detail
+
+    def test_a_fetchable_payload_is_named_in_the_detail(self, check_upstream):
+        md5 = check_upstream.ANNAS_DOM_CANARY_MD5
+        book = f'<html><body><a href="/slow_download/{md5}/0/0">S1</a></body></html>'
+
+        result = self._run(check_upstream, self._two_page(book))
+
+        assert result.ok is True
+        assert "plain httpx" in result.detail, (
+            "green must state that the handoff was exercised, or it reads as "
+            "a claim about extraction alone"
+        )
+
+
+class TestRunProbesReturnsEveryProbe:
+    """`run_probes` must unpack and return every probe it gathers.
+
+    Codex on #150: a probe was added to the `gather()` call without a target,
+    so the tuple unpack raised and `npm run doctor` plus the scheduled
+    upstream check failed before producing a report — the health check
+    disabled by an addition to it. The per-probe tests all passed, because
+    they call the probe functions directly and never go through here.
+
+    This test is deliberately structural rather than behavioural: it counts
+    what goes in against what comes out, so the next probe added without a
+    target fails here instead of in CI.
+    """
+
+    def test_every_gathered_probe_appears_in_the_result(self, check_upstream):
+        import asyncio
+        import inspect
+
+        source = inspect.getsource(check_upstream.run_probes)
+        import re
+
+        gathered = re.findall(r"\b(probe_\w+)\(client\)", source)
+        assert len(gathered) >= 5, f"expected the full probe set, saw {gathered}"
+
+        async def stub(_client):
+            return check_upstream.ProbeResult(
+                name="stub", ok=True, detail="", required=False
+            )
+
+        async def stub_list(_client):
+            return [
+                check_upstream.ProbeResult(
+                    name="zlibrary:stub", ok=True, detail="", required=False
+                )
+            ]
+
+        import unittest.mock as mock
+
+        patches = {name: stub for name in gathered}
+        patches["probe_zlibrary_eapi"] = stub_list
+        with mock.patch.multiple(check_upstream, **patches):
+            results = asyncio.run(check_upstream.run_probes())
+
+        assert len(results) == len(gathered), (
+            f"{len(gathered)} probes gathered but {len(results)} returned — a "
+            f"probe is being dropped, or the unpack will raise"
+        )
+
+
 def test_libgen_block_does_not_set_the_zlibrary_blocked_flag(check_upstream):
     """A walled LibGen must not suppress the Z-Library drift report.
 
@@ -895,3 +1248,101 @@ class TestLibgenSearchProbeReportsUserAgentBlocks:
         result = self._run(check_upstream, empty)
 
         assert result.blocked is False
+
+
+class TestAnnasProbeDiagnosticsNameAnnas:
+    """A block report that names the wrong provider is worse than none (#150).
+
+    `_block_detail` hardcodes the Z-Library domain and tells the operator to
+    export `ZLIBRARY_EAPI_DOMAIN`. Reusing it for Anna's reported a Z-Library
+    host and an irrelevant remedy in the exact anti-bot scenario the probe
+    exists to distinguish.
+    """
+
+    @pytest.fixture(autouse=True)
+    def _isolated_usage_counter(self, tmp_path, monkeypatch):
+        """Never spend the operator's real Anna's budget from a test.
+
+        The probe is metered by the same persistent counter as production
+        (#144), so without this a test run consumes real daily slots and, once
+        they are gone, every later test sees "budget spent" instead of the
+        behaviour it is checking. Found exactly that way.
+        """
+        monkeypatch.setenv("ANNAS_BROWSER_PROFILE_DIR", str(tmp_path / "profile"))
+        monkeypatch.setenv("ANNAS_BROWSER_MIN_INTERVAL", "0.001")
+
+    def _run(self, check_upstream, handler):
+        import asyncio
+
+        async def go():
+            async with httpx.AsyncClient(
+                transport=httpx.MockTransport(handler)
+            ) as client:
+                return await check_upstream.probe_annas_download_dom(client)
+
+        return asyncio.run(go())
+
+    def test_a_403_names_annas_not_zlibrary(self, check_upstream):
+        result = self._run(check_upstream, lambda r: httpx.Response(403, text="nope"))
+
+        assert result.blocked is True
+        assert "annas" in result.detail.lower()
+        assert "zlibrary_eapi_domain" not in result.detail.lower(), (
+            "sending an operator to change a Z-Library variable for an Anna's "
+            "block is an actively wrong remedy"
+        )
+        assert "z-library" not in result.detail.lower()
+
+    def test_the_probe_uses_the_production_challenge_classifier(self, check_upstream):
+        """A partial marker copy called a challenge page DOM drift.
+
+        Production `_classify_page` knows five challenge markers; the probe
+        carried three. A 200 page saying only "enable JavaScript and cookies"
+        was therefore reported as a layout change.
+        """
+        page = (
+            "<html><body><p>Please enable JavaScript and cookies to continue</p>"
+            "</body></html>"
+        )
+
+        result = self._run(check_upstream, lambda r: httpx.Response(200, text=page))
+
+        assert result.blocked is True, (
+            "a challenge marker production recognises must not read as drift"
+        )
+        assert "UNVERIFIED" in result.detail
+
+
+class TestTheProbeMatchesProductionBehavior:
+    """Behavioral oracles for policy shared by production and the probe."""
+
+    def test_every_response_production_rejects_is_rejected_here(self, check_upstream):
+        """The probe must refuse what `_download_url_to_file` refuses (#150).
+
+        `<html`/`<!doctype` alone missed a fragment opening with `<head>`,
+        `<body>`, `<script>` or a comment, an empty body, and an HTML
+        content-type on non-HTML-looking bytes — all of which production
+        rejects and a narrower probe reported as a healthy transfer.
+        """
+        reject = check_upstream._payload_rejection
+
+        assert reject(b"", "application/octet-stream"), "an empty body"
+        assert reject(b"%PDF-1.5", "text/html; charset=utf-8"), "html content-type"
+        for opening in (
+            b"<!DOCTYPE html><html>",
+            b"  \n<html><body>login</body>",
+            b"<head><title>Blocked</title>",
+            b"<body>Access denied</body>",
+            b"<script>location='/login'</script>",
+            b"<!-- soft block -->",
+        ):
+            assert reject(opening, "application/octet-stream"), opening
+
+    def test_real_file_bytes_are_accepted(self, check_upstream):
+        """Both openings from live captures on this branch."""
+        reject = check_upstream._payload_rejection
+
+        assert reject(b"%PDF-1.5\n%\xe2\xe3", "application/octet-stream") is None
+        assert (
+            reject(b"The_Feynman\x00\x00BOOKMOBI", "application/octet-stream") is None
+        )

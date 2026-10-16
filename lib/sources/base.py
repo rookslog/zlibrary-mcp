@@ -5,9 +5,10 @@ to provide consistent search and download behavior.
 """
 
 from abc import ABC, abstractmethod
-from typing import AsyncIterator, List
+from typing import AsyncIterator, List, Optional
 
 from .models import DownloadResult, UnifiedBookResult
+from .net import WalkDeadline
 
 
 class SourceAdapter(ABC):
@@ -21,11 +22,22 @@ class SourceAdapter(ABC):
     """
 
     @abstractmethod
-    async def search(self, query: str, **kwargs) -> List[UnifiedBookResult]:
+    async def search(
+        self,
+        query: str,
+        deadline: Optional[WalkDeadline] = None,
+        **kwargs,
+    ) -> List[UnifiedBookResult]:
         """Search for books matching query.
 
         Args:
             query: Search string (title, author, ISBN, etc.)
+            deadline: Wall-clock ceiling for the WHOLE walk this attempt
+                belongs to, shared across providers and mirrors. An adapter
+                must draw its per-attempt budget from what this has left
+                rather than starting a full-length attempt on a spent walk;
+                None means the adapter is being used directly and its own
+                configured budget applies.
             **kwargs: Source-specific search options
 
         Returns:
@@ -34,24 +46,33 @@ class SourceAdapter(ABC):
         pass
 
     @abstractmethod
-    async def get_download_url(self, md5: str) -> DownloadResult:
+    async def get_download_url(
+        self,
+        md5: str,
+        deadline: Optional[WalkDeadline] = None,
+    ) -> DownloadResult:
         """Get download URL for a book by MD5 hash.
 
         Args:
             md5: MD5 hash identifying the book
+            deadline: As for `search`.
 
         Returns:
             DownloadResult with URL and optional quota info
         """
         pass
 
-    async def iter_download_candidates(self, md5: str) -> AsyncIterator[DownloadResult]:
+    async def iter_download_candidates(
+        self,
+        md5: str,
+        deadline: Optional[WalkDeadline] = None,
+    ) -> AsyncIterator[DownloadResult]:
         """Yield source-neutral download candidates for one book.
 
         Adapters with a single resolution path inherit this compatibility
         implementation. Providers with independent mirrors override it.
         """
-        yield await self.get_download_url(md5)
+        yield await self.get_download_url(md5, deadline=deadline)
 
     @abstractmethod
     async def close(self) -> None:

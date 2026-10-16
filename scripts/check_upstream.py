@@ -37,7 +37,8 @@ from bs4 import BeautifulSoup
 # copies that went stale).
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "zlibrary" / "src"))
-from lib.sources.config import get_source_config  # noqa: E402
+from lib.sources.config import get_source_config
+from lib.sources.libgen import LibgenAdapter  # noqa: E402
 from lib.sources.libgen import FALLBACK_MIRRORS as LIBGEN_FALLBACK_MIRRORS  # noqa: E402
 from lib.sources.libgen import _nginx_stub as _libgen_nginx_stub  # noqa: E402
 from lib.sources.libgen import get_user_agent as libgen_user_agent  # noqa: E402
@@ -66,8 +67,14 @@ LIBGEN_BASE_URL = f"https://libgen.{_source_config.libgen_mirror}"
 # mirrors hand off to *different* CDN nodes that fail independently — on
 # 2026-08-10 `li` -> cdn4.booksdl.lc failed TLS while `vg`/`la` -> cdn3 served
 # real bytes.
+# Derived from the adapter, not restated, so the probe walks exactly the list
+# production walks. Production may stop early when its `WalkDeadline` runs out;
+# the probe deliberately does not, because a mirror skipped for lack of clock
+# is a fact about one busy walk, not about the mirror's health — and reporting
+# it as untested would hide the reachability-vs-capability gap this script
+# exists to close (Codex on #153).
 LIBGEN_MIRROR_CANDIDATES: tuple[str, ...] = tuple(
-    dict.fromkeys([_source_config.libgen_mirror, "li", "vg", "la"])
+    LibgenAdapter(_source_config)._mirror_candidates()
 )
 
 # A small, stable PDF used to exercise the download path end to end. Verified
@@ -295,7 +302,7 @@ def libgen_probe_timeout(config, min_request_interval: float = 0.0) -> float:
     """Wall clock the production adapter may legitimately spend on one search.
 
     `LibgenAdapter.search` walks every mirror candidate, and each attempt can
-    cost a two-phase preflight (DNS, then TCP — the budget is per phase), the
+    cost one aggregate preflight (DNS plus TCP), the
     rate-limit wait, and the full per-provider total budget. Deriving the
     deadline from the same config the adapter reads means an operator who
     raises `BOOK_SOURCE_TOTAL_TIMEOUT` does not thereby make the canary
@@ -311,7 +318,7 @@ def libgen_probe_timeout(config, min_request_interval: float = 0.0) -> float:
     mirrors = len({config.libgen_mirror, *LIBGEN_FALLBACK_MIRRORS})
     per_mirror = float(config.total_timeout) + float(min_request_interval)
     if config.preflight_enabled:
-        per_mirror += 2 * float(config.preflight_timeout)
+        per_mirror += float(config.preflight_timeout)
     return mirrors * per_mirror + LIBGEN_PROBE_MARGIN
 
 

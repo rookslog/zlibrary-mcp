@@ -260,7 +260,64 @@ Results from this tool can be downloaded. Pass a result to `download_book_to_fil
 | source | enum | No | `"auto"` | Source selection: `"auto"` (Anna's Archive if key available, else LibGen), `"annas"` (force Anna's Archive), or `"libgen"` (force LibGen) |
 | count | integer | No | `10` | Maximum number of results to return |
 
-**Returns:** JSON array of book objects with the fields `md5`, `title`, `author`, `year`, `extension`, `size`, and `source`.
+**Returns:** JSON object with `books` and `routing`.
+
+`books` is an array of book objects with the fields `md5`, `title`, `author`, `year`, `extension`, `size`, and `source`.
+
+`routing` reports what you asked for, the observed result sources in `served_by`, whether a fallback occurred, and each source's configured route eligibility and limits. Eligibility comes from local configuration; `served_by` comes from the search results before display slicing. Reporting adds no health request. Quota information that requires an extra request lives in `get_download_limits` instead.
+
+| Field | Meaning |
+|-------|---------|
+| `requested` | The `source` value you passed, verbatim (`"auto"`, `"annas"`, or `"libgen"`) |
+| `served_by` | Canonical names of the observed result sources, before display slicing (including zero or negative count) |
+| `fell_back` | `true` when the source that answered is not the one the server meant to try first |
+| `sources` | One entry per source, with the same fields for every source |
+
+`fell_back` makes an auto fallback visible: with `source: "auto"` and fallback enabled, another provider may supply results instead of the configured primary. Explicit `"annas"` or `"libgen"` selections use only that provider and are not silently substituted.
+
+Each entry in `routing.sources` has `available` (at least one route is eligible under local configuration), `routes` (which of `search` and `download`), `note` (a sentence naming the constraint), and `daily_limit`. `available` is refined by any authentication outcome actually obtained during the call; it is not live reachability, credential validity before login, successful search, or download success. `routing.served_by` records the observed result sources instead. Reporting adds no health probe. A `daily_limit` is never a bare `null`: its `state` says which of four situations you are in.
+
+| `state` | Meaning |
+|---------|---------|
+| `none` | This source imposes no daily limit. Library Genesis. |
+| `known` | The source reported its cap. `total`, `used`, and `remaining` carry the numbers it reported; a value it omitted stays `null` with the reason in `note`, never a derived guess |
+| `unknown` | A limit exists and its value is not available here. `note` says what would answer it. |
+| `not_applicable` | The source has no download route right now, so there is no quota |
+
+**Example routing block:** `source: "auto"`, `ANNAS_SECRET_KEY` configured on the default trusted Anna's base URL, `BOOK_SOURCE_FALLBACK_ENABLED=true`, and Z-Library credentials configured. Anna's is primary; LibGen supplies the results after fallback.
+
+```json
+{
+  "requested": "auto",
+  "served_by": ["libgen"],
+  "fell_back": true,
+  "sources": {
+    "annas_archive": {
+      "available": true,
+      "routes": ["search", "download"],
+      "note": "ANNAS_SECRET_KEY configured; keyed fast download available",
+      "daily_limit": { "state": "unknown", "total": null, "used": null,
+                       "remaining": null, "note": "Anna's reports the keyed quota with each fast download; it cannot be read without spending one" }
+    },
+    "libgen": {
+      "available": true,
+      "routes": ["search", "download"],
+      "note": "no account required; mirror li first",
+      "daily_limit": { "state": "none", "total": null, "used": null,
+                       "remaining": null, "note": "LibGen applies no daily download limit" }
+    },
+    "zlibrary": {
+      "available": true,
+      "routes": ["search", "download"],
+      "note": "credentials configured",
+      "daily_limit": { "state": "unknown", "total": null, "used": null,
+                       "remaining": null, "note": "costs an EAPI profile call; ask get_download_limits" }
+    }
+  }
+}
+```
+
+**Note:** `sources_used` was removed. It was computed from the results, so it could not distinguish a fallback from a direct hit. Read `routing.served_by` and `routing.fell_back` instead.
 
 **Note:** `download_url` is empty for Library Genesis results. The server resolves a download link only when you request the file, because a Library Genesis link expires in less than 2.5 hours.
 
@@ -410,7 +467,24 @@ This tool accepts results from `search_books` (Z-Library) and from `search_multi
 | process_for_rag | boolean | No | -- | Whether to process the document content for RAG after download |
 | processed_output_format | string | No | -- | Desired output format for RAG processing (e.g., `"text"`, `"markdown"`) |
 
-**Returns:** JSON object with `file_path` (downloaded file path). If RAG processing was requested, the response also includes `processed_file_path` (body text), `metadata_file_path`, optional `footnotes_file_path` / `endnotes_file_path` / `citations_file_path`, `content_types_produced`, `stats`, and `output_files`.
+**Returns:** JSON object with `file_path` (downloaded file path) and `provenance`. If RAG processing was requested, the response also includes `processed_file_path` (body text), `metadata_file_path`, optional `footnotes_file_path` / `endnotes_file_path` / `citations_file_path`, `content_types_produced`, `stats`, and `output_files`.
+
+`provenance` records what actually served the file. It is a nested object, not four top-level fields, because a source's own metadata is spread into the book object and a flat `source` key would collide with it silently.
+
+| Field | Meaning |
+|-------|---------|
+| `source` | Canonical name of the source that served the file |
+| `route` | The named route taken: `get.php` for Library Genesis, `fast_download` for Anna's Archive, `eapi` for Z-Library |
+| `mirror` | The mirror or domain the route was taken against |
+| `host` | The host that actually sent the bytes, after redirects |
+
+`mirror` and `host` differ on purpose. A Library Genesis mirror hands the transfer to a content delivery network node, and a mirror can issue a working key while its node is dead — which is why failover is driven by bytes served rather than by key resolution. A field the route has no analogue for is `null` rather than invented.
+
+Provenance describes the transfer, never the document. No file content travels in it.
+
+```json
+"provenance": { "source": "libgen", "route": "get.php", "mirror": "vg", "host": "cdn3.booksdl.lc" }
+```
 
 **Example Usage:**
 
@@ -437,6 +511,8 @@ This tool accepts results from `search_books` (Z-Library) and from `search_multi
 ```json
 {
   "file_path": "./downloads/HeideggerMartin_BeingAndTime_12345678.pdf",
+  "provenance": { "source": "zlibrary", "route": "eapi", "mirror": "z-library.sk",
+                  "host": "dl.z-library.sk" },
   "processed_file_path": "./processed_rag_output/HeideggerMartin_BeingAndTime_12345678.pdf.processed.markdown",
   "metadata_file_path": "./processed_rag_output/HeideggerMartin_BeingAndTime_12345678.pdf.metadata.json",
   "footnotes_file_path": "./processed_rag_output/HeideggerMartin_BeingAndTime_12345678.pdf.processed_footnotes.markdown",
@@ -522,26 +598,60 @@ This tool accepts results from `search_books` (Z-Library) and from `search_multi
 
 ### get_download_limits
 
-**Description:** Get the user's current Z-Library download limits. Shows daily download quota, downloads used today, and remaining downloads.
+**Description:** Report each source's daily download limit. Not Z-Library only: the tool's name never named a source, and answering it with one source's numbers privileged that source in a surface that must not.
+
+Z-Library's quota is read from the authenticated account profile and may require initialization/domain discovery, login and a profile lookup. Library Genesis and Anna's Archive are answered from configuration. Pass `sources` to ask only about those and avoid that Z-Library work; no fixed network request count is implied.
 
 **Parameters:**
 
-None. This tool takes no parameters.
+| Parameter | Type | Required | Default | Description |
+|-----------|------|----------|---------|-------------|
+| sources | array | No | all sources | Which sources to report: `"annas_archive"`, `"libgen"`, `"zlibrary"`. Omit for all three. An empty array is rejected rather than treated as all three. |
 
-**Returns:** JSON object with download limit information: `daily_limit`, `downloads_today`, `remaining`.
+**Returns:** JSON object with `requested` (the sources reported, in canonical order) and `sources` (one entry per source).
+
+Each entry has the same fields as an entry in `search_multi_source`'s `routing.sources` — `available`, `routes`, `note`, `daily_limit` — plus `details` for anything a single source reports that has no counterpart elsewhere. `daily_limit.state` distinguishes *no limit exists* from *a limit exists and is not known here* from *a concrete number*; see [search_multi_source](#search_multi_source) for the table.
+
+| Source | What it reports |
+|--------|-----------------|
+| Library Genesis | `state: "none"` — known to have no daily limit, not merely unknown |
+| Z-Library | `state: "known"` with `total` / `used` / `remaining` from the account profile. Without credentials, `state: "not_applicable"` and `available: false` |
+| Anna's Archive | With `ANNAS_SECRET_KEY`, `state: "unknown"` — Anna's reports the keyed quota only in a fast-download response, so it cannot be read without spending a download. Without a key, `state: "not_applicable"` and search-only routes |
+
+Missing Z-Library credentials, or a refused login while initializing the EAPI client, make that source ineligible: `available: false`, no routes, and `daily_limit.state: "not_applicable"`. A profile lookup failure *after* authentication leaves the eligible routes advertised and degrades only the quota to `state: "unknown"` with the reason in `note`. This uses the same `available` eligibility meaning as `routing.sources`, not a reachability or success claim. The other sources still answer, because a credential-free Library Genesis setup is supported.
 
 **Example Usage:**
 
 ```json
 {
   "tool": "get_download_limits",
-  "arguments": {}
+  "arguments": { "sources": ["libgen"] }
+}
+```
+
+**Example Response:**
+
+```json
+{
+  "requested": ["libgen"],
+  "sources": {
+    "libgen": {
+      "available": true,
+      "routes": ["search", "download"],
+      "note": "no account required; mirror li first",
+      "daily_limit": { "state": "none", "total": null, "used": null,
+                       "remaining": null, "note": "LibGen applies no daily download limit" },
+      "details": {}
+    }
+  }
 }
 ```
 
 **Error Cases:**
-- Authentication failure
-- Network errors or rate limiting
+- `sources` names something the server does not read from
+- `sources` is an empty array
+
+A Z-Library initialization/authentication failure is not an error case here. It appears as that source being unavailable with `daily_limit.state: "not_applicable"`; a later profile lookup failure appears as `daily_limit.state: "unknown"` while its routes remain available.
 
 ---
 

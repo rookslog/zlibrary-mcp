@@ -132,6 +132,10 @@ describe('Bridge Integration Tests', () => {
           expect(result).not.toBeNull();
 
           if (toolName === 'download_book_to_file') {
+            // The contract fixture is offline synthetic data, not a provider recording.
+            expect(result.provenance).toEqual({
+              source: 'zlibrary', route: 'eapi', mirror: null, host: 'synthetic-transfer-host',
+            });
             expect(result).toEqual(expect.objectContaining({
               processed_file_path: expect.any(String),
               metadata_file_path: expect.any(String),
@@ -140,6 +144,20 @@ describe('Bridge Integration Tests', () => {
                 metadata: expect.any(String),
               }),
             }));
+          }
+
+          if (toolName === 'get_download_limits') {
+            expect(result).toEqual(JSON.parse(fixture.content[0].text));
+            expect(result.requested).toEqual(['annas_archive', 'libgen', 'zlibrary']);
+            expect(Object.keys(result.sources)).toEqual(result.requested);
+            expect(result.sources.annas_archive.routes).toEqual(['search']);
+            expect(result.sources.annas_archive.daily_limit.state).toBe('not_applicable');
+            expect(result.sources.libgen.daily_limit.state).toBe('none');
+            expect(result.sources.zlibrary.available).toBe(true);
+            expect(result.sources.zlibrary.daily_limit).toEqual({
+              state: 'known', total: 10, used: 2, remaining: 8, note: '',
+            });
+            expect(result.sources.zlibrary.details).toEqual({ is_premium: false });
           }
 
           if (toolName === 'process_document_for_rag') {

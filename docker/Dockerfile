@@ -33,7 +33,8 @@ COPY package.json package-lock.json ./
 COPY src/ ./src/
 COPY lib/ ./lib/
 COPY zlibrary/ ./zlibrary/
-COPY tsconfig.json ./
+COPY tsconfig.json tsconfig.types.json ./
+COPY __tests__/types/ ./__tests__/types/
 COPY scripts/ ./scripts/
 
 # The image is a RAG-capable distribution: PDF and EPUB extraction work without

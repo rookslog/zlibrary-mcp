@@ -35,10 +35,12 @@ class FakeEAPIDownloader:
     def __init__(self, filename):
         self.filename = filename
 
-    async def download_file(self, book_id, book_hash, output_dir):
+    async def download_file(self, book_id, book_hash, output_dir, host_observer=None):
         Path(output_dir).mkdir(parents=True, exist_ok=True)
         path = Path(output_dir) / self.filename
         path.write_bytes(b"%PDF-1.4 unit test stand-in")
+        if host_observer is not None:
+            host_observer("synthetic-transfer-host")
         return str(path)
 
 
@@ -183,6 +185,7 @@ class TestDownloadBookFilenameFallback:
 
         assert Path(result["file_path"]).name == SERVER_NAME[:-4] + "_127803575.pdf"
         assert Path(result["file_path"]).exists()
+        assert result["provenance"]["host"] == "synthetic-transfer-host"
         assert not any(
             path.name.startswith("UnknownAuthor") for path in tmp_path.iterdir()
         )
@@ -301,9 +304,13 @@ async def test_same_server_name_with_existing_id_does_not_move_previous_book(tmp
 
 async def test_raw_server_name_cannot_overwrite_previous_published_book(tmp_path):
     class Downloader:
-        async def download_file(self, book_id, book_hash, output_dir):
+        async def download_file(
+            self, book_id, book_hash, output_dir, host_observer=None
+        ):
             path = Path(output_dir) / ("Foo.pdf" if book_id == 1 else "Foo_1.pdf")
             path.write_bytes(f"book {book_id}".encode())
+            if host_observer is not None:
+                host_observer("synthetic-transfer-host")
             return str(path)
 
     python_bridge._eapi_client = Downloader()
@@ -311,11 +318,18 @@ async def test_raw_server_name_cannot_overwrite_previous_published_book(tmp_path
     second = await download_book({"id": 2, "extension": "pdf"}, str(tmp_path))
     assert Path(first["file_path"]).read_bytes() == b"book 1"
     assert Path(second["file_path"]).read_bytes() == b"book 2"
-    assert sorted(path.name for path in tmp_path.iterdir()) == ["Foo_1.pdf", "Foo_1_2.pdf"]
+    assert first["provenance"]["host"] == "synthetic-transfer-host"
+    assert second["provenance"]["host"] == "synthetic-transfer-host"
+    assert sorted(path.name for path in tmp_path.iterdir()) == [
+        "Foo_1.pdf",
+        "Foo_1_2.pdf",
+    ]
 
 
 @pytest.mark.parametrize("word", ["中国", "Платон"])
-async def test_non_ascii_metadata_placeholder_keeps_unicode_server_wording(tmp_path, word):
+async def test_non_ascii_metadata_placeholder_keeps_unicode_server_wording(
+    tmp_path, word
+):
     python_bridge._eapi_client = FakeEAPIDownloader(word + ".pdf")
     result = await download_book(
         {"id": 42, "author": word, "title": word, "extension": "pdf"}, str(tmp_path)
@@ -324,7 +338,9 @@ async def test_non_ascii_metadata_placeholder_keeps_unicode_server_wording(tmp_p
 
 
 @pytest.mark.parametrize("stem", ["文" * 81, "📚" * 60])
-async def test_multibyte_server_name_reserves_identity_in_filesystem_units(tmp_path, stem):
+async def test_multibyte_server_name_reserves_identity_in_filesystem_units(
+    tmp_path, stem
+):
     python_bridge._eapi_client = FakeEAPIDownloader(stem + ".pdf")
     result = await download_book({"id": 123456789, "extension": "pdf"}, str(tmp_path))
     path = Path(result["file_path"])
@@ -336,7 +352,9 @@ async def test_multibyte_server_name_reserves_identity_in_filesystem_units(tmp_p
 
 async def test_failed_eapi_download_cleans_private_staging(tmp_path):
     class Downloader:
-        async def download_file(self, book_id, book_hash, output_dir):
+        async def download_file(
+            self, book_id, book_hash, output_dir, host_observer=None
+        ):
             (Path(output_dir) / "partial.pdf").write_bytes(b"partial")
             raise OSError("simulated transfer failure")
 
@@ -346,8 +364,12 @@ async def test_failed_eapi_download_cleans_private_staging(tmp_path):
     assert list(tmp_path.iterdir()) == []
 
 
-@pytest.mark.parametrize("server_name", ["book456.epub", "456.epub", "download456.epub"])
-async def test_generic_id_response_name_does_not_discard_known_title(tmp_path, server_name):
+@pytest.mark.parametrize(
+    "server_name", ["book456.epub", "456.epub", "download456.epub"]
+)
+async def test_generic_id_response_name_does_not_discard_known_title(
+    tmp_path, server_name
+):
     python_bridge._eapi_client = FakeEAPIDownloader(server_name)
     result = await download_book(
         {"id": 456, "title": "A Meaningful Title", "extension": "epub"}, str(tmp_path)

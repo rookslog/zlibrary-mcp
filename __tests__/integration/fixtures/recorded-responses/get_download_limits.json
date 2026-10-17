@@ -2,7 +2,7 @@
   "content": [
     {
       "type": "text",
-      "text": "{\"daily_limit\": 10, \"downloaded_today\": 2, \"remaining\": 8}"
+      "text": "{\"requested\":[\"annas_archive\",\"libgen\",\"zlibrary\"],\"sources\":{\"annas_archive\":{\"available\":true,\"routes\":[\"search\"],\"daily_limit\":{\"state\":\"not_applicable\",\"total\":null,\"used\":null,\"remaining\":null,\"note\":\"synthetic search-only configuration\"},\"note\":\"synthetic search-only configuration\",\"details\":{}},\"libgen\":{\"available\":true,\"routes\":[\"search\",\"download\"],\"daily_limit\":{\"state\":\"none\",\"total\":null,\"used\":null,\"remaining\":null,\"note\":\"synthetic unlimited source\"},\"note\":\"synthetic unlimited source\",\"details\":{}},\"zlibrary\":{\"available\":true,\"routes\":[\"search\",\"download\"],\"daily_limit\":{\"state\":\"known\",\"total\":10,\"used\":2,\"remaining\":8,\"note\":\"\"},\"note\":\"synthetic authenticated configuration\",\"details\":{\"is_premium\":false}}}}"
     }
   ]
 }

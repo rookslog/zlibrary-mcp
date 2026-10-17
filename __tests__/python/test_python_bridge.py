@@ -344,8 +344,12 @@ class TestNodePythonDispatchContract:
         import re
 
         repo_root = Path(__file__).resolve().parents[2]
-        node_src = (repo_root / "src" / "lib" / "zlibrary-api.ts").read_text(encoding="utf-8")
-        bridge_src = (repo_root / "lib" / "python_bridge.py").read_text(encoding="utf-8")
+        node_src = (repo_root / "src" / "lib" / "zlibrary-api.ts").read_text(
+            encoding="utf-8"
+        )
+        bridge_src = (repo_root / "lib" / "python_bridge.py").read_text(
+            encoding="utf-8"
+        )
 
         node_names = set(re.findall(r"callPythonFunction\(\s*'([^']+)'", node_src))
         assert node_names, "no callPythonFunction() names found — regex drifted?"
@@ -371,34 +375,22 @@ class TestProfileEndpoints:
         assert result[0]["id"] == "12345"
 
     @pytest.mark.asyncio
-    async def test_get_download_limits(self, patch_eapi_client):
-        """Real numbers, from the field names the EAPI actually sends."""
-        result = await get_download_limits()
-        assert result["daily_limit"] == 10
-        assert result["daily_remaining"] == 7
-        assert result["downloads_today"] == 3
-        assert result["is_premium"] is False
+    async def test_get_download_limits(self, patch_eapi_client, monkeypatch):
+        """Real numbers, from the field names the EAPI actually sends.
 
-    @pytest.mark.asyncio
-    async def test_get_download_limits_clamps_at_zero(self, patch_eapi_client):
-        """The server counts a download when issued and can exceed the cap."""
-        patch_eapi_client.get_profile = AsyncMock(
-            return_value={"user": {"downloads_today": 12, "downloads_limit": 10}}
-        )
-        result = await get_download_limits()
-        assert result["daily_remaining"] == 0
-
-    @pytest.mark.asyncio
-    async def test_get_download_limits_reports_unknown_if_the_shape_changes(
-        self, patch_eapi_client
-    ):
-        """A renamed field must degrade to 'unknown', not to a wrong number."""
-        patch_eapi_client.get_profile = AsyncMock(
-            return_value={"user": {"something_else": 5}}
-        )
-        result = await get_download_limits()
-        assert result["daily_limit"] == "unknown"
-        assert result["daily_remaining"] == "unknown"
+        Per-source since #107, so the numbers live under the Z-Library entry
+        rather than at top level — a tool whose name does not say 'Z-Library'
+        must not answer as though it did. The full per-source contract is
+        covered in test_routing_contract.py.
+        """
+        monkeypatch.setenv("ZLIBRARY_EMAIL", "reader@example.com")
+        monkeypatch.setenv("ZLIBRARY_PASSWORD", "hunter2")
+        entry = (await get_download_limits(sources=["zlibrary"]))["sources"]["zlibrary"]
+        assert entry["daily_limit"]["state"] == "known"
+        assert entry["daily_limit"]["total"] == 10
+        assert entry["daily_limit"]["remaining"] == 7
+        assert entry["daily_limit"]["used"] == 3
+        assert entry["details"]["is_premium"] is False
 
 
 # --- Tests for get_book_metadata_complete (EAPI-based) ---
@@ -540,11 +532,14 @@ class TestDownloadBook:
         )
         mocker.patch("httpx.AsyncClient", Client)
 
-        result = await python_bridge._fetch_from_source(
+        result, provenance = await python_bridge._fetch_from_source(
             {"md5": expected_md5.upper(), "source": "libgen"}, str(tmp_path)
         )
 
         assert Path(result).read_bytes() == good_body
+        # The mirror that served the bytes is the second one, and the caller
+        # must be able to see that without reading stderr (#101).
+        assert provenance["source"] == "libgen"
         assert Path(result).suffix == ".pdf"
         assert yielded == ["li", "vg"]
         assert preexisting.read_bytes() == b"keep"
@@ -581,7 +576,7 @@ class TestDownloadBook:
             new=AsyncMock(return_value=str(raw_path)),
         )
 
-        result = await python_bridge._fetch_from_source(
+        result, _provenance = await python_bridge._fetch_from_source(
             {"md5": digest, "source": "libgen"}, str(tmp_path)
         )
 
@@ -1009,11 +1004,12 @@ class TestDownloadBook:
         )
         mocker.patch("httpx.AsyncClient", Client)
 
-        result = await python_bridge._fetch_from_source(
+        result, provenance = await python_bridge._fetch_from_source(
             {"md5": digest, "source": "auto"}, str(tmp_path)
         )
 
         assert Path(result).read_bytes() == good_body
+        assert provenance["source"] == "annas_archive"
         assert attempted == ["libgen.example", "annas.example"]
 
     @pytest.mark.asyncio
@@ -1292,7 +1288,7 @@ class TestDownloadBook:
         final_path.write_bytes(b"existing artifact")
         mocker.patch(
             "python_bridge._fetch_from_source",
-            new=AsyncMock(return_value=str(owned)),
+            new=AsyncMock(return_value=(str(owned), {})),
         )
 
         with pytest.raises(FileExistsError) as excinfo:
@@ -1326,7 +1322,7 @@ class TestDownloadBook:
         final_path.write_bytes(body)
         mocker.patch(
             "python_bridge._fetch_from_source",
-            new=AsyncMock(return_value=str(owned)),
+            new=AsyncMock(return_value=(str(owned), {})),
         )
 
         result = await download_book(
@@ -1358,7 +1354,7 @@ class TestDownloadBook:
         assert final_path.stat().st_size == owned.stat().st_size
         mocker.patch(
             "python_bridge._fetch_from_source",
-            new=AsyncMock(return_value=str(owned)),
+            new=AsyncMock(return_value=(str(owned), {})),
         )
 
         with pytest.raises(FileExistsError):
@@ -1374,6 +1370,72 @@ class TestDownloadBook:
 
         assert final_path.read_bytes() == b"%PDF-1.8 freshly acquired"
         assert not owned.exists()
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("matching_content", [True, False])
+    async def test_eapi_staging_preserves_published_artifact_and_host_provenance(
+        self, tmp_path, monkeypatch, matching_content
+    ):
+        """Catch raw EAPI overwrite before publication and lost host observation."""
+        filename = "Author_Title_123.pdf"
+        body = b"%PDF-1.7 downloaded content"
+        previous = body if matching_content else b"%PDF-1.7 previous artifact"
+        published = tmp_path / filename
+        published.write_bytes(previous)
+        staging_paths = []
+
+        async def download_file(*, book_id, book_hash, output_dir, host_observer):
+            assert book_id == 123
+            assert book_hash == "hash123"
+            staging = Path(output_dir)
+            staging_paths.append(staging)
+            assert staging.parent == tmp_path
+            assert staging != tmp_path
+            # EAPI replaces raw server filenames. Use the already published
+            # name to expose bypassing the private per-call staging directory.
+            raw = staging / filename
+            raw.write_bytes(body)
+            host_observer("synthetic-transfer-host")
+            return str(raw)
+
+        client = SimpleNamespace(
+            domain="synthetic-eapi-mirror",
+            download_file=AsyncMock(side_effect=download_file),
+        )
+        monkeypatch.setattr(
+            python_bridge, "get_eapi_client", AsyncMock(return_value=client)
+        )
+        monkeypatch.setattr(
+            python_bridge, "create_unified_filename", lambda *_args, **_kwargs: filename
+        )
+        args = {
+            "book_details": {
+                "id": "123",
+                "hash": "hash123",
+                "title": "Title",
+                "author": "Author",
+                "extension": "pdf",
+            },
+            "output_dir": str(tmp_path),
+        }
+
+        if matching_content:
+            result = await download_book(**args)
+            assert result["file_path"] == str(published)
+            assert result["provenance"] == {
+                "source": "zlibrary",
+                "route": "eapi",
+                "mirror": "synthetic-eapi-mirror",
+                "host": "synthetic-transfer-host",
+            }
+        else:
+            with pytest.raises(FileExistsError):
+                await download_book(**args)
+
+        client.download_file.assert_awaited_once()
+        assert published.read_bytes() == previous
+        assert staging_paths and all(not path.exists() for path in staging_paths)
+        assert list(tmp_path.iterdir()) == [published]
 
     @pytest.mark.asyncio
     async def test_repeat_acquisition_without_catalog_md5_rejects_same_size_different_content(
@@ -1613,9 +1675,7 @@ asyncio.run(python_bridge.main())
                 time.sleep(0.02)
             assert ready.exists()
             assert not partial.exists()
-            staging_files = [
-                path for path in tmp_path.rglob("*.part")
-            ]
+            staging_files = [path for path in tmp_path.rglob("*.part")]
             assert len(staging_files) == 1
 
             process.send_signal(signal.SIGTERM)
@@ -1623,9 +1683,7 @@ asyncio.run(python_bridge.main())
             stdout, _stderr = process.communicate()
 
             assert not partial.exists()
-            assert not [
-                path for path in tmp_path.rglob("*.part")
-            ]
+            assert not [path for path in tmp_path.rglob("*.part")]
             assert not list(tmp_path.glob(".eapi-*"))
             assert stdout == ""
         finally:
@@ -1641,6 +1699,9 @@ asyncio.run(python_bridge.main())
             yield SimpleNamespace(
                 url="https://cdn.example/book",
                 source=SimpleNamespace(value="annas_archive"),
+                route="fast_download",
+                mirror="annas-archive.gl",
+                host="cdn.example",
             )
 
         router = SimpleNamespace(iter_download_candidates=candidates)
@@ -2112,7 +2173,7 @@ asyncio.run(python_bridge.main())
         )
         fetch = mocker.patch(
             "python_bridge._fetch_from_source",
-            new=AsyncMock(return_value=str(raw_path)),
+            new=AsyncMock(return_value=(str(raw_path), {})),
         )
         mocker.patch(
             "python_bridge.create_unified_filename", return_value="libgen-book.pdf"
@@ -2141,7 +2202,7 @@ asyncio.run(python_bridge.main())
         raw_path.write_bytes(b"PK\x03\x04mimetypeapplication/epub+zip")
         mocker.patch(
             "python_bridge._fetch_from_source",
-            new=AsyncMock(return_value=str(raw_path)),
+            new=AsyncMock(return_value=(str(raw_path), {})),
         )
 
         async def process_real_boundary(file_path_str, **_kwargs):
@@ -2180,7 +2241,7 @@ asyncio.run(python_bridge.main())
         raw_path.write_bytes(b"MOBI book bytes")
         mocker.patch(
             "python_bridge._fetch_from_source",
-            new=AsyncMock(return_value=str(raw_path)),
+            new=AsyncMock(return_value=(str(raw_path), {})),
         )
         process = mocker.patch(
             "python_bridge.process_document",
@@ -2451,8 +2512,16 @@ class TestRequiresEapiClient:
     def test_zlibrary_functions_require_eapi(self):
         from lib import python_bridge
 
-        for fn in ("search", "full_text_search", "get_download_limits"):
+        for fn in ("search", "full_text_search", "get_download_history"):
             assert python_bridge._requires_eapi_client(fn, {}) is True
+
+    def test_per_source_download_limits_do_not_force_a_login(self):
+        """#107: LibGen and Anna's answer from configuration. Z-Library's own
+        entry logs in lazily, so its outage costs one entry rather than the
+        whole tool."""
+        from lib import python_bridge
+
+        assert python_bridge._requires_eapi_client("get_download_limits", {}) is False
 
     def test_local_and_multi_source_functions_do_not(self):
         from lib import python_bridge
@@ -2496,7 +2565,7 @@ class TestLibgenDownloadNeedsNoZlibraryLogin:
         raw.write_bytes(b"%PDF-1.4 fake body")
 
         async def fake_fetch(book_details, output_dir):
-            return str(raw)
+            return str(raw), {}
 
         async def dead_eapi(*args, **kwargs):
             raise RuntimeError("EAPI client must not be touched on this path")

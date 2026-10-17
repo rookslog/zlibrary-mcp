@@ -30,6 +30,9 @@ afterEach(() => {
 });
 
 const args = { bookDetails: { id: 'synthetic-book' } };
+const syntheticProvenance = {
+  source: 'zlibrary', route: 'eapi', mirror: null, host: 'synthetic-transfer-host',
+};
 const envelope = (result) => [JSON.stringify({ content: [{ type: 'text', text: JSON.stringify(result) }] })];
 
 async function downloadError() {
@@ -120,8 +123,8 @@ describe('download error contract', () => {
   });
 
   test.each([
-    { file_path: '/synthetic/book.epub' },
-    { file_path: '/synthetic/book.epub', processed_file_path: null, processing_error: 'synthetic optional processing failure' },
+    { file_path: '/synthetic/book.epub', provenance: syntheticProvenance },
+    { file_path: '/synthetic/book.epub', provenance: syntheticProvenance, processed_file_path: null, processing_error: 'synthetic optional processing failure' },
   ])('retains the successful or partial-processing result %#', async (result) => {
     runPythonBridge.mockResolvedValue(envelope(result));
     await expect(api.downloadBookToFile(args)).resolves.toEqual(result);

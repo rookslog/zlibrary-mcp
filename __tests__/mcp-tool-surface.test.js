@@ -15,16 +15,41 @@ jest.unstable_mockModule('../lib/python-runner.js', () => ({
   LONG_BRIDGE_TIMEOUT_MS: 2400000,
 }));
 
+// Offline synthetic contract fixtures, not provider recordings.
+const syntheticProvenance = {
+  source: 'zlibrary', route: 'eapi', mirror: null, host: 'synthetic-transfer-host',
+};
+const syntheticLimits = {
+  requested: ['annas_archive', 'libgen', 'zlibrary'],
+  sources: {
+    annas_archive: {
+      available: true, routes: ['search'],
+      daily_limit: { state: 'not_applicable', total: null, used: null, remaining: null, note: 'synthetic search-only configuration' },
+      note: 'synthetic search-only configuration', details: {},
+    },
+    libgen: {
+      available: true, routes: ['search', 'download'],
+      daily_limit: { state: 'none', total: null, used: null, remaining: null, note: 'synthetic unlimited source' },
+      note: 'synthetic unlimited source', details: {},
+    },
+    zlibrary: {
+      available: true, routes: ['search', 'download'],
+      daily_limit: { state: 'known', total: 10, used: 2, remaining: 8, note: '' },
+      note: 'synthetic authenticated configuration', details: { is_premium: false },
+    },
+  },
+};
+
 const cases = {
   search_books: [{ query: 'offline' }, 'search', { books: [] }],
   full_text_search: [{ query: 'offline phrase' }, 'full_text_search', { books: [] }],
   get_download_history: [{ count: 1 }, 'get_download_history', []],
-  get_download_limits: [{}, 'get_download_limits', { daily_limit: 10, remaining: 10 }],
+  get_download_limits: [{}, 'get_download_limits', syntheticLimits],
   get_recent_books: [{ count: 1 }, 'get_recent_books', { books: [] }],
   download_book_to_file: [
     { bookDetails: { id: '1', hash: 'offline' } },
     'download_book',
-    { file_path: '/offline/book.pdf' },
+    { file_path: '/offline/book.pdf', provenance: syntheticProvenance },
   ],
   process_document_for_rag: [
     { file_path: '/offline/book.pdf' },
@@ -88,6 +113,21 @@ const expectedBridgeArgs = {
 // facade would otherwise reconstruct a missing field's default value.
 const forwardingCases = [
   {
+    name: 'get_download_limits',
+    args: { sources: ['libgen'] },
+    expectedArgs: { sources: ['libgen'] },
+    payload: {
+      requested: ['libgen'],
+      sources: {
+        libgen: {
+          available: true, routes: ['search', 'download'],
+          daily_limit: { state: 'none', total: null, used: null, remaining: null, note: 'synthetic unlimited source' },
+          note: 'synthetic unlimited source', details: {},
+        },
+      },
+    },
+  },
+  {
     name: 'search_books',
     args: {
       query: 'filtered books', exact: true, fromYear: 1900, toYear: 1950,
@@ -121,7 +161,7 @@ const forwardingCases = [
       output_dir: '/offline/downloads', process_for_rag: true,
       processed_output_format: 'markdown',
     },
-    payload: { file_path: '/offline/book.pdf', processed_file_path: '/offline/book.md' },
+    payload: { file_path: '/offline/book.pdf', provenance: syntheticProvenance, processed_file_path: '/offline/book.md' },
   },
   {
     name: 'process_document_for_rag',
@@ -172,7 +212,8 @@ const characterBaselines = {
   search_books: 1588,
   full_text_search: 1517,
   get_download_history: 542,
-  get_download_limits: 417,
+  // #157 adds the optional sources schema; measured SDK serialization is 764 chars.
+  get_download_limits: 764,
   get_recent_books: 585,
   download_book_to_file: 1097,
   process_document_for_rag: 733,
@@ -246,6 +287,20 @@ async function callAdvertised(name, payloadOverride, fixtureOverride) {
   expect(CallToolResultSchema.safeParse(result).success).toBe(true);
   expect(result.isError).not.toBe(true);
   expect(result.content).toEqual([{ type: 'text', text: JSON.stringify(payload) }]);
+  if (name === 'get_download_limits') {
+    expect(result.structuredContent.sources.libgen.daily_limit.state).toBe('none');
+    if (args.sources) {
+      expect(result.structuredContent).toEqual(payload);
+      expect(result.structuredContent.requested).toEqual(['libgen']);
+      expect(Object.keys(result.structuredContent.sources)).toEqual(['libgen']);
+    } else {
+      expect(result.structuredContent).toEqual(syntheticLimits);
+      expect(result.structuredContent.sources.annas_archive.daily_limit.state).toBe('not_applicable');
+      expect(result.structuredContent.sources.zlibrary.daily_limit).toEqual({
+        state: 'known', total: 10, used: 2, remaining: 8, note: '',
+      });
+    }
+  }
   expect(runBridge).toHaveBeenCalledTimes(1);
   expect(runBridge.mock.calls[0][1].args[0]).toBe(operation);
   expect(JSON.parse(runBridge.mock.calls[0][1].args[1])).toEqual(expectedArgs);

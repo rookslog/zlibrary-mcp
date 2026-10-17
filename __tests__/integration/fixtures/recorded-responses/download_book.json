@@ -2,7 +2,7 @@
   "content": [
     {
       "type": "text",
-      "text": "{\"file_path\":\"/tmp/downloads/test-book.pdf\",\"processed_file_path\":\"/tmp/processed/test-book.pdf.processed.markdown\",\"metadata_file_path\":\"/tmp/processed/test-book.pdf.metadata.json\",\"footnotes_file_path\":\"/tmp/processed/test-book.pdf.processed_footnotes.markdown\",\"stats\":{\"word_count\":123,\"char_count\":789,\"format\":\"markdown\"},\"content_types_produced\":[\"body\",\"footnotes\"],\"output_files\":{\"body\":\"/tmp/processed/test-book.pdf.processed.markdown\",\"metadata\":\"/tmp/processed/test-book.pdf.metadata.json\",\"footnotes\":\"/tmp/processed/test-book.pdf.processed_footnotes.markdown\"}}"
+      "text": "{\"file_path\":\"/tmp/downloads/test-book.pdf\",\"processed_file_path\":\"/tmp/processed/test-book.pdf.processed.markdown\",\"metadata_file_path\":\"/tmp/processed/test-book.pdf.metadata.json\",\"footnotes_file_path\":\"/tmp/processed/test-book.pdf.processed_footnotes.markdown\",\"stats\":{\"word_count\":123,\"char_count\":789,\"format\":\"markdown\"},\"content_types_produced\":[\"body\",\"footnotes\"],\"output_files\":{\"body\":\"/tmp/processed/test-book.pdf.processed.markdown\",\"metadata\":\"/tmp/processed/test-book.pdf.metadata.json\",\"footnotes\":\"/tmp/processed/test-book.pdf.processed_footnotes.markdown\"},\"provenance\":{\"source\":\"zlibrary\",\"route\":\"eapi\",\"mirror\":null,\"host\":\"synthetic-transfer-host\"}}"
     }
   ]
 }

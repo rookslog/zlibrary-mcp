@@ -4,8 +4,8 @@ import { InMemoryTransport } from '@modelcontextprotocol/sdk/inMemory.js';
 import { CallToolResultSchema } from '@modelcontextprotocol/sdk/types.js';
 
 // The result tests keep the API facade and SDK real, replacing only the
-// subprocess/environment boundary. One dispatch-only test supplies the missing
-// recent-books export so its registration can be checked before #171 lands.
+// subprocess/environment boundary. The recent-books wiring spy delegates to
+// the real facade, including its literal Python argument contract.
 const runBridge = jest.fn();
 jest.unstable_mockModule('../lib/venv-manager.js', () => ({
   getManagedPythonPath: jest.fn().mockResolvedValue('/offline/python'),
@@ -109,9 +109,47 @@ const expectedBridgeArgs = {
   search_multi_source: { query: 'offline', source: 'libgen', count: 10 },
 };
 
+// These are facade-supplied options, not the runner's eventual default budget.
+// Pin literal labels and budgets independently of the implementation constants.
+const expectedBridgeOptions = {
+  search_books: { timeoutMs: undefined, label: 'python_bridge.search' },
+  full_text_search: { timeoutMs: undefined, label: 'python_bridge.full_text_search' },
+  get_download_history: { timeoutMs: undefined, label: 'python_bridge.get_download_history' },
+  get_download_limits: { timeoutMs: undefined, label: 'python_bridge.get_download_limits' },
+  get_recent_books: { timeoutMs: undefined, label: 'python_bridge.get_recent_books' },
+  download_book_to_file: { timeoutMs: 2400000, label: 'python_bridge.download_book' },
+  process_document_for_rag: { timeoutMs: 2400000, label: 'python_bridge.process_document' },
+  get_book_metadata: { timeoutMs: undefined, label: 'python_bridge.get_book_metadata_complete' },
+  search_by_term: { timeoutMs: undefined, label: 'python_bridge.search_by_term_bridge' },
+  search_by_author: { timeoutMs: undefined, label: 'python_bridge.search_by_author_bridge' },
+  fetch_booklist: { timeoutMs: undefined, label: 'python_bridge.fetch_booklist_bridge' },
+  search_advanced: { timeoutMs: undefined, label: 'python_bridge.search_advanced' },
+  search_multi_source: { timeoutMs: undefined, label: 'python_bridge.search_multi_source' },
+};
+
 // Non-default values make dropped optional fields observable even where the
 // facade would otherwise reconstruct a missing field's default value.
 const forwardingCases = [
+  {
+    name: 'get_recent_books',
+    args: { count: 3, format: 'pdf' },
+    // Format is applied by the real facade, not forwarded to Python.
+    expectedArgs: { count: 3 },
+    payload: { books: [
+      { id: 'synthetic-pdf', title: 'Synthetic PDF', extension: 'pdf' },
+      { id: 'synthetic-epub', title: 'Synthetic EPUB', extension: 'epub' },
+    ] },
+    expectedPayload: { books: [
+      { id: 'synthetic-pdf', title: 'Synthetic PDF', extension: 'pdf' },
+    ] },
+  },
+  {
+    name: 'get_book_metadata',
+    args: { bookId: '2', bookHash: 'other', include: ['terms'] },
+    // Include selects fields in TypeScript; Python receives only the identity.
+    expectedArgs: { book_id: '2', book_hash: 'other' },
+    payload: { title: 'Synthetic metadata', terms: ['synthetic term'] },
+  },
   {
     name: 'get_download_limits',
     args: { sources: ['libgen'] },
@@ -269,6 +307,132 @@ test('tools/list has a fixture for every advertised tool and bounded schema cost
   }
 });
 
+test('every advertised input property is explicitly set by a tool fixture', () => {
+  const missing = [];
+  for (const tool of advertised.tools) {
+    const fixtures = [
+      cases[tool.name]?.[0],
+      ...forwardingCases.filter((fixture) => fixture.name === tool.name).map((fixture) => fixture.args),
+    ].filter(Boolean);
+    for (const key of Object.keys(tool.inputSchema.properties ?? {})) {
+      if (!fixtures.some((args) => Object.prototype.hasOwnProperty.call(args, key) && args[key] !== undefined)) {
+        missing.push(`${tool.name}.${key}`);
+      }
+    }
+  }
+  expect(missing).toEqual([]);
+});
+
+// A deadline that also clears its timer when the operation wins. Promise.race
+// attaches rejection handlers immediately, including to a late losing promise.
+async function within(promise, label) {
+  let timer;
+  try {
+    return await Promise.race([
+      promise,
+      new Promise((_, reject) => {
+        timer = setTimeout(() => reject(new Error(`${label} exceeded 3000 ms`)), 3000);
+      }),
+    ]);
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+test('cancelling a pending MCP request aborts the very signal delivered to the runner', async () => {
+  const request = new AbortController();
+  let markStarted;
+  let releaseRunner;
+  let runnerPromise;
+  let runnerSettled = false;
+  let runnerSignal;
+  let onAbort;
+  const started = new Promise((resolve) => { markStarted = resolve; });
+  const pending = new Promise((resolve) => { releaseRunner = resolve; });
+  runBridge.mockImplementationOnce((_script, _options, runOptions) => {
+    runnerSignal = runOptions.signal;
+    runnerPromise = pending.then(() => {
+      runnerSettled = true;
+      return [JSON.stringify({ content: [{
+        type: 'text', text: JSON.stringify(cases.download_book_to_file[2]),
+      }] })];
+    });
+    markStarted();
+    return runnerPromise;
+  });
+  // Attach both handlers before any abort; a rejection is an expected outcome,
+  // not an unhandled promise. The SDK deadline is separate from our wait bounds.
+  const outcome = client.callTool(
+    { name: 'download_book_to_file', arguments: cases.download_book_to_file[0] },
+    CallToolResultSchema,
+    { signal: request.signal, timeout: 5000 },
+  ).then(
+    (value) => ({ status: 'fulfilled', value }),
+    (reason) => ({ status: 'rejected', reason }),
+  );
+  let primaryFailed = false;
+  let primaryError;
+  const cleanupErrors = [];
+  try {
+    await within(started, 'runner start');
+    expect(runBridge).toHaveBeenCalledTimes(1);
+    expect(runBridge.mock.calls[0][1].args[0]).toBe('download_book');
+    expect(JSON.parse(runBridge.mock.calls[0][1].args[1])).toEqual(expectedBridgeArgs.download_book_to_file);
+    expect(runBridge.mock.calls[0][2]).toEqual({
+      timeoutMs: 2400000, label: 'python_bridge.download_book', signal: expect.any(AbortSignal),
+    });
+    expect(runnerSignal.aborted).toBe(false);
+    expect(runnerSettled).toBe(false);
+    const aborted = new Promise((resolve) => {
+      onAbort = resolve;
+      runnerSignal.addEventListener('abort', onAbort, { once: true });
+    });
+    request.abort();
+    await within(aborted, 'runner signal cancellation');
+    expect(runnerSignal.aborted).toBe(true);
+    expect(runnerSettled).toBe(false);
+    expect((await within(outcome, 'cancelled client request')).status).toBe('rejected');
+  } catch (error) {
+    primaryFailed = true;
+    primaryError = error;
+  } finally {
+    // Attempt each cleanup independently, without replacing a primary error.
+    // Release even a mutant's unrelated signal so the mock cannot stay pending.
+    for (const cleanup of [
+      () => { if (onAbort) runnerSignal.removeEventListener('abort', onAbort); },
+      () => request.abort(),
+      () => releaseRunner(),
+    ]) {
+      try {
+        cleanup();
+      } catch (error) {
+        cleanupErrors.push(error);
+      }
+    }
+    try {
+      await within(Promise.allSettled([outcome, runnerPromise]), 'request and runner drain');
+    } catch (error) {
+      cleanupErrors.push(error);
+    }
+    try {
+      // Schedule both closes before waiting. Even a synchronous throw from one
+      // close must not prevent the other transport's close from being attempted.
+      const closed = await within(Promise.allSettled([
+        Promise.resolve().then(() => client.close()),
+        Promise.resolve().then(() => server.close()),
+      ]), 'transport close');
+      expect(closed.map((result) => result.status)).toEqual(['fulfilled', 'fulfilled']);
+    } catch (error) {
+      cleanupErrors.push(error);
+    } finally {
+      // Do not let afterEach retry a failed or non-settling close without a bound.
+      client = server = undefined;
+    }
+  }
+  if (primaryFailed) throw primaryError;
+  if (cleanupErrors.length > 0) throw new AggregateError(cleanupErrors, 'Cancellation test cleanup failed');
+}, 20000);
+
 async function callAdvertised(name, payloadOverride, fixtureOverride) {
   // A missing or miswired registration must not pass merely because an error
   // envelope is schema-valid: require successful dispatch to the real facade.
@@ -277,6 +441,7 @@ async function callAdvertised(name, payloadOverride, fixtureOverride) {
   const args = fixtureOverride?.args ?? defaultArgs;
   const expectedArgs = fixtureOverride?.expectedArgs ?? expectedBridgeArgs[name];
   const payload = payloadOverride ?? defaultPayload;
+  const expectedPayload = fixtureOverride?.expectedPayload ?? payload;
   runBridge.mockResolvedValue([
     JSON.stringify({ content: [{ type: 'text', text: JSON.stringify(payload) }] }),
   ]);
@@ -286,7 +451,7 @@ async function callAdvertised(name, payloadOverride, fixtureOverride) {
   );
   expect(CallToolResultSchema.safeParse(result).success).toBe(true);
   expect(result.isError).not.toBe(true);
-  expect(result.content).toEqual([{ type: 'text', text: JSON.stringify(payload) }]);
+  expect(result.content).toEqual([{ type: 'text', text: JSON.stringify(expectedPayload) }]);
   if (name === 'get_download_limits') {
     expect(result.structuredContent.sources.libgen.daily_limit.state).toBe('none');
     if (args.sources) {
@@ -307,7 +472,7 @@ async function callAdvertised(name, payloadOverride, fixtureOverride) {
   // The SDK creates a server-side request signal across the transport. It must
   // reach the real runner options; it is not the client's object identity.
   expect(runBridge.mock.calls[0][2]).toEqual(
-    expect.objectContaining({ signal: expect.any(AbortSignal) }),
+    { ...expectedBridgeOptions[name], signal: expect.any(AbortSignal) },
   );
   expect(runBridge.mock.calls[0][2].signal.aborted).toBe(false);
 }
@@ -324,16 +489,10 @@ for (const fixture of forwardingCases) {
 }
 
 test('get_recent_books registration reaches the intended handler exactly once', async () => {
-  // Only the absent API export is supplied here. A miswired/removed production
+  // Observe the real API export. A miswired/removed production
   // registration must fail this ordinary test, never be inverted by .failing.
-  const recentProbe = jest.fn(async (args, options) => {
-    await runBridge(
-      'python_bridge.py',
-      { args: ['get_recent_books', JSON.stringify(args)] },
-      options,
-    );
-    return { books: [] };
-  });
+  const actualApi = await import('../dist/lib/zlibrary-api.js');
+  const recentProbe = jest.fn(actualApi.getRecentBooks);
   await connectServer({ getRecentBooks: recentProbe });
   await callAdvertised('get_recent_books');
   expect(recentProbe).toHaveBeenCalledTimes(1);

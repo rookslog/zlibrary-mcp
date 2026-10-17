@@ -308,6 +308,53 @@ class TestLibgenAdapterDownload:
 
         assert result.url.startswith("https://libgen.vg/")
 
+    @pytest.mark.parametrize(
+        ("content_type", "body"),
+        [
+            pytest.param(
+                "text/html",
+                b"<html><body>" + b"x" * 600 + b"</body></html>",
+                id="html-over-512-bytes",
+            ),
+            pytest.param(
+                "application/octet-stream", b"x" * 100, id="tiny-non-pdf"
+            ),
+        ],
+    )
+    @pytest.mark.asyncio
+    async def test_rejects_non_file_bytes_and_tries_next_mirror(
+        self, adapter, content_type, body
+    ):
+        """Isolate each rejection guard, then require a working PDF fallback."""
+        seen = []
+
+        def handler(request):
+            seen.append((request.url.host, request.url.path))
+            if request.url.path == "/ads.php":
+                return httpx.Response(200, text=ADS_PAGE_WITH_KEY)
+            assert request.url.path == "/get.php"
+            assert request.headers["Range"] == "bytes=0-2047"
+            if request.url.host == "libgen.li":
+                return httpx.Response(
+                    200, content=body, headers={"content-type": content_type}
+                )
+            return httpx.Response(
+                206,
+                content=PDF_BYTES,
+                headers={"content-type": "application/octet-stream"},
+            )
+
+        with self._patched_client(handler):
+            result = await adapter.get_download_url(MD5)
+
+        assert result.url == f"https://libgen.vg/get.php?md5={MD5}&key=TESTKEY123"
+        assert seen == [
+            ("libgen.li", "/ads.php"),
+            ("libgen.li", "/get.php"),
+            ("libgen.vg", "/ads.php"),
+            ("libgen.vg", "/get.php"),
+        ]
+
     @pytest.mark.asyncio
     async def test_range_ignoring_probe_stops_after_the_inspection_window(
         self, adapter

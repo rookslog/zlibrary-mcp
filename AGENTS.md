@@ -14,6 +14,25 @@ files a RAG pipeline can use. Node.js/TypeScript MCP layer (`src/`) over a Pytho
 anything architectural — it is short, and it is the document that says what this project
 refuses to become.
 
+## Contribution and optional maintainer automation
+
+[CONTRIBUTING.md](CONTRIBUTING.md) is the public contribution guide. Contributors
+may use any editor or assistant, or no assistant. Wayfinder, skills, the `gh`
+CLI, and tracker administration permissions are not contribution requirements.
+
+Maintainers may use Wayfinder to organize substantial work into questions,
+research and implementation tasks. When using that automation, consult the
+[tracker operations](docs/agents/issue-tracker.md),
+[triage guidance](docs/agents/triage-labels.md), and
+[domain guidance](docs/agents/domain.md). These repository rules apply even
+when the named skills are unavailable; skills do not define extra requirements
+for contributors. Small fixes do not need a planning map or a separate issue.
+
+Release priorities remain in GitHub milestones and their map issues, per
+`docs/RELEASE_PROCESS.md`. Unresolved decisions are not implementation briefs.
+Readiness does not authorize merging, publishing, using credentials, or
+discarding existing work.
+
 ## Setup and commands
 
 Prerequisites: Node 22+, Python 3.10+, and [uv](https://docs.astral.sh/uv/). The Python

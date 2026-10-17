@@ -31,9 +31,11 @@ const maybe = PYTHON ? describe : describe.skip;
 let tmpDir;
 let runner;
 let baselineProcessListeners;
+let ownedCleanups;
 
 /** True if the OS still knows about this pid. */
 function isAlive(pid) {
+  if (!Number.isInteger(pid) || pid <= 0) return false;
   try {
     process.kill(pid, 0);
     if (process.platform === 'linux') {
@@ -43,6 +45,13 @@ function isAlive(pid) {
     return true;
   } catch {
     return false;
+  }
+}
+
+/** Signal only a fixture-published identity; tolerate the exit/signal race. */
+function killOwned(pid) {
+  try { process.kill(pid, 'SIGKILL'); } catch (error) {
+    if (error.code !== 'ESRCH') throw error;
   }
 }
 
@@ -57,18 +66,27 @@ async function waitFor(predicate, timeoutMs = 8000) {
 }
 
 /** Observe child exit without missing an event that fired before registration. */
-function waitForExit(child) {
+function waitForExit(child, timeoutMs = 8000) {
   if (child.exitCode !== null || child.signalCode !== null) {
     return Promise.resolve({ code: child.exitCode, signal: child.signalCode });
   }
-  return new Promise((resolve) => {
-    child.once('exit', (code, signal) => resolve({ code, signal }));
+  return new Promise((resolve, reject) => {
+    const onExit = (code, signal) => {
+      clearTimeout(timer);
+      resolve({ code, signal });
+    };
+    const timer = setTimeout(() => {
+      child.removeListener('exit', onExit);
+      reject(new Error('Test-owned server exit watchdog expired'));
+    }, timeoutMs);
+    child.once('exit', onExit);
   });
 }
 
 maybe('python-runner', () => {
   beforeEach(async () => {
     jest.resetModules();
+    ownedCleanups = [];
     baselineProcessListeners = new Map(
       ['exit', 'SIGINT', 'SIGTERM'].map((event) => [event, new Set(process.rawListeners(event))]),
     );
@@ -76,13 +94,23 @@ maybe('python-runner', () => {
     runner = await import('../lib/python-runner.js');
   });
 
-  afterEach(() => {
+  afterEach(async () => {
+    // Try every cleanup even when a previous assertion or cleanup failed.
+    const results = await Promise.allSettled(ownedCleanups.reverse().map((cleanup) => cleanup()));
+    runner.killAllPythonChildren('SIGKILL');
+    const treesGone = await waitFor(() => runner.liveChildCount() === 0);
     for (const [event, baseline] of baselineProcessListeners) {
       for (const listener of process.rawListeners(event)) {
         if (!baseline.has(listener)) process.removeListener(event, listener);
       }
+      for (const listener of baseline) {
+        if (!process.rawListeners(event).includes(listener)) process.on(event, listener);
+      }
     }
     fs.rmSync(tmpDir, { recursive: true, force: true });
+    const failure = results.find((result) => result.status === 'rejected');
+    if (failure) throw failure.reason;
+    expect(treesGone).toBe(true);
   });
 
   /** Write a throwaway script into the temp script dir. */
@@ -103,330 +131,329 @@ maybe('python-runner', () => {
     expect(lines).toEqual(['hello', 'world']);
   });
 
-  test('kills the child when the wall-clock budget expires', async () => {
-    // A script with no timeout of its own, standing in for the un-timed
-    // requests.get inside libgen_api_enhanced.
-    const pidFile = path.join(tmpDir, 'hang.pid');
-    const name = script(
-      'hang.py',
-      [
-        'import os, pathlib, time',
-        `pathlib.Path(${JSON.stringify(pidFile)}).write_text(str(os.getpid()))`,
-        'time.sleep(600)',
-        '',
-      ].join('\n'),
-    );
+  const STARTUP_WATCHDOG_MS = 8000;
 
-    const promise = runner
-      .runPythonBridge(
-        name,
+  /** Each process writes its own identity, then readiness after signal setup. */
+  function lifecycleFixture({ descendant = false, ignoreTerm = false, successful = false,
+    delayMs = 0, neverReady = false, parentIgnoreTerm = false } = {}) {
+    const parentPidFile = path.join(tmpDir, 'fixture-parent.pid');
+    const descendantPidFile = path.join(tmpDir, 'fixture-descendant.pid');
+    const readyFile = path.join(tmpDir, 'fixture.ready');
+    const childReadyFile = path.join(tmpDir, 'fixture-descendant.ready');
+    const releaseFile = path.join(tmpDir, 'fixture.release');
+    const publish = (file, value) => [
+      `marker = pathlib.Path(${JSON.stringify(file)})`,
+      `marker.with_suffix('.pending').write_text(${value})`,
+      "marker.with_suffix('.pending').replace(marker)",
+    ];
+    const childBody = [
+      'import os, pathlib, signal, time',
+      ...publish(descendantPidFile, 'str(os.getpid())'),
+      ...(ignoreTerm ? ['signal.signal(signal.SIGTERM, signal.SIG_IGN)'] : []),
+      ...publish(childReadyFile, '"ready"'),
+      'time.sleep(600)',
+    ].join('\n');
+    const name = script('fixture.py', [
+      'import os, pathlib, signal, subprocess, sys, time',
+      ...publish(parentPidFile, 'str(os.getpid())'),
+      ...((!descendant || parentIgnoreTerm) && ignoreTerm ? ['signal.signal(signal.SIGTERM, signal.SIG_IGN)'] : []),
+      ...(descendant ? [
+        `child = subprocess.Popen([sys.executable, "-c", ${JSON.stringify(childBody)}], stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, close_fds=True)`,
+        `while not pathlib.Path(${JSON.stringify(childReadyFile)}).exists(): time.sleep(0.01)`,
+      ] : []),
+      `time.sleep(${delayMs / 1000})`,
+      ...(neverReady ? [] : publish(readyFile, '"ready"')),
+      ...(successful ? [
+        `while not pathlib.Path(${JSON.stringify(releaseFile)}).exists(): time.sleep(0.01)`,
+        'print("complete")',
+      ] : ['time.sleep(600)']),
+      '',
+    ].join('\n'));
+    const readPid = (file) => fs.existsSync(file) ? Number(fs.readFileSync(file, 'utf8')) : -1;
+    return {
+      name, readyFile,
+      parentPid: () => readPid(parentPidFile),
+      descendantPid: () => readPid(descendantPidFile),
+      release: () => fs.writeFileSync(releaseFile, 'go'),
+    };
+  }
+
+  /**
+   * Test-only timer seam: intercept ONLY the synchronous runner deadline setup.
+   * No fake clocks: after readiness its original callback gets the original
+   * budget on a real wall-clock timer. Grace timers and polling are untouched.
+   */
+  async function withReadyBridge(fixture, runOptions, check, startupMs = STARTUP_WATCHDOG_MS) {
+    const realSetTimeout = globalThis.setTimeout;
+    const realClearTimeout = globalThis.clearTimeout;
+    const controller = new AbortController();
+    let callback;
+    let delay;
+    let deadline;
+    let cancelled = false;
+    let intercepted = 0;
+    const token = { unref() { return this; } };
+    const clearSpy = jest.spyOn(globalThis, 'clearTimeout').mockImplementation((timer) => {
+      if (timer !== token) return realClearTimeout(timer);
+      cancelled = true;
+      if (deadline) realClearTimeout(deadline);
+    });
+    const timerSpy = jest.spyOn(globalThis, 'setTimeout').mockImplementation((fn, ms, ...args) => {
+      if (ms !== runOptions.timeoutMs || intercepted > 0) return realSetTimeout(fn, ms, ...args);
+      intercepted += 1;
+      callback = () => fn(...args);
+      delay = ms;
+      return token; // READINESS_GATE_HOLD
+    });
+    let promise;
+    let settled = false;
+    let cleaned = false;
+    const cleanup = async () => {
+      if (cleaned) return;
+      cleaned = true;
+      try {
+        controller.abort();
+        // This freshly imported runner owns only this test's bridge tree.
+        runner.killAllPythonChildren('SIGKILL');
+        // Fallback targets only identities published by this fixture itself.
+        for (const pid of [fixture.parentPid(), fixture.descendantPid()]) {
+          if (isAlive(pid)) killOwned(pid);
+        }
+        if (!await waitFor(() => settled && !isAlive(fixture.parentPid()) &&
+          !isAlive(fixture.descendantPid()) && runner.liveChildCount() === 0)) {
+          throw new Error('Test-owned bridge cleanup did not complete');
+        }
+        await promise;
+      } finally {
+        if (deadline) realClearTimeout(deadline);
+        clearSpy.mockRestore();
+      }
+    };
+    ownedCleanups.push(cleanup);
+    try {
+      promise = runner.runPythonBridge(fixture.name,
         { mode: 'text', pythonPath: PYTHON, scriptPath: tmpDir },
-        { timeoutMs: 500, label: 'hang-test' },
-      )
-      .catch((err) => err);
+        { ...runOptions, signal: controller.signal },
+      ).catch((error) => error).then((result) => { settled = true; return result; });
+    } finally {
+      timerSpy.mockRestore();
+    }
+    try {
+      expect(intercepted).toBe(1);
+      const ready = await waitFor(() => fs.existsSync(fixture.readyFile), startupMs);
+      if (!ready) throw new Error(`Fixture startup watchdog expired after ${startupMs}ms without readiness`);
+      // A spawn failure / premature deadline is not a successful timeout test.
+      expect(settled).toBe(false);
+      expect(cancelled).toBe(false);
+      const readyAt = Date.now();
+      deadline = realSetTimeout(callback, delay); // READINESS_GATE_ARM
+      await check({ promise, controller, readyAt, fixture });
+    } finally {
+      await cleanup();
+    }
+  }
 
-    expect(await waitFor(() => fs.existsSync(pidFile))).toBe(true);
-    const capturedPid = Number(fs.readFileSync(pidFile, 'utf8'));
-
+  async function assertWallClockTimeout({ promise, readyAt, fixture }, timeoutMs, label) {
     const error = await promise;
-
     expect(error).toBeInstanceOf(Error);
     expect(error.code).toBe('TIMEOUT');
-    expect(error.message).toMatch(/hang-test/);
-    expect(capturedPid).toBeGreaterThan(0);
-    expect(await waitFor(() => !isAlive(capturedPid))).toBe(true);
+    expect(error.context.reason).toBe('timeout');
+    expect(error.message).toContain(label);
+    expect(Date.now() - readyAt).toBeGreaterThanOrEqual(timeoutMs - 20);
+    expect(fixture.parentPid()).toBeGreaterThan(0);
+    expect(await waitFor(() => !isAlive(fixture.parentPid()))).toBe(true);
+  }
+
+  test('kills the child when the wall-clock budget expires', async () => {
+    await withReadyBridge(lifecycleFixture(), { timeoutMs: 500, label: 'hang-test' },
+      (context) => assertWallClockTimeout(context, 500, 'hang-test'));
+  });
+
+  test('delayed readiness does not consume the short wall-clock budget', async () => {
+    // Deliberately exceeds the old 300/500ms startup deadline, not a startup fix.
+    await withReadyBridge(lifecycleFixture({ delayMs: 1000 }),
+      { timeoutMs: 300, label: 'delayed-ready-test' },
+      (context) => assertWallClockTimeout(context, 300, 'delayed-ready-test'));
+  });
+
+  test('never-ready startup fails its watchdog and cleans up the whole tree', async () => {
+    const descendant = process.platform !== 'win32';
+    const fixture = lifecycleFixture({ descendant, ignoreTerm: true, neverReady: true });
+    let checked = false;
+    await expect(withReadyBridge(fixture, { timeoutMs: 300 }, async () => {
+      checked = true;
+    })).rejects.toThrow(/Fixture startup watchdog expired after 8000ms without readiness/);
+    expect(checked).toBe(false);
+    expect(fixture.parentPid()).toBeGreaterThan(0);
+    if (descendant) expect(fixture.descendantPid()).toBeGreaterThan(0);
+    expect(isAlive(fixture.parentPid())).toBe(false);
+    expect(isAlive(fixture.descendantPid())).toBe(false);
+    expect(runner.liveChildCount()).toBe(0);
   });
 
   test('a timed-out call is fatal, so the retry layer does not multiply it', async () => {
     const { isRetryableError } = await import('../lib/retry-manager.js');
-    const name = script('hang2.py', 'import time\ntime.sleep(600)\n');
-
-    const error = await runner
-      .runPythonBridge(
-        name,
-        { mode: 'text', pythonPath: PYTHON, scriptPath: tmpDir },
-        { timeoutMs: 300 },
-      )
-      .catch((err) => err);
-
-    expect(error.fatal).toBe(true);
-    expect(isRetryableError(error)).toBe(false);
+    await withReadyBridge(lifecycleFixture(), { timeoutMs: 300 }, async ({ promise }) => {
+      const error = await promise;
+      expect(error.fatal).toBe(true);
+      expect(isRetryableError(error)).toBe(false);
+    });
   });
 
   test('an abort signal kills the child instead of orphaning it', async () => {
-    const name = script('hang3.py', 'import time\ntime.sleep(600)\n');
-    const controller = new AbortController();
-
-    const promise = runner
-      .runPythonBridge(
-        name,
-        { mode: 'text', pythonPath: PYTHON, scriptPath: tmpDir },
-        { timeoutMs: 60000, signal: controller.signal, label: 'abort-test' },
-      )
-      .catch((err) => err);
-
-    await new Promise((resolve) => setTimeout(resolve, 300));
-    const pid = lastSpawnedPid();
-    controller.abort();
-
-    const error = await promise;
-
-    expect(error.code).toBe('TIMEOUT');
-    expect(error.message).toMatch(/aborted/);
-    expect(await waitFor(() => !isAlive(pid))).toBe(true);
+    await withReadyBridge(lifecycleFixture(), { timeoutMs: 60000, label: 'abort-test' },
+      async ({ promise, controller, fixture }) => {
+        const pid = fixture.parentPid();
+        expect(pid).toBeGreaterThan(0);
+        controller.abort();
+        const error = await promise;
+        expect(error.code).toBe('TIMEOUT');
+        expect(error.message).toMatch(/aborted/);
+        expect(await waitFor(() => !isAlive(pid))).toBe(true);
+      });
   });
 
   test('an abort signal kills descendants spawned by the bridge', async () => {
     if (process.platform === 'win32') return;
-
-    const pidFile = path.join(tmpDir, 'tree.pids');
-    const name = script(
-      'tree.py',
-      [
-        'import os, pathlib, subprocess, sys, time',
-        'child = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(600)"], stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, close_fds=True)',
-        `pathlib.Path(${JSON.stringify(pidFile)}).write_text(f"{os.getpid()} {child.pid}")`,
-        'time.sleep(600)',
-        '',
-      ].join('\n'),
-    );
-    const controller = new AbortController();
-    let parentPid = -1;
-    let descendantPid = -1;
-
-    const promise = runner
-      .runPythonBridge(
-        name,
-        { mode: 'text', pythonPath: PYTHON, scriptPath: tmpDir },
-        { timeoutMs: 60000, signal: controller.signal, label: 'tree-abort-test' },
-      )
-      .catch((err) => err);
-
-    try {
-      expect(await waitFor(() => fs.existsSync(pidFile))).toBe(true);
-      [parentPid, descendantPid] = fs
-        .readFileSync(pidFile, 'utf8')
-        .split(' ')
-        .map(Number);
-      expect(parentPid).toBeGreaterThan(0);
-      expect(descendantPid).toBeGreaterThan(0);
-      expect(isAlive(descendantPid)).toBe(true);
-
-      controller.abort();
-      const error = await promise;
-
-      expect(error.code).toBe('TIMEOUT');
-      expect(await waitFor(() => !isAlive(parentPid))).toBe(true);
-      expect(await waitFor(() => !isAlive(descendantPid), 1500)).toBe(true);
-    } finally {
-      // RED leaves the grandchild alive; do not leak the regression fixture.
-      if (!controller.signal.aborted) controller.abort();
-      await promise;
-      if (parentPid > 0 && isAlive(parentPid)) {
-        process.kill(parentPid, 'SIGKILL');
-      }
-      if (descendantPid > 0 && isAlive(descendantPid)) {
-        process.kill(descendantPid, 'SIGKILL');
-      }
-    }
+    await withReadyBridge(lifecycleFixture({ descendant: true }), { timeoutMs: 60000 },
+      async ({ promise, controller, fixture }) => {
+        const parentPid = fixture.parentPid();
+        const descendantPid = fixture.descendantPid();
+        expect(parentPid).toBeGreaterThan(0);
+        expect(descendantPid).toBeGreaterThan(0);
+        expect(isAlive(descendantPid)).toBe(true);
+        controller.abort();
+        expect((await promise).code).toBe('TIMEOUT');
+        expect(await waitFor(() => !isAlive(parentPid))).toBe(true);
+        expect(await waitFor(() => !isAlive(descendantPid), 1500)).toBe(true);
+      });
   });
 
   test('keeps a descendant-only process group owned after the bridge parent exits', async () => {
     if (process.platform === 'win32') return;
-
-    const pidFile = path.join(tmpDir, 'descendant-only.pid');
-    const name = script(
-      'parent-exits-on-term.py',
-      [
-        'import pathlib, subprocess, sys, time',
-        'child = subprocess.Popen([sys.executable, "-c", "import signal, time; signal.signal(signal.SIGTERM, signal.SIG_IGN); time.sleep(600)"], stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, close_fds=True)',
-        `pathlib.Path(${JSON.stringify(pidFile)}).write_text(str(child.pid))`,
-        'time.sleep(600)',
-        '',
-      ].join('\n'),
-    );
-    let descendantPid = -1;
-
-    try {
-      const error = await runner
-        .runPythonBridge(
-          name,
-          { mode: 'text', pythonPath: PYTHON, scriptPath: tmpDir },
-          { timeoutMs: 300, label: 'descendant-only-test' },
-        )
-        .catch((err) => err);
-      expect(await waitFor(() => fs.existsSync(pidFile))).toBe(true);
-      descendantPid = Number(fs.readFileSync(pidFile, 'utf8'));
-      expect(error.code).toBe('TIMEOUT');
-      expect(isAlive(descendantPid)).toBe(true);
-      expect(runner.liveChildCount()).toBe(1);
-
-      expect(runner.killAllPythonChildren('SIGKILL')).toBe(1);
-      expect(await waitFor(() => !isAlive(descendantPid))).toBe(true);
-      expect(await waitFor(() => runner.liveChildCount() === 0)).toBe(true);
-    } finally {
-      if (descendantPid > 0 && isAlive(descendantPid)) {
-        process.kill(descendantPid, 'SIGKILL');
-      }
-    }
+    await withReadyBridge(lifecycleFixture({ descendant: true, ignoreTerm: true }),
+      { timeoutMs: 300, label: 'descendant-only-test' }, async ({ promise, fixture }) => {
+        expect((await promise).code).toBe('TIMEOUT');
+        expect(await waitFor(() => !isAlive(fixture.parentPid()))).toBe(true);
+        expect(isAlive(fixture.descendantPid())).toBe(true);
+        expect(runner.liveChildCount()).toBe(1);
+        expect(runner.killAllPythonChildren('SIGKILL')).toBe(1);
+        expect(await waitFor(() => !isAlive(fixture.descendantPid()))).toBe(true);
+        expect(await waitFor(() => runner.liveChildCount() === 0)).toBe(true);
+      });
   });
 
   test('automatically reaps a surviving descendant after a successful parent exit', async () => {
     if (process.platform === 'win32') return;
-
-    const pidFile = path.join(tmpDir, 'successful-parent-descendant.pid');
-    const name = script(
-      'successful-parent-with-descendant.py',
-      [
-        'import pathlib, subprocess, sys',
-        'child = subprocess.Popen([sys.executable, "-c", "import signal, time; signal.signal(signal.SIGTERM, signal.SIG_IGN); time.sleep(600)"], stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, close_fds=True)',
-        `pathlib.Path(${JSON.stringify(pidFile)}).write_text(str(child.pid))`,
-        'print("complete")',
-        '',
-      ].join('\n'),
-    );
-    let descendantPid = -1;
-
-    try {
-      await expect(
-        runner.runPythonBridge(
-          name,
-          { mode: 'text', pythonPath: PYTHON, scriptPath: tmpDir },
-          { timeoutMs: 60000, label: 'successful-parent-descendant-test' },
-        ),
-      ).resolves.toEqual(['complete']);
-      descendantPid = Number(fs.readFileSync(pidFile, 'utf8'));
-      expect(isAlive(descendantPid)).toBe(true);
-
-      expect(
-        await waitFor(
-          () => !isAlive(descendantPid) && runner.liveChildCount() === 0,
-          runner.KILL_GRACE_MS + 3000,
-        ),
-      ).toBe(true);
-    } finally {
-      if (descendantPid > 0 && isAlive(descendantPid)) {
-        process.kill(descendantPid, 'SIGKILL');
-      }
-    }
+    await withReadyBridge(lifecycleFixture({ descendant: true, ignoreTerm: true, successful: true }),
+      { timeoutMs: 60000, label: 'successful-parent-descendant-test' }, async ({ promise, fixture }) => {
+        fixture.release();
+        expect(await promise).toEqual(['complete']);
+        expect(isAlive(fixture.descendantPid())).toBe(true);
+        expect(await waitFor(() => !isAlive(fixture.descendantPid()) && runner.liveChildCount() === 0,
+          runner.KILL_GRACE_MS + 3000)).toBe(true);
+      });
   });
 
   test('a bridge that ignores SIGTERM is force-killed after the grace period', async () => {
     if (process.platform === 'win32') return;
-
-    const pidFile = path.join(tmpDir, 'ignores-term.pid');
-    const name = script(
-      'ignores-term.py',
-      [
-        'import os, pathlib, signal, time',
-        'signal.signal(signal.SIGTERM, signal.SIG_IGN)',
-        `pathlib.Path(${JSON.stringify(pidFile)}).write_text(str(os.getpid()))`,
-        'time.sleep(600)',
-        '',
-      ].join('\n'),
-    );
-    let pid = -1;
-
-    const error = await runner
-      .runPythonBridge(
-        name,
-        { mode: 'text', pythonPath: PYTHON, scriptPath: tmpDir },
-        { timeoutMs: 300, label: 'sigkill-escalation-test' },
-      )
-      .catch((err) => err);
-
-    try {
-      expect(error.code).toBe('TIMEOUT');
-      expect(await waitFor(() => fs.existsSync(pidFile))).toBe(true);
-      pid = Number(fs.readFileSync(pidFile, 'utf8'));
-      expect(pid).toBeGreaterThan(0);
-      expect(isAlive(pid)).toBe(true);
-      expect(await waitFor(() => !isAlive(pid), runner.KILL_GRACE_MS + 3000)).toBe(true);
-    } finally {
-      if (pid > 0 && isAlive(pid)) process.kill(pid, 'SIGKILL');
-    }
+    await withReadyBridge(lifecycleFixture({ ignoreTerm: true }),
+      { timeoutMs: 300, label: 'sigkill-escalation-test' }, async ({ promise, fixture }) => {
+        expect((await promise).code).toBe('TIMEOUT');
+        const pid = fixture.parentPid();
+        expect(pid).toBeGreaterThan(0);
+        expect(isAlive(pid)).toBe(true);
+        expect(await waitFor(() => !isAlive(pid), runner.KILL_GRACE_MS + 3000)).toBe(true);
+      });
   });
 
   test('installed signal hooks reject new work and accelerate cleanup on a second signal', async () => {
     if (process.platform === 'win32') return;
-
-    const pidFile = path.join(tmpDir, 'in-process-shutdown.pid');
-    const name = script(
-      'in-process-shutdown.py',
-      [
-        'import os, pathlib, signal, time',
-        'signal.signal(signal.SIGTERM, signal.SIG_IGN)',
-        `pathlib.Path(${JSON.stringify(pidFile)}).write_text(str(os.getpid()))`,
-        'time.sleep(600)',
-        '',
-      ].join('\n'),
-    );
-    const run = runner
-      .runPythonBridge(
-        name,
-        { mode: 'text', pythonPath: PYTHON, scriptPath: tmpDir },
-        { timeoutMs: 60000, label: 'in-process-shutdown-test' },
-      )
-      .catch((error) => error);
-    const realKill = process.kill.bind(process);
-    const selfSignals = [];
-    const killSpy = jest.spyOn(process, 'kill').mockImplementation((pid, signal) => {
-      if (pid === process.pid) {
-        selfSignals.push(signal);
-        return true;
-      }
-      return realKill(pid, signal);
-    });
-    let pid = -1;
-
-    try {
-      expect(await waitFor(() => fs.existsSync(pidFile))).toBe(true);
-      pid = Number(fs.readFileSync(pidFile, 'utf8'));
-
-      process.emit('SIGTERM', 'SIGTERM');
-      await expect(
-        runner.runPythonBridge(name, {
-          mode: 'text',
-          pythonPath: PYTHON,
-          scriptPath: tmpDir,
-        }),
-      ).rejects.toThrow(/shutting down/i);
-      expect(isAlive(pid)).toBe(true);
-
-      process.emit('SIGTERM', 'SIGTERM');
-      expect(await waitFor(() => !isAlive(pid))).toBe(true);
-      expect(await waitFor(() => selfSignals.includes('SIGTERM'))).toBe(true);
-      expect(runner.liveChildCount()).toBe(0);
-      await run;
-    } finally {
-      killSpy.mockRestore();
-      if (pid > 0 && isAlive(pid)) realKill(pid, 'SIGKILL');
-    }
+    await withReadyBridge(lifecycleFixture({ ignoreTerm: true }),
+      { timeoutMs: 60000, label: 'in-process-shutdown-test' }, async ({ promise, fixture }) => {
+        const realKill = process.kill.bind(process);
+        const selfSignals = [];
+        let shutdownStarted = false;
+        const killSpy = jest.spyOn(process, 'kill').mockImplementation((pid, signal) => {
+          if (pid === process.pid) {
+            selfSignals.push(signal);
+            return true;
+          }
+          return realKill(pid, signal);
+        });
+        try {
+          shutdownStarted = true;
+          process.emit('SIGTERM', 'SIGTERM');
+          await expect(runner.runPythonBridge(fixture.name, {
+            mode: 'text', pythonPath: PYTHON, scriptPath: tmpDir,
+          })).rejects.toThrow(/shutting down/i);
+          expect(isAlive(fixture.parentPid())).toBe(true);
+          process.emit('SIGTERM', 'SIGTERM');
+          expect(await waitFor(() => !isAlive(fixture.parentPid()))).toBe(true);
+          expect(await waitFor(() => selfSignals.includes('SIGTERM'))).toBe(true);
+          expect(runner.liveChildCount()).toBe(0);
+          await promise;
+        } finally {
+          try {
+            runner.killAllPythonChildren('SIGKILL');
+            await promise;
+            // Keep self-signal interception until the shutdown observer finishes,
+            // including when an assertion above fails.
+            if (shutdownStarted) {
+              expect(await waitFor(() => selfSignals.includes('SIGTERM'))).toBe(true);
+            }
+          } finally {
+            killSpy.mockRestore();
+          }
+        }
+      });
   });
+
+  function ownServer(node, fixture) {
+    let cleaned = false;
+    const cleanup = async () => {
+      if (cleaned) return;
+      cleaned = true;
+      if (node.exitCode === null && node.signalCode === null) node.kill('SIGTERM');
+      try {
+        await waitForExit(node);
+      } catch {
+        node.kill('SIGKILL');
+        await waitForExit(node);
+      }
+      const parentPid = fixture.parentPid();
+      if (parentPid > 0 && (isAlive(parentPid) || isAlive(fixture.descendantPid()))) {
+        try { process.kill(-parentPid, 'SIGKILL'); } catch (error) {
+          if (error.code !== 'ESRCH') throw error;
+        }
+      }
+      for (const pid of [parentPid, fixture.descendantPid()]) {
+        if (isAlive(pid)) killOwned(pid);
+      }
+      expect(await waitFor(() => !isAlive(parentPid) && !isAlive(fixture.descendantPid()))).toBe(true);
+    };
+    ownedCleanups.push(cleanup);
+    return cleanup;
+  }
 
   test('server shutdown waits for TERM-grace-KILL and rejects new bridge work', async () => {
     if (process.platform === 'win32') return;
 
-    const descendantFile = path.join(tmpDir, 'shutdown-descendant.pid');
+    const fixture = lifecycleFixture({ descendant: true, ignoreTerm: true });
+    const descendantFile = path.join(tmpDir, 'fixture-descendant.pid');
     const rejectionFile = path.join(tmpDir, 'shutdown-rejection.txt');
-    script(
-      'shutdown-tree.py',
-      [
-        'import pathlib, subprocess, sys, time',
-        'child = subprocess.Popen([sys.executable, "-c", "import signal, time; signal.signal(signal.SIGTERM, signal.SIG_IGN); time.sleep(600)"], stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, close_fds=True)',
-        `pathlib.Path(${JSON.stringify(descendantFile)}).write_text(str(child.pid))`,
-        'time.sleep(600)',
-        '',
-      ].join('\n'),
-    );
     script('shutdown-new-work.py', 'print("must not spawn")\n');
     const runnerUrl = pathToFileURL(path.resolve('dist/lib/python-runner.js')).href;
     const childCode = [
       `import * as runner from ${JSON.stringify(runnerUrl)};`,
       `import fs from 'fs';`,
       `const options = { mode: 'text', pythonPath: ${JSON.stringify(PYTHON)}, scriptPath: ${JSON.stringify(tmpDir)} };`,
-      `runner.runPythonBridge('shutdown-tree.py', options, { timeoutMs: 60000 }).catch(() => {});`,
-      `while (!fs.existsSync(${JSON.stringify(descendantFile)})) await new Promise(r => setTimeout(r, 10));`,
+      `runner.runPythonBridge('fixture.py', options, { timeoutMs: 60000 }).catch(() => {});`,
+      `const startupDeadline = Date.now() + 8000;`,
+      `while (!fs.existsSync(${JSON.stringify(fixture.readyFile)})) {`,
+      `  if (Date.now() >= startupDeadline) throw new Error('Fixture startup watchdog expired');`,
+      `  await new Promise(r => setTimeout(r, 10));`,
+      `}`,
       `process.on('SIGTERM', async () => {`,
       `  try { await runner.runPythonBridge('shutdown-new-work.py', options); }`,
       `  catch (error) { fs.writeFileSync(${JSON.stringify(rejectionFile)}, error.message); }`,
@@ -438,10 +465,13 @@ maybe('python-runner', () => {
       env: { ...process.env, PYTHON_BRIDGE_KILL_GRACE: '150' },
       stdio: ['ignore', 'ignore', 'pipe'],
     });
+    const cleanup = ownServer(node, fixture);
     let descendantPid = -1;
 
     try {
-      expect(await waitFor(() => fs.existsSync(descendantFile))).toBe(true);
+      if (!await waitFor(() => fs.existsSync(fixture.readyFile))) {
+        throw new Error('Fixture startup watchdog expired without descendant readiness');
+      }
       descendantPid = Number(fs.readFileSync(descendantFile, 'utf8'));
 
       const result = await waitForExit(node);
@@ -450,43 +480,39 @@ maybe('python-runner', () => {
       expect(await waitFor(() => !isAlive(descendantPid), 3000)).toBe(true);
       expect(fs.readFileSync(rejectionFile, 'utf8')).toMatch(/shutting down/i);
     } finally {
-      if (node.exitCode === null && node.signalCode === null) node.kill('SIGKILL');
-      if (descendantPid > 0 && isAlive(descendantPid)) process.kill(descendantPid, 'SIGKILL');
+      await cleanup();
     }
   });
 
   test('a second shutdown signal skips the remaining grace period', async () => {
     if (process.platform === 'win32') return;
 
-    const descendantFile = path.join(tmpDir, 'second-signal-descendant.pid');
-    script(
-      'second-signal-tree.py',
-      [
-        'import pathlib, signal, subprocess, sys, time',
-        'signal.signal(signal.SIGTERM, signal.SIG_IGN)',
-        'child = subprocess.Popen([sys.executable, "-c", "import signal, time; signal.signal(signal.SIGTERM, signal.SIG_IGN); time.sleep(600)"], stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, close_fds=True)',
-        `pathlib.Path(${JSON.stringify(descendantFile)}).write_text(str(child.pid))`,
-        'time.sleep(600)',
-        '',
-      ].join('\n'),
-    );
+    const fixture = lifecycleFixture({ descendant: true, ignoreTerm: true, parentIgnoreTerm: true });
+    const descendantFile = path.join(tmpDir, 'fixture-descendant.pid');
     const runnerUrl = pathToFileURL(path.resolve('dist/lib/python-runner.js')).href;
     const childCode = [
       `import * as runner from ${JSON.stringify(runnerUrl)};`,
       `import fs from 'fs';`,
       `const options = { mode: 'text', pythonPath: ${JSON.stringify(PYTHON)}, scriptPath: ${JSON.stringify(tmpDir)} };`,
-      `runner.runPythonBridge('second-signal-tree.py', options, { timeoutMs: 60000 }).catch(() => {});`,
-      `while (!fs.existsSync(${JSON.stringify(descendantFile)})) await new Promise(r => setTimeout(r, 10));`,
+      `runner.runPythonBridge('fixture.py', options, { timeoutMs: 60000 }).catch(() => {});`,
+      `const startupDeadline = Date.now() + 8000;`,
+      `while (!fs.existsSync(${JSON.stringify(fixture.readyFile)})) {`,
+      `  if (Date.now() >= startupDeadline) throw new Error('Fixture startup watchdog expired');`,
+      `  await new Promise(r => setTimeout(r, 10));`,
+      `}`,
       `await new Promise(() => {});`,
     ].join('\n');
     const node = spawn(process.execPath, ['--input-type=module', '--eval', childCode], {
       env: { ...process.env, PYTHON_BRIDGE_KILL_GRACE: '2000' },
       stdio: ['ignore', 'ignore', 'pipe'],
     });
+    const cleanup = ownServer(node, fixture);
     let descendantPid = -1;
 
     try {
-      expect(await waitFor(() => fs.existsSync(descendantFile))).toBe(true);
+      if (!await waitFor(() => fs.existsSync(fixture.readyFile))) {
+        throw new Error('Fixture startup watchdog expired without descendant readiness');
+      }
       descendantPid = Number(fs.readFileSync(descendantFile, 'utf8'));
       node.kill('SIGTERM');
       await new Promise((resolve) => setTimeout(resolve, 100));
@@ -501,55 +527,29 @@ maybe('python-runner', () => {
       expect(Date.now() - secondSignalAt).toBeLessThan(1000);
       expect(await waitFor(() => !isAlive(descendantPid))).toBe(true);
     } finally {
-      if (node.exitCode === null && node.signalCode === null) node.kill('SIGKILL');
-      if (descendantPid > 0 && isAlive(descendantPid)) process.kill(descendantPid, 'SIGKILL');
+      await cleanup();
     }
   });
 
   test('keeps an unkillable process tree registered until it actually exits', async () => {
     if (process.platform === 'win32') return;
-
-    const pidFile = path.join(tmpDir, 'survives-kill.pid');
-    const name = script(
-      'survives-kill.py',
-      [
-        'import os, pathlib, signal, time',
-        'signal.signal(signal.SIGTERM, signal.SIG_IGN)',
-        `pathlib.Path(${JSON.stringify(pidFile)}).write_text(str(os.getpid()))`,
-        'time.sleep(600)',
-        '',
-      ].join('\n'),
-    );
-    const realKill = process.kill.bind(process);
-    let pid = -1;
-    let killSpy;
-    const promise = runner
-      .runPythonBridge(
-        name,
-        { mode: 'text', pythonPath: PYTHON, scriptPath: tmpDir },
-        { timeoutMs: 300, label: 'surviving-tree-test' },
-      )
-      .catch((err) => err);
-
-    try {
-      expect(await waitFor(() => fs.existsSync(pidFile))).toBe(true);
-      pid = Number(fs.readFileSync(pidFile, 'utf8'));
-      killSpy = jest.spyOn(process, 'kill').mockImplementation((target, signal) => {
-        if (target === -pid && signal === 'SIGKILL') return true;
-        return realKill(target, signal);
+    await withReadyBridge(lifecycleFixture({ ignoreTerm: true }),
+      { timeoutMs: 300, label: 'surviving-tree-test' }, async ({ promise, fixture }) => {
+        const pid = fixture.parentPid();
+        const realKill = process.kill.bind(process);
+        const killSpy = jest.spyOn(process, 'kill').mockImplementation((target, signal) => {
+          if (target === -pid && signal === 'SIGKILL') return true;
+          return realKill(target, signal);
+        });
+        try {
+          expect((await promise).code).toBe('TIMEOUT');
+          await new Promise((resolve) => setTimeout(resolve, runner.KILL_GRACE_MS + 300));
+          expect(isAlive(pid)).toBe(true);
+          expect(runner.liveChildCount()).toBe(1);
+        } finally {
+          killSpy.mockRestore();
+        }
       });
-
-      const error = await promise;
-      expect(error.code).toBe('TIMEOUT');
-      await new Promise((resolve) => setTimeout(resolve, runner.KILL_GRACE_MS + 300));
-
-      expect(isAlive(pid)).toBe(true);
-      expect(runner.liveChildCount()).toBe(1);
-    } finally {
-      killSpy?.mockRestore();
-      if (pid > 0 && isAlive(pid)) realKill(-pid, 'SIGKILL');
-      await waitFor(() => runner.liveChildCount() === 0);
-    }
   });
 
   test('does not spawn anything when the caller has already aborted', async () => {
@@ -590,26 +590,15 @@ maybe('python-runner', () => {
   );
 
   test('killAllPythonChildren reaps children still running', async () => {
-    const name = script('hang4.py', 'import time\ntime.sleep(600)\n');
-
-    const promise = runner
-      .runPythonBridge(
-        name,
-        { mode: 'text', pythonPath: PYTHON, scriptPath: tmpDir },
-        { timeoutMs: 60000 },
-      )
-      .catch((err) => err);
-
-    await new Promise((resolve) => setTimeout(resolve, 300));
-    const pid = lastSpawnedPid();
-    expect(runner.liveChildCount()).toBe(1);
-
-    const killed = runner.killAllPythonChildren('SIGKILL');
-
-    expect(killed).toBe(1);
-    expect(await waitFor(() => !isAlive(pid))).toBe(true);
-    await promise;
-    expect(runner.liveChildCount()).toBe(0);
+    await withReadyBridge(lifecycleFixture(), { timeoutMs: 60000 }, async ({ promise, fixture }) => {
+      const pid = fixture.parentPid();
+      expect(pid).toBeGreaterThan(0);
+      expect(runner.liveChildCount()).toBe(1);
+      expect(runner.killAllPythonChildren('SIGKILL')).toBe(1);
+      expect(await waitFor(() => !isAlive(pid))).toBe(true);
+      await promise;
+      expect(runner.liveChildCount()).toBe(0);
+    });
   });
 
   test('deregisters the child after a normal run', async () => {
@@ -690,27 +679,6 @@ maybe('python-runner', () => {
     expect(process.listenerCount('exit')).toBeLessThanOrEqual(before + 1);
   });
 });
-
-/**
- * The pid of the most recently spawned python child of this process.
- *
- * Read from the OS rather than from the runner, so the assertion is about a
- * real process and not about bookkeeping that could itself be wrong.
- */
-function lastSpawnedPid() {
-  try {
-    const out = execFileSync('pgrep', ['-P', String(process.pid)], {
-      encoding: 'utf8',
-    });
-    const pids = out
-      .split('\n')
-      .map((line) => parseInt(line.trim(), 10))
-      .filter((pid) => Number.isInteger(pid));
-    return pids.length > 0 ? pids[pids.length - 1] : -1;
-  } catch {
-    return -1;
-  }
-}
 
 /**
  * Budget parsing, which needs no Python child: a fresh import per case, since

@@ -127,6 +127,24 @@ const expectedBridgeOptions = {
   search_multi_source: { timeoutMs: undefined, label: 'python_bridge.search_multi_source' },
 };
 
+// Independent literal wire contract, not imported from production metadata.
+// Recent books shares search annotations today; title prose is not pinned.
+const expectedAnnotations = {
+  search_books: { readOnlyHint: true, idempotentHint: true, openWorldHint: true },
+  full_text_search: { readOnlyHint: true, idempotentHint: true, openWorldHint: true },
+  get_download_history: { readOnlyHint: true, idempotentHint: false, openWorldHint: true },
+  get_download_limits: { readOnlyHint: true, idempotentHint: false, openWorldHint: true },
+  get_recent_books: { readOnlyHint: true, idempotentHint: true, openWorldHint: true },
+  download_book_to_file: { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: true },
+  process_document_for_rag: { readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: false },
+  get_book_metadata: { readOnlyHint: true, idempotentHint: true, openWorldHint: true },
+  search_by_term: { readOnlyHint: true, idempotentHint: true, openWorldHint: true },
+  search_by_author: { readOnlyHint: true, idempotentHint: true, openWorldHint: true },
+  fetch_booklist: { readOnlyHint: true, idempotentHint: true, openWorldHint: true },
+  search_advanced: { readOnlyHint: true, idempotentHint: true, openWorldHint: true },
+  search_multi_source: { readOnlyHint: true, idempotentHint: true, openWorldHint: true },
+};
+
 // Non-default values make dropped optional fields observable even where the
 // facade would otherwise reconstruct a missing field's default value.
 const forwardingCases = [
@@ -305,6 +323,48 @@ test('tools/list has a fixture for every advertised tool and bounded schema cost
       Math.ceil(characterBaselines[tool.name] * 1.1),
     );
   }
+});
+
+test('tools/list advertises the literal annotation contract for every tool', () => {
+  expect(advertised.tools.map((tool) => tool.name).sort()).toEqual(Object.keys(expectedAnnotations).sort());
+  for (const tool of advertised.tools) {
+    expect(tool.annotations).toMatchObject(expectedAnnotations[tool.name]);
+  }
+});
+
+test('tools/list titles are nonempty human-readable strings for every tool', () => {
+  for (const tool of advertised.tools) {
+    expect(tool.annotations?.title).toBeDefined();
+    expect(typeof tool.annotations.title).toBe('string');
+    expect(tool.annotations.title.trim().length).toBeGreaterThan(0);
+    expect(tool.annotations.title).not.toContain('_');
+    expect(tool.annotations.title).toMatch(/\p{L}/u);
+  }
+});
+
+test('tools/list exposes descriptive names and object input schemas for every tool', () => {
+  for (const tool of advertised.tools) {
+    expect(tool.name).toMatch(/^[a-z][a-z0-9_]*$/);
+    expect(tool.name).not.toContain('__');
+    expect(typeof tool.description).toBe('string');
+    expect(tool.description.length).toBeGreaterThan(10);
+    expect(tool.description.toLowerCase()).not.toContain('todo');
+    expect(tool.description.toLowerCase()).not.toContain('placeholder');
+    expect(tool.inputSchema.type).toBe('object');
+    expect(tool.inputSchema.properties).toBeDefined();
+  }
+});
+
+test('tools/list retains required search and download inputs and search filters', () => {
+  const search = advertised.tools.find((tool) => tool.name === 'search_books');
+  const download = advertised.tools.find((tool) => tool.name === 'download_book_to_file');
+  expect(search.inputSchema.properties.query).toBeDefined();
+  expect(search.inputSchema.required).toContain('query');
+  expect(download.inputSchema.properties.bookDetails).toBeDefined();
+  expect(download.inputSchema.required).toContain('bookDetails');
+  expect(search.inputSchema.properties.languages).toBeDefined();
+  expect(search.inputSchema.properties.extensions).toBeDefined();
+  expect(search.inputSchema.properties.fromYear).toBeDefined();
 });
 
 test('every advertised input property is explicitly set by a tool fixture', () => {

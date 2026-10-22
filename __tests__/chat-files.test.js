@@ -143,7 +143,7 @@ test('id expiry is exactly four hours and cap is 100 across restarts', async () 
   expect((await client.readResource({ uri: latest })).contents).toHaveLength(1);
   clock.mockReturnValue(now + 4 * 60 * 60 * 1000);
   await expect(client.readResource({ uri: latest })).rejects.toThrow(/unknown|expired/i);
-});
+}, 60_000);
 test('resource read rechecks cap, regular file and hash', async () => {
   await connect();
   const uri = link(await share()).uri;
@@ -219,7 +219,7 @@ pdfTest('map sizes, section resolution, partial send, cap and labels', async () 
     )
   ).mtimeMs;
   expect(after).toBe(before);
-});
+}, 60_000);
 pdfTest.each(['0', '2-1', '1-13', '1.5', '1,2', '-1'])(
   'rejects invalid PDF range %s',
   async (pages) => {

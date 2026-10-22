@@ -285,3 +285,12 @@ test('renderer launch errors return a clear neutral error', async () => {
   await connect();
   expectError(await image(), /renderer.*process error/i);
 });
+imageTest('three concurrent probe renders queue instead of returning busy', async () => {
+  await generatePdf();
+  await connect();
+  const results = await Promise.all([image(), image(), image()]);
+  for (const result of results) {
+    expect(result.isError).not.toBe(true);
+    expect(result.content[0].type).toBe('image');
+  }
+});

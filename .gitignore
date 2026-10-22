@@ -113,3 +113,6 @@ test_files/VISUAL_COMPARISON.txt
 
 # Test visualization outputs
 test_files/*_visualization.png
+
+# Offline chat-file smoke hardlinks and private caches: never publish books.
+/local-smoke-root/

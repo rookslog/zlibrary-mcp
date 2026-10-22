@@ -12,6 +12,7 @@ import type {
 } from '@modelcontextprotocol/sdk/types.js';
 import { z } from 'zod';
 import { getPythonScriptPath } from './paths.js';
+import { pageRenderQueue } from './pdf-queue.js';
 
 class ProbeError extends Error {}
 
@@ -165,7 +166,6 @@ function render(
 
 export class HandoffProbes {
   private readonly files = new Map<string, { resource: BlobResourceContents; expires: number }>();
-  private rendering = false;
 
   private prune() {
     const now = Date.now();
@@ -213,16 +213,18 @@ export class HandoffProbes {
       const python = process.env.ZLIBRARY_PROBE_PYTHON;
       if (!python || !path.isAbsolute(python))
         throw new ProbeError('ZLIBRARY_PROBE_PYTHON must be an absolute interpreter path');
-      if (this.rendering)
-        throw new ProbeError('PDF renderer is busy; retry after the current page');
-      this.rendering = true;
-      try {
+      {
         const output = JSON.parse(
-          await render(
-            bytes,
-            python,
-            parsed.data.page,
-            Math.max(50, Math.min(200, parsed.data.dpi ?? 100)),
+          await pageRenderQueue.run(
+            (queuedSignal) =>
+              render(
+                bytes,
+                python,
+                parsed.data.page,
+                Math.max(50, Math.min(200, parsed.data.dpi ?? 100)),
+                queuedSignal,
+              ),
+            25000,
             signal,
           ),
         );
@@ -256,8 +258,6 @@ export class HandoffProbes {
             },
           ],
         };
-      } finally {
-        this.rendering = false;
       }
     } catch (error) {
       // Never include helper stderr, PDF bytes, extracted text or raw OS paths.

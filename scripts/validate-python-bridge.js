@@ -20,6 +20,8 @@ const projectRoot = resolve(__dirname, '..');
 
 // Required Python bridge files
 const requiredPythonFiles = [
+  { path: 'lib/chat_files.py', critical: true, description: 'Optional conversation PDF helper' },
+  { path: 'lib/probe_page_image.py', critical: true, description: 'Diagnostic PDF renderer' },
   { path: 'lib/python_bridge.py', critical: true, description: 'Main Python bridge script' },
   { path: 'lib/enhanced_metadata.py', critical: true, description: 'Enhanced metadata extraction' },
   { path: 'lib/author_tools.py', critical: false, description: 'Author-specific search tools' },

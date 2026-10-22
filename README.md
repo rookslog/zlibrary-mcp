@@ -211,6 +211,38 @@ expire after 30 minutes, with at most 20 held per server process. These diagnost
 do not establish that ChatGPT receives attachments; with the flag unset, the five
 normal tools and their tool-list bytes remain unchanged.
 
+## Optional conversation files (preliminary)
+
+Set `ZLIBRARY_CHAT_FILES=1` to add `get_book_map {file}`,
+`share_book_file {file, pages?, section?}`, and `get_page_image {file, page, dpi?}`.
+This local-file handoff is separate from acquisition. PDF work requires
+`ZLIBRARY_PDF_PYTHON`, an absolute interpreter path with PyMuPDF already installed;
+there is no new base dependency. EPUBs can be sent whole; splitting EPUB is not supported.
+
+Set `ZLIBRARY_OUTPUT_ROOT` explicitly. Paths may be relative to that root or
+absolute inside it. Traversal, escaping symlinks, non-regular files and the private
+`.chat-files/` cache are refused. `ZLIBRARY_CHAT_FILES_MAX_BYTES` defaults to
+7,750,000 (accepted range: 1,000,000–33,554,432 bytes). Raising it requires a client
+that supports larger resource replies; the measured ChatGPT tunnel needs the default.
+
+Call `get_book_map` first for a large PDF and prefer a whole section. Maps report
+actual excerpt sizes, labels, text-layer share and suggested parts. Safe windows
+are planning hints from real candidate builds; the map describes the candidates
+verified. Every send independently checks the final cached bytes. Oversized ranges
+send one fitting prefix and report the remaining PDF pages. Images are never downsampled
+in excerpts. Printed labels are retained; font subsetting is kept only when smaller
+and sampled text extraction stays unchanged.
+
+A resource link asks ChatGPT for approval before it arrives as a conversation file.
+Delivery is confirmed only by “Tool uploaded file with ID … to: /mnt/data/<name>”.
+If that line is missing, check `/mnt/data` in Python and request again, or request a
+smaller range. Pieces are separate files and can be joined in Python. This behavior
+is client-dependent; these tools do not themselves prove remote materialization.
+Links last four hours, at most 100, with mappings and immutable pieces persisted
+under `<root>/.chat-files/cache` across server restarts. Expired mappings are pruned
+on use; cached maps/pieces remain on disk. Concurrent renders queue, with at most
+eight waiting and a 25-second deadline including queue time.
+
 ## Configuration
 
 | Variable | Meaning |

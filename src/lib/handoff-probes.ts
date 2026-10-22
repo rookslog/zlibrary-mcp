@@ -15,7 +15,13 @@ import { getPythonScriptPath } from './paths.js';
 
 class ProbeError extends Error {}
 
-const MAX_FILE = 6 * 1024 * 1024;
+// Probe-only: ZLIBRARY_PROBE_MAX_FILE_BYTES raises the cap to find the tunnel's real ceiling (1 B to 32 MiB).
+const requestedMax = Number(process.env.ZLIBRARY_PROBE_MAX_FILE_BYTES);
+const MAX_FILE =
+  Number.isInteger(requestedMax) && requestedMax > 0 && requestedMax <= 32 * 1024 * 1024
+    ? requestedMax
+    : 6 * 1024 * 1024;
+const MAX_FILE_LABEL = `${+(MAX_FILE / 1024 / 1024).toFixed(2)} MiB`;
 const MAX_IMAGE = 3 * 1024 * 1024;
 const TTL = 30 * 60 * 1000;
 const fileInput = z.strictObject({
@@ -94,7 +100,7 @@ async function readContainedFile(
   try {
     const info = await handle.stat();
     if (!info.isFile()) throw new ProbeError('path must name a regular file');
-    if (info.size > MAX_FILE) throw new ProbeError('file exceeds 6 MiB');
+    if (info.size > MAX_FILE) throw new ProbeError(`file exceeds ${MAX_FILE_LABEL}`);
     const current = await realpath(target);
     const currentInfo = await stat(current);
     if (!contained(root, current) || info.dev !== currentInfo.dev || info.ino !== currentInfo.ino)
@@ -107,7 +113,7 @@ async function readContainedFile(
       if (!bytesRead) break;
       length += bytesRead;
     }
-    if (length > MAX_FILE) throw new ProbeError('file exceeds 6 MiB');
+    if (length > MAX_FILE) throw new ProbeError(`file exceeds ${MAX_FILE_LABEL}`);
     const mimeTypes: Record<string, string> = {
       '.pdf': 'application/pdf',
       '.epub': 'application/epub+zip',

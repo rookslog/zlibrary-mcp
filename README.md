@@ -202,6 +202,15 @@ with SuperGateway at `http://localhost:8000/sse`. Remote clients receive paths o
 the **server**, not downloadable attachments or local client paths. There is no
 file-reading tool in this five-tool interface.
 
+For the temporary ChatGPT handoff experiment only, `ZLIBRARY_PROBE_TOOLS=1` adds
+`probe_file_link` (resource link or embedded bytes) and `probe_page_image` (one PDF
+page as an image). Both require paths relative to an explicit `ZLIBRARY_OUTPUT_ROOT`
+and refuse files larger than 6 MiB. Image rendering also requires an absolute
+`ZLIBRARY_PROBE_PYTHON` interpreter path with PyMuPDF installed. Resource links
+expire after 30 minutes, with at most 20 held per server process. These diagnostics
+do not establish that ChatGPT receives attachments; with the flag unset, the five
+normal tools and their tool-list bytes remain unchanged.
+
 ## Configuration
 
 | Variable | Meaning |

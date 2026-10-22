@@ -4,7 +4,11 @@ import * as path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { Server } from '@modelcontextprotocol/sdk/server/index.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
-import { CallToolRequestSchema, ListToolsRequestSchema } from '@modelcontextprotocol/sdk/types.js';
+import {
+  CallToolRequestSchema,
+  ListToolsRequestSchema,
+  ReadResourceRequestSchema,
+} from '@modelcontextprotocol/sdk/types.js';
 import type { Tool } from '@modelcontextprotocol/sdk/types.js';
 import { z } from 'zod';
 import { AcquisitionTools, INPUTS } from './lib/acquisition-tools.js';
@@ -12,6 +16,7 @@ import type { ToolName } from './lib/acquisition-tools.js';
 import { getSessionMode } from './lib/eapi-session.js';
 import { invokeAcquisitionBridge } from './lib/zlibrary-api.js';
 import { logger } from './lib/logger.js';
+import { HandoffProbes, PROBE_TOOL_DEFINITIONS } from './lib/handoff-probes.js';
 
 const descriptions: Record<ToolName, string> = {
   search:
@@ -114,12 +119,21 @@ class AcquisitionServer extends Server {
   private definitions: Tool[] = [];
   readonly tools = new AcquisitionTools(invokeAcquisitionBridge);
   constructor() {
+    const probes = process.env.ZLIBRARY_PROBE_TOOLS === '1' ? new HandoffProbes() : undefined;
     super(
       { name: 'book-acquisition', version: getPackageVersion() },
-      { capabilities: { tools: {} } },
+      { capabilities: { tools: {}, ...(probes ? { resources: {} } : {}) } },
     );
-    this.setRequestHandler(ListToolsRequestSchema, async () => ({ tools: this.definitions }));
+    this.setRequestHandler(ListToolsRequestSchema, async () => ({
+      tools: probes ? [...this.definitions, ...PROBE_TOOL_DEFINITIONS] : this.definitions,
+    }));
+    if (probes)
+      this.setRequestHandler(ReadResourceRequestSchema, async (request) =>
+        probes.readResource(request.params.uri),
+      );
     this.setRequestHandler(CallToolRequestSchema, async (request, extra) => {
+      if (probes && PROBE_TOOL_DEFINITIONS.some((tool) => tool.name === request.params.name))
+        return probes.call(request.params.name, request.params.arguments ?? {}, extra.signal);
       const result = await this.tools.call(request.params.name, request.params.arguments ?? {}, {
         signal: extra.signal,
       });

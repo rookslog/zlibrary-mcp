@@ -49,6 +49,17 @@ def generate(root):
         d.new_page().insert_text((20, 30), f"PRIVATE {i}")
     d.save(root / "plain.pdf")
     d.close()
+    # An integer key in the font dictionary: MuPDF prints "invalid key in dict"
+    # and repairs on open. Same length, so the xref offsets stay valid.
+    d = fitz.open()
+    for i in range(3):
+        d.new_page().insert_text((72, 72), f"PRIVATE {i}")
+    d.set_toc([[1, "A", 1], [1, "B", 2]])
+    data = d.tobytes(garbage=0, deflate=False)
+    d.close()
+    good, bad = b"<</Type/Font/Subtype", b"<<1 2/Font 3/Subtype"
+    assert data.count(good) == 1
+    (root / "malformed.pdf").write_bytes(data.replace(good, bad))
 
 
 if __name__ == "__main__":

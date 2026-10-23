@@ -131,3 +131,66 @@ def test_oversized_single_pages_are_not_suggested_as_sendable_parts(helper, book
         assert result["safe_window_pages"] == 0
         assert len(result["unshareable_pages"]) == 5
         assert all(p["use"] == "get_page_image" for p in result["unshareable_pages"])
+
+
+def _fd_open(fd):
+    import os
+
+    try:
+        os.fstat(fd)
+        return True
+    except OSError:
+        return False
+
+
+def run_helper(command, pdf, cache, **args):
+    import json
+    import os
+    import subprocess
+
+    with open(pdf, "rb") as source:
+        # The helper reads the book from fd 3, as the server lends it.
+        saved = os.dup(3) if _fd_open(3) else None
+        os.dup2(source.fileno(), 3)
+        try:
+            proc = subprocess.run(
+                [sys.executable, "-I", "-B", str(ROOT / "lib/chat_files.py"), command],
+                input=json.dumps(
+                    {"cache": str(cache), "key": "k", "max_bytes": 7750000, **args}
+                ).encode(),
+                capture_output=True,
+                pass_fds=(3,),
+                timeout=120,
+            )
+        finally:
+            if saved is None:
+                os.close(3)
+            else:
+                os.dup2(saved, 3)
+                os.close(saved)
+    assert proc.returncode == 0
+    return proc.stdout.decode(), proc.stderr.decode()
+
+
+def test_malformed_pdf_maps_and_excerpts_with_clean_stdout(book):
+    cache = book / "cache"
+    cache.mkdir()
+    out, err = run_helper("map", book / "malformed.pdf", cache)
+    import json
+
+    assert out.count("\n") == 1 and "MuPDF" not in out
+    result = json.loads(out)
+    assert result["pages"] == 3
+    assert result["repairs"] > 0
+    out, _ = run_helper("excerpt", book / "malformed.pdf", cache, pages="1-3")
+    piece = json.loads(out)
+    assert piece["pdf_pages"] == "1-3"
+    with fitz.open(cache / piece["piece"]) as excerpt:
+        assert [p.get_text().strip() for p in excerpt] == [
+            "PRIVATE 0",
+            "PRIVATE 1",
+            "PRIVATE 2",
+        ]
+    # Control: a well-formed file reports no repairs.
+    out, _ = run_helper("map", book / "plain.pdf", cache)
+    assert "repairs" not in json.loads(out)

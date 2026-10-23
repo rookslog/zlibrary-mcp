@@ -126,7 +126,9 @@ async function pdf(
               new Error('PDF helper could not complete within its timeout/output limit'),
             );
           try {
-            const value = JSON.parse(Buffer.concat(chunks).toString());
+            // The reply is the last line; stray library output before it is ignored.
+            const lines = Buffer.concat(chunks).toString().split('\n');
+            const value = JSON.parse(lines.filter((line) => line.trim()).pop() ?? '');
             if (value.error) reject(new Error(value.error));
             else resolve(value);
           } catch {

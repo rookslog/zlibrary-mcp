@@ -264,3 +264,27 @@ test('PDF configuration and argument errors are clear', async () => {
   expectError(await share({ file: 'book.epub', pages: '1' }), /PDF/);
   expectError(await share({ file: 'book.epub', pages: '1', section: '1' }), /arguments|together/i);
 });
+pdfTest('malformed PDF maps and shares; MuPDF repair messages stay out of the reply', async () => {
+  await generated();
+  await connect();
+  const m = facts(await call('get_book_map', { file: 'malformed.pdf' }));
+  expect(m.pages).toBe(3);
+  expect(m.repairs).toBeGreaterThan(0);
+  const r = await share({ file: 'malformed.pdf', pages: '1-3' });
+  expect(link(r)).toBeDefined();
+  expect(facts(r).pdf_pages).toBe('1-3');
+});
+async function fakePython(body) {
+  const file = path.join(directory, `fake-python-${Math.random().toString(36).slice(2)}`);
+  await fs.writeFile(file, `#!/bin/sh\ncat >/dev/null\n${body}\n`, { mode: 0o755 });
+  process.env.ZLIBRARY_PDF_PYTHON = file;
+}
+test('the helper reply is its last stdout line; earlier library output is ignored', async () => {
+  await fs.writeFile(path.join(root, 'any.pdf'), 'PRIVATE');
+  await fakePython(
+    `echo 'MuPDF error: syntax error: invalid key in dict'\necho '{"pages":1,"sections":[],"suggested_parts":[]}'\necho`,
+  );
+  await connect();
+  const m = facts(await call('get_book_map', { file: 'any.pdf' }));
+  expect(m.pages).toBe(1);
+});

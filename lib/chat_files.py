@@ -423,18 +423,42 @@ def render(doc, page_number, dpi):
     }
 
 
+def quiet_mupdf():
+    # MuPDF prints repair messages ("MuPDF error: syntax error: invalid key in
+    # dict") to stdout, which corrupts the JSON reply. Keep them in its store.
+    import fitz
+
+    fitz.TOOLS.mupdf_display_errors(False)
+    fitz.TOOLS.mupdf_display_warnings(False)
+    fitz.TOOLS.reset_mupdf_warnings()
+
+
+def mupdf_messages():
+    import fitz
+
+    return len(
+        [line for line in fitz.TOOLS.mupdf_warnings().splitlines() if line.strip()]
+    )
+
+
 def main(command, args):
     import fitz
 
     cache = Path(args["cache"])
     if cache.is_symlink() or not cache.is_dir() or cache.resolve() != cache:
         raise ValueError("cache directory is unavailable")
+    quiet_mupdf()
     with fitz.open("/proc/self/fd/3") as doc:
         builder = PdfBuilder(doc, cache, args["key"])
         if command == "render":
             return render(doc, args["page"], args.get("dpi", 100))
         if command == "map":
-            return pdf_map(doc, builder, args["max_bytes"])
+            result = pdf_map(doc, builder, args["max_bytes"])
+            repairs = mupdf_messages()
+            if repairs:
+                # MuPDF repaired the file on open; the count is of its messages.
+                result["repairs"] = repairs
+            return result
         if command != "excerpt":
             raise ValueError("unknown PDF operation")
         start, end = parse_pages(args["pages"], len(doc))
@@ -461,6 +485,11 @@ def main(command, args):
 
 
 if __name__ == "__main__":
+    # Only the JSON reply reaches the real stdout; anything else written to fd 1
+    # (by MuPDF or a library) goes to stderr, which the server discards.
+    reply = os.fdopen(os.dup(1), "w")
+    os.dup2(2, 1)
+    sys.stdout = sys.stderr
     try:
         output = main(sys.argv[1], json.load(sys.stdin))
     except ValueError as exc:
@@ -469,4 +498,5 @@ if __name__ == "__main__":
         output = {
             "error": "PDF helper could not complete; check file and ZLIBRARY_PDF_PYTHON (PyMuPDF required)"
         }
-    print(json.dumps(output, separators=(",", ":")))
+    print(json.dumps(output, separators=(",", ":")), file=reply)
+    reply.close()

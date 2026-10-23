@@ -87,6 +87,7 @@ interface Attempt {
   ignored?: string[];
   code?: string;
   reason?: string;
+  http_status?: number;
 }
 const allSources: Source[] = ['libgen', 'zlibrary', 'annas'];
 // Match lib/sources/config.py. The cross-language reporting test guards drift.
@@ -529,6 +530,10 @@ export class AcquisitionTools {
               : 'failed',
           code: failure.code,
           reason: failure.info.detail?.reason,
+          // Set only for browser_check (see classifyFailure); review F2.
+          ...(Number.isInteger(failure.info.detail?.http_status)
+            ? { http_status: failure.info.detail.http_status }
+            : {}),
         });
       }
     }

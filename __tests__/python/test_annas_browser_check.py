@@ -136,6 +136,39 @@ async def test_empty_anna_result_page_quoting_the_phrase_is_not_a_challenge():
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
+    "title",
+    [
+        "Checking your browser before accessing annas-archive.gl",
+        "DDoS-Guard for annas-archive.gl",
+    ],
+)
+async def test_domain_in_challenge_title_does_not_exempt_it(title):
+    # REVIEW-2 N1: a domain in a 200 challenge title is not page branding.
+    body = f"<html><title>{title}</title><h1>Checking your browser</h1></html>"
+    adapter = respond(200, {"server": "ddos-guard", "content-type": "text/html"}, body)
+    try:
+        with pytest.raises(ProviderResponseError) as caught:
+            await adapter.search("grid systems")
+        assert caught.value.reason == "browser_check"
+        assert caught.value.status_code == 200
+    finally:
+        await adapter.close()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("brand", ["Anna's Archive", "Anna’s Archive"])
+async def test_branded_empty_query_echo_is_not_a_challenge(brand):
+    # Negative control for N1: the page title may echo a challenge-like query.
+    body = f"<html><title>Checking your browser - {brand}</title><h1>Checking your browser</h1></html>"
+    adapter = respond(200, {"server": "ddos-guard", "content-type": "text/html"}, body)
+    try:
+        assert await adapter.search("checking your browser") == []
+    finally:
+        await adapter.close()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
     "headers",
     [{}, {"content-type": "text/plain"}, {"content-type": "application/octet-stream"}],
 )

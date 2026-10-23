@@ -245,19 +245,21 @@ export class AcquisitionTools {
         .filter(Boolean)
         .join(', ');
     // Display strings decode catalogue mnemonics; refs keep the raw record.
-    return nonempty({
-      ...(mint ? { ref: this.refs.mintStable('r', selection) } : {}),
-      title: decodeMarcMnemonics(b.title ?? b.name),
-      author: decodeMarcMnemonics(author),
-      year: numberOrUndefined(b.year),
-      language: b.language,
-      format: b.extension ?? b.format,
-      size_mb: sizeMB(b),
-      pages: numberOrUndefined(b.pages),
-      publisher: decodeMarcMnemonics(b.publisher),
-      source: selection.source,
-      also_available_on: b.also_available_on,
-    });
+    return {
+      ...nonempty({
+        ...(mint ? { ref: this.refs.mintStable('r', selection) } : {}),
+        title: decodeMarcMnemonics(b.title ?? b.name),
+        author: decodeMarcMnemonics(author),
+        language: b.language,
+        format: b.extension ?? b.format,
+        size_mb: sizeMB(b),
+        publisher: decodeMarcMnemonics(b.publisher),
+        source: selection.source,
+        also_available_on: b.also_available_on,
+      }),
+      year: numberOrUndefined(b.year) || null,
+      pages: numberOrUndefined(b.pages) || null,
+    };
   }
   private identifiers(b: any, source: Source) {
     return source === 'zlibrary'

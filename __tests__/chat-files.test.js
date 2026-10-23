@@ -104,6 +104,7 @@ test('whole file unchanged, immutable cached SHA, persistent restart resource', 
   const j = facts(r);
   expect(l.uri).toMatch(/^zlib-book:\/\/file\/[a-f0-9-]+$/);
   expect(j.bytes).toBe(14);
+  expect(j.complete).toBe(true);
   expect(j.sha256).toBe(sha(Buffer.from('UNCHANGED_EPUB')));
   await fs.writeFile(path.join(root, 'book.epub'), 'REPLACED');
   const reply = await client.readResource({ uri: l.uri });
@@ -173,6 +174,7 @@ test('EPUB over cap refused, other map metadata needs no PDF interpreter', async
   const m = facts(await call('get_book_map', { file: 'book.epub' }));
   expect(m.fits_whole).toBe(true);
   expect(m.bytes).toBe(14);
+  expect(m.repair_messages).toBe(0);
   await fs.writeFile(path.join(root, 'big.epub'), Buffer.alloc(7750001));
   const r = await share({ file: 'big.epub' });
   expect(link(r)).toBeUndefined();
@@ -185,6 +187,15 @@ test('invalid max_bytes setting returns explicit error, including just below and
     expectError(await share(), /ZLIBRARY_CHAT_FILES_MAX_BYTES/);
   }
 });
+pdfTest('partial send is explicitly incomplete alongside the remaining pages', async () => {
+  await generated();
+  process.env.ZLIBRARY_CHAT_FILES_MAX_BYTES = '1100000';
+  await connect();
+  const r = await share({ file: 'nested.pdf', pages: '1-12' });
+  expect(link(r)).toBeDefined();
+  expect(facts(r).remaining).toMatch(/^\d+-12$/);
+  expect(facts(r).complete).toBe(false);
+});
 pdfTest('map sizes, section resolution, partial send, cap and labels', async () => {
   await generated();
   process.env.ZLIBRARY_CHAT_FILES_MAX_BYTES = '1100000';
@@ -192,6 +203,19 @@ pdfTest('map sizes, section resolution, partial send, cap and labels', async () 
   const m = facts(await call('get_book_map', { file: 'nested.pdf' }));
   expect(m.pages).toBe(12);
   expect(m.text_layer).toBe(1);
+  expect(m.guidance).toMatch(
+    /text_layer is the fraction of sampled pages with non-whitespace extracted text/,
+  );
+  expect(m.guidance).toMatch(/up to 20 evenly spaced pages/);
+  expect(m.guidance).toMatch(/text_layer_sample_pages/);
+  expect(m.guidance).toMatch(/not OCR accuracy/);
+  expect(m.guidance).toMatch(
+    /starts_at_section identifies the first section heading on the part's first page/,
+  );
+  expect(m.guidance).toMatch(/largest section boundary at any depth, including subsections/);
+  expect(m.guidance).toMatch(/at least 60% of the furthest fitting span/);
+  expect(m.guidance).toMatch(/otherwise they end at the furthest fitting page/);
+  expect(m.guidance).toMatch(/A part can start at a subsection in the middle of a chapter/);
   expect(m.fits_whole).toBe(false);
   expect(m.sections[1].fits).toBe(false);
   expect(m.guidance).toMatch(/estimates with a 5% margin/);
@@ -201,6 +225,7 @@ pdfTest('map sizes, section resolution, partial send, cap and labels', async () 
     // Estimated parts never overflow: the exact send is the whole part.
     expect(facts(r).pdf_pages).toBe(part.pdf_pages);
     expect(facts(r).remaining).toBeUndefined();
+    expect(facts(r).complete).toBe(true);
     expect(facts(r).bytes).toBeLessThanOrEqual(part.estimated_bytes);
     expect(link(r).size).toBeLessThanOrEqual(1100000);
     const bytes = Buffer.from(
@@ -212,6 +237,7 @@ pdfTest('map sizes, section resolution, partial send, cap and labels', async () 
   const r = await share({ file: 'nested.pdf', pages: '1-12' });
   const j = facts(r);
   expect(j.remaining).toMatch(/^\d+-12$/);
+  expect(j.complete).toBe(false);
   expect(j.pdf_pages).toMatch(/^1-\d+$/);
   expect(j.bytes).toBeLessThanOrEqual(1100000);
   const section = await share({ file: 'nested.pdf', section: '2.1' });
@@ -249,6 +275,9 @@ pdfTest.each(['0', '2-1', '1-13', '1.5', '1,2', '-1'])(
     await generated();
     await connect();
     expectError(await share({ file: 'nested.pdf', pages }), /page|range/i);
+    expect((await share({ file: 'nested.pdf', pages })).content[0].text).not.toMatch(
+      /request was valid/i,
+    );
   },
 );
 pdfTest('one page over budget sends no file and directs to page image', async () => {
@@ -293,11 +322,51 @@ pdfTest('malformed PDF maps and shares; MuPDF repair messages stay out of the re
   const m = facts(await call('get_book_map', { file: 'malformed.pdf' }));
   expect(m.pages).toBe(3);
   expect(m.repair_messages).toBeGreaterThan(0);
+  expect(m.guidance).toMatch(/repair_messages counts nonempty MuPDF warning lines/);
+  expect(m.guidance).toMatch(/not distinct repairs/);
   expect(m).not.toHaveProperty('repairs');
   expect(m).not.toHaveProperty('repaired');
   const r = await share({ file: 'malformed.pdf', pages: '1-3' });
   expect(link(r)).toBeDefined();
   expect(facts(r).pdf_pages).toBe('1-3');
+});
+pdfTest('clean and cached PDF maps expose zero repairs with current guidance', async () => {
+  await generated();
+  await connect();
+  const m = facts(await call('get_book_map', { file: 'plain.pdf' }));
+  expect(m.repair_messages).toBe(0);
+  expect(m.guidance).toMatch(/repair_messages counts nonempty MuPDF warning lines/);
+  const cache = path.join(root, '.chat-files/cache');
+  const file = (await fs.readdir(cache)).find((f) => f.startsWith('map-'));
+  const legacy = { ...m, guidance: 'Old guidance' };
+  delete legacy.repair_messages;
+  await fs.writeFile(path.join(cache, file), JSON.stringify(legacy));
+  await fakePython('exit 3'); // A metadata upgrade must not need to re-map the PDF.
+  const cached = facts(await call('get_book_map', { file: 'plain.pdf' }));
+  expect(cached).toEqual(m);
+});
+test('map cache v5 bypasses v4 plans and preserves existing file resources', async () => {
+  await fs.writeFile(path.join(root, 'any.pdf'), 'PRIVATE');
+  await connect();
+  const uri = link(await share()).uri;
+  const resource = await client.readResource({ uri });
+  const target = await fs.realpath(path.join(root, 'any.pdf'));
+  const info = await fs.stat(target);
+  const cache = path.join(root, '.chat-files/cache');
+  const oldKey = sha(JSON.stringify([target, info.size, info.mtimeMs, info.ctimeMs, 7750000, 4]));
+  const oldMap = path.join(cache, `map-${oldKey}.json`);
+  await fs.writeFile(
+    oldMap,
+    JSON.stringify({ pages: 999, suggested_parts: [{ pdf_pages: '1-999' }] }),
+  );
+  await fakePython(`echo '{"pages":2,"sections":[],"suggested_parts":[{"pdf_pages":"1-2"}]}'`);
+  const m = facts(await call('get_book_map', { file: 'any.pdf' }));
+  expect(m.pages).toBe(2);
+  expect(m.suggested_parts).toEqual([{ pdf_pages: '1-2' }]);
+  expect(JSON.parse(await fs.readFile(oldMap, 'utf8')).pages).toBe(999);
+  expect(await client.readResource({ uri })).toEqual(resource);
+  await fakePython('exit 3');
+  expect(facts(await call('get_book_map', { file: 'any.pdf' }))).toEqual(m);
 });
 async function fakePython(body) {
   const file = path.join(directory, `fake-python-${Math.random().toString(36).slice(2)}`);
@@ -319,13 +388,16 @@ test('PDF failures name their own cause; only a spawn failure names ZLIBRARY_PDF
   const map = () => call('get_book_map', { file: 'any.pdf' });
   process.env.ZLIBRARY_PDF_PYTHON = path.join(directory, 'missing-python');
   expectError(await map(), /could not start \(ENOENT\); check ZLIBRARY_PDF_PYTHON/);
+  expectError(await map(), /request was valid; the PDF helper failed/i);
   const plain = path.join(directory, 'not-executable');
   await fs.writeFile(plain, '#!/bin/sh\n', { mode: 0o644 });
   process.env.ZLIBRARY_PDF_PYTHON = plain;
   expectError(await map(), /could not start \(EACCES\); check ZLIBRARY_PDF_PYTHON/);
+  expectError(await map(), /request was valid; the PDF helper failed/i);
   await fakePython('exit 3');
   let r = await map();
   expectError(r, /exited abnormally \(status 3\)/);
+  expectError(r, /request was valid; the PDF helper failed/i);
   expect(r.content[0].text).not.toMatch(/ZLIBRARY_PDF_PYTHON|timed out|time/);
   const deadline = PDF_DEADLINES_MS.map;
   PDF_DEADLINES_MS.map = 300;
@@ -333,8 +405,20 @@ test('PDF failures name their own cause; only a spawn failure names ZLIBRARY_PDF
     await fakePython('exec sleep 30');
     r = await map();
     expectError(r, /PDF map did not finish within 0.3 s and was stopped/);
+    expectError(r, /request was valid; the PDF helper failed/i);
     expect(r.content[0].text).not.toMatch(/ZLIBRARY_PDF_PYTHON|could not start/);
   } finally {
     PDF_DEADLINES_MS.map = deadline;
   }
+});
+test.each([
+  ['echo not-json', /invalid result/],
+  ['head -c 5242881 /dev/zero', /output exceeded/],
+])('valid request distinguishes a failed helper: %s', async (body, cause) => {
+  await fs.writeFile(path.join(root, 'any.pdf'), 'PRIVATE');
+  await fakePython(body);
+  await connect();
+  const r = await call('get_book_map', { file: 'any.pdf' });
+  expectError(r, cause);
+  expectError(r, /request was valid; the PDF helper failed/i);
 });

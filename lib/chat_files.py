@@ -186,7 +186,7 @@ def fit_end(builder, start, end, budget, boundaries=()):
     low, high = start, end
     low_size, high_size = first_size, last_size
     if last_size <= budget:
-        low = end
+        return end
     else:
         while high - low > 1:
             fraction = (budget - low_size) / max(1, high_size - low_size)
@@ -375,7 +375,9 @@ def pdf_map(doc, budget):
     # Every size here is an estimate (with MARGIN); share_book_file weighs exactly.
     count = len(doc)
     if count == 0:
-        raise ValueError("PDF has no pages")
+        raise ValueError(
+            "The request was valid; the PDF helper failed: PDF has no pages"
+        )
     estimate = SizeEstimate(doc)
     tree = outline_tree(doc.get_toc(), count)
     for node in walk_sections(tree):
@@ -477,7 +479,9 @@ def render(doc, page_number, dpi):
     page = doc[page_number - 1]
     longest = max(page.rect.width, page.rect.height)
     if not math.isfinite(longest) or longest <= 0:
-        raise ValueError("invalid PDF page dimensions")
+        raise ValueError(
+            "The request was valid; the PDF helper failed: invalid PDF page dimensions"
+        )
     scale = min(max(50, min(200, dpi)) / 72, 1598 / longest)
     pix = page.get_pixmap(
         matrix=fitz.Matrix(scale, scale), colorspace=fitz.csRGB, alpha=False
@@ -486,7 +490,9 @@ def render(doc, page_number, dpi):
     if len(data) > 3 * 1024 * 1024:
         data, mime = pix.tobytes("jpeg", jpg_quality=80), "image/jpeg"
     if len(data) > 3 * 1024 * 1024 or max(pix.width, pix.height) > 1600:
-        raise ValueError("PDF render exceeded the image byte limit")
+        raise ValueError(
+            "The request was valid; the PDF helper failed: PDF render exceeded the image byte limit"
+        )
     return {
         "page": page_number,
         "pages": len(doc),
@@ -522,7 +528,9 @@ def main(command, args):
 
     cache = Path(args["cache"])
     if cache.is_symlink() or not cache.is_dir() or cache.resolve() != cache:
-        raise ValueError("cache directory is unavailable")
+        raise ValueError(
+            "The request was valid; the PDF helper failed: cache directory is unavailable"
+        )
     quiet_mupdf()
     with fitz.open("/proc/self/fd/3") as doc:
         builder = PdfBuilder(doc, cache, args["key"])
@@ -530,13 +538,11 @@ def main(command, args):
             return render(doc, args["page"], args.get("dpi", 100))
         if command == "map":
             result = pdf_map(doc, args["max_bytes"])
-            messages = mupdf_messages()
-            if messages:
-                # Non-empty MuPDF warning lines while mapping, not distinct
-                # repairs. No "repaired" flag: doc.is_repaired is true only
-                # for a rebuilt xref, and false on files MuPDF works around
-                # object by object (the malformed Johnson PDF, 2026-10-23).
-                result["repair_messages"] = messages
+            # Non-empty MuPDF warning lines while opening/mapping, not distinct
+            # repairs. No "repaired" flag: doc.is_repaired is true only
+            # for a rebuilt xref, and false on files MuPDF works around
+            # object by object (the malformed Johnson PDF, 2026-10-23).
+            result["repair_messages"] = mupdf_messages()
             return result
         if command != "excerpt":
             raise ValueError("unknown PDF operation")
@@ -575,9 +581,11 @@ if __name__ == "__main__":
         output = {"error": str(exc)}
     except ImportError:
         output = {
-            "error": "PyMuPDF is missing; set ZLIBRARY_PDF_PYTHON to an interpreter with PyMuPDF"
+            "error": "The request was valid; the PDF helper failed: PyMuPDF is missing; set ZLIBRARY_PDF_PYTHON to an interpreter with PyMuPDF"
         }
     except Exception:
-        output = {"error": "PDF helper could not read or process this file"}
+        output = {
+            "error": "The request was valid; the PDF helper failed: PDF helper could not read or process this file"
+        }
     print(json.dumps(output, separators=(",", ":")), file=reply)
     reply.close()

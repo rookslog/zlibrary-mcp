@@ -74,8 +74,25 @@ export function errorEnvelope(error: unknown, operation: string, source?: string
     else delete detail.diagnostics;
   }
   const attempted = info.source ?? source;
+  const sourceFailures = [
+    'provider_unreachable',
+    'provider_timeout',
+    'provider_error',
+    'outcome_unknown',
+  ];
+  const sourceFailed =
+    sourceFailures.includes(e.code) ||
+    (['all_sources_failed', 'partial_failure'].includes(e.code) &&
+      info.attempts?.some(
+        (attempt: any) => sourceFailures.includes(attempt.code) || attempt.code === 'internal',
+      ));
+  const validity = sourceFailed
+    ? 'The request was valid; the source failed. '
+    : e.code === 'internal'
+      ? 'The request was valid; the helper failed. '
+      : '';
   // Do not expose upstream exception text, URLs, bearer values, or stacks.
-  const message = `${attempted ? `${attempted}: ` : ''}${e.message}`.slice(0, 199);
+  const message = `${attempted ? `${attempted}: ` : ''}${validity}${e.message}`.slice(0, 199);
   return ErrorEnvelopeSchema.parse({
     error: {
       code: e.code,

@@ -82,6 +82,51 @@ def test_estimate_covers_every_window_with_the_margin(helper, book):
             assert estimate.worst_window(n) == max(sizes)
 
 
+def test_fitting_remainder_keeps_its_last_page_instead_of_splitting_at_a_heading(
+    helper, book
+):
+    # These text pages fit together, but the final heading leaves two pages
+    # behind if the 60% boundary preference runs on an already-fitting range.
+    with fitz.open(book / "plain.pdf") as doc:
+        doc.set_toc([[1, "First", 1], [2, "Final subsection", 4]])
+        result = helper.pdf_map(doc, 7750000)
+        assert [p["pdf_pages"] for p in result["suggested_parts"]] == ["1-5"]
+        assert helper.PdfBuilder(doc, book / "cache", "fitting").size(1, 5) <= 7750000
+
+
+def test_only_the_fitting_tail_changes_earlier_parts_stay_the_same(helper, book):
+    with fitz.open(book / "nested.pdf") as doc:
+        doc.set_toc([[1, "First", 1], [1, "Next", 4], [2, "Sub", 7], [1, "Final", 12]])
+        result = helper.pdf_map(doc, 1100000)
+        # Before item 8: 1-3, 4-6, 7-9, 10-11, 12. The first three parts
+        # stay unchanged; the already-fitting final range loses its tiny tail.
+        assert [p["pdf_pages"] for p in result["suggested_parts"]] == [
+            "1-3",
+            "4-6",
+            "7-9",
+            "10-12",
+        ]
+        builder = helper.PdfBuilder(doc, book / "cache", "cap")
+        for part in result["suggested_parts"]:
+            start, end = helper.parse_pages(part["pdf_pages"], 12)
+            assert builder.size(start, end) <= part["estimated_bytes"] <= 1100000
+
+
+@pytest.mark.parametrize(
+    "budget, boundaries, expected",
+    [(600, [4, 6], 6), (600, [4], 8), (600, [3], 8), (500, [4, 5], 5)],
+)
+def test_over_budget_ranges_keep_the_60_percent_boundary_rule(
+    helper, budget, boundaries, expected
+):
+    class FixedPages:
+        @staticmethod
+        def size(start, end):
+            return (end - start + 1) * 100
+
+    assert helper.fit_end(FixedPages(), 3, 12, budget, boundaries) == expected
+
+
 def test_excerpt_copies_every_label_and_never_changes_text(helper, book):
     with fitz.open(book / "nested.pdf") as src:
         builder = helper.PdfBuilder(src, book / "cache", "fixture")
@@ -107,6 +152,21 @@ def test_scans_and_unlabelled_maps(helper, book):
             assert m["page_labels"]["present"] is False
             assert "offset" in m["page_labels"]["note"]
             assert m["text_layer"] == share
+
+
+@pytest.mark.parametrize(
+    "count, sample_count, share", [(1, 1, 1), (5, 5, 0.4), (25, 20, 0.1)]
+)
+def test_text_layer_counts_sampled_pages_with_non_whitespace_text(
+    helper, count, sample_count, share
+):
+    with fitz.open() as doc:
+        for i in range(count):
+            page = doc.new_page()
+            page.insert_text((20, 45), "readable" if i in (0, count - 1) else "   ")
+        result = helper.pdf_map(doc, 7750000)
+        assert result["text_layer_sample_pages"] == sample_count
+        assert result["text_layer"] == share
 
 
 @pytest.mark.parametrize(
@@ -221,7 +281,7 @@ def test_malformed_pdf_maps_and_excerpts_with_clean_stdout(book):
         ]
     # Control: a well-formed file reports no MuPDF messages.
     out, _ = run_helper("map", book / "plain.pdf", cache)
-    assert "repair_messages" not in json.loads(out)
+    assert json.loads(out)["repair_messages"] == 0
 
 
 def test_estimate_counts_serialisation_overhead(helper, book):
@@ -233,6 +293,17 @@ def test_estimate_counts_serialisation_overhead(helper, book):
         for start in range(1, 6):
             for end in range(start, 6):
                 assert estimate.size(start, end) >= builder.size(start, end)
+
+
+def test_valid_request_with_unreadable_pdf_names_helper_failure(book):
+    import json
+
+    cache = book / "cache"
+    cache.mkdir()
+    broken = book / "broken.pdf"
+    broken.write_bytes(b"not a PDF")
+    out, _ = run_helper("map", broken, cache)
+    assert "request was valid; the PDF helper failed" in json.loads(out)["error"]
 
 
 @pytest.mark.parametrize("name", ["inherited.pdf", "inherited-nested.pdf"])

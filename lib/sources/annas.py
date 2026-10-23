@@ -144,7 +144,9 @@ def _challenge_page(text: str) -> bool:
     if soup.select_one("a[href^='/md5/']"):
         return False
     title = soup.title.get_text(" ", strip=True).lower() if soup.title else ""
-    if "anna" in title:
+    # Recognize the site's title branding, not its domain embedded in a
+    # challenge title (REVIEW-2 N1). Empty search titles can echo the query.
+    if re.search(r"(?:^|\s[-–—|]\s)anna['’]s archive$", title):
         return False
     headings = [title] + [
         h.get_text(" ", strip=True).lower() for h in soup.find_all(["h1", "h2"])

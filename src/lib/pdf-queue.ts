@@ -10,7 +10,11 @@ export class PdfQueue {
     external?: AbortSignal,
   ): Promise<T> {
     if (this.active && this.waiting.length >= 8)
-      return Promise.reject(new Error('PDF queue is full (8 waiting); retry shortly'));
+      return Promise.reject(
+        new Error(
+          'The request was valid; the PDF helper failed: PDF queue is full (8 waiting); retry shortly',
+        ),
+      );
     return new Promise<T>((resolve, reject) => {
       const controller = new AbortController();
       let started = false;
@@ -23,7 +27,7 @@ export class PdfQueue {
           reject(
             new Error(
               reason === 'timeout'
-                ? `PDF request timed out after ${timeout / 1000} s while queued behind other PDF work; retry shortly`
+                ? `The request was valid; the PDF helper failed: PDF request timed out after ${timeout / 1000} s while queued behind other PDF work; retry shortly`
                 : 'PDF request was cancelled while queued',
             ),
           );

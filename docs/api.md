@@ -23,7 +23,8 @@ Catalogue metadata, not the text inside a book. Give `query`, `author`, or both.
 
 Returns `rows`, `routing`, optional `next_cursor` and a steering `note`.
 Rows carry `ref`, `title`, `author`, `year`, `language`, `format`, `size_mb`,
-`pages`, `publisher`, `source`, `also_available_on` when known. Unknown scalars
+`pages`, `publisher`, `source`, `also_available_on` when known. Unknown years and
+page counts, including source values of zero or empty, are `null`. Other unknown scalars
 are omitted, not empty strings. Raw IDs, hashes and download URLs are not
 search row fields; `get_book` exposes identifiers when needed.
 

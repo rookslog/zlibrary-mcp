@@ -19,6 +19,11 @@ import {
 
 const delivery =
   'The file arrives as a conversation file after user approval. Delivery is confirmed only by "Tool uploaded file with ID … to: /mnt/data/<name>". If missing, check /mnt/data in Python and request again or request a smaller range.';
+const mapGuidance =
+  'Read sections whole when you can. With no outline, request the front matter and read the contents page from its image. Pieces arrive as separate files in /mnt/data and can be joined in Python. Sizes, fits, parts and the safe window are estimates with a 5% margin; every send is weighed exactly and never exceeds max_bytes. ' +
+  'repair_messages counts nonempty MuPDF warning lines collected while opening and mapping the PDF, not distinct repairs. ' +
+  'text_layer is the fraction of sampled pages with non-whitespace extracted text (up to 20 evenly spaced pages; count: text_layer_sample_pages), not OCR accuracy. ' +
+  "starts_at_section identifies the first section heading on the part's first page. A remainder that fits stays whole. Otherwise parts end at the largest section boundary at any depth, including subsections, that keeps at least 60% of the furthest fitting span; otherwise they end at the furthest fitting page. A part can start at a subsection in the middle of a chapter.";
 const fileProperty = {
   type: 'string',
   description:
@@ -93,6 +98,8 @@ type Facts = Record<string, any>;
 const text = (value: unknown): CallToolResult => ({
   content: [{ type: 'text', text: typeof value === 'string' ? value : JSON.stringify(value) }],
 });
+const helperFailure = (message: string) =>
+  new Error(`The request was valid; the PDF helper failed: ${message}`);
 
 async function pdf(
   command: 'map' | 'excerpt' | 'render',
@@ -103,7 +110,7 @@ async function pdf(
 ): Promise<Facts> {
   const python = process.env.ZLIBRARY_PDF_PYTHON;
   if (!python || !path.isAbsolute(python))
-    throw new Error('ZLIBRARY_PDF_PYTHON must be an absolute interpreter path with PyMuPDF');
+    throw helperFailure('ZLIBRARY_PDF_PYTHON must be an absolute interpreter path with PyMuPDF');
   const queue = command === 'render' ? pageRenderQueue : pdfQueue;
   return queue.run(
     (childSignal) =>
@@ -123,16 +130,16 @@ async function pdf(
         // Three distinct failures: our deadline (abort), the interpreter not
         // starting, and the helper dying. Only the second is a setting problem.
         const stopped = () =>
-          new Error(
-            childSignal.reason === 'timeout'
-              ? `PDF ${command} did not finish within ${PDF_DEADLINES_MS[command] / 1000} s and was stopped; the machine may be busy, retry shortly`
-              : 'PDF request was cancelled',
-          );
+          childSignal.reason === 'timeout'
+            ? helperFailure(
+                `PDF ${command} did not finish within ${PDF_DEADLINES_MS[command] / 1000} s and was stopped; the machine may be busy, retry shortly`,
+              )
+            : new Error('PDF request was cancelled');
         child.on('error', (error: NodeJS.ErrnoException) => {
           if (childSignal.aborted) reject(stopped());
           else
             reject(
-              new Error(
+              helperFailure(
                 `PDF helper could not start (${error.code ?? 'spawn error'}); check ZLIBRARY_PDF_PYTHON`,
               ),
             );
@@ -140,10 +147,10 @@ async function pdf(
         child.on('close', (code, killSignal) => {
           if (childSignal.aborted) return reject(stopped());
           if (length > OUTPUT_LIMIT)
-            return reject(new Error('PDF helper output exceeded its 5 MiB limit'));
+            return reject(helperFailure('PDF helper output exceeded its 5 MiB limit'));
           if (code !== 0)
             return reject(
-              new Error(
+              helperFailure(
                 `PDF helper exited abnormally (${code === null ? `signal ${killSignal}` : `status ${code}`})`,
               ),
             );
@@ -154,7 +161,7 @@ async function pdf(
             if (value.error) reject(new Error(value.error));
             else resolve(value);
           } catch {
-            reject(new Error('PDF helper returned an invalid result'));
+            reject(helperFailure('PDF helper returned an invalid result'));
           }
         });
         child.stdin!.on('error', () => {});
@@ -187,6 +194,7 @@ export class ChatFiles {
       bytes: source.info.size,
       max_bytes: maxBytes(),
       fits_whole: source.info.size <= maxBytes(),
+      repair_messages: 0,
     };
     if (format !== 'pdf')
       return {
@@ -201,15 +209,15 @@ export class ChatFiles {
             : 'Send whole if it fits.',
       };
     const cached = await readMap(cache, source.key);
-    if (cached) return cached;
+    if (cached)
+      return { ...cached, repair_messages: cached.repair_messages ?? 0, guidance: mapGuidance };
     let pending = this.pendingMaps.get(source.key);
     if (!pending) {
       pending = (async () => {
         const result = {
           ...base,
           ...(await pdf('map', source, cache, {}, signal)),
-          guidance:
-            'Read sections whole when you can. With no outline, request the front matter and read the contents page from its image. Pieces arrive as separate files in /mnt/data and can be joined in Python. Sizes, fits, parts and the safe window are estimates with a 5% margin; every send is weighed exactly and never exceeds max_bytes.',
+          guidance: mapGuidance,
         };
         await atomicWrite(path.join(cache, `map-${source.key}.json`), JSON.stringify(result));
         return result;
@@ -256,7 +264,7 @@ export class ChatFiles {
           r.width > 1600 ||
           r.height > 1600
         )
-          throw new Error('PDF render exceeded the image byte limit');
+          throw helperFailure('PDF render exceeded the image byte limit');
         return {
           content: [
             { type: 'image', mimeType: r.mimeType, data: r.data },
@@ -304,7 +312,7 @@ export class ChatFiles {
       // Final independent size/hash guard on the exact cached bytes served by resources/read.
       const bytes = await cachedBytes(cache, piece, max);
       if (bytes.length !== facts.bytes || sha256(bytes) !== facts.sha256)
-        throw new Error('cached piece changed before send');
+        throw helperFailure('cached piece changed before send');
       const mimeType =
         format === '.pdf'
           ? 'application/pdf'
@@ -321,6 +329,7 @@ export class ChatFiles {
       const result = {
         name: filename,
         ...facts,
+        complete: !facts.remaining,
         ...(facts.remaining
           ? {
               message: `sent PDF pp. ${facts.pdf_pages}${facts.printed_pages ? ` (printed ${facts.printed_pages})` : ''}; remaining: pages ${facts.remaining} — call share_book_file again with pages "${facts.remaining}"`,

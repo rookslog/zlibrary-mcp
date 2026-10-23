@@ -231,9 +231,19 @@ labels, text-layer share, sections and suggested parts. Their sizes
 the objects each page references, with a 5% margin, so a cold map takes seconds.
 Each section ends on the page where the next one starts, so a chapter's last page
 is never dropped. PDFs on which MuPDF reports problems still map, and the map gives
-`repair_messages`, the number of MuPDF warning lines while mapping.
+`repair_messages`, the number of nonempty MuPDF warning lines while opening and
+mapping, including zero; this is not a count of distinct repairs. `text_layer` is
+the fraction of up to 20 evenly spaced sampled pages with non-whitespace extracted
+text; `text_layer_sample_pages` gives the denominator. It does not measure OCR accuracy.
+`starts_at_section` identifies the first section heading on a part's first page.
+A remainder that fits stays whole. Otherwise, parts prefer the largest section
+boundary at any depth, including subsections, that keeps at least 60% of the
+furthest fitting span; without one, they end at the furthest fitting page. A part
+can start at a subsection in the middle of a chapter.
 Every send is built and weighed exactly and never exceeds the cap; oversized ranges
-send one fitting prefix and report the remaining PDF pages. Images are never downsampled
+send one fitting prefix and report the remaining PDF pages with `complete: false`.
+`complete: true` means the requested range was prepared whole; delivery still needs
+the confirmation below. Images are never downsampled
 in excerpts. Printed labels are retained; font subsetting is kept only when smaller
 and sampled text extraction stays unchanged.
 

@@ -208,10 +208,17 @@ def fit_end(builder, start, end, budget, boundaries=()):
     return low
 
 
-# Lane P's (b0) byte model, measured on five books (2026-10-23): no false fits;
-# over by up to ~29 % on born-digital books (subsetting shrinks fonts), under by
-# at most 4 %. Hence the margin. The map uses only this; sends weigh exactly.
+# Lane P's (b0) byte model plus serialisation overhead, checked on five books
+# (2026-10-23) against exact builds: no false fits. It overestimates born-digital
+# books (subsetting shrinks fonts), hence parts below the cap; the margin covers
+# small underestimates. The map uses only this; sends weigh exactly.
 MARGIN = 1.05
+# Bytes each written object costs beyond its text and stream ("N 0 obj",
+# "endobj", the xref entry; "stream"/"endstream" and /Length for streams).
+# Least-squares fit over 20 written excerpts of 5 books: 38.3 B per object and
+# 19.3 B per stream, residuals within 35 B per excerpt. Rounded up.
+OBJECT_OVERHEAD = 39
+STREAM_OVERHEAD = 20
 REFERENCE = re.compile(rb"(\d+) 0 R")
 BACK_LINKS = re.compile(
     r"/(Parent|P|Dest|D|Prev|Next|First|Last|StructParent|B)\s+\d+ 0 R"
@@ -226,7 +233,8 @@ def is_page(text):
 class SizeEstimate:
     """Estimated excerpt bytes: the union of the objects each page drags along
     (its reference closure, not following back-links or other pages), weighed
-    raw, plus a fixed per-page cost, times MARGIN."""
+    raw with their serialisation overhead, plus a fixed per-page cost, times
+    MARGIN."""
 
     def __init__(self, document):
         self.document = document
@@ -242,9 +250,10 @@ class SizeEstimate:
 
     def _weight(self, xref):
         if xref not in self.weights:
-            weight = len(self._object(xref))
+            weight = len(self._object(xref)) + OBJECT_OVERHEAD
             try:
                 if self.document.xref_is_stream(xref):
+                    weight += STREAM_OVERHEAD
                     weight += len(self.document.xref_stream_raw(xref) or b"")
             except Exception:
                 pass

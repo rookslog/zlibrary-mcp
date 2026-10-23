@@ -221,3 +221,14 @@ def test_malformed_pdf_maps_and_excerpts_with_clean_stdout(book):
     # Control: a well-formed file reports no repairs.
     out, _ = run_helper("map", book / "plain.pdf", cache)
     assert "repairs" not in json.loads(out)
+
+
+def test_estimate_counts_serialisation_overhead(helper, book):
+    # plain.pdf is all small objects, so per-object overhead dominates its size;
+    # without it the estimate falls below the exact build.
+    with fitz.open(book / "plain.pdf") as src:
+        estimate = helper.SizeEstimate(src)
+        builder = helper.PdfBuilder(src, book / "cache", "overhead")
+        for start in range(1, 6):
+            for end in range(start, 6):
+                assert estimate.size(start, end) >= builder.size(start, end)

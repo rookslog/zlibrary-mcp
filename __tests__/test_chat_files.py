@@ -39,8 +39,12 @@ def test_map_estimates_labels_sections_and_safe_windows(helper, book):
         result = helper.pdf_map(src, 1100000)
         assert result["pages"] == 12
         assert result["page_labels"]["present"] is True
-        assert result["sections"][1]["pdf_pages"] == "3-10"
-        assert result["sections"][1]["children"][1]["pdf_pages"] == "7-10"
+        # One page of overlap: each section ends on the next one's start page.
+        assert [n["pdf_pages"] for n in result["sections"]] == ["1-3", "3-11", "11-12"]
+        assert [n["pdf_pages"] for n in result["sections"][1]["children"]] == [
+            "3-7",
+            "7-11",
+        ]
         assert result["sections"][1]["estimated_bytes"] > 1100000
         assert result["text_layer"] == 1
         assert result["safe_window_estimated"] is True
@@ -121,6 +125,17 @@ def test_outline_repairs_invalid_destinations_and_levels(helper, book):
     assert tree[0]["_start"] == 1
     assert tree[0]["children"][0]["level"] == 2
     assert all(1 <= n["_start"] <= n["_end"] <= 12 for n in helper.walk_sections(tree))
+
+
+def test_sections_overlap_by_one_page_and_stay_inside_their_parent(helper):
+    tree = helper.outline_tree(
+        [[1, "One", 1], [2, "A", 2], [2, "B", 5], [2, "C", 5], [1, "Two", 8]], 12
+    )
+    one, two = tree
+    assert (one["pdf_pages"], two["pdf_pages"]) == ("1-8", "8-12")
+    # Same start page: the section is that one page. The last child ends with
+    # its parent, so it too reaches the next section's start page.
+    assert [c["pdf_pages"] for c in one["children"]] == ["2-5", "5", "5-8"]
 
 
 def test_subset_rejected_when_extraction_changes(helper, book, monkeypatch):

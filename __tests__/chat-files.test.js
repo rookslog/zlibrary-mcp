@@ -201,7 +201,11 @@ pdfTest('map sizes, section resolution, partial send, cap and labels', async () 
   expect(j.pdf_pages).toMatch(/^1-\d+$/);
   expect(j.bytes).toBeLessThanOrEqual(1100000);
   const section = await share({ file: 'nested.pdf', section: '2.1' });
+  // 2.1 ends on the start page of 2.2 (3-7); over this cap, so the exact send
+  // keeps the fitting prefix and reports the overlap page as remaining.
+  expect(m.sections[1].children[0]).toMatchObject({ pdf_pages: '3-7', fits: false });
   expect(facts(section).pdf_pages).toBe('3-6');
+  expect(facts(section).remaining).toBe('7');
   expect(facts(section).printed_pages).toBeDefined();
   expectError(await share({ file: 'nested.pdf', section: '999' }), /section/i);
   const before = (

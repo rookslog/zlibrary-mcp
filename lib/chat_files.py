@@ -157,8 +157,10 @@ def outline_tree(toc, count):
         stack.append(node)
 
     def finish(nodes, parent_end):
+        # A section ends on the page where the next one starts: a chapter
+        # often ends on that page, so one page of overlap keeps its last lines.
         for i, node in enumerate(nodes):
-            end = nodes[i + 1]["_start"] - 1 if i + 1 < len(nodes) else parent_end
+            end = nodes[i + 1]["_start"] if i + 1 < len(nodes) else parent_end
             node["_end"] = max(node["_start"], min(parent_end, end))
             node["pdf_pages"] = page_range(node["_start"], node["_end"])
             finish(node["children"], node["_end"])

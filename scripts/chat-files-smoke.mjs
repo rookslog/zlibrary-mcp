@@ -168,7 +168,7 @@ try {
       parts: [],
       safe_window_pages: map.safe_window_pages,
       safe_window_estimated: map.safe_window_estimated,
-      repairs: map.repairs ?? 0,
+      repair_messages: map.repair_messages ?? 0,
       round_trip: null,
       image: null,
     };

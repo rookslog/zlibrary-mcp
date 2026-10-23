@@ -292,7 +292,9 @@ pdfTest('malformed PDF maps and shares; MuPDF repair messages stay out of the re
   await connect();
   const m = facts(await call('get_book_map', { file: 'malformed.pdf' }));
   expect(m.pages).toBe(3);
-  expect(m.repairs).toBeGreaterThan(0);
+  expect(m.repair_messages).toBeGreaterThan(0);
+  expect(m).not.toHaveProperty('repairs');
+  expect(m).not.toHaveProperty('repaired');
   const r = await share({ file: 'malformed.pdf', pages: '1-3' });
   expect(link(r)).toBeDefined();
   expect(facts(r).pdf_pages).toBe('1-3');

@@ -230,7 +230,8 @@ labels, text-layer share, sections and suggested parts. Their sizes
 (`estimated_bytes`, `fits`, suggested parts and the safe window) are estimates from
 the objects each page references, with a 5% margin, so a cold map takes seconds.
 Each section ends on the page where the next one starts, so a chapter's last page
-is never dropped. PDFs that MuPDF repairs on open map normally and report `repairs`.
+is never dropped. PDFs on which MuPDF reports problems still map, and the map gives
+`repair_messages`, the number of MuPDF warning lines while mapping.
 Every send is built and weighed exactly and never exceeds the cap; oversized ranges
 send one fitting prefix and report the remaining PDF pages. Images are never downsampled
 in excerpts. Printed labels are retained; font subsetting is kept only when smaller

@@ -208,7 +208,8 @@ def test_malformed_pdf_maps_and_excerpts_with_clean_stdout(book):
     assert out.count("\n") == 1 and "MuPDF" not in out
     result = json.loads(out)
     assert result["pages"] == 3
-    assert result["repairs"] > 0
+    assert result["repair_messages"] > 0
+    assert "repairs" not in result and "repaired" not in result
     out, _ = run_helper("excerpt", book / "malformed.pdf", cache, pages="1-3")
     piece = json.loads(out)
     assert piece["pdf_pages"] == "1-3"
@@ -218,9 +219,9 @@ def test_malformed_pdf_maps_and_excerpts_with_clean_stdout(book):
             "PRIVATE 1",
             "PRIVATE 2",
         ]
-    # Control: a well-formed file reports no repairs.
+    # Control: a well-formed file reports no MuPDF messages.
     out, _ = run_helper("map", book / "plain.pdf", cache)
-    assert "repairs" not in json.loads(out)
+    assert "repair_messages" not in json.loads(out)
 
 
 def test_estimate_counts_serialisation_overhead(helper, book):

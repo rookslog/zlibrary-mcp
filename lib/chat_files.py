@@ -485,10 +485,13 @@ def main(command, args):
             return render(doc, args["page"], args.get("dpi", 100))
         if command == "map":
             result = pdf_map(doc, args["max_bytes"])
-            repairs = mupdf_messages()
-            if repairs:
-                # MuPDF repaired the file on open; the count is of its messages.
-                result["repairs"] = repairs
+            messages = mupdf_messages()
+            if messages:
+                # Non-empty MuPDF warning lines while mapping, not distinct
+                # repairs. No "repaired" flag: doc.is_repaired is true only
+                # for a rebuilt xref, and false on files MuPDF works around
+                # object by object (the malformed Johnson PDF, 2026-10-23).
+                result["repair_messages"] = messages
             return result
         if command != "excerpt":
             raise ValueError("unknown PDF operation")

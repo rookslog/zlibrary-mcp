@@ -116,21 +116,64 @@ class QuotaExhaustedError(Exception):
     pass
 
 
+# Content types that say nothing about the body; a relay may also omit it.
+_GENERIC_TYPES = ("", "text/plain", "application/octet-stream", "binary/octet-stream")
+# A challenge page is small; result pages are not inspected past this size.
+_CHALLENGE_MAX_BYTES = 256 * 1024
+
+
+def _looks_like_html(response) -> bool:
+    kind = response.headers.get("content-type", "").split(";")[0].strip().lower()
+    if "html" in kind:
+        return True
+    if kind not in _GENERIC_TYPES:
+        return False  # e.g. application/json from the fast-download API
+    head = response.content[:1024].lstrip().lower()
+    return head.startswith((b"<!doctype html", b"<html")) or b"<html" in head
+
+
+def _challenge_page(text: str) -> bool:
+    """Structure of a DDoS-Guard challenge, not words in a result.
+
+    No result rows (`/md5/` links), a title or heading that names DDoS-Guard
+    or says "Checking your browser", and not an Anna's Archive page title
+    (which echoes the query). A result titled "Checking Your Browser" stays a
+    result (review of 6ad5cfb, F3).
+    """
+    soup = BeautifulSoup(text, "html.parser")
+    if soup.select_one("a[href^='/md5/']"):
+        return False
+    title = soup.title.get_text(" ", strip=True).lower() if soup.title else ""
+    if "anna" in title:
+        return False
+    headings = [title] + [
+        h.get_text(" ", strip=True).lower() for h in soup.find_all(["h1", "h2"])
+    ]
+    return "ddos-guard" in title or any(
+        h.startswith("checking your browser") for h in headings
+    )
+
+
 def is_browser_check(response) -> bool:
     """Whether DDoS-Guard answered instead of Anna's Archive.
 
     Seen 2026-10-23 on all three trusted hosts: /search gives a 302 from
     `server: ddos-guard` to `?check=1`, then a 403 "Checking your browser"
-    page. A guarded host that serves real content (2xx, no challenge) is fine.
+    page. Two rules:
+    - header: `server: ddos-guard` on any hop and a final status of 400 or
+      more (a guarded host serving real content with 2xx is fine);
+    - structure: an HTML or HTML-looking body, even with a missing or generic
+      content type (review F5), shaped like the challenge page.
     """
     responses = [*response.history, response]
     guarded = any(
         "ddos-guard" in r.headers.get("server", "").lower() for r in responses
     )
-    challenge = False
-    if "html" in response.headers.get("content-type", "").lower():
-        challenge = "checking your browser" in response.text[:20000].lower()
-    return challenge or (guarded and response.status_code >= 400)
+    if guarded and response.status_code >= 400:
+        return True
+    if len(response.content) > _CHALLENGE_MAX_BYTES or not _looks_like_html(response):
+        return False
+    return _challenge_page(response.text)
 
 
 def _attempt_budget(config, deadline: Optional[WalkDeadline]) -> float:

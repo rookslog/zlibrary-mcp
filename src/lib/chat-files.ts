@@ -81,6 +81,9 @@ const imageInput = z.strictObject({
   dpi: z.number().int().optional(),
 });
 const pdfQueue = new PdfQueue();
+/** Deadlines from enqueue, per helper command. Exported for tests. */
+export const PDF_DEADLINES_MS = { map: 90000, excerpt: 60000, render: 25000 };
+const OUTPUT_LIMIT = 5 * 1024 * 1024;
 type Source = Awaited<ReturnType<typeof sourceFile>>;
 type Facts = Record<string, any>;
 const text = (value: unknown): CallToolResult => ({
@@ -110,20 +113,35 @@ async function pdf(
         let length = 0;
         child.stdout!.on('data', (chunk: Buffer) => {
           length += chunk.length;
-          if (length > 5 * 1024 * 1024) child.kill('SIGKILL');
+          if (length > OUTPUT_LIMIT) child.kill('SIGKILL');
           else chunks.push(chunk);
         });
-        child.on('error', () =>
-          reject(
-            new Error(
-              'PDF helper process could not start or request timed out; check ZLIBRARY_PDF_PYTHON',
-            ),
-          ),
-        );
-        child.on('close', (code) => {
-          if (code !== 0 || length > 5 * 1024 * 1024)
+        // Three distinct failures: our deadline (abort), the interpreter not
+        // starting, and the helper dying. Only the second is a setting problem.
+        const stopped = () =>
+          new Error(
+            childSignal.reason === 'timeout'
+              ? `PDF ${command} did not finish within ${PDF_DEADLINES_MS[command] / 1000} s and was stopped; the machine may be busy, retry shortly`
+              : 'PDF request was cancelled',
+          );
+        child.on('error', (error: NodeJS.ErrnoException) => {
+          if (childSignal.aborted) reject(stopped());
+          else
+            reject(
+              new Error(
+                `PDF helper could not start (${error.code ?? 'spawn error'}); check ZLIBRARY_PDF_PYTHON`,
+              ),
+            );
+        });
+        child.on('close', (code, killSignal) => {
+          if (childSignal.aborted) return reject(stopped());
+          if (length > OUTPUT_LIMIT)
+            return reject(new Error('PDF helper output exceeded its 5 MiB limit'));
+          if (code !== 0)
             return reject(
-              new Error('PDF helper could not complete within its timeout/output limit'),
+              new Error(
+                `PDF helper exited abnormally (${code === null ? `signal ${killSignal}` : `status ${code}`})`,
+              ),
             );
           try {
             // The reply is the last line; stray library output before it is ignored.
@@ -140,7 +158,7 @@ async function pdf(
           JSON.stringify({ cache, key: source.key, max_bytes: maxBytes(), ...args }),
         );
       }),
-    command === 'map' ? 90000 : command === 'excerpt' ? 60000 : 25000,
+    PDF_DEADLINES_MS[command],
     signal,
   );
 }
@@ -187,7 +205,7 @@ export class ChatFiles {
           ...base,
           ...(await pdf('map', source, cache, {}, signal)),
           guidance:
-            'Read sections whole when you can. With no outline, request the front matter and read the contents page from its image. Pieces arrive as separate files in /mnt/data and can be joined in Python. Safe windows are planning hints; every send is measured.',
+            'Read sections whole when you can. With no outline, request the front matter and read the contents page from its image. Pieces arrive as separate files in /mnt/data and can be joined in Python. Sizes, fits, parts and the safe window are estimates with a 5% margin; every send is weighed exactly and never exceeds max_bytes.',
         };
         await atomicWrite(path.join(cache, `map-${source.key}.json`), JSON.stringify(result));
         return result;

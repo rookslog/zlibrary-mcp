@@ -24,9 +24,13 @@ const fifo = process.argv.includes('--fifo');
 const cold = process.argv.includes('--cold');
 const sha = (b) => createHash('sha256').update(b).digest('hex');
 const bookNames = (await readdir(root)).filter(
-  (n) => n.endsWith('.pdf') && /Kant|Heidegger|Glas/.test(n),
+  (n) => n.endsWith('.pdf') && /Kant|Heidegger|Glas|Johnson/.test(n),
 );
-assert.equal(bookNames.length, 3, 'Expected Kant, Heidegger and Glas hardlinks');
+assert.equal(
+  bookNames.filter((n) => /Kant|Heidegger|Glas/.test(n)).length,
+  3,
+  'Expected Kant, Heidegger and Glas hardlinks (Johnson copies are optional)',
+);
 if (cold) {
   const cache = path.join(root, '.chat-files/cache');
   for (const name of await readdir(cache).catch(() => []))
@@ -163,8 +167,8 @@ try {
       sections: count(map.sections),
       parts: [],
       safe_window_pages: map.safe_window_pages,
-      safe_window_verification: map.safe_window_verification,
-      subsetting: map.subsetting,
+      safe_window_estimated: map.safe_window_estimated,
+      repairs: map.repairs ?? 0,
       round_trip: null,
       image: null,
     };
@@ -173,8 +177,9 @@ try {
       const j = metadata(r),
         link = r.content.find((c) => c.type === 'resource_link');
       assert.ok(link);
+      // The map's sizes are estimates; the send is exact and must not overflow.
       assert.ok(j.bytes <= max);
-      assert.equal(j.bytes, part.bytes);
+      assert.equal(j.pdf_pages, part.pdf_pages, 'estimated part overflowed its exact send');
       assert.ok(!j.remaining);
       const read = await rpc('resources/read', { uri: link.uri });
       const bytes = Buffer.from(read.contents[0].blob, 'base64');
@@ -184,6 +189,8 @@ try {
         pdf_pages: j.pdf_pages,
         printed_pages: j.printed_pages,
         bytes: bytes.length,
+        estimated_bytes: part.estimated_bytes,
+        estimate_error: Number((part.estimated_bytes / bytes.length - 1).toFixed(4)),
         max_bytes: max,
         sha256: j.sha256,
         subsetting: j.subsetting,

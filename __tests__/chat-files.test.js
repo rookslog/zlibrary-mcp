@@ -8,6 +8,7 @@ import { promisify } from 'node:util';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { InMemoryTransport } from '@modelcontextprotocol/sdk/inMemory.js';
 import { createServer } from '../dist/index.js';
+import { PDF_DEADLINES_MS } from '../dist/lib/chat-files.js';
 
 const python = process.env.ZLIBRARY_PDF_PYTHON;
 if (!python) process.stderr.write('SKIP chat-files PyMuPDF tests: set ZLIBRARY_PDF_PYTHON\n');
@@ -179,10 +180,14 @@ pdfTest('map sizes, section resolution, partial send, cap and labels', async () 
   expect(m.text_layer).toBe(1);
   expect(m.fits_whole).toBe(false);
   expect(m.sections[1].fits).toBe(false);
+  expect(m.guidance).toMatch(/estimates with a 5% margin/);
   expect(link(await share({ file: 'nested.pdf' }))).toBeUndefined();
   for (const part of m.suggested_parts) {
     const r = await share({ file: 'nested.pdf', pages: part.pdf_pages });
-    expect(facts(r).bytes).toBe(part.bytes);
+    // Estimated parts never overflow: the exact send is the whole part.
+    expect(facts(r).pdf_pages).toBe(part.pdf_pages);
+    expect(facts(r).remaining).toBeUndefined();
+    expect(facts(r).bytes).toBeLessThanOrEqual(part.estimated_bytes);
     expect(link(r).size).toBeLessThanOrEqual(1100000);
     const bytes = Buffer.from(
       (await client.readResource({ uri: link(r).uri })).contents[0].blob,
@@ -287,4 +292,29 @@ test('the helper reply is its last stdout line; earlier library output is ignore
   await connect();
   const m = facts(await call('get_book_map', { file: 'any.pdf' }));
   expect(m.pages).toBe(1);
+});
+test('PDF failures name their own cause; only a spawn failure names ZLIBRARY_PDF_PYTHON', async () => {
+  await fs.writeFile(path.join(root, 'any.pdf'), 'PRIVATE');
+  await connect();
+  const map = () => call('get_book_map', { file: 'any.pdf' });
+  process.env.ZLIBRARY_PDF_PYTHON = path.join(directory, 'missing-python');
+  expectError(await map(), /could not start \(ENOENT\); check ZLIBRARY_PDF_PYTHON/);
+  const plain = path.join(directory, 'not-executable');
+  await fs.writeFile(plain, '#!/bin/sh\n', { mode: 0o644 });
+  process.env.ZLIBRARY_PDF_PYTHON = plain;
+  expectError(await map(), /could not start \(EACCES\); check ZLIBRARY_PDF_PYTHON/);
+  await fakePython('exit 3');
+  let r = await map();
+  expectError(r, /exited abnormally \(status 3\)/);
+  expect(r.content[0].text).not.toMatch(/ZLIBRARY_PDF_PYTHON|timed out|time/);
+  const deadline = PDF_DEADLINES_MS.map;
+  PDF_DEADLINES_MS.map = 300;
+  try {
+    await fakePython('exec sleep 30');
+    r = await map();
+    expectError(r, /PDF map did not finish within 0.3 s and was stopped/);
+    expect(r.content[0].text).not.toMatch(/ZLIBRARY_PDF_PYTHON|could not start/);
+  } finally {
+    PDF_DEADLINES_MS.map = deadline;
+  }
 });

@@ -174,9 +174,9 @@ def walk_sections(nodes):
 
 
 def fit_end(builder, start, end, budget, boundaries=()):
-    # Interpolate between actual builds, then close the integer gap. This avoids
-    # repeated large font-subsetting passes on near-uniform books. Bounds still
-    # come only from serialized excerpts, not estimated stream weights.
+    # Interpolate between sizes, then close the integer gap. With a PdfBuilder
+    # (sends) every size is a real build, which avoids repeated large
+    # font-subsetting passes; with a SizeEstimate (the map) each is an estimate.
     first_size = builder.size(start, start)
     if first_size > budget:
         return start - 1
@@ -206,130 +206,150 @@ def fit_end(builder, start, end, budget, boundaries=()):
     return low
 
 
-def page_weights(doc):
-    # Ranking only. Count shared font/image resources on every referencing page,
-    # rather than missing the fixed font overhead in a born-digital excerpt.
-    lengths = {}
-    weights = []
-    for page in doc:
-        refs = {r[0] for r in page.get_images()} | {r[0] for r in page.get_fonts()}
-        refs.update(page.get_contents())
-        weight = 512
-        for xref in refs:
-            if xref not in lengths:
-                try:
-                    lengths[xref] = len(doc.xref_stream_raw(xref) or b"")
-                except Exception:
-                    lengths[xref] = 0
-            weight += lengths[xref]
-        weights.append(weight)
-    return weights
+# Lane P's (b0) byte model, measured on five books (2026-10-23): no false fits;
+# over by up to ~29 % on born-digital books (subsetting shrinks fonts), under by
+# at most 4 %. Hence the margin. The map uses only this; sends weigh exactly.
+MARGIN = 1.05
+REFERENCE = re.compile(rb"(\d+) 0 R")
+BACK_LINKS = re.compile(
+    r"/(Parent|P|Dest|D|Prev|Next|First|Last|StructParent|B)\s+\d+ 0 R"
+)
 
 
-def safe_window(builder, budget):
-    count = len(builder.document)
-    weights = page_weights(builder.document)
-    prefix = [0]
-    for weight in weights:
-        prefix.append(prefix[-1] + weight)
-    checked = {}
-
-    def candidates(n):
-        starts = list(range(1, count - n + 2))
-        if count <= 80:
-            return starts
-        ranked = sorted(
-            starts, key=lambda i: prefix[i + n - 1] - prefix[i - 1], reverse=True
-        )
-        return list(dict.fromkeys(ranked[:3] + [1, count - n + 1]))
-
-    def worst(n, final=False):
-        starts = candidates(n)
-        if count > 80 and not final:
-            starts = starts[:1]
-        largest = 0
-        for start in starts:
-            size = builder.size(start, start + n - 1)
-            checked[(start, n)] = size
-            largest = max(largest, size)
-        return largest
-
-    low, high = 0, count
-    low_size, high_size = 0, builder.size(1, count)
-    if high_size <= budget:
-        low = count
-        checked[(1, count)] = high_size
-    else:
-        while high - low > 1:
-            fraction = (budget - low_size) / max(1, high_size - low_size)
-            mid = max(low + 1, min(high - 1, low + int((high - low) * fraction)))
-            size = worst(mid)
-            if size <= budget:
-                low, low_size = mid, size
-            else:
-                high, high_size = mid, size
-    # The endpoint can carry different fonts from the top weighted windows.
-    # Shrink only the falsified candidate; restarting a full binary search here
-    # needlessly repeats expensive subsetting on dozens of known-safe windows.
-    while low and worst(low, final=True) > budget:
-        low -= 1
-
-    return low, {
-        "method": "all windows"
-        if count <= 80
-        else "heaviest 3 estimated windows plus endpoints, verified with real builds",
-        "planning_hint_only": count > 80,
-        "verified_windows": [
-            {"pdf_pages": page_range(s, s + n - 1), "bytes": size}
-            for (s, n), size in checked.items()
-            if n == low
-        ],
-    }
+def is_page(text):
+    text = text.replace(" ", "")
+    return text.startswith("<<") and "/Type/Page" in text and "/Type/Pages" not in text
 
 
-def pdf_map(doc, builder, budget):
+class SizeEstimate:
+    """Estimated excerpt bytes: the union of the objects each page drags along
+    (its reference closure, not following back-links or other pages), weighed
+    raw, plus a fixed per-page cost, times MARGIN."""
+
+    def __init__(self, document):
+        self.document = document
+        self.weights = {}
+        self.references = {}
+        self.pages = [self._closure(page.xref) for page in document]
+
+    def _object(self, xref):
+        try:
+            return self.document.xref_object(xref, compressed=True)
+        except Exception:
+            return ""
+
+    def _weight(self, xref):
+        if xref not in self.weights:
+            weight = len(self._object(xref))
+            try:
+                if self.document.xref_is_stream(xref):
+                    weight += len(self.document.xref_stream_raw(xref) or b"")
+            except Exception:
+                pass
+            self.weights[xref] = weight
+        return self.weights[xref]
+
+    def _refs(self, xref):
+        if xref not in self.references:
+            text = self._object(xref)
+            page = is_page(text)
+            if page:
+                text = re.sub(r"/Parent\s+\d+ 0 R", "", text)
+            text = BACK_LINKS.sub("", text)
+            self.references[xref] = (
+                page,
+                [int(m) for m in REFERENCE.findall(text.encode())],
+            )
+        return self.references[xref]
+
+    def _closure(self, page_xref):
+        seen = {page_xref}
+        stack = list(self._refs(page_xref)[1])
+        while stack:
+            xref = stack.pop()
+            if xref in seen or xref <= 0:
+                continue
+            page, refs = self._refs(xref)
+            if page:
+                continue  # a link target: insert_pdf does not copy other pages
+            seen.add(xref)
+            stack.extend(refs)
+        return seen
+
+    def _scaled(self, weight, pages):
+        return math.ceil((weight + 300 * pages) * MARGIN)
+
+    def size(self, start, end):
+        union = set().union(*self.pages[start - 1 : end])
+        return self._scaled(sum(self._weight(x) for x in union), end - start + 1)
+
+    def worst_window(self, n):
+        # Slide an n-page window over the book, keeping reference counts, so
+        # every window is estimated, not a sample of them.
+        counts, weight, worst = {}, 0, 0
+        for i, objects in enumerate(self.pages):
+            for x in objects:
+                counts[x] = counts.get(x, 0) + 1
+                if counts[x] == 1:
+                    weight += self._weight(x)
+            if i >= n:
+                for x in self.pages[i - n]:
+                    counts[x] -= 1
+                    if not counts[x]:
+                        weight -= self._weight(x)
+            if i >= n - 1:
+                worst = max(worst, self._scaled(weight, n))
+        return worst
+
+
+def safe_window(estimate, budget):
+    # The largest n for which every n-page window is estimated to fit. The
+    # worst window only grows with n, so a binary search is exact.
+    low, high = 0, len(estimate.pages) + 1
+    while high - low > 1:
+        mid = (low + high) // 2
+        if estimate.worst_window(mid) <= budget:
+            low = mid
+        else:
+            high = mid
+    return low
+
+
+def pdf_map(doc, budget):
+    # Every size here is an estimate (with MARGIN); share_book_file weighs exactly.
     count = len(doc)
     if count == 0:
         raise ValueError("PDF has no pages")
+    estimate = SizeEstimate(doc)
     tree = outline_tree(doc.get_toc(), count)
-    total_nodes = sum(1 for _ in walk_sections(tree))
-
-    def measure(nodes, needed=True):
-        for node in nodes:
-            start, end = node["_start"], node["_end"]
-            label = printed_range(doc, start, end)
-            if label is not None:
-                node["printed_pages"] = label
-            if needed:
-                size = builder.size(start, end)
-                node.update(bytes=size, fits=size <= budget)
-            recurse = needed and not node["fits"]
-            if recurse or total_nodes < 40:
-                measure(node["children"], recurse)
-            else:
-                # Retain complete stable IDs for section resolution without
-                # paying to measure descendants of a fitting parent.
-                measure(node["children"], False)
-
-    measure(tree)
+    for node in walk_sections(tree):
+        start, end = node["_start"], node["_end"]
+        label = printed_range(doc, start, end)
+        if label is not None:
+            node["printed_pages"] = label
+        size = estimate.size(start, end)
+        node.update(estimated_bytes=size, fits=size <= budget)
     boundaries = {n["_start"] - 1 for n in walk_sections(tree)}
     parts = []
     unshareable = []
     start = 1
     while start <= count:
-        end = fit_end(builder, start, count, budget, boundaries)
+        end = fit_end(estimate, start, count, budget, boundaries)
         if end < start:
             unshareable.append(
                 {
                     "pdf_pages": str(start),
-                    "bytes": builder.size(start, start),
+                    "estimated_bytes": estimate.size(start, start),
                     "fits": False,
                     "use": "get_page_image",
                 }
             )
             start += 1
             continue
-        part = {"pdf_pages": page_range(start, end), "bytes": builder.size(start, end)}
+        part = {
+            "pdf_pages": page_range(start, end),
+            "estimated_bytes": estimate.size(start, end),
+        }
         label = printed_range(doc, start, end)
         if label is not None:
             part["printed_pages"] = label
@@ -338,7 +358,7 @@ def pdf_map(doc, builder, budget):
             part["starts_at_section"] = section["id"]
         parts.append(part)
         start = end + 1
-    safe, verification = safe_window(builder, budget)
+    safe = safe_window(estimate, budget)
     rules = doc.get_page_labels()
     labels = {"present": bool(rules), "ranges": []}
     if rules:
@@ -376,8 +396,8 @@ def pdf_map(doc, builder, budget):
         "suggested_parts": parts,
         "unshareable_pages": unshareable,
         "safe_window_pages": safe,
-        "safe_window_verification": verification,
-        "subsetting": list(builder.measurements.values()),
+        "safe_window_estimated": True,
+        "size_estimate_margin": round(MARGIN - 1, 2),
     }
 
 
@@ -453,7 +473,7 @@ def main(command, args):
         if command == "render":
             return render(doc, args["page"], args.get("dpi", 100))
         if command == "map":
-            result = pdf_map(doc, builder, args["max_bytes"])
+            result = pdf_map(doc, args["max_bytes"])
             repairs = mupdf_messages()
             if repairs:
                 # MuPDF repaired the file on open; the count is of its messages.
@@ -494,9 +514,11 @@ if __name__ == "__main__":
         output = main(sys.argv[1], json.load(sys.stdin))
     except ValueError as exc:
         output = {"error": str(exc)}
-    except Exception:
+    except ImportError:
         output = {
-            "error": "PDF helper could not complete; check file and ZLIBRARY_PDF_PYTHON (PyMuPDF required)"
+            "error": "PyMuPDF is missing; set ZLIBRARY_PDF_PYTHON to an interpreter with PyMuPDF"
         }
+    except Exception:
+        output = {"error": "PDF helper could not read or process this file"}
     print(json.dumps(output, separators=(",", ":")), file=reply)
     reply.close()

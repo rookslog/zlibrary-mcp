@@ -1,4 +1,5 @@
-/** A bounded FIFO. Each deadline starts at enqueue, including time waiting. */
+/** A bounded FIFO. Each deadline starts at enqueue, including time waiting.
+ * The job's signal carries the abort reason: 'timeout' or 'cancelled'. */
 export class PdfQueue {
   private active = false;
   private readonly waiting: (() => void)[] = [];
@@ -13,19 +14,26 @@ export class PdfQueue {
     return new Promise<T>((resolve, reject) => {
       const controller = new AbortController();
       let started = false;
-      const abort = () => {
-        controller.abort();
+      const abort = (reason: 'timeout' | 'cancelled') => {
+        controller.abort(reason);
         if (!started) {
           const index = this.waiting.indexOf(start);
           if (index >= 0) this.waiting.splice(index, 1);
           cleanup();
-          reject(new Error('PDF request cancelled or timed out while queued'));
+          reject(
+            new Error(
+              reason === 'timeout'
+                ? `PDF request timed out after ${timeout / 1000} s while queued behind other PDF work; retry shortly`
+                : 'PDF request was cancelled while queued',
+            ),
+          );
         }
       };
-      const timer = setTimeout(abort, timeout);
+      const cancel = () => abort('cancelled');
+      const timer = setTimeout(() => abort('timeout'), timeout);
       const cleanup = () => {
         clearTimeout(timer);
-        external?.removeEventListener('abort', abort);
+        external?.removeEventListener('abort', cancel);
       };
       const start = () => {
         started = true;
@@ -38,8 +46,8 @@ export class PdfQueue {
             this.waiting.shift()?.();
           });
       };
-      external?.addEventListener('abort', abort, { once: true });
-      if (external?.aborted) abort();
+      external?.addEventListener('abort', cancel, { once: true });
+      if (external?.aborted) cancel();
       else if (this.active) this.waiting.push(start);
       else start();
     });

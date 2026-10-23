@@ -33,22 +33,32 @@ def helper():
     return load("chat_files", ROOT / "lib/chat_files.py")
 
 
-def test_map_sizes_labels_sections_and_all_safe_windows(helper, book):
+def test_map_estimates_labels_sections_and_safe_windows(helper, book):
     with fitz.open(book / "nested.pdf") as src:
         builder = helper.PdfBuilder(src, book / "cache", "fixture")
-        result = helper.pdf_map(src, builder, 1100000)
+        result = helper.pdf_map(src, 1100000)
         assert result["pages"] == 12
         assert result["page_labels"]["present"] is True
         assert result["sections"][1]["pdf_pages"] == "3-10"
         assert result["sections"][1]["children"][1]["pdf_pages"] == "7-10"
-        assert result["sections"][1]["bytes"] > 1100000
+        assert result["sections"][1]["estimated_bytes"] > 1100000
         assert result["text_layer"] == 1
+        assert result["safe_window_estimated"] is True
+        assert result["size_estimate_margin"] == 0.05
+        assert "subsetting" not in result
+        # No false fits: every estimated fit is under the cap by a real build.
+        for node in helper.walk_sections(result["sections"]):
+            assert "bytes" not in node
+            if node["fits"]:
+                start, end = helper.parse_pages(node["pdf_pages"], 12)
+                assert len(builder.build(start, end)[0]) <= 1100000
         next_page = 1
         for part in result["suggested_parts"]:
             start, end = helper.parse_pages(part["pdf_pages"], 12)
             assert start == next_page
-            data, _ = builder.build(start, end)
-            assert len(data) == part["bytes"] <= 1100000
+            assert (
+                len(builder.build(start, end)[0]) <= part["estimated_bytes"] <= 1100000
+            )
             next_page = end + 1
         assert next_page == 13
         n = result["safe_window_pages"]
@@ -56,10 +66,16 @@ def test_map_sizes_labels_sections_and_all_safe_windows(helper, book):
         assert all(
             len(builder.build(i, i + n - 1)[0]) <= 1100000 for i in range(1, 14 - n)
         )
-        if n < 12:
-            assert any(
-                len(builder.build(i, i + n)[0]) > 1100000 for i in range(1, 13 - n)
-            )
+        # Largest by the estimate: one more page makes some window too big.
+        assert helper.SizeEstimate(src).worst_window(n + 1) > 1100000
+
+
+def test_estimate_covers_every_window_with_the_margin(helper, book):
+    with fitz.open(book / "nested.pdf") as src:
+        estimate = helper.SizeEstimate(src)
+        for n in (1, 3, 12):
+            sizes = [estimate.size(i, i + n - 1) for i in range(1, 14 - n)]
+            assert estimate.worst_window(n) == max(sizes)
 
 
 def test_excerpt_copies_every_label_and_never_changes_text(helper, book):
@@ -82,9 +98,7 @@ def test_excerpt_copies_every_label_and_never_changes_text(helper, book):
 def test_scans_and_unlabelled_maps(helper, book):
     for name, share in [("scan.pdf", 0), ("plain.pdf", 1)]:
         with fitz.open(book / name) as src:
-            m = helper.pdf_map(
-                src, helper.PdfBuilder(src, book / "cache", name), 1100000
-            )
+            m = helper.pdf_map(src, 1100000)
             assert m["sections"] == []
             assert m["page_labels"]["present"] is False
             assert "offset" in m["page_labels"]["note"]
@@ -124,10 +138,8 @@ def test_subset_rejected_when_extraction_changes(helper, book, monkeypatch):
 
 def test_oversized_single_pages_are_not_suggested_as_sendable_parts(helper, book):
     with fitz.open(book / "plain.pdf") as src:
-        result = helper.pdf_map(
-            src, helper.PdfBuilder(src, book / "cache", "too-small"), 100
-        )
-        assert all(p["bytes"] <= 100 for p in result["suggested_parts"])
+        result = helper.pdf_map(src, 100)
+        assert all(p["estimated_bytes"] <= 100 for p in result["suggested_parts"])
         assert result["safe_window_pages"] == 0
         assert len(result["unshareable_pages"]) == 5
         assert all(p["use"] == "get_page_image" for p in result["unshareable_pages"])

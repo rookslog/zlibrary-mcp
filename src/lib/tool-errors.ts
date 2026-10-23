@@ -95,6 +95,8 @@ export function errorEnvelope(error: unknown, operation: string, source?: string
     },
   });
 }
+const nonemptyStatus = (d: { reason: string; http_status?: number }) =>
+  d.http_status === undefined ? { reason: d.reason } : d;
 export function classifyFailure(error: any, operation: string, source?: string): ToolFailure {
   if (error instanceof ToolFailure) return error;
   const context = error?.context ?? {};
@@ -130,6 +132,7 @@ export function classifyFailure(error: any, operation: string, source?: string):
     'walk_budget_exhausted',
     'integrity_mismatch',
     'http_error',
+    'browser_check',
     'protocol_error',
     'partial_transfer',
     'not_found',
@@ -214,7 +217,8 @@ export function classifyFailure(error: any, operation: string, source?: string):
   else if (['read_timeout', 'search_timeout', 'walk_budget_exhausted'].includes(reason))
     code = 'provider_timeout';
   else if (reason === 'integrity_mismatch') code = 'integrity_mismatch';
-  else if (['http_error', 'protocol_error', 'partial_transfer'].includes(reason)) code = 'provider_error';
+  else if (['http_error', 'browser_check', 'protocol_error', 'partial_transfer'].includes(reason))
+    code = 'provider_error';
   else if (error?.code === 'CIRCUIT_BREAKER_OPEN') code = 'breaker_open';
   else if (['ValueError', 'TypeError'].includes(context.pythonErrorType)) code = 'invalid_argument';
   else if (detail.failures?.length) {
@@ -226,13 +230,17 @@ export function classifyFailure(error: any, operation: string, source?: string):
       children[children.length - 1];
     return new ToolFailure(child.code, `${operation} did not complete.`, {
       ...child.info,
-      detail: { reason: child.info.detail.reason },
+      detail: nonemptyStatus({
+        reason: child.info.detail.reason,
+        http_status: child.info.detail.http_status,
+      }),
       attempts: children.map((f: ToolFailure, i: number) => ({
         source:
           detail.failures[i].provider === 'annas_archive' ? 'annas' : detail.failures[i].provider,
         outcome: 'failed',
         code: f.code,
         reason: f.info.detail.reason,
+        ...(f.info.detail.http_status ? { http_status: f.info.detail.http_status } : {}),
       })),
     });
   }
@@ -278,8 +286,17 @@ export function classifyFailure(error: any, operation: string, source?: string):
       ...(Number.isFinite(context.retryAfterMs)
         ? { retry_after_s: Math.ceil(context.retryAfterMs / 1000) }
         : {}),
+      ...(reason === 'browser_check'
+        ? {
+            recovery:
+              "Anna's Archive is behind a DDoS-Guard browser check; this connector does not pass it. Use another source.",
+          }
+        : {}),
       detail: {
         reason,
+        ...(reason === 'browser_check' && Number.isInteger(detail.status_code)
+          ? { http_status: detail.status_code }
+          : {}),
         ...(breakerError ? { dependency: breakerError.dependency } : {}),
         ...(diagnostics ? { diagnostics } : {}),
         ...(typeof detail.request_issued === 'boolean'

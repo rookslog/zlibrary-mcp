@@ -116,6 +116,23 @@ class QuotaExhaustedError(Exception):
     pass
 
 
+def is_browser_check(response) -> bool:
+    """Whether DDoS-Guard answered instead of Anna's Archive.
+
+    Seen 2026-10-23 on all three trusted hosts: /search gives a 302 from
+    `server: ddos-guard` to `?check=1`, then a 403 "Checking your browser"
+    page. A guarded host that serves real content (2xx, no challenge) is fine.
+    """
+    responses = [*response.history, response]
+    guarded = any(
+        "ddos-guard" in r.headers.get("server", "").lower() for r in responses
+    )
+    challenge = False
+    if "html" in response.headers.get("content-type", "").lower():
+        challenge = "checking your browser" in response.text[:20000].lower()
+    return challenge or (guarded and response.status_code >= 400)
+
+
 def _attempt_budget(config, deadline: Optional[WalkDeadline]) -> float:
     """One attempt's budget, clamped to whatever the shared walk has left.
 
@@ -238,6 +255,17 @@ class AnnasArchiveAdapter(SourceAdapter):
         response = (
             await client.get(url, params=params) if params else await client.get(url)
         )
+        if is_browser_check(response):
+            # Before raise_for_status: a challenge 403 on the fast-download
+            # endpoint is not a rejected key, and a challenge 200 is not an
+            # empty result page.
+            raise ProviderResponseError(
+                PROVIDER,
+                self.host,
+                f"HTTP {response.status_code}",
+                reason="browser_check",
+                status_code=response.status_code,
+            )
         response.raise_for_status()
         return response
 

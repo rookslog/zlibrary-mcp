@@ -26,6 +26,9 @@ REASON_TEXT = {
     "read_timeout": "accepted the connection but sent no response before the deadline",
     "search_timeout": "did not finish the search before the deadline",
     "http_error": "returned an HTTP error",
+    # DDoS-Guard answers in the provider's place; the connector does not try
+    # to pass the challenge, so retrying the same host will not help.
+    "browser_check": "answered with a DDoS-Guard browser check instead of a result",
     "quota_exhausted": "has no downloads left on this account today",
     "protocol_error": "returned a malformed response",
     "partial_transfer": "stopped after receiving only part of the file",
@@ -74,10 +77,12 @@ class SourceError(Exception):
         host: str = "",
         detail: str = "",
         reason: Optional[str] = None,
+        status_code: Optional[int] = None,
     ):
         self.provider = provider
         self.host = host
         self.detail = detail
+        self.status_code = status_code
         if reason:
             self.reason = reason
         super().__init__(self._build_message())
@@ -100,6 +105,11 @@ class SourceError(Exception):
             "host": self.host,
             "reason": self.reason,
             "detail": self.detail,
+            **(
+                {"status_code": self.status_code}
+                if self.status_code is not None
+                else {}
+            ),
             "message": str(self),
         }
 

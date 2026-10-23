@@ -83,6 +83,20 @@ test('opt-in lists three chat tools and preserves probes under their own flag', 
     'get_page_image',
   ]);
 });
+test('map description sends no file; every file argument says where names come from', async () => {
+  await connect();
+  const tools = (await client.listTools()).tools.filter((t) =>
+    ['get_book_map', 'share_book_file', 'get_page_image'].includes(t.name),
+  );
+  expect(tools).toHaveLength(3);
+  const map = tools.find((t) => t.name === 'get_book_map');
+  expect(map.description).not.toMatch(/arrives|uploaded|\/mnt\/data/);
+  expect(tools.find((t) => t.name === 'share_book_file').description).toMatch(/arrives/);
+  for (const t of tools)
+    expect(t.inputSchema.properties.file.description).toMatch(
+      /name returned by search or download, or the exact path download returned/,
+    );
+});
 test('whole file unchanged, immutable cached SHA, persistent restart resource', async () => {
   await connect();
   const r = await share();

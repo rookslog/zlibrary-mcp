@@ -226,9 +226,12 @@ absolute inside it. Traversal, escaping symlinks, non-regular files and the priv
 that supports larger resource replies; the measured ChatGPT tunnel needs the default.
 
 Call `get_book_map` first for a large PDF and prefer a whole section. Maps report
-actual excerpt sizes, labels, text-layer share and suggested parts. Safe windows
-are planning hints from real candidate builds; the map describes the candidates
-verified. Every send independently checks the final cached bytes. Oversized ranges
+labels, text-layer share, sections and suggested parts. Their sizes
+(`estimated_bytes`, `fits`, suggested parts and the safe window) are estimates from
+the objects each page references, with a 5% margin, so a cold map takes seconds.
+Each section ends on the page where the next one starts, so a chapter's last page
+is never dropped. PDFs that MuPDF repairs on open map normally and report `repairs`.
+Every send is built and weighed exactly and never exceeds the cap; oversized ranges
 send one fitting prefix and report the remaining PDF pages. Images are never downsampled
 in excerpts. Printed labels are retained; font subsetting is kept only when smaller
 and sampled text extraction stays unchanged.

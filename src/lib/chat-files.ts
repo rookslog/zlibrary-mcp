@@ -19,15 +19,19 @@ import {
 
 const delivery =
   'The file arrives as a conversation file after user approval. Delivery is confirmed only by "Tool uploaded file with ID … to: /mnt/data/<name>". If missing, check /mnt/data in Python and request again or request a smaller range.';
+const fileProperty = {
+  type: 'string',
+  description:
+    'The book: the file name returned by search or download, or the exact path download returned.',
+};
 export const CHAT_FILE_TOOL_DEFINITIONS: Tool[] = [
   {
     name: 'get_book_map',
     description:
-      'Call first for anything large. Reports measured PDF sections and parts, printed page labels, scan/text share and a safe-window planning hint; no page content. Prefer whole sections. ' +
-      delivery,
+      'Call first for anything large. Reports PDF sections and parts with estimated sizes, printed page labels, scan/text share and a safe-window planning hint; no page content and no file. Prefer whole sections.',
     inputSchema: {
       type: 'object',
-      properties: { file: { type: 'string' } },
+      properties: { file: fileProperty },
       required: ['file'],
       additionalProperties: false,
     },
@@ -41,7 +45,7 @@ export const CHAT_FILE_TOOL_DEFINITIONS: Tool[] = [
     inputSchema: {
       type: 'object',
       properties: {
-        file: { type: 'string' },
+        file: fileProperty,
         pages: { type: 'string' },
         section: { type: 'string' },
       },
@@ -57,7 +61,7 @@ export const CHAT_FILE_TOOL_DEFINITIONS: Tool[] = [
     inputSchema: {
       type: 'object',
       properties: {
-        file: { type: 'string' },
+        file: fileProperty,
         page: { type: 'integer', minimum: 1 },
         dpi: { type: 'integer', default: 100 },
       },

@@ -89,3 +89,40 @@ def test_record_keeps_raw_and_adds_decoded_beside_it(tmp_path):
     assert record["title"] == GRID_TITLE
     assert record["title_decoded"] == "Raster systeme für die visuelle Gestaltung"
     assert "publisher_decoded" not in record
+
+
+# Review of 6ad5cfb, F4: a combining run before a spacing mnemonic attaches to
+# the letter that mnemonic stands for.
+@pytest.mark.parametrize(
+    "raw, decoded",
+    [
+        ("{acute}{aelig}", "ǽ"),  # ǽ (the review's red assertion, ported)
+        ("{acute}{oslash}rn", "ǿrn"),  # ǿrn
+        ("{acute}{AElig}", "Ǽ"),  # Ǽ
+        ("{caron}{eth}", "ð̌"),  # no precomposed form: stays decomposed
+    ],
+)
+def test_combining_mnemonic_before_a_spacing_one(raw, decoded):
+    assert decode_marc_mnemonics(raw) == decoded
+    assert unicodedata.is_normalized("NFC", decode_marc_mnemonics(raw))
+
+
+def test_composed_spacing_name_matches_the_literal_unicode_filename(tmp_path):
+    raw = {
+        "author": "Bj{acute}{oslash}rn, {AElig}lfric",
+        "title": "S{acute}{aelig}ga",
+        "id": "1",
+        "extension": "pdf",
+    }
+    literal = {
+        "author": "Bjǿrn, Ælfric",
+        "title": "Sǽga",
+        "id": "1",
+        "extension": "pdf",
+    }
+    assert create_unified_filename(raw) == create_unified_filename(literal)
+    assert "Acute" not in create_unified_filename(raw)
+    record = acq._record(raw, "zlibrary", {"id": "1"}, tmp_path / "x.pdf", {})
+    assert record["author"] == raw["author"] and record["title"] == raw["title"]
+    assert record["author_decoded"] == literal["author"]
+    assert record["title_decoded"] == literal["title"]

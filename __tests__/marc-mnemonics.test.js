@@ -27,6 +27,11 @@ test.each([
   ['{unknown}x', '{unknown}x'],
   ['x{uml}', 'x{uml}'],
   ['{uml} a', '{uml} a'],
+  // Review of 6ad5cfb, F4: a combining run before a spacing mnemonic (the
+  // review's red assertion, ported, is the first).
+  ['{acute}{aelig}', '\u01fd'],
+  ['{acute}{oslash}rn', '\u01ffrn'],
+  ['{acute}{AElig}', '\u01fc'],
 ])('decodes %s', (raw, decoded) => {
   expect(decodeMarcMnemonics(raw)).toBe(decoded);
 });

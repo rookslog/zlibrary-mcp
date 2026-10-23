@@ -81,6 +81,7 @@ def decode_marc_mnemonics(value):
         "M{uml}uller-Brockmann" → "Müller-Brockmann"
         "f{uml}ur" → "für"
         "{AElig}lfric" → "Ælfric"
+        "{acute}{aelig}" → "ǽ" (spacing first, then the mark attaches)
     """
     if not isinstance(value, str) or "{" not in value:
         return value
@@ -91,8 +92,10 @@ def decode_marc_mnemonics(value):
         )
         return unicodedata.normalize("NFC", match.group(2) + marks)
 
-    value = _MARC_COMBINING_RUN.sub(combine, value)
-    return _MARC_SPACING_ONE.sub(lambda m: MARC_SPACING[m.group(1)], value)
+    # Spacing letters first, so a combining run can attach to one: MARC
+    # writes "{acute}{aelig}" for ǽ (review of 6ad5cfb, F4).
+    value = _MARC_SPACING_ONE.sub(lambda m: MARC_SPACING[m.group(1)], value)
+    return _MARC_COMBINING_RUN.sub(combine, value)
 
 
 def to_camel_case(value: str, max_length: int = None) -> str:

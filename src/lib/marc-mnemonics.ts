@@ -41,11 +41,13 @@ const SPACING_ONE = new RegExp(`\\{(${Object.keys(SPACING).join('|')})\\}`, 'g')
 
 export function decodeMarcMnemonics<T>(value: T): T {
   if (typeof value !== 'string' || !value.includes('{')) return value;
+  // Spacing letters first, so a combining run can attach to one: MARC writes
+  // "{acute}{aelig}" for ǽ (review of 6ad5cfb, F4).
   return value
+    .replace(SPACING_ONE, (_, name: string) => SPACING[name]!)
     .replace(COMBINING_RUN, (_, run: string, letter: string) =>
       (letter + [...run.matchAll(/\{(\w+)\}/g)].map((m) => COMBINING[m[1]!]).join('')).normalize(
         'NFC',
       ),
-    )
-    .replace(SPACING_ONE, (_, name: string) => SPACING[name]!) as T;
+    ) as T;
 }

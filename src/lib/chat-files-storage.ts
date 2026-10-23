@@ -67,7 +67,7 @@ export async function sourceFile(input: string) {
     )
       throw new Error('file path changed while opening');
     const key = sha256(
-      JSON.stringify([target, info.size, info.mtimeMs, info.ctimeMs, maxBytes(), 3]),
+      JSON.stringify([target, info.size, info.mtimeMs, info.ctimeMs, maxBytes(), 4]),
     );
     return { root, target, handle, info, key, name: path.basename(target) };
   } catch (error) {

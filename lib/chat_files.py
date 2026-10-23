@@ -219,6 +219,10 @@ MARGIN = 1.05
 # 19.3 B per stream, residuals within 35 B per excerpt. Rounded up.
 OBJECT_OVERHEAD = 39
 STREAM_OVERHEAD = 20
+# Page attributes a page may inherit from its page-tree ancestors (PDF 32000-1,
+# 7.7.3.4). insert_pdf copies the inherited value into the excerpt's page, so
+# the estimate must too. Rotate is a number and carries no objects.
+INHERITED = ("Resources", "MediaBox", "CropBox")
 REFERENCE = re.compile(rb"(\d+) 0 R")
 BACK_LINKS = re.compile(
     r"/(Parent|P|Dest|D|Prev|Next|First|Last|StructParent|B)\s+\d+ 0 R"
@@ -240,6 +244,8 @@ class SizeEstimate:
         self.document = document
         self.weights = {}
         self.references = {}
+        self.ancestors = {}
+        self.inline = 0
         self.pages = [self._closure(page.xref) for page in document]
 
     def _object(self, xref):
@@ -249,6 +255,7 @@ class SizeEstimate:
             return ""
 
     def _weight(self, xref):
+        # Negative ids are inherited values written inline into one page.
         if xref not in self.weights:
             weight = len(self._object(xref)) + OBJECT_OVERHEAD
             try:
@@ -273,9 +280,47 @@ class SizeEstimate:
             )
         return self.references[xref]
 
+    def _key(self, xref, key):
+        try:
+            kind, value = self.document.xref_get_key(xref, key)
+        except Exception:
+            return None
+        return None if kind == "null" else value
+
+    def _inherited(self, page_xref, key):
+        # The nearest ancestor's value, walking up /Parent only: siblings and
+        # the rest of the page tree are never part of the closure.
+        node, visited = page_xref, set()
+        while node and node not in visited:
+            visited.add(node)
+            if (node, key) in self.ancestors:
+                return self.ancestors[(node, key)]
+            value = self._key(node, key) if node != page_xref else None
+            if value is not None:
+                break
+            parent = self._key(node, "Parent")
+            node = int(parent.split()[0]) if parent and parent.endswith(" R") else None
+        else:
+            value = None
+        for seen_node in visited - {page_xref}:
+            self.ancestors[(seen_node, key)] = value
+        return value
+
     def _closure(self, page_xref):
         seen = {page_xref}
         stack = list(self._refs(page_xref)[1])
+        for key in INHERITED:
+            if self._key(page_xref, key) is not None:
+                continue
+            value = self._inherited(page_xref, key)
+            if value is None:
+                continue
+            stack.extend(int(m) for m in REFERENCE.findall(value.encode()))
+            if not value.endswith(" R"):
+                # An inline value is written into this page's dictionary.
+                self.inline -= 1
+                self.weights[self.inline] = len(value)
+                seen.add(self.inline)
         while stack:
             xref = stack.pop()
             if xref in seen or xref <= 0:

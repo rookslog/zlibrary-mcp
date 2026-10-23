@@ -233,3 +233,37 @@ def test_estimate_counts_serialisation_overhead(helper, book):
         for start in range(1, 6):
             for end in range(start, 6):
                 assert estimate.size(start, end) >= builder.size(start, end)
+
+
+@pytest.mark.parametrize("name", ["inherited.pdf", "inherited-nested.pdf"])
+def test_estimate_includes_inherited_page_resources(helper, book, name):
+    # Review of 6ad5cfb, F1: pages inheriting /Resources from the page tree
+    # (directly, or two levels up) were estimated without their images.
+    with fitz.open(book / name) as src:
+        estimate = helper.SizeEstimate(src)
+        builder = helper.PdfBuilder(src, book / "cache", name)
+        for start in range(1, 5):
+            for end in range(start, 5):
+                assert estimate.size(start, end) >= builder.size(start, end)
+        for cap in (200000, 400000):
+            result = helper.pdf_map(src, cap)
+            for node in helper.walk_sections(result["sections"]):
+                start, end = helper.parse_pages(node["pdf_pages"], 4)
+                assert node["fits"] == (builder.size(start, end) <= cap)
+            for part in result["suggested_parts"]:
+                assert builder.size(*helper.parse_pages(part["pdf_pages"], 4)) <= cap
+            n = result["safe_window_pages"]
+            assert (
+                all(builder.size(i, i + n - 1) <= cap for i in range(1, 6 - n))
+                if n
+                else True
+            )
+        # The reviewer's red assertion, ported: at 200 kB nothing fits.
+        assert helper.pdf_map(src, 200000)["sections"][0]["fits"] is False
+        # Siblings are not dragged in: one page's closure has one image.
+        images = [
+            x
+            for x in estimate.pages[0]
+            if x > 0 and src.xref_get_key(x, "Subtype")[1] == "/Image"
+        ]
+        assert len(images) == 1

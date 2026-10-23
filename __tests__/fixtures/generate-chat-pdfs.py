@@ -60,6 +60,42 @@ def generate(root):
     good, bad = b"<</Type/Font/Subtype", b"<<1 2/Font 3/Subtype"
     assert data.count(good) == 1
     (root / "malformed.pdf").write_bytes(data.replace(good, bad))
+    inherited(root)
+
+
+def inherited(root):
+    # Pages that inherit /Resources from the page tree (PDF 32000-1, 7.7.3.4),
+    # after the review of 6ad5cfb (F1): directly from the root /Pages node, and
+    # from two levels up through an intermediate /Pages node with none.
+    d = fitz.open()
+    pix = fitz.Pixmap(fitz.csRGB, 300, 300, random.Random(7).randbytes(270000), False)
+    for i in range(4):
+        d.new_page(width=300, height=300).insert_image(
+            fitz.Rect(0, 0, 300, 300), pixmap=pix
+        )
+    d.set_toc([[1, "A", 1], [1, "B", 3]])
+    resources = d.xref_get_key(d[0].xref, "Resources")[1]
+    pages = int(d.xref_get_key(d[0].xref, "Parent")[1].split()[0])
+    d.xref_set_key(pages, "Resources", resources)
+    kids = [p.xref for p in d]
+    for xref in kids:
+        d.xref_set_key(xref, "Resources", "null")
+    data = d.tobytes(garbage=4, deflate=True)
+    d.close()
+    (root / "inherited.pdf").write_bytes(data)
+    d = fitz.open(stream=data, filetype="pdf")
+    pages = int(d.xref_get_key(d[0].xref, "Parent")[1].split()[0])
+    kids = [p.xref for p in d]
+    middle = d.get_new_xref()
+    refs = " ".join(f"{x} 0 R" for x in kids)
+    d.update_object(
+        middle, f"<</Type/Pages/Kids[{refs}]/Count {len(kids)}/Parent {pages} 0 R>>"
+    )
+    d.xref_set_key(pages, "Kids", f"[{middle} 0 R]")
+    for xref in kids:
+        d.xref_set_key(xref, "Parent", f"{middle} 0 R")
+    d.save(root / "inherited-nested.pdf", garbage=4, deflate=True)
+    d.close()
 
 
 if __name__ == "__main__":

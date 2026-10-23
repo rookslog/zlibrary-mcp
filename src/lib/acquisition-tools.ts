@@ -1,5 +1,6 @@
 import { z } from 'zod';
 import { RefStore } from './refs.js';
+import { decodeMarcMnemonics } from './marc-mnemonics.js';
 import { classifyFailure, errorEnvelope, ToolFailure } from './tool-errors.js';
 import type { CallOptions } from './zlibrary-api.js';
 
@@ -242,16 +243,17 @@ export class AcquisitionTools {
         ?.map((a: any) => (typeof a === 'string' ? a : (a.name ?? a.author)))
         .filter(Boolean)
         .join(', ');
+    // Display strings decode catalogue mnemonics; refs keep the raw record.
     return nonempty({
       ...(mint ? { ref: this.refs.mintStable('r', selection) } : {}),
-      title: b.title ?? b.name,
-      author,
+      title: decodeMarcMnemonics(b.title ?? b.name),
+      author: decodeMarcMnemonics(author),
       year: numberOrUndefined(b.year),
       language: b.language,
       format: b.extension ?? b.format,
       size_mb: sizeMB(b),
       pages: numberOrUndefined(b.pages),
-      publisher: b.publisher,
+      publisher: decodeMarcMnemonics(b.publisher),
       source: selection.source,
       also_available_on: b.also_available_on,
     });
@@ -388,9 +390,9 @@ export class AcquisitionTools {
       ...this.compact({ ...selection, book: merged }, false),
       ref,
       isbn: merged.isbn ?? merged.isbn_13 ?? merged.isbn_10,
-      series: merged.series,
+      series: decodeMarcMnemonics(merged.series),
       edition: merged.edition,
-      translator: merged.translator,
+      translator: decodeMarcMnemonics(merged.translator),
       categories: merged.categories,
       rating: merged.rating,
       description: description?.slice(0, 1000),

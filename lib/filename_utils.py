@@ -37,6 +37,64 @@ def normalize_document_extension(extension) -> str:
     return normalized if normalized in SAFE_DOCUMENT_EXTENSIONS else ""
 
 
+# MARC-8 mnemonics, as library cataloguing software writes them in some
+# catalogue records ("M{uml}uller-Brockmann"). A combining mnemonic precedes
+# the letter it modifies, as in MARC; spacing ones stand for a letter.
+MARC_COMBINING = {
+    "uml": "\u0308",
+    "acute": "\u0301",
+    "grave": "\u0300",
+    "circ": "\u0302",
+    "cedil": "\u0327",
+    "tilde": "\u0303",
+    "ring": "\u030a",
+    "caron": "\u030c",
+    "macr": "\u0304",
+    "breve": "\u0306",
+}
+MARC_SPACING = {
+    "szlig": "\u00df",
+    "eth": "\u00f0",
+    "thorn": "\u00fe",
+    "THORN": "\u00de",
+    "aelig": "\u00e6",
+    "AElig": "\u00c6",
+    "oslash": "\u00f8",
+    "Oslash": "\u00d8",
+    "oelig": "\u0153",
+    "OElig": "\u0152",
+    "lstrok": "\u0142",
+    "Lstrok": "\u0141",
+    "dstrok": "\u0111",
+    "Dstrok": "\u0110",
+}
+_MARC_COMBINING_RUN = re.compile(
+    r"((?:\{(?:" + "|".join(MARC_COMBINING) + r")\})+)([^\W\d_])"
+)
+_MARC_SPACING_ONE = re.compile(r"\{(" + "|".join(MARC_SPACING) + r")\}")
+
+
+def decode_marc_mnemonics(value):
+    """Decode MARC-8 mnemonics; unknown or ill-placed ones are left as is.
+
+    Examples:
+        "M{uml}uller-Brockmann" → "Müller-Brockmann"
+        "f{uml}ur" → "für"
+        "{AElig}lfric" → "Ælfric"
+    """
+    if not isinstance(value, str) or "{" not in value:
+        return value
+
+    def combine(match):
+        marks = "".join(
+            MARC_COMBINING[name] for name in re.findall(r"\{(\w+)\}", match.group(1))
+        )
+        return unicodedata.normalize("NFC", match.group(2) + marks)
+
+    value = _MARC_COMBINING_RUN.sub(combine, value)
+    return _MARC_SPACING_ONE.sub(lambda m: MARC_SPACING[m.group(1)], value)
+
+
 def to_camel_case(value: str, max_length: int = None) -> str:
     """
     Convert string to CamelCase (remove all hyphens, spaces, special chars).
@@ -192,8 +250,9 @@ def create_unified_filename(
     Returns:
         Filesystem-safe CamelCase filename with underscores
     """
-    # Extract and process author(s)
-    author_str = book_details.get("author", "")
+    # Extract and process author(s); catalogue mnemonics are decoded first so
+    # the usual folding applies ("M{uml}uller" → "Müller" → "Muller").
+    author_str = decode_marc_mnemonics(book_details.get("author", ""))
     if not author_str:
         # Try 'authors' list as fallback
         authors_list = book_details.get("authors", [])
@@ -201,18 +260,23 @@ def create_unified_filename(
             # Handle multiple authors: "Author1_Author2"
             if len(authors_list) > 1:
                 author_parts = [
-                    format_author_camelcase(a) for a in authors_list[:2]
+                    format_author_camelcase(decode_marc_mnemonics(a))
+                    for a in authors_list[:2]
                 ]  # Max 2 authors
                 author_camel = "_".join(author_parts)
             else:
-                author_camel = format_author_camelcase(authors_list[0])
+                author_camel = format_author_camelcase(
+                    decode_marc_mnemonics(authors_list[0])
+                )
         else:
             author_camel = "UnknownAuthor"
     else:
         author_camel = format_author_camelcase(author_str)
 
     # Extract and process title
-    title_str = book_details.get("title") or book_details.get("name", "")
+    title_str = decode_marc_mnemonics(
+        book_details.get("title") or book_details.get("name", "")
+    )
     if not title_str:
         title_camel = "UntitledBook"
     else:
@@ -346,7 +410,9 @@ def is_preservable_server_filename(filename: str) -> bool:
     # replace the real title/author components that partial metadata provides.
     # Treat all-digit stems as generic IDs too, even real titles such as 1984,
     # to avoid replacing known metadata with an ambiguous numeric response name.
-    if re.fullmatch(r"(?:book|file|document|download)(?:[-_ ]?\d+)?|\d+", stem, re.IGNORECASE):
+    if re.fullmatch(
+        r"(?:book|file|document|download)(?:[-_ ]?\d+)?|\d+", stem, re.IGNORECASE
+    ):
         return False
     if not normalize_document_extension(Path(name).suffix):
         return False

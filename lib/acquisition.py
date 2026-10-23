@@ -17,7 +17,11 @@ import re
 import stat
 import tempfile
 
-from lib.filename_utils import create_unified_filename, normalize_document_extension
+from lib.filename_utils import (
+    create_unified_filename,
+    decode_marc_mnemonics,
+    normalize_document_extension,
+)
 from lib.sources.config import (
     DEFAULT_NODE_LONG_TIMEOUT_SECONDS,
     WALK_OVERHEAD_ALLOWANCE,
@@ -396,6 +400,18 @@ async def destination_lock(path, budget):
         lease.close()
 
 
+def _decoded(book):
+    # The raw catalogue string stays in the record; its MARC-decoded form, if
+    # different, sits beside it.
+    fields = ["title", "author", "publisher", "series", "translator"]
+    return {
+        f"{field}_decoded": decode_marc_mnemonics(book[field])
+        for field in fields
+        if isinstance(book.get(field), str)
+        and decode_marc_mnemonics(book[field]) != book[field]
+    }
+
+
 def _record(book, source, identifiers, destination, request):
     return {
         "record_version": 1,
@@ -424,6 +440,7 @@ def _record(book, source, identifiers, destination, request):
                 "translator",
             ]
         },
+        **_decoded(book),
         "format": book.get("extension") or None,
         "identifiers": identifiers,
         "request": {

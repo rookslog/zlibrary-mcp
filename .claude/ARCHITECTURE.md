@@ -75,7 +75,8 @@ this retained 1.x list is not the current tool list:
 | `base.py` | `SourceAdapter` ABC: `search()`, `get_download_url(md5)`, `close()` — each takes the walk's shared `deadline` |
 | `models.py` | `UnifiedBookResult`, `DownloadResult` (shared result shapes) |
 | `config.py` | `DEFAULT_WALK_BUDGET`, `worst_case_search_seconds()`, `worst_case_download_seconds()`, and `SourceConfig` from env (`ANNAS_SECRET_KEY`, `ANNAS_BASE_URL`, `LIBGEN_MIRROR`, `LIBGEN_USER_AGENT`, `BOOK_SOURCE_DEFAULT`, `BOOK_SOURCE_FALLBACK_ENABLED`) |
-| `annas.py` | Anna's Archive adapter — HTML scraping (BeautifulSoup); DOM-fragile surface |
+| `annas.py` | Anna's adapter — shared HTML search parser, keyed download resolver, opt-in browser URL candidates |
+| `annas_browser.py`, `annas_usage.py` | Optional visible Chrome page resolution, bounded cleanup, profile locking and shared durable visit limits; file bytes stay on HTTP |
 | `libgen.py` | LibGen adapter (fallback source) |
 | `router.py` | `SourceRouter`: Anna's primary when key configured, LibGen fallback on error/quota exhaustion; source selection `auto`/`annas`/`libgen`. Creates one `WalkDeadline` per walk and every provider and mirror spends it |
 
@@ -83,6 +84,18 @@ The public `search` tool walks explicit ordered sources; for LibGen/Anna's it
 calls the internal `search_multi_source` bridge with one source per attempt.
 Z-Library itself does **not** yet
 route through `SourceRouter` — promoting it to a `SourceAdapter` is planned work.
+
+Without a key, internal `auto` downloads remain LibGen-first and add Anna's only
+when `ANNAS_BROWSER_ENABLED` is on. Anna's uses the browser only without a key or
+after an explicit trusted-endpoint credential rejection; keyed success and quota
+are unchanged. Slow partners yield in site order, with browser cleanup before
+each URL is handed to the existing HTTP/MD5/resume/receipt path. No browser
+cookies or storage enter that transfer. Browser results use the existing
+`mirror_download` receipt route; keyed results retain `fast_download`.
+For browser receipts the existing internal `quota_estimate` bridge field is
+explicitly null, including receipt reuse. The public facade consumes that marker,
+clears any cached membership estimate and omits the field from its public reply.
+Keyed responses retain their existing quota/decrement behavior.
 
 ### Testing Posture
 
@@ -214,7 +227,7 @@ zlibrary-mcp/
 - Cloudflare bypass: API endpoints not subject to browser challenges
 
 ### Alternative Sources
-- Anna's Archive: HTML-scraped; fast downloads gated on `ANNAS_SECRET_KEY`; quota-aware
+- Anna's Archive: HTML-scraped; keyed fast downloads or opted-in visible-browser URL resolution; shared page-visit limits
 - LibGen: mirror-configurable fallback
 - Both monitored daily by the Upstream Contract Check workflow
 

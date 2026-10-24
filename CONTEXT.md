@@ -40,10 +40,9 @@ _Avoid_: Method, channel, path
 **Provenance**:
 The record of which source, route, mirror, and host served a given result.
 
-Note that provenance is currently **written to the logs, not returned to the caller**.
-`DownloadResult` carries `url`, `source`, and quota only. Making it part of the returned
-result is an open design decision (#96), so treat this entry as naming the concept rather
-than describing a guarantee the server presently offers.
+The acquisition receipt records resolution identity separately from the host that
+actually served the file. A browser-resolved partner URL is a mirror download;
+it does not claim that a membership fast download occurred.
 
 ### Anna's Archive routes
 
@@ -63,9 +62,8 @@ rate-limited to personal-use scale.
 **Not viable — dead, not deferred** (resolved 2026-08-11, #84). DDoS-Guard binds the
 challenge cookie to the client that earned it: the issuing IP is stored inside `__ddg9_`,
 so a transplanted cookie is rejected byte-for-byte identically to no cookie at all
-(403, 902 bytes, with and without). `AnnasArchiveAdapter.get_download_url` calls only the
-keyed `fast_download` endpoint and raises without `ANNAS_SECRET_KEY`. **Anna's therefore
-has exactly one supported download route: keyed `fast_download`.** The term is retained
+(403, 902 bytes, with and without). This rules out transplanted challenge cookies,
+not the browser-resident route below. The term is retained
 here because the distinction it names is still needed to read #75, #84 and #97 — not
 because the route is planned. Its guardrail work, #97, is closed as moot **and has a
 successor**: the sanctioned rate-limited route it anticipated did appear, as the
@@ -75,9 +73,10 @@ _Avoid_: Keyless download (ambiguous — say this instead)
 
 **Browser-resident session**:
 A route where a *real browser on the operator's machine* holds the DDoS-Guard clearance and
-search and download requests are issued from inside it, rate-limited. Nothing is exported to
-a different client, so the IP binding that defeated the operator-cookie route above does not
-apply. #142 measured that clearance can be held this way — headful only, roughly 20 minutes
+Anna's search and download-page requests are issued from inside it, rate-limited.
+An off-site file URL can then be fetched over ordinary HTTP; browser cookies and
+storage remain in the browser. This does not transplant Anna's challenge clearance
+to another client. #142 measured that clearance can be held this way — headful only, roughly 20 minutes
 per solve — and #143 and #144 build on that answer.
 
 **In scope** (operator ruling; the reasoning and its limits are in `AGENTS.md`

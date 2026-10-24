@@ -434,7 +434,7 @@ def _record(book, source, identifiers, destination, request):
 
 
 def _reply(record, record_path, skipped):
-    return {
+    reply = {
         "path": record["path"],
         "bytes": record["bytes"],
         "reused": False if skipped else record["reused"],
@@ -442,6 +442,16 @@ def _reply(record, record_path, skipped):
         "verified": "sha256",
         "record": str(record_path),
     }
+    if (
+        record.get("source") in {"annas", "annas_archive"}
+        and isinstance(record.get("provenance"), dict)
+        and record["provenance"].get("route") == "mirror_download"
+    ):
+        # Existing bridge field, explicit unknown: the public facade removes
+        # this marker rather than decrementing a cached membership estimate.
+        # Derive it from the receipt so offline reuse has the same semantics.
+        reply["quota_estimate"] = None
+    return reply
 
 
 def _same_identity(record, source, identifiers):

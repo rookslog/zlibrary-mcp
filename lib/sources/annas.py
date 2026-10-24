@@ -1,7 +1,7 @@
 """Anna's Archive source adapter.
 
-Provides search and fast download functionality for Anna's Archive.
-Search uses HTML scraping, downloads use the fast download API.
+Search uses HTML scraping; downloads prefer the keyed fast API, with optional
+visible-browser URL resolution. File bytes use the existing HTTP transfer.
 
 Key decisions:
 - ANNAS-DOMAIN-INDEX-1: Use domain_index=1 for fast download API
@@ -10,7 +10,7 @@ Key decisions:
 """
 
 import re
-from typing import Dict, List, Optional
+from typing import AsyncIterator, Dict, List, Optional
 from urllib.parse import quote, urlsplit
 
 import httpx
@@ -117,6 +117,14 @@ class QuotaExhaustedError(Exception):
     pass
 
 
+class _RejectedKeyError(ProviderConfigurationError):
+    """A trusted keyed endpoint rejected its key; eligible for opt-in fallback."""
+
+
+class _BrowserDownloadResult(DownloadResult):
+    """Same fields as DownloadResult; marks the existing mirror receipt route."""
+
+
 def _attempt_budget(config, deadline: Optional[WalkDeadline]) -> float:
     """One attempt's budget, clamped to whatever the shared walk has left.
 
@@ -136,11 +144,11 @@ class AnnasArchiveAdapter(SourceAdapter):
 
     Provides:
     - search(query) -> List[UnifiedBookResult] via HTML scraping
-    - get_download_url(md5) -> DownloadResult via fast download API
+    - get_download_url(md5) -> DownloadResult via keyed API or opt-in browser
 
     Configuration:
     - annas_base_url: Base URL for Anna's Archive (default: https://annas-archive.gl)
-    - annas_secret_key: API key for fast downloads (required for get_download_url)
+    - annas_secret_key: API key for fast downloads
 
     Security: the secret key is only ever attached to hosts in
     config.ANNAS_TRUSTED_HOSTS. Anna's Archive domains lapse and get re-registered
@@ -425,6 +433,47 @@ class AnnasArchiveAdapter(SourceAdapter):
         md5: str,
         deadline: Optional[WalkDeadline] = None,
     ) -> DownloadResult:
+        """Return the first keyed or opted-in browser candidate; close its stream."""
+        stream = self.iter_download_candidates(md5, deadline=deadline)
+        try:
+            return await anext(stream)
+        finally:
+            await stream.aclose()
+
+    async def iter_download_candidates(
+        self, md5: str, deadline: Optional[WalkDeadline] = None
+    ) -> AsyncIterator[DownloadResult]:
+        """Keep keyed success/quota unchanged; fallback only for no/rejected key."""
+        if not self.config.annas_browser_enabled:
+            yield await self._keyed_download_url(md5, deadline=deadline)
+            return
+        if self.secret_key:
+            try:
+                result = await self._keyed_download_url(md5, deadline=deadline)
+            except _RejectedKeyError:
+                pass
+            else:
+                yield result
+                return
+        if self._browser is None:
+            self._browser = AnnasBrowserSession(self.config)
+        stream = self._browser.iter_download_urls(md5, deadline=deadline)
+        try:
+            async for url in stream:
+                # The shared counter measures page visits, not membership
+                # downloads. Omitting membership quota also preserves the last
+                # fully-budgeted URL when the router rejects zero quotas.
+                yield _BrowserDownloadResult(
+                    url=url, source=SourceType.ANNAS_ARCHIVE, mirror=self.host
+                )
+        finally:
+            await stream.aclose()
+
+    async def _keyed_download_url(
+        self,
+        md5: str,
+        deadline: Optional[WalkDeadline] = None,
+    ) -> DownloadResult:
         """Get fast download URL for a book.
 
         Calls /dyn/api/fast_download.json with MD5 and API key.
@@ -496,7 +545,7 @@ class AnnasArchiveAdapter(SourceAdapter):
                 exc.response.status_code in (401, 403)
                 and is_configured_fast_download_endpoint
             ):
-                raise ProviderConfigurationError(
+                raise _RejectedKeyError(
                     PROVIDER,
                     self.host,
                     f"ANNAS_SECRET_KEY rejected by fast-download endpoint "

@@ -67,8 +67,8 @@ class SourceRouter:
         """Get or create the Anna's Archive adapter.
 
         Constructed unconditionally. Anna's search is HTML scraping that carries
-        no credentials, so it works without ANNAS_SECRET_KEY; only
-        get_download_url needs the key, and it enforces that itself. Gating
+        no credentials, so it works without ANNAS_SECRET_KEY. Downloads require
+        the key or an opted-in browser route, enforced by the adapter. Gating
         construction on the key put the check in the wrong place and made an
         explicit source="annas" silently return LibGen results instead (#74).
 
@@ -204,9 +204,8 @@ class SourceRouter:
     def _download_candidates(self, source: SourceSelection) -> List[SourceSelection]:
         """Ordered providers to try for a download.
 
-        Narrower than `_search_candidates`: Anna's fast-download API needs
-        ANNAS_SECRET_KEY, so without one it is not a usable download fallback
-        even though its search is.
+        Anna's is eligible with a key or an explicitly enabled browser route.
+        Without either, retain the original LibGen-only download fallback.
 
         Args:
             source: Requested source
@@ -219,7 +218,11 @@ class SourceRouter:
             return [primary]
         if primary == "annas":
             return ["annas", "libgen"]
-        return ["libgen"] + (["annas"] if self.config.has_annas_key else [])
+        return ["libgen"] + (
+            ["annas"]
+            if self.config.has_annas_key or self.config.annas_browser_enabled
+            else []
+        )
 
     async def get_download_url(
         self,

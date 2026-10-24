@@ -17,3 +17,6 @@ FU-1 adds `kant-manual-phrase-variant.html`: a deliberately derived test case,
 not an additional live capture. It retains the saved Kant page structure and
 changes the Critique of Pure Reason title to include "complete the manual check".
 BeautifulSoup reserializes the HTML; the five original captures remain unchanged.
+
+B5 download variants and their transformations are documented in `b5/README.md`.
+They are derived offline, not additional live captures.

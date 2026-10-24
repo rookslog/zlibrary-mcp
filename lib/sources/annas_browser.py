@@ -1,13 +1,14 @@
 """Opt-in visible Anna browser search; session/usage layer ported from bfef94b.
 
-Only Playwright startup imports the optional dependency. Search shares the
-operator's dedicated profile, durable request budget and OS lock. Download
-resolution is intentionally deferred to a separate slice.
+Only Playwright startup imports the optional dependency. Search and download
+URL resolution share the dedicated profile, durable request budget and OS lock.
+File bytes remain on the ordinary HTTP transfer path.
 """
 
 from __future__ import annotations
 
 import asyncio
+import ipaddress
 import logging
 import math
 import os
@@ -17,18 +18,19 @@ from pathlib import Path
 import tempfile
 from dataclasses import dataclass
 from datetime import datetime, timezone
-from typing import Optional
-from urllib.parse import quote, urlsplit
+from typing import AsyncIterator, Optional
+from urllib.parse import quote, unquote, urlsplit
 
 from bs4 import BeautifulSoup
 
+from ..filename_utils import SAFE_DOCUMENT_EXTENSIONS
 from .annas_usage import (
     CrossProcessLock,
     DailyUsage,
     UsageCounterUnavailableError,
     UsageWaitExceedsDeadlineError,
 )
-from .config import SourceConfig
+from .config import ANNAS_TRUSTED_HOSTS, SourceConfig
 from .errors import (
     ProviderConfigurationError,
     ProviderResponseError,
@@ -144,6 +146,82 @@ class _RateLimiter:
 _GENERIC_TYPES = ("", "text/plain", "application/octet-stream", "binary/octet-stream")
 # A challenge page is small; result pages are not inspected past this size.
 _CHALLENGE_MAX_BYTES = 256 * 1024
+_MD5_RE = re.compile(r"[a-f0-9]{32}")
+_SLOW_LINK_RE = re.compile(r"/slow_download/([a-f0-9]{32})/0/\d+")
+_DOWNLOAD_LABEL_RE = re.compile(r"\b(?:download|save|get\s+file)\b", re.I)
+
+
+def _slow_download_paths(page_html: str, md5: str) -> list[str]:
+    """Port bfef94b's ordered/deduplicated partners, using actual local anchors."""
+    soup = BeautifulSoup(page_html, "html.parser")
+    paths = []
+    for anchor in soup.select("main a[href]"):
+        path = anchor["href"]
+        match = _SLOW_LINK_RE.fullmatch(path)
+        if match and match.group(1) == md5 and path not in paths:
+            paths.append(path)
+    return paths
+
+
+def _hidden_link(anchor) -> bool:
+    for node in (anchor, *anchor.parents):
+        if (
+            node.has_attr("hidden")
+            or node.has_attr("disabled")
+            or node.get("aria-hidden") == "true"
+            or node.get("aria-disabled") == "true"
+            or "hidden" in node.get("class", [])
+            or re.search(
+                r"display\s*:\s*none|visibility\s*:\s*hidden",
+                node.get("style", ""),
+                re.I,
+            )
+        ):
+            return True
+    return False
+
+
+def _direct_file_url(page_html, base_host: str) -> Optional[str]:
+    """Port labelled/extension/opaque handoff selection; never return Anna pages."""
+    soup = (
+        BeautifulSoup(page_html, "html.parser")
+        if isinstance(page_html, str)
+        else page_html
+    )
+    opaque, labelled = [], []
+    for anchor in soup.select("main a[href]"):
+        if _hidden_link(anchor):
+            continue
+        href = anchor["href"].strip()  # BeautifulSoup decodes &amp; in signed URLs.
+        try:
+            parsed = urlsplit(href)
+            host = (parsed.hostname or "").lower().rstrip(".")
+            if (
+                parsed.scheme not in ("http", "https")
+                or not host
+                or parsed.username is not None
+                or parsed.password is not None
+                or host in ANNAS_TRUSTED_HOSTS
+                or host == base_host
+                or host == "localhost"
+                or host.endswith((".localhost", ".local"))
+            ):
+                continue
+            try:
+                if not ipaddress.ip_address(host).is_global:
+                    continue
+            except ValueError:
+                pass  # Hostname, resolved only by the existing HTTP transfer.
+            parsed.port  # Reject malformed/out-of-range ports without requesting.
+        except ValueError:
+            continue
+        suffix = Path(unquote(parsed.path)).suffix.lstrip(".").lower()
+        if suffix in SAFE_DOCUMENT_EXTENSIONS:
+            return href
+        opaque.append(href)
+        if _DOWNLOAD_LABEL_RE.search(anchor.get_text(" ", strip=True)):
+            labelled.append(href)
+    return next(iter(labelled), None) or (opaque[0] if len(opaque) == 1 else None)
 
 
 def _looks_like_html(response) -> bool:
@@ -202,12 +280,11 @@ def _settled_search_page(soup) -> bool:
 def needs_human_check(page_html: str) -> bool:
     """Recognize the saved manual DDoS-Guard check without interacting with it."""
     soup = BeautifulSoup(page_html, "html.parser")
+    if soup.select_one("#ddg-captcha, #ddg-iframe"):
+        return True
     if _settled_search_page(soup):
         return False
-    return bool(
-        soup.select_one("#ddg-captcha, #ddg-iframe")
-        or "complete the manual check" in soup.get_text(" ", strip=True).lower()
-    )
+    return "complete the manual check" in soup.get_text(" ", strip=True).lower()
 
 
 class AnnasBrowserSession:
@@ -428,6 +505,13 @@ class AnnasBrowserSession:
     async def _search_html(
         self, query: str, *, deadline: WalkDeadline, cleanup_deadline: WalkDeadline
     ) -> str:
+        async def search(page, operation_deadline):
+            return await self._visit(page, f"{self.base_url}/search?q={quote(query)}")
+
+        return await self._run_page(search, deadline, cleanup_deadline)
+
+    async def _run_page(self, visit, deadline, cleanup_deadline):
+        """Reserve the first visit and own its page/driver/locks through cleanup."""
         page = None
         session_locked = False
         process_locked = False
@@ -452,7 +536,7 @@ class AnnasBrowserSession:
             await self._limiter.acquire(deadline)
             context = await self._ensure_context()
             page = await context.new_page()
-            return await self._visit(page, f"{self.base_url}/search?q={quote(query)}")
+            return await visit(page, deadline)
 
         try:
             # The operation timer cancels navigation/lock waits, not cleanup.
@@ -475,6 +559,69 @@ class AnnasBrowserSession:
                 if session_locked:
                     self._lock.release()
 
+    async def iter_download_urls(
+        self, md5: str, deadline: Optional[WalkDeadline] = None
+    ) -> AsyncIterator[str]:
+        """Read detail once, then partners in site order; close before every yield."""
+        md5 = md5.strip().lower()
+        if not _MD5_RE.fullmatch(md5):
+            raise ValueError("Anna's browser downloads require a 32-hex MD5")
+        resolution = WalkDeadline(
+            self.config.download_timeout,
+            remaining_limit=(
+                None
+                if deadline is None
+                else lambda left: min(left, deadline.remaining())
+            ),
+        )
+        pending = None
+        last_failure = None
+
+        async def resolve(page, operation_deadline):
+            nonlocal pending, last_failure
+            needs_slot = False  # _run_page reserved the first visit.
+            if pending is None:
+                book = await self._visit(
+                    page, f"{self.base_url}/md5/{md5}", kind="detail"
+                )
+                pending = _slow_download_paths(book, md5)[
+                    : self.config.annas_browser_max_servers
+                ]
+                if not pending:
+                    raise ProviderResponseError(
+                        PROVIDER,
+                        self.host,
+                        f"no slow-partner link for md5 {md5}",
+                        reason="not_found",
+                    )
+                needs_slot = True
+            while pending:
+                path = pending.pop(0)
+                if needs_slot:
+                    await self._limiter.acquire(operation_deadline)
+                needs_slot = True
+                try:
+                    partner = await self._visit(
+                        page, f"{self.base_url}{path}", kind="partner"
+                    )
+                    return _direct_file_url(partner, self.host)
+                except (ProviderResponseError, ProviderTimeoutError) as exc:
+                    if exc.reason in ("browser_check", "quota_exhausted"):
+                        raise
+                    last_failure = exc
+            if last_failure is not None:
+                raise last_failure
+            return None
+
+        while pending is None or pending:
+            budget = resolution.remaining()
+            cleanup_deadline = WalkDeadline(budget)
+            operation_deadline = WalkDeadline(max(0.0, budget - min(2.0, budget / 4)))
+            url = await self._run_page(resolve, operation_deadline, cleanup_deadline)
+            if url is not None:
+                with resolution.suspended():
+                    yield url
+
     def _browser_check(self, detail: str) -> ProviderResponseError:
         self._limiter.penalise(self.config.annas_browser_backoff_seconds)
         return ProviderResponseError(
@@ -484,7 +631,7 @@ class AnnasBrowserSession:
             reason="browser_check",
         )
 
-    async def _visit(self, page, url: str) -> str:
+    async def _visit(self, page, url: str, *, kind: str = "search") -> str:
         try:
             response = await page.goto(
                 url,
@@ -514,7 +661,20 @@ class AnnasBrowserSession:
                 page_html = None
             if page_html is not None:
                 soup = BeautifulSoup(page_html, "html.parser")
-                if _settled_search_page(soup):
+                ready = (
+                    _settled_search_page(soup)
+                    if kind == "search"
+                    else (
+                        bool(soup.select_one("main [id^='cover_aarecord_id__md5:']"))
+                        if kind == "detail"
+                        else bool(_direct_file_url(soup, self.host))
+                    )
+                )
+                if (
+                    ready
+                    and not soup.select_one("#ddg-captcha, #ddg-iframe")
+                    and not _challenge_page("", soup=soup)
+                ):
                     # Settled content wins over incidental manual-check prose
                     # in a result, and over an initial challenge-hop status.
                     return page_html
@@ -522,10 +682,22 @@ class AnnasBrowserSession:
                     raise self._browser_check(
                         "Anna's asks for a person in the visible Chrome window."
                     )
+                partner_heading = (
+                    soup.select_one("main h2") if kind == "partner" else None
+                )
+                pending_partner = (
+                    partner_heading is not None
+                    and partner_heading.get_text(" ", strip=True).startswith(
+                        "Download from partner"
+                    )
+                )
                 if (
                     not _challenge_page(page_html)
                     and status is not None
                     and status >= 400
+                    # A challenge hop can answer 403 before the genuine
+                    # partner countdown loads. Wait for its visible file link.
+                    and not (status == 403 and pending_partner)
                 ):
                     if status in (403, 429, 503):
                         raise self._browser_check(
@@ -534,7 +706,7 @@ class AnnasBrowserSession:
                     raise ProviderResponseError(
                         PROVIDER,
                         self.host,
-                        f"HTTP {status} from browser search",
+                        f"HTTP {status} from browser {kind}",
                         reason="http_error",
                     )
             left = expires - loop.time()
@@ -546,7 +718,7 @@ class AnnasBrowserSession:
                 raise ProviderResponseError(
                     PROVIDER,
                     self.host,
-                    "No settled Anna search page before its settle timeout.",
+                    f"No settled Anna {kind} page before its settle timeout.",
                     reason="protocol_error",
                 )
             await asyncio.sleep(min(0.25, left))

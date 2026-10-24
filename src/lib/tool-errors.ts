@@ -92,7 +92,14 @@ export function errorEnvelope(error: unknown, operation: string, source?: string
       ? 'The request was valid; the helper failed. '
       : '';
   // Do not expose upstream exception text, URLs, bearer values, or stacks.
-  const message = `${attempted ? `${attempted}: ` : ''}${validity}${e.message}`.slice(0, 199);
+  // Keep the full message budget; context belongs outside the bounded message.
+  const message = e.message.slice(0, 199);
+  const recovery =
+    info.recovery ??
+    (e.code === 'outcome_unknown' && attempted === 'libgen'
+      ? 'Call download again with the same ref if still wanted; disk receipts are checked first and LibGen transfers are quota-free.'
+      : recoveries[e.code]) ??
+    'Try another source or candidate; report persistent provider drift.';
   return ErrorEnvelopeSchema.parse({
     error: {
       code: e.code,
@@ -101,12 +108,7 @@ export function errorEnvelope(error: unknown, operation: string, source?: string
       message,
       retry: info.retry ?? 'no',
       ...(Number.isFinite(info.retry_after_s) ? { retry_after_s: info.retry_after_s } : {}),
-      recovery:
-        info.recovery ??
-        (e.code === 'outcome_unknown' && attempted === 'libgen'
-          ? 'Call download again with the same ref if still wanted; disk receipts are checked first and LibGen transfers are quota-free.'
-          : recoveries[e.code]) ??
-        'Try another source or candidate; report persistent provider drift.',
+      recovery: `${validity}${attempted ? `${attempted}: ` : ''}${recovery}`,
       attempts: info.attempts ?? [],
       detail,
     },

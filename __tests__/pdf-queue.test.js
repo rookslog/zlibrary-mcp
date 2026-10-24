@@ -21,7 +21,7 @@ test('FIFO serializes jobs and refuses the ninth waiting job', async () => {
     }, 1000),
   );
   await expect(queue.run(async () => 99, 1000)).rejects.toThrow(
-    /request was valid; the PDF helper failed.*full/i,
+    /request was valid; the server is busy.*full/i,
   );
   release('first');
   expect(await first).toBe('first');

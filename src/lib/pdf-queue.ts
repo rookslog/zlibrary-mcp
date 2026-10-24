@@ -12,7 +12,7 @@ export class PdfQueue {
     if (this.active && this.waiting.length >= 8)
       return Promise.reject(
         new Error(
-          'The request was valid; the PDF helper failed: PDF queue is full (8 waiting); retry shortly',
+          'The request was valid; the server is busy: PDF queue is full (8 waiting); retry shortly',
         ),
       );
     return new Promise<T>((resolve, reject) => {

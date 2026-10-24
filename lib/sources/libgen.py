@@ -10,6 +10,7 @@ import logging
 import re
 import threading
 import time
+import unicodedata
 from typing import AsyncIterator, List, Optional
 from urllib.parse import parse_qs, urljoin, urlparse
 
@@ -242,7 +243,8 @@ def _get_books(self, table):
 
     Only a direct, nonblank edition link supplies the title and ID. Nested
     journal/issue links and trailing DOI/ISBN metadata are not row identities.
-    Retain upstream title normalization and mirror/cover handling. Install via
+    Preserve Unicode title text and punctuation; strip markup and controls.
+    Retain upstream mirror/cover handling. Install via
     the same local compatibility mechanism as the UA shim; remove when upstream
     supports this layout and object-type evidence itself.
     """
@@ -275,7 +277,9 @@ def _get_books(self, table):
         edition_link = edition_links[0]
         raw_title = edition_link.get_text(" ", strip=True)
         title = re.sub(r"\s+", " ", raw_title.strip())
-        title = re.sub(r"[^A-Za-z0-9 ]+", "", title.strip())
+        title = "".join(
+            c for c in title if unicodedata.category(c) not in {"Cc", "Cf"}
+        ).strip()
         id_param = parse_qs(urlparse(edition_link["href"]).query)["id"][0]
 
         author = tds[offset + 1].get_text(strip=True)
@@ -394,10 +398,10 @@ def _unparseable_search_page(
 ) -> Optional[str]:
     """Detail text when a zero-result page is a parse failure, else None.
 
-    A genuinely-empty search still renders the (empty) results table (verified
-    2026-08-17), so a page WITHOUT `tablelibgen` means the mirror served
-    something else entirely — a UA-block stub or a layout change — and "no
-    results" would be a false report (#124).
+    Only an actual table#tablelibgen establishes a parseable results page.
+    CSS, scripts and comments can mention that ID without a results table.
+    Retain the existing no-table parse-failure policy (#124); an empty table
+    remains a valid empty result.
 
     This is #124's `SourceParseError` folded into the #106 error taxonomy: the
     caller raises it as a `ProviderResponseError`/`protocol_error` attributed
@@ -416,7 +420,7 @@ def _unparseable_search_page(
     if page is None:
         return None
     text = getattr(page, "text", "") or ""
-    if "tablelibgen" in text:
+    if BeautifulSoup(text, "html.parser").find("table", id="tablelibgen") is not None:
         return None
     status = getattr(page, "status_code", "?")
     title_match = re.search(r"<title>([^<]*)</title>", text, re.I)

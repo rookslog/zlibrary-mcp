@@ -18,6 +18,7 @@ from bs4 import BeautifulSoup
 from bs4.element import Tag
 
 from .base import SourceAdapter
+from .annas_browser import AnnasBrowserSession, is_browser_check
 from .config import ANNAS_TRUSTED_HOSTS, SourceConfig
 from .errors import (
     ProviderConfigurationError,
@@ -165,6 +166,7 @@ class AnnasArchiveAdapter(SourceAdapter):
         self.port = port_of(self.base_url)
         self.scheme = urlsplit(self.base_url).scheme or "https"
         self._client: Optional[httpx.AsyncClient] = None
+        self._browser: Optional[AnnasBrowserSession] = None
 
     async def _get_client(self) -> httpx.AsyncClient:
         """Get or create HTTP client.
@@ -229,7 +231,14 @@ class AnnasArchiveAdapter(SourceAdapter):
             return ProviderResponseError(PROVIDER, self.host, detail, reason=reason)
         return ProviderUnreachableError(PROVIDER, self.host, detail, reason=reason)
 
-    async def _fetch(self, client, url: str, params: Optional[Dict] = None):
+    async def _fetch(
+        self,
+        client,
+        url: str,
+        params: Optional[Dict] = None,
+        *,
+        allow_browser_check: bool = False,
+    ):
         """GET a URL and raise on an error status, as one awaitable.
 
         Exists so the status check sits *inside* the wall-clock budget rather
@@ -238,6 +247,8 @@ class AnnasArchiveAdapter(SourceAdapter):
         response = (
             await client.get(url, params=params) if params else await client.get(url)
         )
+        if allow_browser_check and is_browser_check(response):
+            return response
         response.raise_for_status()
         return response
 
@@ -271,21 +282,39 @@ class AnnasArchiveAdapter(SourceAdapter):
 
         client = await self._get_client()
         url = f"{self.base_url}/search?q={quote(query)}"
+        attempt = WalkDeadline(_attempt_budget(self.config, deadline))
         try:
             # httpx bounds each phase separately and restarts its read deadline
             # on every chunk, so a host that trickles bytes never trips it. The
             # outer budget is what actually enforces config.total_timeout.
             response = await bounded_await(
-                self._fetch(client, url),
-                _attempt_budget(self.config, deadline),
+                self._fetch(client, url, allow_browser_check=True),
+                attempt.remaining(),
                 provider=PROVIDER,
                 host=self.host,
                 operation="search",
             )
+            if is_browser_check(response):
+                if not self.config.annas_browser_enabled:
+                    raise ProviderResponseError(
+                        PROVIDER,
+                        self.host,
+                        "Anna's returned a browser check.",
+                        reason="browser_check",
+                    )
+                if self._browser is None:
+                    self._browser = AnnasBrowserSession(self.config)
+                page_html = await self._browser.search_html(query, deadline=attempt)
+            else:
+                page_html = response.text
         except Exception as exc:
             raise self._as_source_error(exc) from exc
 
-        soup = BeautifulSoup(response.text, "html.parser")
+        return self._parse_search_html(page_html)
+
+    def _parse_search_html(self, page_html: str) -> List[UnifiedBookResult]:
+        """One row parser for both transports, using the existing result shape."""
+        soup = BeautifulSoup(page_html, "html.parser")
         results = []
         seen = set()
 
@@ -295,6 +324,10 @@ class AnnasArchiveAdapter(SourceAdapter):
         # over 100 records on two unrelated queries, every md5 group has exactly
         # two anchors and exactly one of them bears text.
         for link in soup.select("a[href^='/md5/']"):
+            # Real settled pages also include a recent-downloads ticker in
+            # their header. It is navigation, not a query result card.
+            if link.find_parent(attrs={"role": "navigation"}) is not None:
+                continue
             title = link.get_text(strip=True)
             if not title:
                 continue
@@ -529,6 +562,9 @@ class AnnasArchiveAdapter(SourceAdapter):
 
     async def close(self) -> None:
         """Clean up HTTP client resources."""
+        if self._browser is not None:
+            await self._browser.close()
+            self._browser = None
         if self._client:
             await self._client.aclose()
             self._client = None

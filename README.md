@@ -110,6 +110,46 @@ verification; this server's shipped download route uses its API key. Keys are
 sent only to the trusted hosts in `lib/sources/config.py`. `also_available_on`
 is an upstream hint, not a promise that another source still has the file.
 
+### Optional visible Anna search
+
+Anna's may answer ordinary HTTP searches with a DDoS-Guard browser check.
+With `ANNAS_BROWSER_ENABLED=true`, search can then start Google Chrome on the
+server's visible display, using its own dedicated profile. Install the optional
+Python package with `uv sync --no-dev --extra annas-browser`; install Google
+Chrome separately if needed (`uv run --no-sync playwright install chrome`).
+This option defaults off and adds no browser dependency to the base install.
+Downloads still require the membership API key.
+
+Chrome starts only after a search receives the check, waits for automatic
+verification, reads the settled results, and closes before releasing the shared
+profile lock. It never clicks a human check. If a person is needed, search
+returns the existing `browser_check` failure and closes Chrome. The operator
+must arrange a separate manual session using this dedicated profile, close it,
+and retry after the backoff. A person's normal browser profile is never imported.
+
+| Setting | Default / effect |
+|---|---|
+| `ANNAS_BROWSER_PROFILE_DIR` | `~/.cache/zlibrary-mcp/annas-browser-profile`; persistent clearance/profile |
+| `ANNAS_BROWSER_MIN_INTERVAL` | 20 seconds between scheduled browser visits |
+| `ANNAS_BROWSER_DAILY_LIMIT` | 30 scheduled visits per rolling 24-hour window; counts requests, not books |
+| `ANNAS_BROWSER_BACKOFF` | 300 seconds after an uncleared check or refusal |
+| `ANNAS_BROWSER_NAV_TIMEOUT` | 60 seconds for initial navigation |
+| `ANNAS_BROWSER_SETTLE` | Up to 40 seconds for automatic verification after navigation |
+| `ANNAS_BROWSER_MAX_SERVERS` | 3; retained branch setting, unused by search |
+
+Usage and lock files live beside the profile. Profiles with the same parent
+share one budget; changing parent directories creates separate state. Counter
+errors refuse the visit. Pacing counts scheduled visits; Chrome's automatic
+challenge redirects and background requests are not separately counted.
+
+The existing `BOOK_SOURCE_TOTAL_TIMEOUT` (45 seconds by default) and shared
+`BOOK_SOURCE_WALK_BUDGET` also cap the entire search, including HTTP, browser
+startup, lock wait, pacing and settling. A deadline can therefore stop this
+route earlier than the browser settings allow. Operators needing a longer
+window must set both budgets deliberately within the enclosing bridge budget;
+the flag does not enlarge them. This option supplies no display service and
+makes no headless or current-site reliability claim.
+
 ## Download output
 
 ```json

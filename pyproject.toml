@@ -37,6 +37,8 @@ zlibrary = { path = "./zlibrary", editable = true }
 
 # Optional dependencies
 [project.optional-dependencies]
+# Visible Anna browser search; Google Chrome is installed separately.
+annas-browser = ["playwright>=1.55.0"]
 # Development and testing
 dev = [
     "pytest>=8.4.0",

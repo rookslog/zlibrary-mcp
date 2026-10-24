@@ -26,6 +26,7 @@ REASON_TEXT = {
     "read_timeout": "accepted the connection but sent no response before the deadline",
     "search_timeout": "did not finish the search before the deadline",
     "http_error": "returned an HTTP error",
+    "browser_check": "answered with a DDoS-Guard browser check instead of a result",
     "quota_exhausted": "has no downloads left on this account today",
     "protocol_error": "returned a malformed response",
     "partial_transfer": "stopped after receiving only part of the file",

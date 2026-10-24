@@ -143,6 +143,26 @@ DEFAULT_BROWSER_USER_AGENT = (
 DEFAULT_LIBGEN_USER_AGENT = DEFAULT_BROWSER_USER_AGENT
 
 
+# --- Anna's browser-resident route (#143) and its politeness layer (#144) ---
+#
+# The defaults are chosen to be slow. #95 fixed the intended scale — 10-15 books
+# in a typical four-hour reading session, 30 at the outside — and these numbers
+# are that scale expressed as limits rather than as a note in a document.
+# Raising them is an operator decision with a reason, not tuning.
+DEFAULT_ANNAS_BROWSER_MIN_INTERVAL = 20.0  # seconds between requests
+DEFAULT_ANNAS_BROWSER_DAILY_LIMIT = 30  # requests, not books: a book costs ~2
+DEFAULT_ANNAS_BROWSER_BACKOFF = 300.0  # after a challenge or a refusal
+# Settling, not guessing: the challenge hop answers 403 while succeeding, and
+# #142 measured ~15s for a cold solve and ~35s for a re-solve. Below the slower
+# of those, a working run reads as a failure.
+DEFAULT_ANNAS_BROWSER_SETTLE = 40.0
+DEFAULT_ANNAS_BROWSER_NAV_TIMEOUT = 60.0
+DEFAULT_ANNAS_BROWSER_MAX_SERVERS = 3
+DEFAULT_ANNAS_BROWSER_PROFILE_DIR = os.path.expanduser(
+    "~/.cache/zlibrary-mcp/annas-browser-profile"
+)
+
+
 @dataclass
 class SourceConfig:
     """Configuration for book source adapters.
@@ -180,6 +200,14 @@ class SourceConfig:
     walk_budget: float = DEFAULT_WALK_BUDGET
     bridge_overhead: float = WALK_OVERHEAD_ALLOWANCE
     download_resume_attempts: int = 2
+    annas_browser_enabled: bool = False
+    annas_browser_profile_dir: str = DEFAULT_ANNAS_BROWSER_PROFILE_DIR
+    annas_browser_min_interval: float = DEFAULT_ANNAS_BROWSER_MIN_INTERVAL
+    annas_browser_daily_limit: int = DEFAULT_ANNAS_BROWSER_DAILY_LIMIT
+    annas_browser_backoff_seconds: float = DEFAULT_ANNAS_BROWSER_BACKOFF
+    annas_browser_settle_seconds: float = DEFAULT_ANNAS_BROWSER_SETTLE
+    annas_browser_nav_timeout: float = DEFAULT_ANNAS_BROWSER_NAV_TIMEOUT
+    annas_browser_max_servers: int = DEFAULT_ANNAS_BROWSER_MAX_SERVERS
 
     @property
     def has_annas_key(self) -> bool:
@@ -230,6 +258,24 @@ def _positive_float(name: str, default: float) -> float:
     except ValueError:
         return default
     return value if math.isfinite(value) and value > 0 else default
+
+
+def _positive_int(name: str, default: int) -> int:
+    """Read a positive int from the environment, falling back on nonsense.
+
+    Same reasoning as `_positive_float`: a malformed ceiling must not become no
+    ceiling. For the politeness limits (#144) that matters more than for a
+    timeout — a typo removing the daily cap would make this path exactly the
+    thing Anna's operates its wall against.
+    """
+    raw = os.environ.get(name)
+    if not raw:
+        return default
+    try:
+        value = int(raw)
+    except ValueError:
+        return default
+    return value if value > 0 else default
 
 
 def _resume_attempts() -> int:
@@ -326,4 +372,40 @@ def get_source_config(*, for_download: bool = False) -> SourceConfig:
             available,
         ),
         bridge_overhead=overhead,
+        # Opt-in, and it stays opt-in. The route needs a real display and a
+        # human to solve the challenge once, so a server that switched it on by
+        # default would hang waiting for a window nobody can see.
+        annas_browser_enabled=os.environ.get("ANNAS_BROWSER_ENABLED", "false")
+        .strip()
+        .lower()
+        in ("1", "true", "yes"),
+        # expanduser applies to the OVERRIDE too, not just the default. The
+        # value arrives from an MCP client's JSON `env` block, where no shell
+        # has expanded anything, so a perfectly ordinary `~/.cache/...` stays
+        # literal and Chrome, the usage counter and the process lock all land
+        # in a `./~/` directory beside the server's cwd — losing the clearance
+        # the operator solved by hand, or failing outright on a read-only
+        # install (Codex on #150).
+        annas_browser_profile_dir=os.path.expanduser(
+            os.environ.get("ANNAS_BROWSER_PROFILE_DIR", "").strip()
+            or DEFAULT_ANNAS_BROWSER_PROFILE_DIR
+        ),
+        annas_browser_min_interval=_positive_float(
+            "ANNAS_BROWSER_MIN_INTERVAL", DEFAULT_ANNAS_BROWSER_MIN_INTERVAL
+        ),
+        annas_browser_daily_limit=_positive_int(
+            "ANNAS_BROWSER_DAILY_LIMIT", DEFAULT_ANNAS_BROWSER_DAILY_LIMIT
+        ),
+        annas_browser_backoff_seconds=_positive_float(
+            "ANNAS_BROWSER_BACKOFF", DEFAULT_ANNAS_BROWSER_BACKOFF
+        ),
+        annas_browser_settle_seconds=_positive_float(
+            "ANNAS_BROWSER_SETTLE", DEFAULT_ANNAS_BROWSER_SETTLE
+        ),
+        annas_browser_nav_timeout=_positive_float(
+            "ANNAS_BROWSER_NAV_TIMEOUT", DEFAULT_ANNAS_BROWSER_NAV_TIMEOUT
+        ),
+        annas_browser_max_servers=_positive_int(
+            "ANNAS_BROWSER_MAX_SERVERS", DEFAULT_ANNAS_BROWSER_MAX_SERVERS
+        ),
     )

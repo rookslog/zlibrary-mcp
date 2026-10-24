@@ -229,10 +229,18 @@ class TestRealBasicSearch:
         books field into an empty list. No new client or login is created.
         """
         result = await zlib_client.get_recently()
-        assert isinstance(result, dict)
-        assert result.get("success", 1) == 1
-        assert isinstance(result.get("books"), list)
-        assert all(isinstance(book, dict) for book in result["books"])
+        assert isinstance(result, dict), (
+            "Recent-books provider contract error: expected an object"
+        )
+        assert result.get("success", 1) == 1, (
+            "Recent-books provider contract error: provider did not report success"
+        )
+        assert isinstance(result.get("books"), list), (
+            "Recent-books provider contract error: expected a books list"
+        )
+        assert all(isinstance(book, dict) for book in result["books"]), (
+            "Recent-books provider contract error: expected book objects"
+        )
 
 
 @pytest.mark.integration

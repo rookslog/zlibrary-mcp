@@ -129,3 +129,40 @@ historical proposed base/rag/scholar/Text installer matrix. No rag/scholar or
 Text installation is supplied. The current npm manifest still says 1.4.0;
 the check identifies candidate code by its packed hash, distinct runtime bytes
 and exact five-tool 2.0 surface, not a version bump performed by this script.
+
+## Daily source alerts
+
+`check_upstream.py` keeps alert policy separate from connector routing. Set
+`UPSTREAM_RELIED_SOURCES` to a comma-separated subset of `zlibrary,annas-archive,libgen`.
+The default is all three. Any blocked or failing probe of a listed source exits 1;
+excluded sources produce warnings. `UPSTREAM_RELIED_SOURCES=zlibrary` retains the
+old warning-only treatment of Anna's Archive and LibGen. Z-Library blocks also
+alert now; excluding a source is the way to suppress its alerts. This setting
+never changes the connector's source selection or Anna's fallback without a key.
+Unknown source names are configuration errors, detected before provider calls.
+An unset, blank or whitespace-only value selects the default of all three sources,
+both in the CLI and in GitHub Actions. Configure a named subset to narrow alerts.
+
+Use `--report-file PATH.txt` to write text plus adjacent JSON, including on an alert
+exit. The workflow sets `--report-file upstream-report.txt` and uploads both files.
+Without this flag the probe only prints its report; `npm run doctor` leaves no report
+files behind. `--json` prints JSON instead of text. Each JSON `results`
+row contains `source`, probe `name`, `status` (`passed`, `blocked`, `changed`),
+`reason`, `first_seen` (UTC date or null for a pass), and `relied_on`.
+`changed` covers a failed contract or transport, not a confirmed provider change.
+
+`--previous-issue PATH` reads the prior rolling issue body. A machine marker in
+the body preserves each continuously failing probe's first-observed date, even
+if its reason changes. Old bodies without that marker start tracking today;
+the issue creation date is not evidence of a particular source's failure date.
+The scheduled workflow updates the issue body on recovery too, clearing dates
+for passing probes. It uploads both files as `upstream-source-report` for 30 days,
+even when a source alerts. Source blocked and Source changed have separate issue
+headings. A block from the runner does not establish a worldwide outage.
+The credentialed live suite, including collection, requires an explicit
+`zlib_blocked=false` from the reachability probe. A true value reports `blocked`;
+missing, empty or any other value reports `unknown` and skips logins. A failed
+Anna's or LibGen probe does not suppress those tests when Z-Library explicitly
+reported unblocked. Upstream text is fenced, comment delimiters are escaped, and
+only the last machine marker supplies carried dates. Only the exact rolling issue
+title is reused; other issues with the same label are left untouched.

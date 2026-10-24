@@ -26,6 +26,10 @@ permissions:
   contents: read
   issues: write
 
+concurrency:
+  group: upstream-contract-check
+  cancel-in-progress: false
+
 jobs:
   reachability:
     name: Source reachability
@@ -42,9 +46,38 @@ jobs:
       - uses: ./.github/actions/setup
         with:
           build: 'false'
+      - name: Read previous rolling issue
+        id: previous
+        uses: actions/github-script@v9
+        env:
+          PREVIOUS_ISSUE_PATH: previous-upstream-issue.md
+        with:
+          script: |
+            const issues = await github.paginate(github.rest.issues.listForRepo, {
+              ...context.repo, state: 'open', labels: 'upstream-drift', per_page: 100,
+            });
+            const existing = issues.find(issue => issue.title === 'Upstream contract check failing');
+            require('node:fs').writeFileSync(process.env.PREVIOUS_ISSUE_PATH, existing?.body || '');
       - name: Probe configured sources
         id: probe
-        run: uv run python scripts/check_upstream.py --github-output
+        continue-on-error: true
+        env:
+          # Empty repository variable means the default. Set to zlibrary to
+          # retain warning-only behaviour for Anna's Archive and LibGen.
+          UPSTREAM_RELIED_SOURCES: ${{ vars.UPSTREAM_RELIED_SOURCES || 'zlibrary,annas-archive,libgen' }}
+        run: uv run python scripts/check_upstream.py --github-output --previous-issue previous-upstream-issue.md --report-file upstream-report.txt
+      - uses: actions/upload-artifact@v7
+        if: always()
+        with:
+          name: upstream-source-report
+          path: |
+            upstream-report.txt
+            upstream-report.json
+          if-no-files-found: warn
+          retention-days: 30
+      - name: Fail the job when a relied-on source is blocked or changed
+        if: steps.probe.outcome == 'failure'
+        run: exit 1
 
   live_tests:
     name: Live integration suite
@@ -54,7 +87,7 @@ jobs:
     # reachability probe so a network-level block skips the suite instead of
     # burning login attempts (~10/hour/IP) against a wall.
     needs: reachability
-    if: github.event_name == 'schedule' || inputs.run_live_tests
+    if: always() && (github.event_name == 'schedule' || inputs.run_live_tests)
     outputs:
       status: ${{ steps.live.outputs.status }}
       blocked: ${{ steps.live.outputs.blocked }}
@@ -64,10 +97,6 @@ jobs:
           # Processing corpus is preserved separately; acquisition tests need no LFS PDFs.
           lfs: false
       - uses: ./.github/actions/setup
-      # Coverage is gated by the full acquisition suite, not credentialed live probes.
-      # Acquisition-only tests collect without document-processing packages (#250).
-      - name: Collect retained integration tests
-        run: uv run pytest -m integration --collect-only --no-cov -q
       - name: Run integration-marked tests against live Z-Library
         id: live
         env:
@@ -83,11 +112,19 @@ jobs:
             echo "blocked=true" >> "$GITHUB_OUTPUT"
             exit 0
           fi
+          if [ "$ZLIB_BLOCKED" != "false" ]; then
+            echo "::warning::Z-Library reachability block state is unknown — live suite skipped without logging in."
+            echo "status=unknown" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
           if [ -z "$ZLIBRARY_EMAIL" ] || [ -z "$ZLIBRARY_PASSWORD" ]; then
             echo "::warning::ZLIBRARY_EMAIL/ZLIBRARY_PASSWORD secrets are not set — live suite skipped."
             echo "status=skipped" >> "$GITHUB_OUTPUT"
             exit 0
           fi
+          # Use the same literal-false gate for collection and execution.
+          # Coverage belongs to the full acquisition suite (#250).
+          uv run pytest -m integration --collect-only --no-cov -q
           set +e
           uv run pytest -m integration --no-cov --benchmark-disable --no-header --junitxml=live.xml -q 2>&1 | tee live.log
           code=${PIPESTATUS[0]}
@@ -112,14 +149,18 @@ jobs:
     name: File drift issue
     runs-on: ubuntu-latest
     needs: [reachability, live_tests]
-    if: always() && github.event_name == 'schedule' && (needs.reachability.result == 'failure' || needs.live_tests.result == 'failure' || needs.reachability.outputs.failed == 'true')
+    # Refresh an existing issue on recovery too, so the next failure gets a
+    # fresh first-seen date. A healthy run never creates a new issue.
+    if: always() && github.event_name == 'schedule'
     steps:
       - uses: actions/github-script@v9
+        id: issue
         # The probe report is multi-line free text built partly from upstream
         # responses. It is passed through env rather than interpolated into the
         # script body, where a backtick or `${` would break out of the literal.
         env:
           PROBE_REPORT: ${{ needs.reachability.outputs.report }}
+          PROBE_FAILED: ${{ needs.reachability.outputs.failed }}
           REACHABILITY_RESULT: ${{ needs.reachability.result }}
           LIVE_RESULT: ${{ needs.live_tests.result }}
           LIVE_STATUS: ${{ needs.live_tests.outputs.status }}
@@ -130,9 +171,10 @@ jobs:
             const title = 'Upstream contract check failing';
             const runUrl = `${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}`;
             const report = process.env.PROBE_REPORT || '(no reachability report)';
+            const failed = process.env.PROBE_FAILED === 'true' ||
+              process.env.REACHABILITY_RESULT === 'failure' || process.env.LIVE_RESULT === 'failure';
             const body = [
-              'The scheduled upstream contract check did not pass. One of the third-party',
-              'surfaces this server depends on has changed, moved, or gone down.',
+              failed ? 'The scheduled upstream contract check did not pass.' : 'The scheduled upstream contract check passed.',
               '',
               `- reachability job: **${process.env.REACHABILITY_RESULT}**`,
               `- live integration job: **${process.env.LIVE_STATUS || process.env.LIVE_RESULT}**`,
@@ -141,34 +183,30 @@ jobs:
                 : []),
               `- run: ${runUrl}`,
               '',
-              '<details><summary>Reachability report</summary>',
-              '',
-              '```',
               report,
-              '```',
-              '',
-              '</details>',
               '',
               'Unit tests mock these calls and will stay green, so triage from the run log.',
             ].join('\n');
 
             // Reuse one rolling issue so a prolonged outage does not create a new
             // issue every morning.
-            const existing = await github.rest.issues.listForRepo({
+            const issues = await github.paginate(github.rest.issues.listForRepo, {
               owner: context.repo.owner,
               repo: context.repo.repo,
               state: 'open',
               labels: 'upstream-drift',
+              per_page: 100,
             });
+            const existing = issues.find(issue => issue.title === title);
 
-            if (existing.data.length > 0) {
-              await github.rest.issues.createComment({
+            if (existing) {
+              await github.rest.issues.update({
                 owner: context.repo.owner,
                 repo: context.repo.repo,
-                issue_number: existing.data[0].number,
+                issue_number: existing.number,
                 body,
               });
-            } else {
+            } else if (failed) {
               await github.rest.issues.create({
                 owner: context.repo.owner,
                 repo: context.repo.repo,

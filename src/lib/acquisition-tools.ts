@@ -1,6 +1,8 @@
 import { z } from 'zod';
 import { RefStore } from './refs.js';
 import { decodeMarcMnemonics } from './marc-mnemonics.js';
+import { normalizeLanguages } from './filter-languages.js';
+import { logger } from './logger.js';
 import { classifyFailure, errorEnvelope, ToolFailure } from './tool-errors.js';
 import type { CallOptions } from './zlibrary-api.js';
 
@@ -461,7 +463,10 @@ export class AcquisitionTools {
         if (cursor?.held) fetched = cursor.held;
         else if (operation === 'get_history')
           fetched = await this.invoke('get_download_history', { count, page }, options);
-        else if (source === 'zlibrary')
+        else if (source === 'zlibrary') {
+          const languages = normalizeLanguages(args.languages ?? []);
+          if (languages.unrecognized.length)
+            logger.warn('Z-Library languages unrecognized; sent literally:', JSON.stringify(languages.unrecognized));
           fetched = (
             await this.invoke(
               'search',
@@ -471,7 +476,7 @@ export class AcquisitionTools {
                 exact: args.exact ?? false,
                 from_year: args.year_from,
                 to_year: args.year_to,
-                languages: args.languages ?? [],
+                languages: languages.values,
                 extensions: args.formats ?? [],
                 count,
                 page,
@@ -479,7 +484,7 @@ export class AcquisitionTools {
               options,
             )
           ).books;
-        else {
+        } else {
           const query = [args.query, args.author].filter(Boolean).join(' ');
           fetched = (
             await this.invoke('search_multi_source', { query, source, count: 50 }, options)

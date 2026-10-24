@@ -152,10 +152,11 @@ DEFAULT_LIBGEN_USER_AGENT = DEFAULT_BROWSER_USER_AGENT
 DEFAULT_ANNAS_BROWSER_MIN_INTERVAL = 20.0  # seconds between requests
 DEFAULT_ANNAS_BROWSER_DAILY_LIMIT = 30  # requests, not books: a book costs ~2
 DEFAULT_ANNAS_BROWSER_BACKOFF = 300.0  # after a challenge or a refusal
-# Settling, not guessing: the challenge hop answers 403 while succeeding, and
-# #142 measured ~15s for a cold solve and ~35s for a re-solve. Below the slower
-# of those, a working run reads as a failure.
-DEFAULT_ANNAS_BROWSER_SETTLE = 40.0
+# L6 (2026-10-23) captured seven successful searches in 21.350–84.883s
+# (upper bounds including document pacing/capture). Allow the slower cases
+# without raising unrelated providers' HTTP budgets; the shared walk still wins.
+DEFAULT_ANNAS_BROWSER_SEARCH_TIMEOUT = 120.0
+DEFAULT_ANNAS_BROWSER_SETTLE = 90.0
 DEFAULT_ANNAS_BROWSER_NAV_TIMEOUT = 60.0
 DEFAULT_ANNAS_BROWSER_MAX_SERVERS = 3
 DEFAULT_ANNAS_BROWSER_PROFILE_DIR = os.path.expanduser(
@@ -205,6 +206,7 @@ class SourceConfig:
     annas_browser_min_interval: float = DEFAULT_ANNAS_BROWSER_MIN_INTERVAL
     annas_browser_daily_limit: int = DEFAULT_ANNAS_BROWSER_DAILY_LIMIT
     annas_browser_backoff_seconds: float = DEFAULT_ANNAS_BROWSER_BACKOFF
+    annas_browser_search_timeout: float = DEFAULT_ANNAS_BROWSER_SEARCH_TIMEOUT
     annas_browser_settle_seconds: float = DEFAULT_ANNAS_BROWSER_SETTLE
     annas_browser_nav_timeout: float = DEFAULT_ANNAS_BROWSER_NAV_TIMEOUT
     annas_browser_max_servers: int = DEFAULT_ANNAS_BROWSER_MAX_SERVERS
@@ -398,6 +400,9 @@ def get_source_config(*, for_download: bool = False) -> SourceConfig:
         ),
         annas_browser_backoff_seconds=_positive_float(
             "ANNAS_BROWSER_BACKOFF", DEFAULT_ANNAS_BROWSER_BACKOFF
+        ),
+        annas_browser_search_timeout=_positive_float(
+            "ANNAS_BROWSER_SEARCH_TIMEOUT", DEFAULT_ANNAS_BROWSER_SEARCH_TIMEOUT
         ),
         annas_browser_settle_seconds=_positive_float(
             "ANNAS_BROWSER_SETTLE", DEFAULT_ANNAS_BROWSER_SETTLE

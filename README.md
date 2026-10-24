@@ -117,11 +117,15 @@ With `ANNAS_BROWSER_ENABLED=true`, search can then start Google Chrome on the
 server's visible display, using its own dedicated profile. Install the optional
 Python package with `uv sync --no-dev --extra annas-browser`; install Google
 Chrome separately if needed (`uv run --no-sync playwright install chrome`).
+On Linux that command installs system Chrome through the package manager and
+can require root privileges. If Chrome is already installed, the route selects
+it with `channel="chrome"`; skip the installer.
 This option defaults off and adds no browser dependency to the base install.
 Downloads still require the membership API key.
 
-Chrome starts only after a search receives the check, waits for automatic
-verification, reads the settled results, and closes before releasing the shared
+Chrome starts only when the HTTP body is shaped like a browser check; a
+`server: ddos-guard` header on an ordinary error does not start it. Chrome waits
+for automatic verification, reads settled results, and closes before releasing the shared
 profile lock. It never clicks a human check. If a person is needed, search
 returns the existing `browser_check` failure and closes Chrome. The operator
 must arrange a separate manual session using this dedicated profile, close it,
@@ -134,21 +138,34 @@ and retry after the backoff. A person's normal browser profile is never imported
 | `ANNAS_BROWSER_DAILY_LIMIT` | 30 scheduled visits per rolling 24-hour window; counts requests, not books |
 | `ANNAS_BROWSER_BACKOFF` | 300 seconds after an uncleared check or refusal |
 | `ANNAS_BROWSER_NAV_TIMEOUT` | 60 seconds for initial navigation |
-| `ANNAS_BROWSER_SETTLE` | Up to 40 seconds for automatic verification after navigation |
+| `ANNAS_BROWSER_SEARCH_TIMEOUT` | 120 seconds for opted-in search's HTTP/browser work and cleanup |
+| `ANNAS_BROWSER_SETTLE` | Up to 90 seconds for automatic verification after navigation |
 | `ANNAS_BROWSER_MAX_SERVERS` | 3; retained branch setting, unused by search |
 
 Usage and lock files live beside the profile. Profiles with the same parent
 share one budget; changing parent directories creates separate state. Counter
 errors refuse the visit. Pacing counts scheduled visits; Chrome's automatic
 challenge redirects and background requests are not separately counted.
+If a required pacing/backoff wait cannot fit the remaining search clock, the
+call refuses immediately, names a retry time, and spends no daily slot.
 
-The existing `BOOK_SOURCE_TOTAL_TIMEOUT` (45 seconds by default) and shared
-`BOOK_SOURCE_WALK_BUDGET` also cap the entire search, including HTTP, browser
-startup, lock wait, pacing and settling. A deadline can therefore stop this
-route earlier than the browser settings allow. Operators needing a longer
-window must set both budgets deliberately within the enclosing bridge budget;
-the flag does not enlarge them. This option supplies no display service and
-makes no headless or current-site reliability claim.
+`BOOK_SOURCE_TOTAL_TIMEOUT` keeps the HTTP phase at 45 seconds by default.
+With the browser flag on, `ANNAS_BROWSER_SEARCH_TIMEOUT` gives that HTTP phase
+and any browser fallback one shared 120-second allowance. L6's seven successful
+capture upper bounds ranged from 21.350 to 84.883 seconds; they include pacing
+and capture, so they do not measure an exact timeout failure rate.
+The existing shared `BOOK_SOURCE_WALK_BUDGET` and enclosing bridge clock can
+shorten this allowance. Downloads retain their existing timeout settings.
+
+The search allowance starts after reachability preflight/client setup and covers
+awaited HTTP, browser startup, lock and pacing waits, navigation, settling and
+cleanup. Up to two seconds (at most a quarter of a short clock) are reserved
+inside it for page/context/driver closes; slow closes trigger forced termination
+before unlocking. On Linux the fallback pins owned process identities; without
+pidfd support it can terminate only the owned driver. Synchronous HTML parsing,
+local file operations and operating-system scheduling are not a hard real-time
+guarantee. Real-Chrome forced cleanup remains unmeasured by the offline tests.
+This option supplies no display service or headless qualification.
 
 ## Download output
 

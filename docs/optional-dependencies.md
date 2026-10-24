@@ -17,6 +17,9 @@ For visible Anna search without dev tools, use `uv sync --no-dev --extra
 annas-browser`. Google Chrome and a visible graphical session are separate
 requirements. If Chrome is absent, `uv run --no-sync playwright install chrome`
 installs it explicitly; `--no-sync` preserves the selected dependency tier.
+On Linux this is a system package installation and can require root privileges.
+An existing Google Chrome installation is selected by `channel="chrome"`, so it
+does not need that installer command.
 The base install never requires Playwright or Chrome. Set
 `ANNAS_BROWSER_ENABLED=true` to allow search to start visible Chrome after an
 HTTP browser check; healthy HTTP search starts no browser. See the

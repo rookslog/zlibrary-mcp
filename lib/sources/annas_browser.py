@@ -9,15 +9,25 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import math
 import os
 import re
+import signal
+from pathlib import Path
+import tempfile
 from dataclasses import dataclass
+from datetime import datetime, timezone
 from typing import Optional
 from urllib.parse import quote, urlsplit
 
 from bs4 import BeautifulSoup
 
-from .annas_usage import CrossProcessLock, DailyUsage, UsageCounterUnavailableError
+from .annas_usage import (
+    CrossProcessLock,
+    DailyUsage,
+    UsageCounterUnavailableError,
+    UsageWaitExceedsDeadlineError,
+)
 from .config import SourceConfig
 from .errors import (
     ProviderConfigurationError,
@@ -73,7 +83,7 @@ class _RateLimiter:
     def remaining_today(self) -> int:
         return self.usage.remaining(self.daily_limit)
 
-    async def acquire(self) -> Optional[int]:
+    async def acquire(self, deadline: Optional[WalkDeadline] = None) -> Optional[int]:
         """Take a slot from the day's budget, then wait out the interval.
 
         Returns the budget remaining afterwards. The budget check comes first:
@@ -82,8 +92,21 @@ class _RateLimiter:
         """
         try:
             allowed, remaining, wait = self.usage.spend(
-                self.daily_limit, self.min_interval
+                self.daily_limit,
+                self.min_interval,
+                max_wait=None if deadline is None else deadline.remaining(),
             )
+        except UsageWaitExceedsDeadlineError as exc:
+            retry_at = datetime.fromtimestamp(
+                math.ceil(exc.retry_at), timezone.utc
+            ).strftime("%Y-%m-%d %H:%M:%S UTC")
+            raise ProviderResponseError(
+                PROVIDER,
+                "",
+                f"browser pacing/backoff requires {exc.wait_seconds:.1f}s; "
+                f"retry at {retry_at}. No browser request or daily slot was reserved.",
+                reason="browser_check",
+            ) from None
         except UsageCounterUnavailableError as exc:
             # A configuration_error, not an outage: permanent until the
             # operator changes something, so it must not count as evidence
@@ -133,7 +156,7 @@ def _looks_like_html(response) -> bool:
     return head.startswith((b"<!doctype html", b"<html")) or b"<html" in head
 
 
-def _challenge_page(text: str) -> bool:
+def _challenge_page(text: str, *, soup=None) -> bool:
     """Structure of a DDoS-Guard challenge, not words in a result.
 
     No result rows (`/md5/` links), a title or heading that names DDoS-Guard
@@ -141,7 +164,8 @@ def _challenge_page(text: str) -> bool:
     (which echoes the query). A result titled "Checking Your Browser" stays a
     result (review of 6ad5cfb, F3).
     """
-    soup = BeautifulSoup(text, "html.parser")
+    if soup is None:
+        soup = BeautifulSoup(text, "html.parser")
     if soup.select_one("a[href^='/md5/']"):
         return False
     title = soup.title.get_text(" ", strip=True).lower() if soup.title else ""
@@ -160,28 +184,26 @@ def _challenge_page(text: str) -> bool:
 def is_browser_check(response) -> bool:
     """Whether DDoS-Guard answered instead of Anna's Archive.
 
-    Seen 2026-10-23 on all three trusted hosts: /search gives a 302 from
-    `server: ddos-guard` to `?check=1`, then a 403 "Checking your browser"
-    page. Two rules:
-    - header: `server: ddos-guard` on any hop and a final status of 400 or
-      more (a guarded host serving real content with 2xx is fine);
-    - structure: an HTML or HTML-looking body, even with a missing or generic
-      content type (review F5), shaped like the challenge page.
+    Require an HTML or HTML-looking body shaped like the challenge page,
+    including missing/generic content types. A DDoS-Guard server header is
+    not evidence of a check: it can also relay an ordinary origin error.
     """
-    responses = [*response.history, response]
-    guarded = any(
-        "ddos-guard" in r.headers.get("server", "").lower() for r in responses
-    )
-    if guarded and response.status_code >= 400:
-        return True
     if len(response.content) > _CHALLENGE_MAX_BYTES or not _looks_like_html(response):
         return False
     return _challenge_page(response.text)
 
 
+def _settled_search_page(soup) -> bool:
+    return bool(
+        soup.select_one("form.js-search-form[role='search']")
+    ) and not _challenge_page("", soup=soup)
+
+
 def needs_human_check(page_html: str) -> bool:
     """Recognize the saved manual DDoS-Guard check without interacting with it."""
     soup = BeautifulSoup(page_html, "html.parser")
+    if _settled_search_page(soup):
+        return False
     return bool(
         soup.select_one("#ddg-captcha, #ddg-iframe")
         or "complete the manual check" in soup.get_text(" ", strip=True).lower()
@@ -258,7 +280,6 @@ class AnnasBrowserSession:
                 ignore_default_args=["--enable-automation"],
             )
         except Exception as exc:  # noqa: BLE001 - surfaced as configuration
-            await self._shutdown_playwright()
             raise BrowserUnavailableError(
                 PROVIDER,
                 self.host,
@@ -270,73 +291,189 @@ class AnnasBrowserSession:
             ) from exc
         return self._context
 
-    async def _shutdown_playwright(self) -> None:
-        if self._playwright is not None:
-            try:
-                await self._playwright.stop()
-            finally:
-                self._playwright = None
+    def _driver_process(self):
+        # Playwright 1.64.1 PipeTransport owns this asyncio child process.
+        # Optional/internal access: missing support must not block graceful close.
+        impl = getattr(self._playwright, "_impl_obj", None)
+        connection = getattr(impl, "_connection", None)
+        transport = getattr(connection, "_transport", None)
+        return getattr(transport, "_proc", None)
 
-    async def close(self) -> None:
-        """Close the context and driver, logging cleanup errors to stderr."""
-        if self._context is not None:
+    @staticmethod
+    def _pin_owned_processes(driver):
+        """Pin only this driver's live descendant identities on Linux."""
+        if (
+            driver is None
+            or driver.returncode is not None
+            or not (hasattr(os, "pidfd_open") and hasattr(signal, "pidfd_send_signal"))
+        ):
+            return []
+        pinned = []
+        todo = [(driver.pid, os.getpid(), None)]
+        seen = set()
+        while todo and len(seen) < 256:
+            pid, parent_pid, parent_fd = todo.pop()
+            if pid in seen:
+                continue
+            seen.add(pid)
+            fd = None
             try:
-                await self._context.close()
-            except Exception as exc:
-                logger.warning("Anna's browser context did not close: %s", exc)
-            finally:
-                self._context = None
+                if parent_fd is not None:
+                    import select
+
+                    if select.select([parent_fd], [], [], 0)[0]:
+                        continue  # Parent exited; never follow a reused PID.
+                fd = os.pidfd_open(pid)
+                proc = Path(f"/proc/{pid}")
+                parent = int((proc / "stat").read_text().rsplit(")", 1)[1].split()[1])
+                if parent != parent_pid:
+                    os.close(fd)
+                    continue
+                pinned.append(fd)
+                children = (proc / "task" / str(pid) / "children").read_text().split()
+                todo.extend((int(child), pid, fd) for child in children)
+            except (OSError, ValueError):
+                if fd is not None and fd not in pinned:
+                    os.close(fd)
+        return pinned
+
+    @staticmethod
+    def _force_kill_owned(pinned, driver):
+        # pidfds keep identity even if a graceful close exited and PID was reused.
+        for fd in reversed(pinned):
+            try:
+                signal.pidfd_send_signal(fd, signal.SIGKILL)
+            except ProcessLookupError:
+                pass
+            except OSError as exc:
+                logger.warning(
+                    "Could not terminate owned Anna browser process: %s", exc
+                )
+        if not pinned and driver is not None and driver.returncode is None:
+            # Non-Linux / missing pidfd support: terminate the owned child driver.
+            # Descendant termination on those platforms is not qualified here.
+            try:
+                driver.kill()
+            except ProcessLookupError:
+                pass
+            except OSError as exc:
+                logger.warning("Could not terminate owned Anna driver: %s", exc)
+
+    async def _bounded_close(self, operation, seconds):
+        if seconds <= 0:
+            return False
+        task = None
         try:
-            await self._shutdown_playwright()
+            task = asyncio.create_task(operation())
+            done, _ = await asyncio.wait({task}, timeout=seconds)
+            if task not in done:
+                return False
+            task.result()
+            return True
         except Exception as exc:
-            logger.warning("Anna's Playwright driver did not stop: %s", exc)
+            logger.warning("Anna browser cleanup did not finish: %s", exc)
+            return False
+        finally:
+            if task is not None and not task.done():
+                task.cancel()
+                # Do not wait indefinitely for cancellation acknowledgement.
+                task.add_done_callback(
+                    lambda done: None if done.cancelled() else done.exception()
+                )
+
+    async def close(self, *, page=None, deadline=None) -> None:
+        """Bound page/context/driver cleanup, forcing owned processes on failure."""
+        budget = 2.0 if deadline is None else min(2.0, max(0.0, deadline.remaining()))
+        cleanup = WalkDeadline(budget)
+        driver = self._driver_process()
+        pinned = self._pin_owned_processes(driver)
+        context, self._context = self._context, None
+        playwright, self._playwright = self._playwright, None
+        operations = (
+            ([page.close] if page is not None else [])
+            + ([context.close] if context is not None else [])
+            + ([playwright.stop] if playwright is not None else [])
+        )
+        force = True
+        try:
+            complete = True
+            for index, operation in enumerate(operations):
+                complete = (
+                    await self._bounded_close(
+                        operation, cleanup.remaining() / (len(operations) - index)
+                    )
+                    and complete
+                )
+            force = not complete
+        finally:
+            if force:
+                self._force_kill_owned(pinned, driver)
+            for fd in pinned:
+                os.close(fd)
 
     async def search_html(
         self, query: str, deadline: Optional[WalkDeadline] = None
     ) -> str:
         """Read settled search HTML within the caller's remaining walk clock."""
-        budget = (
-            self.config.annas_browser_nav_timeout
-            + self.config.annas_browser_settle_seconds
-        )
+        budget = self.config.annas_browser_search_timeout
         if deadline is not None:
             budget = min(budget, max(0.0, deadline.remaining()))
-        return await bounded_await(
-            self._search_html(query),
-            budget,
-            provider=PROVIDER,
-            host=self.host,
-            operation="browser search",
+        local_deadline = WalkDeadline(budget)
+        operation_budget = max(0.0, budget - min(2.0, budget / 4))
+        operation_deadline = WalkDeadline(operation_budget)
+        return await self._search_html(
+            query, deadline=operation_deadline, cleanup_deadline=local_deadline
         )
 
-    async def _search_html(self, query: str) -> str:
-        async with self._lock:
-            # Nonblocking OS-lock attempts avoid a detached thread acquiring
-            # Chrome's lock after its caller's deadline/cancellation.
-            while not self._process_lock.acquire(0):
-                await asyncio.sleep(0.05)
-            page = None
+    async def _search_html(
+        self, query: str, *, deadline: WalkDeadline, cleanup_deadline: WalkDeadline
+    ) -> str:
+        page = None
+        session_locked = False
+        process_locked = False
+
+        async def operation():
+            nonlocal page, session_locked, process_locked
+            await self._lock.acquire()
+            session_locked = True
             try:
-                # Reserve/wait before starting Chrome. Exhaustion or backoff
-                # cannot cause an uncounted navigation or a needless launch.
-                await self._limiter.acquire()
-                context = await self._ensure_context()
-                page = await context.new_page()
-                return await self._visit(
-                    page, f"{self.base_url}/search?q={quote(query)}"
-                )
+                while not self._process_lock.acquire(0, strict=True):
+                    await asyncio.sleep(0.05)
+            except UsageCounterUnavailableError as exc:
+                raise ProviderConfigurationError(PROVIDER, self.host, str(exc)) from exc
+            process_locked = True
+            try:
+                with tempfile.TemporaryFile(dir=self.config.annas_browser_profile_dir):
+                    pass
+            except OSError as exc:
+                raise ProviderConfigurationError(
+                    PROVIDER, self.host, f"unusable Anna's browser profile: {exc}"
+                ) from exc
+            await self._limiter.acquire(deadline)
+            context = await self._ensure_context()
+            page = await context.new_page()
+            return await self._visit(page, f"{self.base_url}/search?q={quote(query)}")
+
+        try:
+            # The operation timer cancels navigation/lock waits, not cleanup.
+            # Cleanup spends only its reserved share of the same owner clock.
+            return await bounded_await(
+                operation(),
+                deadline.remaining(),
+                provider=PROVIDER,
+                host=self.host,
+                operation="browser search",
+            )
+        finally:
+            try:
+                if process_locked:
+                    try:
+                        await self.close(page=page, deadline=cleanup_deadline)
+                    finally:
+                        self._process_lock.release()
             finally:
-                try:
-                    if page is not None:
-                        try:
-                            await page.close()
-                        except Exception as exc:
-                            logger.warning("Anna's browser page did not close: %s", exc)
-                    # The profile must stop being owned by Chrome before
-                    # another bridge process is allowed to launch against it.
-                    await self.close()
-                finally:
-                    self._process_lock.release()
+                if session_locked:
+                    self._lock.release()
 
     def _browser_check(self, detail: str) -> ProviderResponseError:
         self._limiter.penalise(self.config.annas_browser_backoff_seconds)
@@ -376,16 +513,15 @@ class AnnasBrowserSession:
                 # Retry the DOM read only; never reload or click the check.
                 page_html = None
             if page_html is not None:
+                soup = BeautifulSoup(page_html, "html.parser")
+                if _settled_search_page(soup):
+                    # Settled content wins over incidental manual-check prose
+                    # in a result, and over an initial challenge-hop status.
+                    return page_html
                 if needs_human_check(page_html):
                     raise self._browser_check(
                         "Anna's asks for a person in the visible Chrome window."
                     )
-                soup = BeautifulSoup(page_html, "html.parser")
-                if not _challenge_page(page_html) and soup.select_one(
-                    "form.js-search-form[role='search']"
-                ):
-                    # Settled real content outranks an initial challenge-hop 403.
-                    return page_html
                 if (
                     not _challenge_page(page_html)
                     and status is not None

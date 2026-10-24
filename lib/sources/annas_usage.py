@@ -35,6 +35,7 @@ decide to, rather than getting it by accident because the counter forgot.
 from __future__ import annotations
 
 import json
+import errno
 import logging
 import os
 import sys
@@ -82,6 +83,17 @@ class UsageCounterUnavailableError(RuntimeError):
     """
 
 
+class UsageWaitExceedsDeadlineError(RuntimeError):
+    """A required delay cannot fit; no daily slot or future floor was changed."""
+
+    def __init__(self, wait_seconds: float, retry_at: float):
+        self.wait_seconds = wait_seconds
+        self.retry_at = retry_at
+        super().__init__(
+            f"required wait {wait_seconds:g}s exceeds the remaining budget"
+        )
+
+
 class CrossProcessLock:
     """One holder at a time, across processes, for a named resource.
 
@@ -110,7 +122,7 @@ class CrossProcessLock:
         self.path = Path(path)
         self._fd: Optional[int] = None
 
-    def acquire(self, timeout: float) -> bool:
+    def acquire(self, timeout: float, *, strict: bool = False) -> bool:
         """Block up to `timeout` seconds for the lock. False if not taken.
 
         Fails CLOSED on an unusable lock path, for the same reason the counter
@@ -130,12 +142,20 @@ class CrossProcessLock:
                 self.path.parent.mkdir(parents=True, exist_ok=True)
                 fd = os.open(self.path, os.O_RDWR | os.O_CREAT, 0o644)
             except OSError as exc:
+                if strict:
+                    raise UsageCounterUnavailableError(
+                        f"cannot open the Anna's lock at {self.path}: {exc}"
+                    ) from exc
                 logger.warning("Cannot open the lock file at %s: %s", self.path, exc)
                 return False
             try:
                 _try_lock(fd)
-            except OSError:
+            except OSError as exc:
                 os.close(fd)
+                if strict and exc.errno not in (errno.EACCES, errno.EAGAIN):
+                    raise UsageCounterUnavailableError(
+                        f"cannot lock the Anna's lock at {self.path}: {exc}"
+                    ) from exc
                 if time.monotonic() >= deadline:
                     return False
                 time.sleep(_LOCK_POLL if timeout <= _LOCK_TIMEOUT else 0.25)
@@ -251,7 +271,7 @@ class DailyUsage:
     # -- the operations the limiter needs ---------------------------------
 
     def spend(
-        self, limit: int, min_interval: float = 0.0
+        self, limit: int, min_interval: float = 0.0, *, max_wait: Optional[float] = None
     ) -> Tuple[bool, Optional[int], float]:
         """Take one request from today's budget.
 
@@ -316,11 +336,16 @@ class DailyUsage:
                 return False, 0, 0.0
             local_wait = max(0.0, self._local_penalty_until - time.monotonic())
             start_at = max(now, next_allowed, now + local_wait)
+            wait = max(0.0, start_at - now)
+            if max_wait is not None and wait > max(0.0, max_wait):
+                # Decide under the counter lock before writing either the
+                # count or request floor. Repeated denied retries spend nothing.
+                raise UsageWaitExceedsDeadlineError(wait, start_at)
             # The next slot is reserved *before* the wait, under the lock, so
             # two processes queueing at once get consecutive slots rather than
             # both computing the same start time and going together.
             self._write(window_started, spent + 1, start_at + min_interval)
-            return True, max(0, limit - (spent + 1)), max(0.0, start_at - now)
+            return True, max(0, limit - (spent + 1)), wait
         finally:
             self._release()
 

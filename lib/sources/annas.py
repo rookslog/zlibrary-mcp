@@ -282,14 +282,22 @@ class AnnasArchiveAdapter(SourceAdapter):
 
         client = await self._get_client()
         url = f"{self.base_url}/search?q={quote(query)}"
-        attempt = WalkDeadline(_attempt_budget(self.config, deadline))
+        search_budget = (
+            self.config.annas_browser_search_timeout
+            if self.config.annas_browser_enabled
+            else self.config.total_timeout
+        )
+        if deadline is not None:
+            search_budget = min(search_budget, max(0.0, deadline.remaining()))
+        attempt = WalkDeadline(search_budget)
         try:
             # httpx bounds each phase separately and restarts its read deadline
             # on every chunk, so a host that trickles bytes never trips it. The
-            # outer budget is what actually enforces config.total_timeout.
+            # HTTP keeps its existing limit even when browser search opts in
+            # to a larger overall allowance. Both spend the same attempt clock.
             response = await bounded_await(
                 self._fetch(client, url, allow_browser_check=True),
-                attempt.remaining(),
+                min(self.config.total_timeout, attempt.remaining()),
                 provider=PROVIDER,
                 host=self.host,
                 operation="search",

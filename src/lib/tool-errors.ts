@@ -86,14 +86,18 @@ export function errorEnvelope(error: unknown, operation: string, source?: string
       info.attempts?.some(
         (attempt: any) => sourceFailures.includes(attempt.code) || attempt.code === 'internal',
       ));
-  const validity = sourceFailed
-    ? 'The request was valid; the source failed. '
-    : e.code === 'internal'
-      ? 'The request was valid; the helper failed. '
-      : '';
+  const validity =
+    e.code === 'outcome_unknown'
+      ? 'The request was valid; its outcome is unknown. '
+      : sourceFailed
+        ? 'The request was valid; the source failed. '
+        : e.code === 'internal'
+          ? 'The request was valid; the helper failed. '
+          : '';
   // Do not expose upstream exception text, URLs, bearer values, or stacks.
   // Keep the full message budget; context belongs outside the bounded message.
-  const message = e.message.slice(0, 199);
+  // A cut through a surrogate pair must omit the incomplete character.
+  const message = e.message.slice(0, 199).replace(/[\uD800-\uDBFF]$/u, '');
   const recovery =
     info.recovery ??
     (e.code === 'outcome_unknown' && attempted === 'libgen'

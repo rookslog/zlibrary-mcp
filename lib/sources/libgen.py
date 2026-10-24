@@ -233,6 +233,21 @@ def _has_cover_cell(tds) -> bool:
     return first.find("img") is not None and not first.get_text(strip=True)
 
 
+# Keep script-shaping ZWNJ/ZWJ; remove only named invisible formatting.
+_TITLE_FORMATTING_DENYLIST = frozenset(
+    "\u00ad"  # Soft hyphen.
+    "\u061c"  # Arabic letter mark.
+    "\u200b"  # Zero-width space.
+    "\u200e\u200f"  # Directional marks.
+    "\u202a\u202b\u202c\u202d\u202e"  # Bidi embeddings and overrides.
+    "\u2060"  # Word joiner.
+    "\u2061\u2062\u2063\u2064"  # Invisible math operators.
+    "\u2066\u2067\u2068\u2069"  # Bidi isolates.
+    "\u206a\u206b\u206c\u206d\u206e\u206f"  # Deprecated bidi controls.
+    "\ufeff"  # Byte order mark / zero-width no-break space.
+)
+
+
 def _get_books(self, table):
     """Parse LibGen book and article rows without shifting their columns (#132).
 
@@ -278,8 +293,11 @@ def _get_books(self, table):
         raw_title = edition_link.get_text(" ", strip=True)
         title = re.sub(r"\s+", " ", raw_title.strip())
         title = "".join(
-            c for c in title if unicodedata.category(c) not in {"Cc", "Cf"}
-        ).strip()
+            c
+            for c in title
+            if unicodedata.category(c) != "Cc" and c not in _TITLE_FORMATTING_DENYLIST
+        )
+        title = re.sub(r"\s+", " ", title).strip()
         id_param = parse_qs(urlparse(edition_link["href"]).query)["id"][0]
 
         author = tds[offset + 1].get_text(strip=True)
@@ -398,10 +416,9 @@ def _unparseable_search_page(
 ) -> Optional[str]:
     """Detail text when a zero-result page is a parse failure, else None.
 
-    Only an actual table#tablelibgen establishes a parseable results page.
-    CSS, scripts and comments can mention that ID without a results table.
-    Retain the existing no-table parse-failure policy (#124); an empty table
-    remains a valid empty result.
+    A results table or the active Files tab's zero-count badge establishes a
+    parseable page. CSS, scripts and comments can mention those markers without
+    supplying either element. Other no-table pages remain parse failures (#124).
 
     This is #124's `SourceParseError` folded into the #106 error taxonomy: the
     caller raises it as a `ProviderResponseError`/`protocol_error` attributed
@@ -420,8 +437,20 @@ def _unparseable_search_page(
     if page is None:
         return None
     text = getattr(page, "text", "") or ""
-    if BeautifulSoup(text, "html.parser").find("table", id="tablelibgen") is not None:
+    soup = BeautifulSoup(text, "html.parser")
+    for inert in soup.select("template, noscript"):
+        inert.decompose()
+    if soup.find("table", id="tablelibgen") is not None:
         return None
+    for tab in soup.select("ul.nav-tabs > li.nav-item > a.nav-link.active[href]"):
+        badge = tab.select_one("span.badge")
+        if (
+            parse_qs(urlparse(tab["href"]).query).get("curtab") == ["f"]
+            and badge is not None
+            and badge.get_text(strip=True) == "0"
+            and tab.get_text(" ", strip=True).split() == ["Files", "0"]
+        ):
+            return None
     status = getattr(page, "status_code", "?")
     title_match = re.search(r"<title>([^<]*)</title>", text, re.I)
     page_title = title_match.group(1).strip() if title_match else ""

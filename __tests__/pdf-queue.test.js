@@ -53,7 +53,7 @@ test('cancelled and expired waiting requests never execute and queue remains usa
     queue.run(async () => {
       executed = true;
     }, 5),
-  ).rejects.toThrow(/request was valid; the PDF helper failed.*timed out/i);
+  ).rejects.toThrow(/request was valid; the server is busy.*timed out/i);
   release();
   await first;
   expect(executed).toBe(false);

@@ -22,3 +22,16 @@ test('long messages truncate only their own content at 199 characters', () => {
   expect(reply.error.message).toBe('x'.repeat(198) + 'Y');
   expect(reply.error.message).toHaveLength(199);
 });
+
+
+test.each([
+  [198, 'a'.repeat(198)],
+  [197, 'a'.repeat(197) + '😀'],
+  [199, 'a'.repeat(199)],
+])('199-unit cut with %s prefix units keeps Unicode well formed', (units, expected) => {
+  const reply = errorEnvelope(new ToolFailure('provider_error', 'a'.repeat(units) + '😀tail'), 'search', 'libgen');
+  expect(reply.error.message).toBe(expected);
+  expect(reply.error.message.length).toBeLessThanOrEqual(199);
+  expect(reply.error.message.isWellFormed()).toBe(true);
+  expect(ErrorEnvelopeSchema.safeParse(reply).success).toBe(true);
+});

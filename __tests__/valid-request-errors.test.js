@@ -60,7 +60,8 @@ test.each([false, true])(
 
 test('download timeout retains unknown outcome and quota-aware retry', () => {
   const reply = errorEnvelope({ context: { reason: 'timeout' } }, 'download', 'annas');
-  expect(reply.error.recovery).toMatch(/request was valid; the source failed/i);
+  expect(reply.error.recovery).toContain('The request was valid; its outcome is unknown.');
+  expect(reply.error.recovery).not.toContain('the source failed');
   expect(reply.error).toMatchObject({ code: 'outcome_unknown', retry: 'may_spend_quota' });
 });
 
@@ -73,4 +74,23 @@ test('invalid requests keep their argument diagnosis without claiming validity',
   expect(reply.error.recovery).not.toMatch(/request was valid/i);
   const direct = errorEnvelope(new ToolFailure('invalid_argument', 'Invalid range.'), 'search');
   expect(direct.error.message).toBe('Invalid range.');
+});
+
+
+test.each([
+  ['zlibrary', 'walk_budget_exhausted', 'no'],
+  ['annas', 'walk_budget_exhausted', 'no'],
+  ['libgen', 'walk_budget_exhausted', 'no'],
+  ['zlibrary', 'timeout', 'may_spend_quota'],
+  ['libgen', 'timeout', 'safe'],
+])('uncertain %s download with %s retains retry=%s', (source, reason, retry) => {
+  const reply = errorEnvelope({ context: { details: {
+    reason, request_issued: true,
+  } } }, 'download', source);
+  expect(reply.error).toMatchObject({ code: 'outcome_unknown', retry });
+  expect(reply.error.recovery).toContain('The request was valid; its outcome is unknown.');
+  expect(reply.error.recovery).not.toContain('the source failed');
+  if (reason === 'walk_budget_exhausted') {
+    expect(reply.error.recovery).toContain('The transfer may have completed.');
+  }
 });

@@ -1,3 +1,5 @@
+export class PdfQueueBusyError extends Error {}
+
 /** A bounded FIFO. Each deadline starts at enqueue, including time waiting.
  * The job's signal carries the abort reason: 'timeout' or 'cancelled'. */
 export class PdfQueue {
@@ -11,7 +13,7 @@ export class PdfQueue {
   ): Promise<T> {
     if (this.active && this.waiting.length >= 8)
       return Promise.reject(
-        new Error(
+        new PdfQueueBusyError(
           'The request was valid; the server is busy: PDF queue is full (8 waiting); retry shortly',
         ),
       );
@@ -25,11 +27,11 @@ export class PdfQueue {
           if (index >= 0) this.waiting.splice(index, 1);
           cleanup();
           reject(
-            new Error(
-              reason === 'timeout'
-                ? `The request was valid; the PDF helper failed: PDF request timed out after ${timeout / 1000} s while queued behind other PDF work; retry shortly`
-                : 'PDF request was cancelled while queued',
-            ),
+            reason === 'timeout'
+              ? new PdfQueueBusyError(
+                  `The request was valid; the server is busy: PDF request timed out after ${timeout / 1000} s while queued behind other PDF work; retry shortly`,
+                )
+              : new Error('PDF request was cancelled while queued'),
           );
         }
       };

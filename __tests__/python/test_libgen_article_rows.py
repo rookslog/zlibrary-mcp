@@ -304,3 +304,58 @@ def test_title_preserves_unicode_and_punctuation_without_markup_or_controls(
     rows = parse_row(f'<a href="edition.php?id=123">{markup}</a>')
     assert len(rows) == 1
     assert rows[0].title == expected
+
+
+@pytest.mark.parametrize(
+    "title",
+    [
+        "می\u200cخواهم",
+        "क्\u200dष",
+        "👩\u200d👩\u200d👧",
+    ],
+)
+def test_title_retains_joiners_and_non_joiners(title):
+    rows = parse_row(f'<a href="edition.php?id=123">{title}</a>')
+    assert rows[0].title == title
+
+
+@pytest.mark.parametrize(
+    "formatting",
+    [
+        "\u00ad",  # Soft hyphen.
+        "\u061c",  # Arabic letter mark.
+        "\u200b",  # Zero-width space.
+        "\u200e",
+        "\u200f",  # Directional marks.
+        "\u202a",
+        "\u202b",
+        "\u202c",
+        "\u202d",
+        "\u202e",  # Bidi embedding/overrides.
+        "\u2060",  # Word joiner.
+        "\u2061",
+        "\u2062",
+        "\u2063",
+        "\u2064",  # Invisible math operators.
+        "\u2066",
+        "\u2067",
+        "\u2068",
+        "\u2069",  # Bidi isolates.
+        "\u206a",
+        "\u206b",
+        "\u206c",
+        "\u206d",
+        "\u206e",
+        "\u206f",  # Deprecated bidi controls.
+        "\ufeff",  # Byte order mark / zero-width no-break space.
+    ],
+)
+def test_title_removes_named_invisible_formatting(formatting):
+    rows = parse_row(f'<a href="edition.php?id=123">A{formatting}B</a>')
+    assert rows[0].title == "AB"
+
+
+@pytest.mark.parametrize("title", ["A \x1b B", "A \u200b B", " A \ufeff  B "])
+def test_title_collapses_spaces_after_removing_characters(title):
+    rows = parse_row(f'<a href="edition.php?id=123">{title}</a>')
+    assert rows[0].title == "A B"

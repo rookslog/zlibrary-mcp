@@ -116,8 +116,8 @@ export function summarize(receipts) {
       }
       run.quotaSpent += x.quotaSpent;
     }
-    if (r.arm.build === 'B' && !(r.build.tools.serializedCharacters < 6500))
-      g.absoluteViolations.push('tools/list is not under 6500 characters');
+    if (r.arm.build === 'B' && !(r.build.tools.serializedCharacters < 6600))
+      g.absoluteViolations.push('tools/list is not under 6600 characters');
     for (const phase of Object.values(g.phases)) {
       phase.totals = Object.fromEntries(
         ['wrongDecisions', 'calls', 'inputTotal', 'output', 'successes', 'quotaSpent'].map((k) => [

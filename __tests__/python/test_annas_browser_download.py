@@ -41,6 +41,9 @@ def payload_variant(url, *, hidden=False):
     anchors[0]["href"] = url
     if hidden:
         anchors[0]["hidden"] = ""
+        waiting = soup.new_tag("p", attrs={"class": "js-download-countdown"})
+        waiting.string = "Please wait 3 seconds before the download is ready."
+        soup.main.append(waiting)
     anchors[1].decompose()
     return str(soup)
 
@@ -269,6 +272,7 @@ async def test_unsafe_or_anna_page_links_are_not_download_candidates(
         tmp_path,
         monkeypatch,
         {PARTNERS[0]: payload_variant(url)},
+        statuses={PARTNERS[0]: 200},
         annas_browser_max_servers=1,
         annas_browser_settle_seconds=0.01,
     )

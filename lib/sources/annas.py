@@ -10,6 +10,7 @@ Key decisions:
 """
 
 import re
+import logging
 from typing import AsyncIterator, Dict, List, Optional
 from urllib.parse import quote, urlsplit
 
@@ -39,6 +40,7 @@ from .net import (
 )
 
 PROVIDER = "annas"
+logger = logging.getLogger(__name__)
 
 # Each Anna's result renders a metadata strip of "·"-separated segments, e.g.
 #   English [en] · PDF · 5.6MB · 2008 · 📕 Book (fiction) · 🚀/lgli/nexusstc/zlib
@@ -451,7 +453,11 @@ class AnnasArchiveAdapter(SourceAdapter):
             try:
                 result = await self._keyed_download_url(md5, deadline=deadline)
             except _RejectedKeyError:
-                pass
+                logger.warning(
+                    "%s: fast-download endpoint rejected the configured key; "
+                    "using opted-in browser URL resolution",
+                    PROVIDER,
+                )
             else:
                 yield result
                 return

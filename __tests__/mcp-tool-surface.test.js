@@ -22,13 +22,27 @@ beforeEach(async () => {
 });
 afterEach(async () => { await client.close(); await server.close(); process.env = previous; });
 const call = async (name, args = {}) => (await client.callTool({ name, arguments: args })).structuredContent;
-test('tools/list stays under 6500 characters with success/error output schemas', async () => {
+test('tools/list stays under 6600 characters with success/error output schemas', async () => {
   const list = await client.listTools();
-  expect(JSON.stringify(list).length).toBeLessThan(6500);
-  expect(JSON.stringify(list).length).toBe(6493);
+  expect(JSON.stringify(list).length).toBeLessThan(6600);
+  expect(JSON.stringify(list).length).toBe(6551);
   expect(ERROR_CODES).toHaveLength(19);
   expect(list.tools.map(t => t.name)).toEqual(['search', 'get_book', 'download', 'get_limits', 'get_history']);
   for (const t of list.tools) expect(t.outputSchema.oneOf).toHaveLength(2);
+});
+test.each(['false', 'true'])('tools/list bytes and Anna description with browser flag %s', async (flag) => {
+  await client.close(); await server.close();
+  process.env.ANNAS_BROWSER_ENABLED = flag;
+  server = createServer(); client = new Client({ name: 'flag-wire', version: '1' });
+  const [a, b] = InMemoryTransport.createLinkedPair();
+  await Promise.all([client.connect(a), server.connect(b)]);
+  const list = await client.listTools();
+  const wire = JSON.stringify(list);
+  expect(list.tools.find((t) => t.name === 'search').description).toContain(
+    'annas searches without a key; downloads need a key or the opted-in visible browser (ANNAS_BROWSER_ENABLED)',
+  );
+  expect(Buffer.byteLength(wire, 'utf8')).toBe(6551);
+  console.log(`tools/list flag=${flag} characters=${wire.length} bytes=${Buffer.byteLength(wire, 'utf8')}`);
 });
 test('tools/list retains current annotations, descriptions, schemas and server identity on the wire', async () => {
   expect(client.getServerVersion()).toEqual({

@@ -21,7 +21,7 @@ from datetime import datetime, timezone
 from typing import AsyncIterator, Optional
 from urllib.parse import quote, unquote, urlsplit
 
-from bs4 import BeautifulSoup
+from bs4 import BeautifulSoup, Comment
 
 from ..filename_utils import SAFE_DOCUMENT_EXTENSIONS
 from .annas_usage import (
@@ -61,6 +61,22 @@ class DailyLimitReachedError(ProviderResponseError):
     reason = "quota_exhausted"
 
 
+class _PacingWaitError(ProviderResponseError):
+    """Keep the closed refusal reason, describing our wait rather than a wall."""
+
+    reason = "browser_check"
+
+    def _build_message(self) -> str:
+        return f"{self.provider}: {self.detail}"
+
+
+class _DownloadTimeoutError(ProviderTimeoutError):
+    """Keep the existing timeout reason without its search-only gloss."""
+
+    def _build_message(self) -> str:
+        return f"{self.provider}: {self.detail}"
+
+
 @dataclass
 class _RateLimiter:
     """Minimum spacing between requests, plus a ceiling on how many there are.
@@ -85,7 +101,9 @@ class _RateLimiter:
     def remaining_today(self) -> int:
         return self.usage.remaining(self.daily_limit)
 
-    async def acquire(self, deadline: Optional[WalkDeadline] = None) -> Optional[int]:
+    async def acquire(
+        self, deadline: Optional[WalkDeadline] = None, *, operation: str = "browser"
+    ) -> Optional[int]:
         """Take a slot from the day's budget, then wait out the interval.
 
         Returns the budget remaining afterwards. The budget check comes first:
@@ -102,10 +120,10 @@ class _RateLimiter:
             retry_at = datetime.fromtimestamp(
                 math.ceil(exc.retry_at), timezone.utc
             ).strftime("%Y-%m-%d %H:%M:%S UTC")
-            raise ProviderResponseError(
+            raise _PacingWaitError(
                 PROVIDER,
                 "",
-                f"browser pacing/backoff requires {exc.wait_seconds:.1f}s; "
+                f"{operation} pacing/backoff requires {exc.wait_seconds:.1f}s; "
                 f"retry at {retry_at}. No browser request or daily slot was reserved.",
                 reason="browser_check",
             ) from None
@@ -182,15 +200,36 @@ def _hidden_link(anchor) -> bool:
 
 
 def _direct_file_url(page_html, base_host: str) -> Optional[str]:
-    """Port labelled/extension/opaque handoff selection; never return Anna pages."""
+    """Select the partner download block or Download now, never a card link."""
     soup = (
         BeautifulSoup(page_html, "html.parser")
         if isinstance(page_html, str)
         else page_html
     )
-    opaque, labelled = [], []
+    if _partner_countdown(soup):
+        return None
+    marker = next(
+        (
+            p
+            for p in soup.select("main p")
+            if re.fullmatch(r"Slow Partner Server #\d+", p.get_text(" ", strip=True))
+        ),
+        None,
+    )
+    block = marker.find_next_sibling() if marker is not None else None
+    block_links = (
+        []
+        if block is None
+        else ([block] if block.name == "a" else block.select("a[href]"))
+    )
+    ranked, opaque = [], []
     for anchor in soup.select("main a[href]"):
         if _hidden_link(anchor):
+            continue
+        in_block = any(anchor is candidate for candidate in block_links)
+        label = anchor.get_text(" ", strip=True)
+        download_now = bool(re.search(r"\bdownload\s+now\b", label, re.I))
+        if not in_block and not download_now:
             continue
         href = anchor["href"].strip()  # BeautifulSoup decodes &amp; in signed URLs.
         try:
@@ -216,12 +255,45 @@ def _direct_file_url(page_html, base_host: str) -> Optional[str]:
         except ValueError:
             continue
         suffix = Path(unquote(parsed.path)).suffix.lstrip(".").lower()
-        if suffix in SAFE_DOCUMENT_EXTENSIONS:
-            return href
-        opaque.append(href)
-        if _DOWNLOAD_LABEL_RE.search(anchor.get_text(" ", strip=True)):
-            labelled.append(href)
-    return next(iter(labelled), None) or (opaque[0] if len(opaque) == 1 else None)
+        if download_now:
+            ranked.append((0 if in_block else 1, href))
+        elif in_block and (
+            suffix in SAFE_DOCUMENT_EXTENSIONS or _DOWNLOAD_LABEL_RE.search(label)
+        ):
+            ranked.append((2, href))
+        elif in_block:
+            opaque.append(href)
+    return (
+        min(ranked, key=lambda item: item[0])[1]
+        if ranked
+        else (opaque[0] if len(opaque) == 1 else None)
+    )
+
+
+def _partner_countdown(soup) -> bool:
+    """Positive visible countdown evidence; the normal heading is not a wait."""
+    for node in soup.select(
+        "main .js-download-countdown, main .js-countdown, main #countdown, main [data-countdown]"
+    ):
+        if not _hidden_link(node):
+            return True
+    main = soup.select_one("main")
+    if main is None:
+        return False
+    text = " ".join(
+        str(s)
+        for s in main.find_all(string=True)
+        if not isinstance(s, Comment)
+        and s.parent.name not in ("script", "style")
+        and not _hidden_link(s.parent)
+    )
+    return bool(
+        re.search(
+            r"\b(?:wait(?:\s+for)?|(?:ready|available)\s+in)\s+\d+(?:\.\d+)?\s*(?:seconds?|minutes?)\b",
+            text,
+            re.I,
+        )
+    )
 
 
 def _looks_like_html(response) -> bool:
@@ -510,13 +582,15 @@ class AnnasBrowserSession:
 
         return await self._run_page(search, deadline, cleanup_deadline)
 
-    async def _run_page(self, visit, deadline, cleanup_deadline):
+    async def _run_page(
+        self, visit, deadline, cleanup_deadline, *, operation="browser search"
+    ):
         """Reserve the first visit and own its page/driver/locks through cleanup."""
         page = None
         session_locked = False
         process_locked = False
 
-        async def operation():
+        async def run_operation():
             nonlocal page, session_locked, process_locked
             await self._lock.acquire()
             session_locked = True
@@ -533,7 +607,7 @@ class AnnasBrowserSession:
                 raise ProviderConfigurationError(
                     PROVIDER, self.host, f"unusable Anna's browser profile: {exc}"
                 ) from exc
-            await self._limiter.acquire(deadline)
+            await self._limiter.acquire(deadline, operation=operation)
             context = await self._ensure_context()
             page = await context.new_page()
             return await visit(page, deadline)
@@ -542,12 +616,18 @@ class AnnasBrowserSession:
             # The operation timer cancels navigation/lock waits, not cleanup.
             # Cleanup spends only its reserved share of the same owner clock.
             return await bounded_await(
-                operation(),
+                run_operation(),
                 deadline.remaining(),
                 provider=PROVIDER,
                 host=self.host,
-                operation="browser search",
+                operation=operation,
             )
+        except ProviderTimeoutError as exc:
+            if operation == "browser download":
+                raise _DownloadTimeoutError(
+                    exc.provider, exc.host, exc.detail, reason=exc.reason
+                ) from None
+            raise
         finally:
             try:
                 if process_locked:
@@ -598,7 +678,9 @@ class AnnasBrowserSession:
             while pending:
                 path = pending.pop(0)
                 if needs_slot:
-                    await self._limiter.acquire(operation_deadline)
+                    await self._limiter.acquire(
+                        operation_deadline, operation="browser download"
+                    )
                 needs_slot = True
                 try:
                     partner = await self._visit(
@@ -617,7 +699,12 @@ class AnnasBrowserSession:
             budget = resolution.remaining()
             cleanup_deadline = WalkDeadline(budget)
             operation_deadline = WalkDeadline(max(0.0, budget - min(2.0, budget / 4)))
-            url = await self._run_page(resolve, operation_deadline, cleanup_deadline)
+            url = await self._run_page(
+                resolve,
+                operation_deadline,
+                cleanup_deadline,
+                operation="browser download",
+            )
             if url is not None:
                 with resolution.suspended():
                     yield url
@@ -682,15 +769,7 @@ class AnnasBrowserSession:
                     raise self._browser_check(
                         "Anna's asks for a person in the visible Chrome window."
                     )
-                partner_heading = (
-                    soup.select_one("main h2") if kind == "partner" else None
-                )
-                pending_partner = (
-                    partner_heading is not None
-                    and partner_heading.get_text(" ", strip=True).startswith(
-                        "Download from partner"
-                    )
-                )
+                pending_partner = kind == "partner" and _partner_countdown(soup)
                 if (
                     not _challenge_page(page_html)
                     and status is not None

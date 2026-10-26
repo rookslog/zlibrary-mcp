@@ -180,6 +180,66 @@ test('EPUB over cap refused, other map metadata needs no PDF interpreter', async
   expect(link(r)).toBeUndefined();
   expect(JSON.stringify(r)).toMatch(/EPUB splitting is not supported/);
 });
+test.each([2, 3])(
+  'EPUB %s maps file navigation without a PDF interpreter or new reply fields',
+  async (version) => {
+    delete process.env.ZLIBRARY_PDF_PYTHON;
+    await fs.copyFile(`test_files/epub-nav/epub${version}.epub`, path.join(root, 'book.epub'));
+    const bytes = await fs.readFile(path.join(root, 'book.epub'));
+    await connect();
+    const reply = await call('get_book_map', { file: 'book.epub' });
+    expect(reply.isError).toBeUndefined();
+    const m = facts(reply);
+    expect(Object.keys(m).sort()).toEqual([
+      'bytes',
+      'file',
+      'fits_whole',
+      'format',
+      'guidance',
+      'max_bytes',
+      'pages',
+      'repair_messages',
+      'safe_window_pages',
+      'sections',
+      'suggested_parts',
+    ]);
+    expect(m.sections).toEqual([
+      {
+        id: '1',
+        title: 'Part One',
+        level: 1,
+        children: [
+          { id: '1.1', title: 'Chapter 1 & start', level: 2, children: [] },
+          { id: '1.2', title: 'Chapter 2', level: 2, children: [] },
+        ],
+      },
+      { id: '2', title: 'End', level: 1, children: [] },
+    ]);
+    expect(m.pages).toBeNull();
+    expect(m.guidance).toMatch(/file.s own navigation/);
+    expect(m.guidance).toMatch(/not verified against the text/);
+    expect(m.guidance).toMatch(/splitting is not supported/);
+    expect(m.guidance).toMatch(/section ids.*outline/i);
+    expect(facts(await call('get_book_map', { file: 'book.epub' }))).toEqual(m);
+    expect(
+      (await fs.readdir(path.join(root, '.chat-files/cache'))).filter((f) => f.startsWith('map-')),
+    ).toEqual([]);
+    expectError(await share({ section: '1' }), /PDF/);
+    const sent = await share();
+    expect(facts(sent).sha256).toBe(sha(bytes));
+    expect(
+      Buffer.from((await client.readResource({ uri: link(sent).uri })).contents[0].blob, 'base64'),
+    ).toEqual(bytes);
+  },
+);
+test('malformed EPUB retains the existing map reply', async () => {
+  delete process.env.ZLIBRARY_PDF_PYTHON;
+  await connect();
+  const r = await call('get_book_map', { file: 'book.epub' });
+  expect(r.isError).toBeUndefined();
+  expect(facts(r).sections).toEqual([]);
+  expect(facts(r).guidance).toBe('Send whole if it fits; EPUB splitting is not supported yet.');
+});
 test('invalid max_bytes setting returns explicit error, including just below and above bounds', async () => {
   await connect();
   for (const value of ['999999', '33554433', 'NaN', '1.2']) {

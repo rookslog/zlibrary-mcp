@@ -9,7 +9,11 @@ import httpx
 import pytest
 from bs4 import BeautifulSoup
 
-from lib.sources.annas_browser import AnnasBrowserSession, _direct_file_url
+from lib.sources.annas_browser import (
+    AnnasBrowserSession,
+    _direct_file_url,
+    _partner_countdown,
+)
 from lib.sources.config import SourceConfig
 from lib.sources.errors import ProviderResponseError, ProviderTimeoutError
 from lib.sources.net import WalkDeadline
@@ -28,6 +32,15 @@ from test_annas_browser_download import (
 
 def partner_variant(*, countdown=False, incidental_pdf=False):
     soup = BeautifulSoup(saved("b5/partner-countdown.html"), "html.parser")
+    if countdown:
+        marker = next(
+            p
+            for p in soup.select("main p")
+            if p.get_text(" ", strip=True) == "Slow Partner Server #1"
+        )
+        marker.find_next_sibling().append(
+            soup.select_one(".js-download-countdown").extract()
+        )
     if not countdown:
         soup.select_one(".js-download-countdown").decompose()
         p = soup.new_tag("p")
@@ -47,7 +60,8 @@ async def test_normal_partner_heading_does_not_hide_a_403_refusal(
         tmp_path,
         monkeypatch,
         {PARTNERS[0]: partner_variant()},
-        annas_browser_settle_seconds=0.01,
+        # Use the production settle window: FU-2 M2 requires two complete
+        # DOM reads at least 3 s apart, including parser time on this capture.
     )
     with pytest.raises(ProviderResponseError) as caught:
         await first_url(session)
@@ -66,6 +80,7 @@ async def test_incidental_pdf_cannot_end_a_partner_countdown(
         soup = BeautifulSoup(waiting, "html.parser")
         del soup.select_one(".js-download-countdown")["class"]
         waiting = str(soup)
+    assert _partner_countdown(BeautifulSoup(waiting, "html.parser")) is True
     assert _direct_file_url(waiting, "annas-archive.gl") is None
     session, io = browser(
         tmp_path,

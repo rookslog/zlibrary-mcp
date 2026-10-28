@@ -1150,6 +1150,48 @@ def _publish_or_reuse(source: Path, destination: Path, expected_md5: str = "") -
         source.unlink(missing_ok=True)
 
 
+async def _check_browser_download_request(request):
+    """Refuse non-public DNS answers before each browser transfer request.
+
+    HTTPX request hooks also run for redirects and resumed GETs. This is a
+    preflight check, not address pinning: the transport resolves again when
+    connecting, so DNS rebinding between this check and connection remains.
+    """
+    import ipaddress
+    import socket
+
+    host = request.url.host
+    try:
+        if request.url.scheme not in {"http", "https"} or not host:
+            raise ValueError("invalid download URL")
+        if request.url.username or request.url.password:
+            raise ValueError("download URL contains user information")
+        try:
+            addresses = [ipaddress.ip_address(host)]
+        except ValueError:
+            answers = await asyncio.get_running_loop().getaddrinfo(
+                host,
+                request.url.port or (443 if request.url.scheme == "https" else 80),
+                type=socket.SOCK_STREAM,
+            )
+            addresses = [ipaddress.ip_address(answer[4][0]) for answer in answers]
+        if not addresses or any(
+            not address.is_global
+            or address.is_multicast
+            or address.is_reserved
+            or getattr(address, "is_site_local", False)
+            for address in addresses
+        ):
+            raise ValueError("non-public download address")
+    except (OSError, ValueError) as exc:
+        raise ProviderResponseError(
+            "annas",
+            host,
+            "Browser download host did not resolve exclusively to public addresses",
+            reason="protocol_error",
+        ) from exc
+
+
 async def _download_url_to_file(
     url: str,
     output_dir: str,
@@ -1160,6 +1202,7 @@ async def _download_url_to_file(
     host_observer=None,
     progress_observer=None,
     config: Optional[SourceConfig] = None,
+    browser_download: bool = False,
 ) -> str:
     """Stream a resolved source URL to disk and return the raw path.
 
@@ -1233,6 +1276,11 @@ async def _download_url_to_file(
                 timeout=build_timeout(config),
                 follow_redirects=True,
                 headers={"User-Agent": user_agent},
+                **(
+                    {"event_hooks": {"request": [_check_browser_download_request]}}
+                    if browser_download
+                    else {}
+                ),
             ) as client:
                 while True:
                     offset = written
@@ -1628,6 +1676,7 @@ async def _fetch_from_source(book_details: dict, output_dir: str) -> str:
                         host_observer=lambda host: _set_active_host(host),
                         progress_observer=observe_progress,
                         config=config,
+                        browser_download=isinstance(result, _BrowserDownloadResult),
                     )
                     if not isinstance(downloaded, _DownloadedPath):
                         downloaded = _DownloadedPath(str(downloaded))

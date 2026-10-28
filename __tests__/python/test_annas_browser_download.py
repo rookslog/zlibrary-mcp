@@ -3,6 +3,7 @@
 import asyncio
 import hashlib
 import json
+import socket
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
@@ -513,6 +514,11 @@ BOOK = {"md5": DIGEST, "source": "annas", "title": "Offline B5", "extension": "p
 def integration_route(tmp_path, monkeypatch, handler, **settings):
     """Real adapter/router/session/transfer/publication; fake browser and HTTP only."""
     from lib import python_bridge as bridge
+
+    async def public_dns(host, port, **kwargs):
+        return [(socket.AF_INET, socket.SOCK_STREAM, 6, "", ("8.8.8.8", port))]
+
+    monkeypatch.setattr(asyncio.get_running_loop(), "getaddrinfo", public_dns)
 
     adapter, io = adapter_browser(tmp_path, monkeypatch, **settings)
     io.pages = {

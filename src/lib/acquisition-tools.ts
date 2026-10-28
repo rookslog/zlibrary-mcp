@@ -189,11 +189,19 @@ export class AcquisitionTools {
   private capabilities(source: Source) {
     const annasBaseUsable = usableAnnasBase(this.env.ANNAS_BASE_URL);
     const annasBaseTrusted = trustedAnnasBase(this.env.ANNAS_BASE_URL);
+    const annasBrowserEnabled = ['1', 'true', 'yes'].includes(
+      (this.env.ANNAS_BROWSER_ENABLED ?? '').trim().toLowerCase(),
+    );
+    const annasDownloadConfigured =
+      (Boolean(this.env.ANNAS_SECRET_KEY) && annasBaseTrusted) ||
+      (annasBrowserEnabled &&
+        annasBaseUsable &&
+        (!this.env.ANNAS_SECRET_KEY || annasBaseTrusted));
     const configured =
       source === 'libgen' ||
       (source === 'zlibrary'
         ? Boolean(this.env.ZLIBRARY_EMAIL && this.env.ZLIBRARY_PASSWORD)
-        : Boolean(this.env.ANNAS_SECRET_KEY) && annasBaseTrusted);
+        : annasDownloadConfigured);
     return {
       configured,
       search_available:
@@ -306,18 +314,22 @@ export class AcquisitionTools {
       if (name === 'get_book') return await this.details(args.ref, selection, options);
       // Configuration is checked inside the bridge, after disk reuse, so a receipt remains useful offline.
       try {
-        const result = DownloadReplySchema.parse(
-          await this.invoke(
-            'acquire_book',
-            {
-              book_details: selection.book,
-              output_dir: args.output_dir,
-              filename: args.filename,
-              request: nonempty({ ref: args.ref, query: selection.query }),
-            },
-            options,
-          ),
+        const bridgeResult = await this.invoke(
+          'acquire_book',
+          {
+            book_details: selection.book,
+            output_dir: args.output_dir,
+            filename: args.filename,
+            request: nonempty({ ref: args.ref, query: selection.query }),
+          },
+          options,
         );
+        const browserQuotaUnknown =
+          selection.source === 'annas' && bridgeResult?.quota_estimate === null;
+        const projected = browserQuotaUnknown ? { ...bridgeResult } : bridgeResult;
+        if (browserQuotaUnknown) delete projected.quota_estimate;
+        const result = DownloadReplySchema.parse(projected);
+        if (browserQuotaUnknown) this.estimates.delete(selection.source);
         if (result.quota_estimate?.source === selection.source)
           this.estimates.set(selection.source, { ...result.quota_estimate });
         const estimate = this.estimates.get(selection.source);

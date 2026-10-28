@@ -19,6 +19,8 @@ import { logger } from './lib/logger.js';
 import { HandoffProbes, PROBE_TOOL_DEFINITIONS } from './lib/handoff-probes.js';
 import { ChatFiles, CHAT_FILE_TOOL_DEFINITIONS } from './lib/chat-files.js';
 
+const browserSearchDescription =
+  'Metadata, not book text. Give query and/or author; exact covers both. sources is ordered: libgen needs no account/quota; zlibrary needs an account, downloads spend quota; annas searches without a key; downloads need a key or the opted-in visible browser (ANNAS_BROWSER_ENABLED). Defaults: get_limits. Use refs. Refs last this process and 5,000 recent entries; on ref_unavailable search and choose again. Pass cursor alone: replay fetches the same position; pages are re-queried, not frozen.';
 const descriptions: Record<ToolName, string> = {
   search:
     'Metadata, not book text. Give query and/or author; exact covers both. sources is ordered: libgen needs no account/quota; zlibrary needs an account, downloads spend quota; annas searches without a key, downloads with one. Defaults: get_limits. Use refs. Refs last this process and 5,000 recent entries; on ref_unavailable search and choose again. Pass cursor alone: replay fetches the same position; pages are re-queried, not frozen.',
@@ -157,7 +159,15 @@ class AcquisitionServer extends Server {
     });
   }
   registerTool(name: ToolName) {
-    this.definitions.push(TOOL_DEFINITIONS.find((t) => t.name === name)!);
+    const definition = TOOL_DEFINITIONS.find((t) => t.name === name)!;
+    const browserEnabled = ['1', 'true', 'yes'].includes(
+      (process.env.ANNAS_BROWSER_ENABLED ?? '').trim().toLowerCase(),
+    );
+    this.definitions.push(
+      name === 'search' && browserEnabled
+        ? { ...definition, description: browserSearchDescription }
+        : definition,
+    );
   }
 }
 export function createServer(): AcquisitionServer {

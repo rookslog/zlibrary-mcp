@@ -64,6 +64,7 @@ from lib import enhanced_metadata
 
 # Import multi-source router
 from lib.sources.router import SourceRouter
+from lib.sources.annas import _BrowserDownloadResult
 from lib.sources.config import SourceConfig, get_preflight_timeout, get_source_config
 from lib.sources.errors import (
     AllSourcesFailedError,
@@ -1633,6 +1634,7 @@ async def _fetch_from_source(book_details: dict, output_dir: str) -> str:
                     downloaded.provenance = {
                         "route": "fast_download"
                         if provider == "annas"
+                        and not isinstance(result, _BrowserDownloadResult)
                         else "mirror_download",
                         "host": active_host or None,
                         "mirror": _provenance_hostname(getattr(result, "mirror", "")),
@@ -2080,7 +2082,7 @@ async def search_multi_source(
         query: Search query string
         source: Source selection ('auto', 'annas', 'libgen')
             - 'auto': Use Anna's if ANNAS_SECRET_KEY is set, else LibGen
-            - 'annas': Force Anna's Archive (requires ANNAS_SECRET_KEY)
+            - 'annas': Force Anna's Archive (key or enabled visible browser)
             - 'libgen': Force LibGen
         count: Maximum number of results to return
         **kwargs: Additional arguments passed to adapters
@@ -2378,8 +2380,10 @@ async def _dispatch_bridge_function(function_name: str, args_dict: dict):
                     # global exists. Mark the failure, not local receipt refusals.
                     error._eapi_initialization_failure = True
                     raise
-            elif source in {"annas", "annas_archive"} and not os.environ.get(
-                "ANNAS_SECRET_KEY"
+            elif (
+                source in {"annas", "annas_archive"}
+                and not os.environ.get("ANNAS_SECRET_KEY")
+                and not get_source_config(for_download=True).annas_browser_enabled
             ):
                 raise AcquisitionError(
                     "configuration_error", "Configure ANNAS_SECRET_KEY"

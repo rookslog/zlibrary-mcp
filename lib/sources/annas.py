@@ -1,7 +1,7 @@
 """Anna's Archive source adapter.
 
-Provides search and fast download functionality for Anna's Archive.
-Search uses HTML scraping, downloads use the fast download API.
+Search uses HTML scraping; downloads prefer the keyed fast API, with optional
+visible-browser URL resolution. File bytes use the existing HTTP transfer.
 
 Key decisions:
 - ANNAS-DOMAIN-INDEX-1: Use domain_index=1 for fast download API
@@ -10,7 +10,8 @@ Key decisions:
 """
 
 import re
-from typing import Dict, List, Optional
+import logging
+from typing import AsyncIterator, Dict, List, Optional
 from urllib.parse import quote, urlsplit
 
 import httpx
@@ -18,6 +19,10 @@ from bs4 import BeautifulSoup
 from bs4.element import Tag
 
 from .base import SourceAdapter
+from .annas_browser import (
+    AnnasBrowserSession,
+    is_browser_check as is_browser_launch_check,
+)
 from .config import ANNAS_TRUSTED_HOSTS, SourceConfig
 from .errors import (
     ProviderConfigurationError,
@@ -38,6 +43,7 @@ from .net import (
 )
 
 PROVIDER = "annas"
+logger = logging.getLogger(__name__)
 
 # Each Anna's result renders a metadata strip of "·"-separated segments, e.g.
 #   English [en] · PDF · 5.6MB · 2008 · 📕 Book (fiction) · 🚀/lgli/nexusstc/zlib
@@ -178,6 +184,14 @@ def is_browser_check(response) -> bool:
     return _challenge_page(response.text)
 
 
+class _RejectedKeyError(ProviderConfigurationError):
+    """A trusted keyed endpoint rejected its key; eligible for opt-in fallback."""
+
+
+class _BrowserDownloadResult(DownloadResult):
+    """Same fields as DownloadResult; marks the existing mirror receipt route."""
+
+
 def _attempt_budget(config, deadline: Optional[WalkDeadline]) -> float:
     """One attempt's budget, clamped to whatever the shared walk has left.
 
@@ -197,11 +211,11 @@ class AnnasArchiveAdapter(SourceAdapter):
 
     Provides:
     - search(query) -> List[UnifiedBookResult] via HTML scraping
-    - get_download_url(md5) -> DownloadResult via fast download API
+    - get_download_url(md5) -> DownloadResult via keyed API or opt-in browser
 
     Configuration:
     - annas_base_url: Base URL for Anna's Archive (default: https://annas-archive.gl)
-    - annas_secret_key: API key for fast downloads (required for get_download_url)
+    - annas_secret_key: API key for fast downloads
 
     Security: the secret key is only ever attached to hosts in
     config.ANNAS_TRUSTED_HOSTS. Anna's Archive domains lapse and get re-registered
@@ -227,6 +241,7 @@ class AnnasArchiveAdapter(SourceAdapter):
         self.port = port_of(self.base_url)
         self.scheme = urlsplit(self.base_url).scheme or "https"
         self._client: Optional[httpx.AsyncClient] = None
+        self._browser: Optional[AnnasBrowserSession] = None
 
     async def _get_client(self) -> httpx.AsyncClient:
         """Get or create HTTP client.
@@ -291,7 +306,14 @@ class AnnasArchiveAdapter(SourceAdapter):
             return ProviderResponseError(PROVIDER, self.host, detail, reason=reason)
         return ProviderUnreachableError(PROVIDER, self.host, detail, reason=reason)
 
-    async def _fetch(self, client, url: str, params: Optional[Dict] = None):
+    async def _fetch(
+        self,
+        client,
+        url: str,
+        params: Optional[Dict] = None,
+        *,
+        allow_browser_check: bool = False,
+    ):
         """GET a URL and raise on an error status, as one awaitable.
 
         Exists so the status check sits *inside* the wall-clock budget rather
@@ -300,6 +322,15 @@ class AnnasArchiveAdapter(SourceAdapter):
         response = (
             await client.get(url, params=params) if params else await client.get(url)
         )
+        # The live public cause is broader than eligibility to launch Chrome.
+        # Return only a structural challenge to an opted-in browser search;
+        # ordinary guarded errors keep their reason/status without launching.
+        if (
+            allow_browser_check
+            and self.config.annas_browser_enabled
+            and is_browser_launch_check(response)
+        ):
+            return response
         if is_browser_check(response):
             # Before raise_for_status: a challenge 403 on the fast-download
             # endpoint is not a rejected key, and a challenge 200 is not an
@@ -344,21 +375,48 @@ class AnnasArchiveAdapter(SourceAdapter):
 
         client = await self._get_client()
         url = f"{self.base_url}/search?q={quote(query)}"
+        search_budget = (
+            self.config.annas_browser_search_timeout
+            if self.config.annas_browser_enabled
+            else self.config.total_timeout
+        )
+        if deadline is not None:
+            search_budget = min(search_budget, max(0.0, deadline.remaining()))
+        attempt = WalkDeadline(search_budget)
         try:
             # httpx bounds each phase separately and restarts its read deadline
             # on every chunk, so a host that trickles bytes never trips it. The
-            # outer budget is what actually enforces config.total_timeout.
+            # HTTP keeps its existing limit even when browser search opts in
+            # to a larger overall allowance. Both spend the same attempt clock.
             response = await bounded_await(
-                self._fetch(client, url),
-                _attempt_budget(self.config, deadline),
+                self._fetch(client, url, allow_browser_check=True),
+                min(self.config.total_timeout, attempt.remaining()),
                 provider=PROVIDER,
                 host=self.host,
                 operation="search",
             )
+            if is_browser_launch_check(response):
+                if not self.config.annas_browser_enabled:
+                    raise ProviderResponseError(
+                        PROVIDER,
+                        self.host,
+                        "Anna's returned a browser check.",
+                        reason="browser_check",
+                        status_code=response.status_code,
+                    )
+                if self._browser is None:
+                    self._browser = AnnasBrowserSession(self.config)
+                page_html = await self._browser.search_html(query, deadline=attempt)
+            else:
+                page_html = response.text
         except Exception as exc:
             raise self._as_source_error(exc) from exc
 
-        soup = BeautifulSoup(response.text, "html.parser")
+        return self._parse_search_html(page_html)
+
+    def _parse_search_html(self, page_html: str) -> List[UnifiedBookResult]:
+        """One row parser for both transports, using the existing result shape."""
+        soup = BeautifulSoup(page_html, "html.parser")
         results = []
         seen = set()
 
@@ -368,6 +426,10 @@ class AnnasArchiveAdapter(SourceAdapter):
         # over 100 records on two unrelated queries, every md5 group has exactly
         # two anchors and exactly one of them bears text.
         for link in soup.select("a[href^='/md5/']"):
+            # Real settled pages also include a recent-downloads ticker in
+            # their header. It is navigation, not a query result card.
+            if link.find_parent(attrs={"role": "navigation"}) is not None:
+                continue
             title = link.get_text(strip=True)
             if not title:
                 continue
@@ -457,6 +519,51 @@ class AnnasArchiveAdapter(SourceAdapter):
         md5: str,
         deadline: Optional[WalkDeadline] = None,
     ) -> DownloadResult:
+        """Return the first keyed or opted-in browser candidate; close its stream."""
+        stream = self.iter_download_candidates(md5, deadline=deadline)
+        try:
+            return await anext(stream)
+        finally:
+            await stream.aclose()
+
+    async def iter_download_candidates(
+        self, md5: str, deadline: Optional[WalkDeadline] = None
+    ) -> AsyncIterator[DownloadResult]:
+        """Keep keyed success/quota unchanged; fallback only for no/rejected key."""
+        if not self.config.annas_browser_enabled:
+            yield await self._keyed_download_url(md5, deadline=deadline)
+            return
+        if self.secret_key:
+            try:
+                result = await self._keyed_download_url(md5, deadline=deadline)
+            except _RejectedKeyError:
+                logger.warning(
+                    "%s: fast-download endpoint rejected the configured key; "
+                    "using opted-in browser URL resolution",
+                    PROVIDER,
+                )
+            else:
+                yield result
+                return
+        if self._browser is None:
+            self._browser = AnnasBrowserSession(self.config)
+        stream = self._browser.iter_download_urls(md5, deadline=deadline)
+        try:
+            async for url in stream:
+                # The shared counter measures page visits, not membership
+                # downloads. Omitting membership quota also preserves the last
+                # fully-budgeted URL when the router rejects zero quotas.
+                yield _BrowserDownloadResult(
+                    url=url, source=SourceType.ANNAS_ARCHIVE, mirror=self.host
+                )
+        finally:
+            await stream.aclose()
+
+    async def _keyed_download_url(
+        self,
+        md5: str,
+        deadline: Optional[WalkDeadline] = None,
+    ) -> DownloadResult:
         """Get fast download URL for a book.
 
         Calls /dyn/api/fast_download.json with MD5 and API key.
@@ -528,7 +635,7 @@ class AnnasArchiveAdapter(SourceAdapter):
                 exc.response.status_code in (401, 403)
                 and is_configured_fast_download_endpoint
             ):
-                raise ProviderConfigurationError(
+                raise _RejectedKeyError(
                     PROVIDER,
                     self.host,
                     f"ANNAS_SECRET_KEY rejected by fast-download endpoint "
@@ -602,6 +709,9 @@ class AnnasArchiveAdapter(SourceAdapter):
 
     async def close(self) -> None:
         """Clean up HTTP client resources."""
+        if self._browser is not None:
+            await self._browser.close()
+            self._browser = None
         if self._client:
             await self._client.aclose()
             self._client = None

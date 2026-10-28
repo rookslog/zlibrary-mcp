@@ -1,0 +1,1097 @@
+﻿<!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Transitional//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml1-transitional.dtd">
+<html xmlns="http://www.w3.org/1999/xhtml">
+<head>
+	<meta http-equiv="Content-Type" content="text/html; charset=utf-8" />
+	<META HTTP-EQUIV="CACHE-CONTROL" CONTENT="max-age=604800, must-revalidate">
+	<meta name="rating" content="general">
+	<!--<link href="/rss/index.php" rel="alternate" type="application/rss+xml" title="News" />-->
+	<link rel="shortcut icon" href="/img/favicon.ico" type="image/x-icon">
+	<title>Library Genesis</title>
+		
+	<!--[if IE 6]>
+	<style>
+		body {behavior: url("/csshover3.htc");}
+		#menu li .drop {background:url("img/drop.gif") no-repeat right 8px; 
+	</style>
+	<![endif]-->
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap@4.5.3/dist/css/bootstrap.min.css">	
+	
+<link href="/css/font.min.css" rel="stylesheet">	
+<style>
+nav.navbar .dropdown:hover > .dropdown-menu {
+ display: block; 
+}
+.bd-placeholder-img {
+	font-size: 1.125rem;
+	text-anchor: middle;
+	-webkit-user-select: none;
+	-moz-user-select: none;
+	-ms-user-select: none;
+	user-select: none;
+}
+@media (min-width: 768px) {
+			.bd-placeholder-img-lg {
+			font-size: 3.5rem;
+		}
+	}
+
+.panel-heading .accordion-toggle:after {
+    font-family: "Glyphicons Halflings";  
+    content: "\e114";    
+    float: right;       
+    color: grey;         
+}
+.panel-heading .accordion-toggle.collapsed:after {
+    content: "\e080";   
+}
+.tooltip-inner {
+    max-width: 350px;
+    width: 350px; 
+}
+h1 {
+	display: block; 
+	font-size: 1.8rem; 
+	font-weight: bold; 
+	font-family: Georgia, "Times New Roman", Times, serif;  color: #A00000; 
+}
+#tablelibgen td { 
+	font-family: "Pt Sans", Tahoma, Helvetica, sans-serif; 
+	margin: 0; 
+	padding: 0em 3px; 
+	font-size: 1rem;
+}
+
+#tablelibgen1 td { 
+	font-family: "Pt Sans", Tahoma, Helvetica, sans-serif; 
+	margin: 0; 
+	padding: 0em 3px; 
+	font-size: 1rem;
+}
+
+.taghide {
+    display: none; 
+}
+.taghide + label ~ div {
+    display: none;
+}
+/* оформляем текст label */
+.taghide + label {
+    display: inline-block; 
+}
+/* вид текста label при активном переключателе */
+
+/* когда чекбокс активен показываем блоки с содержанием  */
+.taghide:checked + label + div {
+    display: block; 
+}
+
+
+
+/*.navbar {
+	background-color: #BBBBBB;
+}*/
+	</style>
+
+	<link rel="stylesheet" href="/css/dark-mode.css">
+	<script src="https://code.jquery.com/jquery-3.6.0.min.js" integrity="sha256-/xUj+3OJU5yExlq6GSYGSHk7tPXikynS7ogEvDej/m4=" crossorigin="anonymous"></script>
+<link rel="stylesheet" type="text/css" href="../css/paginator3000.css" />
+<script type="text/javascript" src="../js/paginator3000.js"></script><script data-cfasync="false" async type="text/javascript" src="//je.deuxseethe.com/rUJqARoMIAl18z/146156"></script>
+
+
+
+
+</head>
+<body>    
+<nav class="navbar navbar-expand-md navbar-dark bg-secondary  mb-1">
+  
+   <a class="navbar-brand" href="/index.php">
+    <img src="/img/logo.png"  height="30" alt="">
+  </a>
+  <button class="navbar-toggler" type="button" data-toggle="collapse" data-target="#navbarCollapse" aria-controls="navbarCollapse" aria-expanded="false" aria-label="Toggle navigation">
+    <span class="navbar-toggler-icon"></span>
+  </button>
+  <div class="collapse navbar-collapse" id="navbarCollapse">
+    <ul class="navbar-nav mr-auto">
+      <li class="nav-item active">
+        <a class="nav-link" href="/community/app.php/article/news">NEWS <span class="sr-only">(current)</span></a>
+      </li>
+      <li class="nav-item active">
+        <a class="nav-link" href="/community/">FORUM <span class="sr-only">(current)</span></a>
+      </li>
+	
+      <li class="nav-item dropdown">
+<a class="btn btn-secondary dropdown-toggle" href="/community/ucp.php?mode=login" role="button" id="dropdownMenuLink"  aria-haspopup="true" aria-expanded="false">
+          LOGIN
+        </a>
+        <div class="dropdown-menu" aria-labelledby="dropdown01">    
+          <a class="dropdown-item" href="/community/ucp.php?mode=register">Register</a>
+        </div>
+      </li>
+      <li class="nav-item dropdown">
+        <a class="btn btn-secondary dropdown-toggle" href="#" role="button" id="dropdownMenuLink"  aria-haspopup="true" aria-expanded="false">
+          DOWNLOAD
+        </a>
+        <div class="dropdown-menu" aria-labelledby="dropdown01">      
+
+          <a class="dropdown-item" href="/mirrors.php">Mirrors</a>
+          <a class="dropdown-item" href="http://libgenfrialc7tguyjywa36vtrdcplwpxaw43h6o63dmmwhvavo5rqqd.onion/">TOR</a>
+
+	<div class="dropdown-divider"></div>
+         <h6 class="dropdown-header">P2P</h6>
+          <a class="dropdown-item" href="/torrents/">Torrents</a>
+          <a class="dropdown-item" href="https://ipdl.cat/data/torrents.html">Torrents status</a>
+          <a class="dropdown-item" href="/nzb/">Usenet (*.nzb)</a>
+          <a class="dropdown-item" href="/soft/">Soft</a>
+	<!--https://phillm.net/libgen-stats-table.php-->
+
+
+
+
+	<div class="dropdown-divider"></div>
+         <h6 class="dropdown-header">DB Dumps</h6>
+          <a class="dropdown-item" href="/dirlist.php?dir=dbdumps">Libgen</a>
+          <a class="dropdown-item" href="http://libgen.rs/dbdumps/">libgen.rs (gen.lib.rus.ec)</a>
+
+	<!--<div class="dropdown-divider"></div>
+ 	 <a class="dropdown-item" href="/magz0/">Unsorted magz</a>
+ 	 <a class="dropdown-item" href="/fict0/">Unsorted fiction</a>
+
+	 <a class="dropdown-item" href="/comics4/">Unsorted comics</a>
+        </div>-->
+
+      </li>
+
+      <li class="nav-item dropdown">
+        <a class="btn btn-secondary dropdown-toggle" href="librarian.php" role="button" id="dropdownMenuLink"  aria-haspopup="true" aria-expanded="false">
+          UPLOAD
+        </a>
+        <div class="dropdown-menu" aria-labelledby="dropdown01">  
+          <a class="dropdown-item" href="ftp://ftp.libgen.bz/upload/">FTP</a> 
+        </div>
+      </li>
+
+      <li class="nav-item dropdown">
+        <a class="btn btn-secondary dropdown-toggle" href="/index.php?req=fmode:last&topics1=all" role="button" id="dropdownMenuLink"  aria-haspopup="true" aria-expanded="false">
+          LAST
+        </a>
+
+        <div class="dropdown-menu" aria-labelledby="dropdown01">
+	<a class="dropdown-item" href="/index.php?req=fmode:last&topics1=all"><b>Files</b></a>
+
+          <a class="dropdown-item" href="/index.php?req=fmode:last&topics%5B%5D=l">Libgen</a>
+          <a class="dropdown-item" href="/index.php?req=fmode:last&topics%5B%5D=a">Scientific Articles</a> 
+          <a class="dropdown-item" href="/index.php?req=fmode:last&topics%5B%5D=f">Fiction</a> 
+          <a class="dropdown-item" href="/index.php?req=fmode:last&topics%5B%5D=c">Comics</a> 
+          <a class="dropdown-item" href="/index.php?req=fmode:last&topics%5B%5D=m">Magazines</a> 
+          <a class="dropdown-item" href="/index.php?req=fmode:last&topics%5B%5D=s">Standards</a> 
+          <a class="dropdown-item" href="/index.php?req=fmode:last&topics%5B%5D=r">Fiction RUS</a>
+	<div class="dropdown-divider"></div>
+          <a class="dropdown-item" href="/index.php?req=mode:last&curtab=e">Editions</a> 
+          <a class="dropdown-item" href="/index.php?req=mode:last&curtab=s">Series</a>
+          <a class="dropdown-item" href="/index.php?req=mode:last&curtab=p">Publishers</a> 
+        <!--  <a class="dropdown-item" href="/index.php?req=mode:last&curtab=f">Files</a> -->
+          <a class="dropdown-item" href="/index.php?req=mode:last&curtab=a">Authors</a> 
+          <a class="dropdown-item" href="/index.php?req=mode:last&curtab=w">Works</a>
+
+
+  
+        </div>
+
+
+      </li>
+
+      <li class="nav-item dropdown">
+        <a class="btn btn-secondary dropdown-toggle" href="#" role="button" id="dropdownMenuLink"  aria-haspopup="true" aria-expanded="false">
+          OTHERS
+        </a>
+
+        <div class="dropdown-menu" aria-labelledby="dropdown01">  
+          <a class="dropdown-item" href="json.php">API</a> 
+          <a class="dropdown-item" href="rss.php">RSS</a> 
+          <a class="dropdown-item" href="top.php">Top 100 users</a> 
+          <a class="dropdown-item" href="stat.php">Stats</a>
+
+	<a class="dropdown-item" href="topics.php">Topics</a>
+
+          <a class="dropdown-item" href="batchsearchindex.php">Batch search</a>  
+          <a class="dropdown-item" href="biblioservice.php">Bibliographic services</a>
+          <a class="dropdown-item" href="https://wiki.mhut.org/software:libgen_desktop">Libgen librarian for desktop</a>
+
+
+          <a class="dropdown-item" href="/code/">Source (PHP)</a>
+          <a class="dropdown-item" href="/soft/">LG soft</a>
+          <!--<a class="dropdown-item" href="/import/">Import local files in LG format</a>-->
+          <a class="dropdown-item" href="https://z-library.se/fulltext/">Full text search</a>
+
+
+
+        </div>
+      </li>
+
+
+
+     <!-- <li class="nav-item dropdown">
+        <a class="btn btn-secondary dropdown-toggle" href="topics.php" role="button" id="dropdownMenuLink"  aria-haspopup="true" aria-expanded="false">
+          Topics
+        </a>
+      </li>
+-->
+
+      <li class="nav-item dropdown">
+        <a class="btn btn-secondary dropdown-toggle" href="#" role="button" id="dropdownMenuLink"  aria-haspopup="true" aria-expanded="false">
+          LINKS
+        </a>
+
+        <div class="dropdown-menu" aria-labelledby="dropdown01">  
+
+
+          
+          <a class="dropdown-item" href="http://sci-hub.ru">Sci-hub</a> 
+          <a class="dropdown-item" href="http://magzdb.org">Magzdb.org</a>
+
+          <a class="dropdown-item" href="http://nlr.ru/rlin/Periodika_rus.php">РНБ</a>
+          <a class="dropdown-item" href="http://rsl.ru/">РГБ</a>
+          <a class="dropdown-item" href="http://loc.gov/">LOC</a>
+          <a class="dropdown-item" href="https://comicvine.gamespot.com/">ComicVine</a>
+          <a class="dropdown-item" href="http://cyberleninka.ru/">Cyberleninka</a>
+          <a class="dropdown-item" href="http://lib.rus.ec/">Lib.rus.ec</a>
+          <a class="dropdown-item" href="http://flibusta.net/">Flibusta.net</a>
+          <a class="dropdown-item" href="http://goodreads.com/">Goodreads.com</a>
+          <a class="dropdown-item" href="http://worldcat.org/">Worldcat.org</a>
+          <a class="dropdown-item" href="https://wiki.archiveteam.org/">Archive team</a>
+          <a class="dropdown-item" href="https://www.reddit.com/r/libgen/">Reddit</a>
+          <a class="dropdown-item" href="http://annas-archive.org/">Anna's Archive</a>
+          <a class="dropdown-item" href="https://welib.org/">Welib</a>
+          <a class="dropdown-item" href="https://open-slum.org/">The Shadow Library Uptime Monitor</a>
+
+        </div>
+
+      </li>
+
+
+      <li class="nav-item dropdown">
+        <a class="btn btn-secondary" href="index.php?req=mode:req&curtab=e" role="button" id="dropdownMenuLink"  aria-haspopup="true" aria-expanded="false">
+          WANTED
+        </a>
+      </li>
+
+    </ul>
+  </div>
+
+  <div class="nav-link">
+
+    <div class="custom-control custom-switch">
+      <input type="checkbox" class="custom-control-input" id="darkSwitch">
+      <label class="custom-control-label" for="darkSwitch">🌓</label>
+    </div>
+    <script src="/js/dark-mode-switch.js"></script>
+  </div>
+   <a class="navbar-brand" href="setlang.php?req=Nicomachean+Ethics&res=25&lang=ru">RU</a>
+</nav>
+<form class="card p-2 needs-validation" novalidate id="formlibgen" action="index.php" enctype="multipart/form-data" METHOD="GET">
+<div class="input-group mb-3" >
+	<input autofocus type="text" class="form-control" placeholder="Input value" name="req" aria-label="input text" aria-describedby="button-addon2" value="Nicomachean Ethics" required>
+	<div class="input-group-append">
+	<button class="btn btn-outline-secondary"  id="button-addon2" type="submit">&nbsp;&nbsp;&nbsp;&nbsp;&#128269;&nbsp;&nbsp;&nbsp;&nbsp;</button>
+	</div>
+
+	<div class="invalid-feedback">Input value</div>
+</div>
+
+<div class="container-fluid">
+	<div class="row">
+		<div class="col-8">	
+			<div class="d-block" id="topic">
+				<strong>Search in fields:</strong>
+				<input type="checkbox" checked class="column-input" id="colt" name="columns[]" value="t">
+				<label class="column-label" for="coltitle">Title</label>
+				<input type="checkbox" checked class="column-input" id="cola" name="columns[]" value="a">
+				<label class="column-label" for="colauthor">Author(s)</label>
+				<input type="checkbox" checked class="column-input" id="cols" name="columns[]" value="s">
+				<label class="column-label" for="colseries">Series</label>
+				<input type="checkbox" checked class="column-input" id="coly" name="columns[]" value="y">
+				<label class="column-label" for="colyear">Year</label>
+				<input type="checkbox" checked class="column-input" id="colp" name="columns[]" value="p">
+				<label class="column-label" for="colpublisher">Publisher</label>
+				<input type="checkbox" checked class="column-input" id="coli" name="columns[]" value="i">
+				<label class="column-label" for="colisbn">ISBN</label>
+	  		</div>
+	
+	  		<div class="d-block" id="object">
+				<strong>Search in objects:</strong>
+				<input type="checkbox" checked class="column-input" id="objf" name="objects[]" value="f">
+				<label class="column-label" for="objf">Files</label>
+				<input type="checkbox" checked class="column-input" id="obje" name="objects[]" value="e">
+				<label class="column-label" for="obje">Editions</label>
+				<input type="checkbox" checked class="column-input" id="objs" name="objects[]" value="s">
+				<label class="column-label" for="objs">Series</label>
+				<input type="checkbox" checked class="column-input" id="obja" name="objects[]" value="a">
+				<label class="column-label" for="obja">Authors</label>
+				<input type="checkbox" checked class="column-input" id="objp" name="objects[]" value="p">
+				<label class="column-label" for="objp">Publishers</label>
+				<input type="checkbox" checked class="column-input" id="objw" name="objects[]" value="w">
+				<label class="column-label" for="objw">Works</label>
+			</div>
+			<div class="d-block" id="column">
+				<strong>Search in topics :</strong>
+				<input type="checkbox" checked class="column-input" id="topl" name="topics[]" value="l" >
+				<label class="column-label" for="topl">Libgen</label>
+				<input type="checkbox" checked class="column-input" id="topc" name="topics[]" value="c" >
+				<label class="column-label" for="topc">Comics</label>
+				<input type="checkbox" checked class="column-input" id="topf" name="topics[]" value="f" >
+				<label class="column-label" for="topf">Fiction</label>
+				<input type="checkbox" checked class="column-input" id="topa" name="topics[]" value="a" >
+				<label class="column-label" for="topa">Scientific Articles</label>
+				<input type="checkbox" checked class="column-input" id="topm" name="topics[]" value="m" >
+				<label class="column-label" for="topm">Magazines</label>
+				<input type="checkbox" checked class="column-input" id="topr" name="topics[]" value="r" >
+				<label class="column-label" for="topr">Fiction RUS</label>
+				<input type="checkbox" checked class="column-input" id="tops" name="topics[]" value="s" >
+				<label class="column-label" for="tops">Standards</label>
+			</div>
+ 		</div>
+		<div class="col-4">
+
+			<!--<div >
+				<strong>Results per page:</strong>
+
+				<div class="custom-control custom-radio custom-control-inline">
+				<input type="radio" id="res25" name="res" class="custom-control-input" value="25" checked>
+				<label class="custom-control-label" for="res25">25</label>
+				</div>
+				<div class="custom-control custom-radio custom-control-inline">
+				<input type="radio" id="res50" name="res" class="custom-control-input" value="50" >
+				<label class="custom-control-label" for="res50">50</label>
+				</div>
+				<div class="custom-control custom-radio custom-control-inline">
+				<input type="radio" id="res100" name="res" class="custom-control-input" value="100" >
+				<label class="custom-control-label" for="res100">100</label>
+
+				</div>
+ 			</div>
+			-->
+			<div class="d-block">
+				<table><tr><td>
+					<div class="custom-control custom-switch">
+						<input type="checkbox" class="custom-control-input" id="covers" name="covers" >
+						<label class="custom-control-label" for="covers"><strong>Show Covers</strong></label>
+						<script type="text/javascript">
+						$("input[id=covers]").change(function(){
+							if($(this).is(":checked")==false)
+							{
+								document.cookie = "covers=; expires=Thu 01-Jan-70 00:00:01 GMT;";
+							}
+						});				
+						</script>
+					</div>
+					</td><td> 
+					<div class="custom-control custom-switch">
+						<input type="checkbox" class="custom-control-input" id="showch" name="showch" >
+						<label class="custom-control-label" for="showch"><strong>Show chapters</strong></label>
+						<script type="text/javascript">
+						$("input[id=showch]").change(function(){
+							if($(this).is(":checked")==false)
+							{
+								document.cookie = "showch=; expires=Thu 01-Jan-70 00:00:01 GMT;";
+							}
+						});				
+						</script>
+					</div>
+				</td></tr></table>
+
+ 			</div>
+
+			<div class="d-block">
+
+				<div class="custom-control custom-switch">
+					<input type="checkbox" class="custom-control-input" id="gmode" name="gmode" >
+					<label class="custom-control-label" for="gmode" ><strong>Google mode <a href="#" data-toggle="modal" data-target="#googlemodemodal">?</a></strong></label>
+					<script type="text/javascript">
+					$("input[id=gmode]").change(function(){
+						if($(this).is(":checked")==false)
+						{
+							document.cookie = "gmode=; expires=Thu 01-Jan-70 00:00:01 GMT;";
+						}
+					});
+					</script>
+					
+				</div>
+ 			</div>
+
+			<div >
+
+
+				<strong>Seach in files:</strong>
+
+				<div class="custom-control custom-radio custom-control-inline">
+				<input type="radio" id="all" name="filesuns" class="custom-control-input" value="all" checked>
+				<label class="custom-control-label" for="all">All</label>
+				</div>
+				<div class="custom-control custom-radio custom-control-inline">
+				<input type="radio" id="sort" name="filesuns" class="custom-control-input" value="sort" >
+				<label class="custom-control-label" for="sort">Only sorted</label>
+				</div>
+				<div class="custom-control custom-radio custom-control-inline">
+				<input type="radio" id="unsort" name="filesuns" class="custom-control-input" value="unsort" >
+				<label class="custom-control-label" for="unsort">Only uns.</label>
+				</div>
+
+
+
+ 			</div>
+
+ 		</div>
+	</div>
+</div>
+</form><ul class="nav nav-tabs "><li class="nav-item">
+ <a class="nav-link active " href="/index.php?req=Nicomachean+Ethics&res=25&curtab=f">Files <span class="badge badge-primary">600</span></a>
+</li><li class="nav-item">
+ <a class="nav-link  " href="/index.php?req=Nicomachean+Ethics&res=25&curtab=e">Editions <span class="badge badge-primary">747</span></a>
+</li><li class="nav-item">
+ <a class="nav-link  " href="/index.php?req=Nicomachean+Ethics&res=25&curtab=s">Series <span class="badge badge-primary">0</span></a>
+</li><li class="nav-item">
+ <a class="nav-link  " href="/index.php?req=Nicomachean+Ethics&res=25&curtab=a">Authors <span class="badge badge-primary">0</span></a>
+</li><li class="nav-item">
+ <a class="nav-link  " href="/index.php?req=Nicomachean+Ethics&res=25&curtab=p">Publishers <span class="badge badge-primary">0</span></a>
+</li><li class="nav-item">
+ <a class="nav-link  " href="/index.php?req=Nicomachean+Ethics&res=25&curtab=w">Works <span class="badge badge-primary">0</span></a>
+</li><li class="navbar-right" style="float: right !important;"><a class="nav-link" href="/json.php?object=f&ids=112682274,112676286,112682273,96082786,112676287,33486919,33488798,86867668,92458444,92458445,69679795,92462648,92462376,92462377,70131759,93677320,97488422,109328593,110752098,110862134,69194842,70131754,109327192,110752072,110850167,110855439,69205979,93662038,97504191,97504192,97504965,110852864,44461277,46031934,48224326,69129678,69138791,69149122,69205980,69754535,70131746,70131748,70131749,70131750,70131751,70131755,70131756,84356321,84600669,84676396,85346759,95262953,108916611,109310997,109311740,109319137,109323370,109323532,109328554,109335346,109995754,110751786,110751864,110752199,110836252,110839203,110842070,110842448,110846072,110847994,110850216,110850341,110852171,110852511,110860463,92715422,69492292,85981679,110862942,113307830,44806511,44834212,44876026,47512815,48347731,51762936,52751820,55176596,65420595,67233861,67670279,78762469,84509305,85347391,85833542,85856790,91572023,92113317,92435679,92474669,93129411,93145621,93217942,93562822,93562841,101401878,101419873,109312486,109333767,109334317,109334438,109334452,109334629,109335715,109565703,110257688,110626182,110627825,110651683,110752188,110752195,110836925,110837877,110844506,110844687,110854466,110861186,111600244,114057629,114057630,114057631,114057632,4058545,4098567,4098568,4258473,4258474,4258475,4444878,4444879,4444882,4444883,4576352,15502286,15604827,16116588,16117084,16174146,16175646,16197654,16423831,16603840,17539880,21448026,21765016,21942307,22060388,25271396,25271398,25271405,25819724,27466619,28221046,28227295,28485704,28670849,28696994,28708745,29007336,29150107,29180158,29183907,29240505,29253032,29316025,29316756,29316775,29387339,29387369,29387374,29430464,29445074,29681359,32172961,32177625,32178103,32187484,32187757,32188175,32464611,32465127,33272825,33281898,33287930,33301375,33302092,33315174,33323615,33331794,33339822,33354782,33393952,33450392,33500441,33690310,33711506,33730212,34099522,34139273,34266406,34755722,34968658,36671368,36943374,37125524,37820478,37877871,39795291,39971675,40147437,40373934,41744602,42042701,43274805,43318915,44393620,44434651,44470881,44481140,44543571,44584196,44604738,44610978,44630399,44652647,44653384,44928862,44932815,44998368,45029274,45071859,45311982,45592760,45646368,45777505,45842277,45954242,46003965,46023566,46082555,46101853,46107633,46268755,46402546,46717864,47179204,47291530,47380771,47497116,47497629,47516095,48139086,48155733,48245028,48292599,48438840,48460216,48751829,48785917,48810759,48812068,48833086,48880988,49136153,49445420,49449302,49563817,49668297,49680198,49712784,49779744,50295069,51616838,52117308,52785800,52788540,52802659,52853366,52892980,52952043,53039201,53171236,53312977,53340469,53394522,53478398,53505379,53681158,53714409,53768692,53797705,54049340,54059521,54184574,54209563,54475939,54527628,54614195,54691558,54850613,54862313,54894564,54894566,54939537,55049267,55112767,55198832,55246173,55249204,55318465,55363026,55387423,55430004,55555559,55568076,55716927,55717061,55811524,55840154,55864208,56065850,56103992,56191596,56214427,56273368,57179283,57227248,58832703,59341125,59465703,59518523,59538553,59762905,60314689,60893311,60893312,61182998,61446908,61988671,62266377,62456883,62555924,62790474,63264552,64257320,65028396,65238397,65420579,65509659,65552037,65579907,65723043,65796184,66213212,66870460,66948354,67279055,67360390,68465139,69600719,69662089,69766930,69785864,69848373,70450527,70779098,71300191,73342468,74242326,74622697,75027471,75096834,75142161,75699722,76614539,77328436,77588024,77906847,78182325,78842325,79525532,80726680,80824898,81232951,82929101,83133782,83858660,84045069,84300561,84370520,85174735,85325965,85354520,85744357,85937586,85984414,86407964,86507429,86540723,86660045,87239756,88157405,89386382,90295606,90295607,90405491,90428202,90519126,91020741,91330837,91457826,91482733,91488505,91488737,91489769,91496893,91537937,91575082,91641130,91653937,91717854,91813057,91850440,91877092,92065207,92128217,92205159,92224989,92333339,92445256,92458442,92458443,92469393,92698104,93086572,93109025,93562820,93562829,93685707,93699996,93699997,93699998,93700000,93743394,93786113,93833222,93833223,93842392,93931030,93940086,94089902,94169701,94768108,94822314,95156201,95156218,96460854,96660993,96702118,96729297,96752970,96769681,96769684,97468835,97468836,97468839,97477592,97538323,97538324,97787537,98035769,98036619,98279825,98284877,99190877,99380408,99420657,99786016,100099412,100111083,100999836,101291558,101401913,102627887,102853429,102858066,102901181,102901208,103787110,103802215,104003959,104003971,104055949,104057072,104534096,104822305,104822306,104834162,105122327,105124308,106246953,106850940,108029987,108034556,108370238,108370959,108828013,108913922,108920711,108922020,108943946,108982916,108988280,109026879,109046624,109064797,109116639,109134548,109158646,109311986,109312444,109320357,109324416,109332455,109484155,109517120,109537919,109552713,109554938,109578157,109627432,109659469,109676447,109703410,109712345,109721778,109821145,109822748,109944034,109952500,109966447,110011475,110017555,110019878,110024616,110027117,110262698,110654049,110751805,110768452,110838270,110847125,110857881,111223673,111292131,111576627,111576671,111634996,111637277,111745399,111753068,111825762,112054279,112506566,112670324,112670325,112676288,112682275,113699163,113872940,113872941,113872942,113872943,114724279,114724280,114724281,114724282,114724283,114796469,114940073,114958496,114973922,115309920,115642182,115642183,116045105,116335302,28739079,62585763,110807569"><font color="black">JSON</font></a></li> </ul><div style="text-align: center;" class="paginator" id="paginator_example_top"></div><script type="text/javascript">paginator_example_top = new Paginator("paginator_example_top", 24, 25, 1, "/index.php?req=Nicomachean+Ethics&res=25&curtab=f&order=&ordermode=desc&filesuns=all&page=" );</script><table class="table  table-striped" id="tablelibgen"><thead><tr>
+
+<th scope="col" class="first_col"><nobr>
+ID <a href="/index.php?req=Nicomachean+Ethics&res=25&curtab=f&order=f_id&ordermode=asc">&#8597</a> 
+Time add. <a href="/index.php?req=Nicomachean+Ethics&res=25&curtab=f&order=time_added&ordermode=asc">&#8597</a> 
+Title <a href="/index.php?req=Nicomachean+Ethics&res=25&curtab=f&order=title&ordermode=asc">&#8597</a> 
+Series <a href="/index.php?req=Nicomachean+Ethics&res=25&curtab=f&order=series&ordermode=asc">&#8597</a></nobr></th>
+<th scope="col"><nobr>Author(s) <a href="/index.php?req=Nicomachean+Ethics&res=25&curtab=f&order=author&ordermode=asc">&#8597</a></nobr></th>
+<th scope="col"><nobr>Publisher <a href="/index.php?req=Nicomachean+Ethics&res=25&curtab=f&order=publisher&ordermode=asc">&#8597</a></nobr></th>
+<th scope="col"><nobr>Year <a href="/index.php?req=Nicomachean+Ethics&res=25&curtab=f&order=year&ordermode=asc">&#8597</a></nobr></th>
+<th scope="col">Language</th>
+<th scope="col">Pages</th>
+<th scope="col"><nobr>Size  <a href="/index.php?req=Nicomachean+Ethics&res=25&curtab=f&order=filesize&ordermode=asc">&#8597</a></nobr></th>
+<th scope="col"><nobr>Ext. <a href="/index.php?req=Nicomachean+Ethics&res=25&curtab=f&order=extension&ordermode=asc">&#8597</a></nobr></th>
+<th scope="col">Mirrors</th>
+</tr></thead><tbody><tr>
+
+<td><b>Nicomachean Ethics Book 1 - 10</b><br><a data-toggle="tooltip" data-placement="right" data-html="true" title="Add/Edit : 2026-01-11/2026-01-11; ID: 112682274<br>Ethics, Nicomachean - Aristotle - Nicomachean Ethics" href="edition.php?id=205330816">Aristotle - Nicomachean Ethics <i></i></a> 
+<nobr><span class="badge badge-primary"><a data-toggle="tooltip" data-placement="bottom" data-html="true" title="Book">b</a></span> 
+<span class="badge badge-secondary"">l 7031499</span></nobr>
+
+</td>
+<td>Ethics, Nicomachean</td>
+<td></td>
+<td><nobr></nobr></td>
+<td>English</td>
+<td>0 / 329</td>
+<td><nobr><a href="/file.php?id=112682274">196 kB</a></nobr></td>
+<td>epub</td>
+<td><nobr><a data-toggle="tooltip" data-placement="bottom" data-html="true" title="libgen" href="/ads.php?md5=bfce8f729fbf470f4e763e995dbb71b8"><span class="badge badge-primary">1</span></a> <a data-toggle="tooltip" data-placement="bottom" data-html="true" title="libgen.xyz" href="https://libgen.xyz/book/bfce8f729fbf470f4e763e995dbb71b8?utm_source=libgen.li"><span class="badge badge-primary">2</span></a> <a data-toggle="tooltip" data-placement="bottom" data-html="true" title="anna's archive" href="https://en.annas-archive.gl/md5/bfce8f729fbf470f4e763e995dbb71b8?r=Ax2w6jC"><span class="badge badge-primary">3</span></a> <a data-toggle="tooltip" data-placement="bottom" data-html="true" title="libgen.pw" href="https://libgen.pw/book/bfce8f729fbf470f4e763e995dbb71b8?utm_source=libgen.li"><span class="badge badge-primary">4</span></a> <a data-toggle="tooltip" data-placement="bottom" data-html="true" title="randombook.org" href="https://randombook.org/book/bfce8f729fbf470f4e763e995dbb71b8?utm_source=libgen.li"><span class="badge badge-primary">5</span></a> </nobr></td>
+</tr><tr>
+
+<td><a data-toggle="tooltip" data-placement="right" data-html="true" title="Add/Edit : 2026-01-11/2026-01-11; ID: 112676286<br>Nicomachean Ethics - Aristotle - Nicomachean Ethics" href="edition.php?id=205324825">Aristotle - Nicomachean Ethics <i></i></a> 
+<nobr><span class="badge badge-primary"><a data-toggle="tooltip" data-placement="bottom" data-html="true" title="Book">b</a></span> 
+<span class="badge badge-secondary"">l 7030256</span></nobr>
+
+</td>
+<td>Nicomachean Ethics</td>
+<td></td>
+<td><nobr></nobr></td>
+<td>English</td>
+<td>0</td>
+<td><nobr><a href="/file.php?id=112676286">346 kB</a></nobr></td>
+<td>azw3</td>
+<td><nobr><a data-toggle="tooltip" data-placement="bottom" data-html="true" title="libgen" href="/ads.php?md5=a98503d3ee18b1a4a2de97c39d35b8c5"><span class="badge badge-primary">1</span></a> <a data-toggle="tooltip" data-placement="bottom" data-html="true" title="libgen.xyz" href="https://libgen.xyz/book/a98503d3ee18b1a4a2de97c39d35b8c5?utm_source=libgen.li"><span class="badge badge-primary">2</span></a> <a data-toggle="tooltip" data-placement="bottom" data-html="true" title="anna's archive" href="https://en.annas-archive.gl/md5/a98503d3ee18b1a4a2de97c39d35b8c5?r=Ax2w6jC"><span class="badge badge-primary">3</span></a> <a data-toggle="tooltip" data-placement="bottom" data-html="true" title="libgen.pw" href="https://libgen.pw/book/a98503d3ee18b1a4a2de97c39d35b8c5?utm_source=libgen.li"><span class="badge badge-primary">4</span></a> <a data-toggle="tooltip" data-placement="bottom" data-html="true" title="randombook.org" href="https://randombook.org/book/a98503d3ee18b1a4a2de97c39d35b8c5?utm_source=libgen.li"><span class="badge badge-primary">5</span></a> </nobr></td>
+</tr><tr>
+
+<td><a data-toggle="tooltip" data-placement="right" data-html="true" title="Add/Edit : 2026-01-11/2026-01-11; ID: 112682273<br>Nicomachean Ethics - Aristotle - Nicomachean Ethics" href="edition.php?id=205330815">Aristotle - Nicomachean Ethics <i></i></a> 
+<nobr><span class="badge badge-primary"><a data-toggle="tooltip" data-placement="bottom" data-html="true" title="Book">b</a></span> 
+<span class="badge badge-secondary"">l 7031498</span></nobr>
+
+</td>
+<td>Nicomachean Ethics</td>
+<td></td>
+<td><nobr></nobr></td>
+<td>English</td>
+<td>0</td>
+<td><nobr><a href="/file.php?id=112682273">346 kB</a></nobr></td>
+<td>azw3</td>
+<td><nobr><a data-toggle="tooltip" data-placement="bottom" data-html="true" title="libgen" href="/ads.php?md5=8b3e152f96c1a6669d9e62b5c32b34cf"><span class="badge badge-primary">1</span></a> <a data-toggle="tooltip" data-placement="bottom" data-html="true" title="libgen.xyz" href="https://libgen.xyz/book/8b3e152f96c1a6669d9e62b5c32b34cf?utm_source=libgen.li"><span class="badge badge-primary">2</span></a> <a data-toggle="tooltip" data-placement="bottom" data-html="true" title="anna's archive" href="https://en.annas-archive.gl/md5/8b3e152f96c1a6669d9e62b5c32b34cf?r=Ax2w6jC"><span class="badge badge-primary">3</span></a> <a data-toggle="tooltip" data-placement="bottom" data-html="true" title="libgen.pw" href="https://libgen.pw/book/8b3e152f96c1a6669d9e62b5c32b34cf?utm_source=libgen.li"><span class="badge badge-primary">4</span></a> <a data-toggle="tooltip" data-placement="bottom" data-html="true" title="randombook.org" href="https://randombook.org/book/8b3e152f96c1a6669d9e62b5c32b34cf?utm_source=libgen.li"><span class="badge badge-primary">5</span></a> </nobr></td>
+</tr><tr>
+
+<td><b><a href="series.php?id=10410">International Journal of Ethics   </a><a data-toggle="tooltip" data-placement="right" data-html="true" title="Add/Edit : 2021-10-25/2021-10-25; ID: 96082786<br>" href="edition.php?id=95002063"><i> 1893-oct vol. 4 iss. 1</i></a> pp.123—126</b><br><a data-toggle="tooltip" data-placement="right" data-html="true" title="Add/Edit : 2021-10-25/2021-10-25; ID: 96082786<br>" href="edition.php?id=95002063">Notes on the Nicomachean Ethics of Aristotle.J. A. StewartThe Nicomachean Ethics of Aristotle.J. E. C. Welldon <i></i></a><br><a data-toggle="tooltip" data-placement="right" data-html="true" title="Add/Edit : 2021-10-25/2021-10-25; ID: 96082786<br>" href="edition.php?id=95002063"><i><font color="green">DOI: 10.1086/intejethi.4.1.2375720</font></a></i> 
+<nobr><span class="badge badge-primary"><a data-toggle="tooltip" data-placement="bottom" data-html="true" title="Journal article">a</a></span> 
+<span class="badge badge-secondary"">a 87241977</span></nobr>
+
+</td>
+<td>Alexander, S. </td>
+<td>University of Chicago Press</td>
+<td><nobr>1893 October</nobr></td>
+<td></td>
+<td>0</td>
+<td><nobr><a href="/file.php?id=96082786">322 kB</a></nobr></td>
+<td>pdf</td>
+<td><a data-toggle="tooltip" data-placement="bottom" data-html="true" title="libgen" href="/ads.php?md5=f37fcc5732bb5e9dd3cc01d392ce2bec&downloadname=10.1086/intejethi.4.1.2375720"><span class="badge badge-primary">Libgen</span></a> <a data-toggle="tooltip" data-placement="bottom" data-html="true" title="sci-hub" href="http://sci-hub.ru/10.1086/intejethi.4.1.2375720"><span class="badge badge-primary">Sci-Hub</span></a> <a data-toggle="tooltip" data-placement="bottom" data-html="true" title="libgen.xyz" href="https://libgen.xyz/book/f37fcc5732bb5e9dd3cc01d392ce2bec?utm_source=libgen.li"><span class="badge badge-primary">libgen.xyz</span></a> <a data-toggle="tooltip" data-placement="bottom" data-html="true" title="libgen.pw" href="https://libgen.pw/book/f37fcc5732bb5e9dd3cc01d392ce2bec?utm_source=libgen.li"><span class="badge badge-primary">libgen.pw</span></a> <a data-toggle="tooltip" data-placement="bottom" data-html="true" title="anna's archive" href="https://en.annas-archive.gl/md5/f37fcc5732bb5e9dd3cc01d392ce2bec?r=Ax2w6jC"><span class="badge badge-primary">Anna's arch</span></a> <a data-toggle="tooltip" data-placement="bottom" data-html="true" title="Randombook" href="https://randombook.org/book/f37fcc5732bb5e9dd3cc01d392ce2bec?utm_source=libgen.li"><span class="badge badge-primary">Randombook</span></a> </td>
+</tr><tr>
+
+<td><a data-toggle="tooltip" data-placement="right" data-html="true" title="Add/Edit : 2026-01-11/2026-01-11; ID: 112676287<br>Ethics, Nicomachean - Aristotle - Nicomachean Ethics" href="edition.php?id=205324826">Aristotle - Nicomachean Ethics <i></i></a> 
+<nobr><span class="badge badge-primary"><a data-toggle="tooltip" data-placement="bottom" data-html="true" title="Book">b</a></span> 
+<span class="badge badge-secondary"">l 7030257</span></nobr>
+
+</td>
+<td>Ethics, Nicomachean</td>
+<td></td>
+<td><nobr></nobr></td>
+<td>English</td>
+<td>0</td>
+<td><nobr><a href="/file.php?id=112676287">196 kB</a></nobr></td>
+<td>epub</td>
+<td><nobr><a data-toggle="tooltip" data-placement="bottom" data-html="true" title="libgen" href="/ads.php?md5=fa7e3077f2c06f1cd581e7823d5bcbfe"><span class="badge badge-primary">1</span></a> <a data-toggle="tooltip" data-placement="bottom" data-html="true" title="libgen.xyz" href="https://libgen.xyz/book/fa7e3077f2c06f1cd581e7823d5bcbfe?utm_source=libgen.li"><span class="badge badge-primary">2</span></a> <a data-toggle="tooltip" data-placement="bottom" data-html="true" title="anna's archive" href="https://en.annas-archive.gl/md5/fa7e3077f2c06f1cd581e7823d5bcbfe?r=Ax2w6jC"><span class="badge badge-primary">3</span></a> <a data-toggle="tooltip" data-placement="bottom" data-html="true" title="libgen.pw" href="https://libgen.pw/book/fa7e3077f2c06f1cd581e7823d5bcbfe?utm_source=libgen.li"><span class="badge badge-primary">4</span></a> <a data-toggle="tooltip" data-placement="bottom" data-html="true" title="randombook.org" href="https://randombook.org/book/fa7e3077f2c06f1cd581e7823d5bcbfe?utm_source=libgen.li"><span class="badge badge-primary">5</span></a> </nobr></td>
+</tr><tr>
+
+<td><b><a href="series.php?id=6927">Ethics   </a><a data-toggle="tooltip" data-placement="right" data-html="true" title="Add/Edit : 2014-11-02/2021-07-20; ID: 33486919<br>" href="edition.php?id=33424004"><i> 2006-apr vol. 116 iss. 3</i></a> pp.597—600</b><br><a data-toggle="tooltip" data-placement="right" data-html="true" title="Add/Edit : 2014-11-02/2021-07-20; ID: 33486919<br>" href="edition.php?id=33424004">Gabriel Richardson Lear,Happy Lives and the Highest Good: An Essay on Aristotle’s “Nicomachean Ethics” <i></i></a><br><a data-toggle="tooltip" data-placement="right" data-html="true" title="Add/Edit : 2014-11-02/2021-07-20; ID: 33486919<br>" href="edition.php?id=33424004"><i><font color="green">DOI: 10.1086/500340</font></a></i> 
+<nobr><span class="badge badge-primary"><a data-toggle="tooltip" data-placement="bottom" data-html="true" title="Journal article">a</a></span> 
+<span class="badge badge-secondary"">a 27032888</span></nobr>
+
+</td>
+<td>Destree, Pierre</td>
+<td></td>
+<td><nobr>2006 April</nobr></td>
+<td>English</td>
+<td>0</td>
+<td><nobr><a href="/file.php?id=33486919">97 kB</a></nobr></td>
+<td>pdf</td>
+<td><a data-toggle="tooltip" data-placement="bottom" data-html="true" title="libgen" href="/ads.php?md5=2e7d053ba4bda5be5752d9978a67cce6&downloadname=10.1086/500340"><span class="badge badge-primary">Libgen</span></a> <a data-toggle="tooltip" data-placement="bottom" data-html="true" title="sci-hub" href="http://sci-hub.ru/10.1086/500340"><span class="badge badge-primary">Sci-Hub</span></a> <a data-toggle="tooltip" data-placement="bottom" data-html="true" title="libgen.xyz" href="https://libgen.xyz/book/2e7d053ba4bda5be5752d9978a67cce6?utm_source=libgen.li"><span class="badge badge-primary">libgen.xyz</span></a> <a data-toggle="tooltip" data-placement="bottom" data-html="true" title="libgen.pw" href="https://libgen.pw/book/2e7d053ba4bda5be5752d9978a67cce6?utm_source=libgen.li"><span class="badge badge-primary">libgen.pw</span></a> <a data-toggle="tooltip" data-placement="bottom" data-html="true" title="anna's archive" href="https://en.annas-archive.gl/md5/2e7d053ba4bda5be5752d9978a67cce6?r=Ax2w6jC"><span class="badge badge-primary">Anna's arch</span></a> <a data-toggle="tooltip" data-placement="bottom" data-html="true" title="Randombook" href="https://randombook.org/book/2e7d053ba4bda5be5752d9978a67cce6?utm_source=libgen.li"><span class="badge badge-primary">Randombook</span></a> </td>
+</tr><tr>
+
+<td><b><a href="series.php?id=6927">Ethics   </a><a data-toggle="tooltip" data-placement="right" data-html="true" title="Add/Edit : 2014-08-09/2021-07-20; ID: 33488798<br>" href="edition.php?id=33425883"><i> 1995-apr vol. 105 iss. 2</i></a> pp.411—412</b><br><a data-toggle="tooltip" data-placement="right" data-html="true" title="Add/Edit : 2014-08-09/2021-07-20; ID: 33488798<br>" href="edition.php?id=33425883">Practices of Reason: Aristotle's "Nicomachean Ethics."by C. D. C. Reeve <i></i></a><br><a data-toggle="tooltip" data-placement="right" data-html="true" title="Add/Edit : 2014-08-09/2021-07-20; ID: 33488798<br>" href="edition.php?id=33425883"><i><font color="green">DOI: 10.2307/2382355</font></a></i> 
+<nobr><span class="badge badge-primary"><a data-toggle="tooltip" data-placement="bottom" data-html="true" title="Journal article">a</a></span> 
+<span class="badge badge-secondary"">a 27034767</span></nobr>
+
+</td>
+<td>Review by: Norman O. Dahl</td>
+<td></td>
+<td><nobr>1995 April</nobr></td>
+<td>English</td>
+<td>0</td>
+<td><nobr><a href="/file.php?id=33488798">94 kB</a></nobr></td>
+<td>pdf</td>
+<td><a data-toggle="tooltip" data-placement="bottom" data-html="true" title="libgen" href="/ads.php?md5=67488eb0a0820caacaad79b62c6d27d5&downloadname=10.2307/2382355"><span class="badge badge-primary">Libgen</span></a> <a data-toggle="tooltip" data-placement="bottom" data-html="true" title="sci-hub" href="http://sci-hub.ru/10.2307/2382355"><span class="badge badge-primary">Sci-Hub</span></a> <a data-toggle="tooltip" data-placement="bottom" data-html="true" title="libgen.xyz" href="https://libgen.xyz/book/67488eb0a0820caacaad79b62c6d27d5?utm_source=libgen.li"><span class="badge badge-primary">libgen.xyz</span></a> <a data-toggle="tooltip" data-placement="bottom" data-html="true" title="libgen.pw" href="https://libgen.pw/book/67488eb0a0820caacaad79b62c6d27d5?utm_source=libgen.li"><span class="badge badge-primary">libgen.pw</span></a> <a data-toggle="tooltip" data-placement="bottom" data-html="true" title="anna's archive" href="https://en.annas-archive.gl/md5/67488eb0a0820caacaad79b62c6d27d5?r=Ax2w6jC"><span class="badge badge-primary">Anna's arch</span></a> <a data-toggle="tooltip" data-placement="bottom" data-html="true" title="Randombook" href="https://randombook.org/book/67488eb0a0820caacaad79b62c6d27d5?utm_source=libgen.li"><span class="badge badge-primary">Randombook</span></a> </td>
+</tr><tr>
+
+<td><b><a href="series.php?id=6927">Ethics   </a><a data-toggle="tooltip" data-placement="right" data-html="true" title="Add/Edit : 2020-02-27/2021-07-21; ID: 86867668<br>" href="edition.php?id=87388761"><i> 1995-jan vol. 105 iss. 2</i></a> pp.411—412</b><br><a data-toggle="tooltip" data-placement="right" data-html="true" title="Add/Edit : 2020-02-27/2021-07-21; ID: 86867668<br>" href="edition.php?id=87388761"><i>Practices of Reason: Aristotle's "Nicomachean Ethics."</i>               . C. D. C. Reeve <i></i></a><br><a data-toggle="tooltip" data-placement="right" data-html="true" title="Add/Edit : 2020-02-27/2021-07-21; ID: 86867668<br>" href="edition.php?id=87388761"><i><font color="green">DOI: 10.1086/293710</font></a></i> 
+<nobr><span class="badge badge-primary"><a data-toggle="tooltip" data-placement="bottom" data-html="true" title="Journal article">a</a></span> 
+<span class="badge badge-secondary"">a 81148895</span></nobr>
+
+</td>
+<td>Dahl, Norman O.</td>
+<td></td>
+<td><nobr>1995 January</nobr></td>
+<td>English</td>
+<td>0</td>
+<td><nobr><a href="/file.php?id=86867668">40 kB</a></nobr></td>
+<td>pdf</td>
+<td><a data-toggle="tooltip" data-placement="bottom" data-html="true" title="libgen" href="/ads.php?md5=865bad801755fda7b1cf4d1e7123e6f6&downloadname=10.1086/293710"><span class="badge badge-primary">Libgen</span></a> <a data-toggle="tooltip" data-placement="bottom" data-html="true" title="sci-hub" href="http://sci-hub.ru/10.1086/293710"><span class="badge badge-primary">Sci-Hub</span></a> <a data-toggle="tooltip" data-placement="bottom" data-html="true" title="libgen.xyz" href="https://libgen.xyz/book/865bad801755fda7b1cf4d1e7123e6f6?utm_source=libgen.li"><span class="badge badge-primary">libgen.xyz</span></a> <a data-toggle="tooltip" data-placement="bottom" data-html="true" title="libgen.pw" href="https://libgen.pw/book/865bad801755fda7b1cf4d1e7123e6f6?utm_source=libgen.li"><span class="badge badge-primary">libgen.pw</span></a> <a data-toggle="tooltip" data-placement="bottom" data-html="true" title="anna's archive" href="https://en.annas-archive.gl/md5/865bad801755fda7b1cf4d1e7123e6f6?r=Ax2w6jC"><span class="badge badge-primary">Anna's arch</span></a> <a data-toggle="tooltip" data-placement="bottom" data-html="true" title="Randombook" href="https://randombook.org/book/865bad801755fda7b1cf4d1e7123e6f6?utm_source=libgen.li"><span class="badge badge-primary">Randombook</span></a> </td>
+</tr><tr>
+
+<td><b>Ancient commentators on Aristotle</b><br><a data-toggle="tooltip" data-placement="right" data-html="true" title="Add/Edit : 2015-12-23/2021-10-07; ID: 92458444<br>(Bloomsbury Academic) (Ancient Commentators on Aristotle) Aspasius_ On Aristotle Nicomachean Ethics 1-4, 7-8 - Aspasius & David Konstan" href="edition.php?id=137198404">Aspasius : on Aristotle Nicomachean ethics 1-4, 7-8 <i></i></a><br><a data-toggle="tooltip" data-placement="right" data-html="true" title="Add/Edit : 2015-12-23/2021-10-07; ID: 92458444<br>(Bloomsbury Academic) (Ancient Commentators on Aristotle) Aspasius_ On Aristotle Nicomachean Ethics 1-4, 7-8 - Aspasius & David Konstan" href="edition.php?id=137198404"><i><font color="green"> 0715635735; 9780715635735; 9781472501431; 1472501438; 9781472558138; 1472558138</font></a></i> 
+<nobr><span class="badge badge-primary"><a data-toggle="tooltip" data-placement="bottom" data-html="true" title="Book">b</a></span> 
+<span class="badge badge-secondary"">l 1421137</span></nobr>
+
+</td>
+<td>Aspasius & David Konstan</td>
+<td>Bristol Classical Press;Bloomsbury Academic</td>
+<td><nobr>2006</nobr></td>
+<td>English</td>
+<td>0 / 255</td>
+<td><nobr><a href="/file.php?id=92458444">1 MB</a></nobr></td>
+<td>pdf</td>
+<td><nobr><a data-toggle="tooltip" data-placement="bottom" data-html="true" title="libgen" href="/ads.php?md5=d25ffa37963cc04defa1b5719361d252"><span class="badge badge-primary">1</span></a> <a data-toggle="tooltip" data-placement="bottom" data-html="true" title="libgen.xyz" href="https://libgen.xyz/book/d25ffa37963cc04defa1b5719361d252?utm_source=libgen.li"><span class="badge badge-primary">2</span></a> <a data-toggle="tooltip" data-placement="bottom" data-html="true" title="anna's archive" href="https://en.annas-archive.gl/md5/d25ffa37963cc04defa1b5719361d252?r=Ax2w6jC"><span class="badge badge-primary">3</span></a> <a data-toggle="tooltip" data-placement="bottom" data-html="true" title="libgen.pw" href="https://libgen.pw/book/d25ffa37963cc04defa1b5719361d252?utm_source=libgen.li"><span class="badge badge-primary">4</span></a> <a data-toggle="tooltip" data-placement="bottom" data-html="true" title="randombook.org" href="https://randombook.org/book/d25ffa37963cc04defa1b5719361d252?utm_source=libgen.li"><span class="badge badge-primary">5</span></a> </nobr></td>
+</tr><tr>
+
+<td><b>Ancient commentators on Aristotle</b><br><a data-toggle="tooltip" data-placement="right" data-html="true" title="Add/Edit : 2015-12-23/2021-10-07; ID: 92458445<br>(Bloomsbury Academic) (Ancient Commentators on Aristotle) Aspasius_ On Aristotle Nicomachean Ethics 1-4, 7-8 - Aspasius" href="edition.php?id=137198405">Aspasius : on Aristotle Nicomachean ethics 1-4, 7-8 <i></i></a><br><a data-toggle="tooltip" data-placement="right" data-html="true" title="Add/Edit : 2015-12-23/2021-10-07; ID: 92458445<br>(Bloomsbury Academic) (Ancient Commentators on Aristotle) Aspasius_ On Aristotle Nicomachean Ethics 1-4, 7-8 - Aspasius" href="edition.php?id=137198405"><i><font color="green"> 0715635735; 9780715635735; 9781472501431; 1472501438; 9781472558138; 1472558138</font></a></i> 
+<nobr><span class="badge badge-primary"><a data-toggle="tooltip" data-placement="bottom" data-html="true" title="Book">b</a></span> 
+<span class="badge badge-secondary"">l 1421138</span></nobr>
+
+</td>
+<td>Aspasius, David Konstan</td>
+<td>Bristol Classical Press;Bloomsbury Academic</td>
+<td><nobr>2006</nobr></td>
+<td>English</td>
+<td>0 / 255</td>
+<td><nobr><a href="/file.php?id=92458445">1 MB</a></nobr></td>
+<td>pdf</td>
+<td><nobr><a data-toggle="tooltip" data-placement="bottom" data-html="true" title="libgen" href="/ads.php?md5=917f20fdce8bddaa98f2052a6d4a2b27"><span class="badge badge-primary">1</span></a> <a data-toggle="tooltip" data-placement="bottom" data-html="true" title="libgen.xyz" href="https://libgen.xyz/book/917f20fdce8bddaa98f2052a6d4a2b27?utm_source=libgen.li"><span class="badge badge-primary">2</span></a> <a data-toggle="tooltip" data-placement="bottom" data-html="true" title="anna's archive" href="https://en.annas-archive.gl/md5/917f20fdce8bddaa98f2052a6d4a2b27?r=Ax2w6jC"><span class="badge badge-primary">3</span></a> <a data-toggle="tooltip" data-placement="bottom" data-html="true" title="libgen.pw" href="https://libgen.pw/book/917f20fdce8bddaa98f2052a6d4a2b27?utm_source=libgen.li"><span class="badge badge-primary">4</span></a> <a data-toggle="tooltip" data-placement="bottom" data-html="true" title="randombook.org" href="https://randombook.org/book/917f20fdce8bddaa98f2052a6d4a2b27?utm_source=libgen.li"><span class="badge badge-primary">5</span></a> </nobr></td>
+</tr><tr>
+
+<td><a data-toggle="tooltip" data-placement="right" data-html="true" title="Add/Edit : 2017-02-06/2021-07-21; ID: 69679795<br>" href="edition.php?id=137202961">Aristotle's "Nicomachean ethics" <i></i></a><br><a data-toggle="tooltip" data-placement="right" data-html="true" title="Add/Edit : 2017-02-06/2021-07-21; ID: 69679795<br>" href="edition.php?id=137202961"><i><font color="green"> 9004177620; 9789004177628; 9789047444800; 9047444809</font></a></i><br><a data-toggle="tooltip" data-placement="right" data-html="true" title="Add/Edit : 2017-02-06/2021-07-21; ID: 69679795<br>" href="edition.php?id=137202961"><i><font color="green">DOI: 10.1163/9789047444800</font></a></i> 
+<nobr><span class="badge badge-primary"><a data-toggle="tooltip" data-placement="bottom" data-html="true" title="Book">b</a></span> 
+<span class="badge badge-secondary"">a 63732721</span></nobr>
+
+</td>
+<td>Otfried Hoffe, David Fernbach</td>
+<td>Brill Academic Pub</td>
+<td><nobr>2010</nobr></td>
+<td>English;German</td>
+<td>0 / 259</td>
+<td><nobr><a href="/file.php?id=69679795">4 MB</a></nobr></td>
+<td>pdf</td>
+<td><a data-toggle="tooltip" data-placement="bottom" data-html="true" title="libgen" href="/ads.php?md5=633ed5ff40a90fc049483eb2ea0166fb&downloadname=10.1163/9789047444800"><span class="badge badge-primary">Libgen</span></a> <a data-toggle="tooltip" data-placement="bottom" data-html="true" title="sci-hub" href="http://sci-hub.ru/10.1163/9789047444800"><span class="badge badge-primary">Sci-Hub</span></a> <a data-toggle="tooltip" data-placement="bottom" data-html="true" title="libgen.xyz" href="https://libgen.xyz/book/633ed5ff40a90fc049483eb2ea0166fb?utm_source=libgen.li"><span class="badge badge-primary">libgen.xyz</span></a> <a data-toggle="tooltip" data-placement="bottom" data-html="true" title="libgen.pw" href="https://libgen.pw/book/633ed5ff40a90fc049483eb2ea0166fb?utm_source=libgen.li"><span class="badge badge-primary">libgen.pw</span></a> <a data-toggle="tooltip" data-placement="bottom" data-html="true" title="anna's archive" href="https://en.annas-archive.gl/md5/633ed5ff40a90fc049483eb2ea0166fb?r=Ax2w6jC"><span class="badge badge-primary">Anna's arch</span></a> <a data-toggle="tooltip" data-placement="bottom" data-html="true" title="Randombook" href="https://randombook.org/book/633ed5ff40a90fc049483eb2ea0166fb?utm_source=libgen.li"><span class="badge badge-primary">Randombook</span></a> </td>
+</tr><tr>
+
+<td><a data-toggle="tooltip" data-placement="right" data-html="true" title="Add/Edit : 2015-12-23/2021-10-07; ID: 92462648<br>Hoffe O. (ed.) Aristotle's Nicomachean Ethics (2010)" href="edition.php?id=137202961">Aristotle's "Nicomachean ethics" <i></i></a><br><a data-toggle="tooltip" data-placement="right" data-html="true" title="Add/Edit : 2015-12-23/2021-10-07; ID: 92462648<br>Hoffe O. (ed.) Aristotle's Nicomachean Ethics (2010)" href="edition.php?id=137202961"><i><font color="green"> 9004177620; 9789004177628; 9789047444800; 9047444809</font></a></i><br><a data-toggle="tooltip" data-placement="right" data-html="true" title="Add/Edit : 2015-12-23/2021-10-07; ID: 92462648<br>Hoffe O. (ed.) Aristotle's Nicomachean Ethics (2010)" href="edition.php?id=137202961"><i><font color="green">DOI: 10.1163/9789047444800</font></a></i> 
+<nobr><span class="badge badge-primary"><a data-toggle="tooltip" data-placement="bottom" data-html="true" title="Book">b</a></span> 
+<span class="badge badge-secondary"">l 1425694</span></nobr>
+
+</td>
+<td>Otfried Hoffe, David Fernbach</td>
+<td>Brill Academic Pub</td>
+<td><nobr>2010</nobr></td>
+<td>English;German</td>
+<td>0 / 259</td>
+<td><nobr><a href="/file.php?id=92462648">4 MB</a></nobr></td>
+<td>pdf</td>
+<td><nobr><a data-toggle="tooltip" data-placement="bottom" data-html="true" title="libgen" href="/ads.php?md5=6d3661d383077d1e1389295d4fa31c4f"><span class="badge badge-primary">1</span></a> <a data-toggle="tooltip" data-placement="bottom" data-html="true" title="libgen.xyz" href="https://libgen.xyz/book/6d3661d383077d1e1389295d4fa31c4f?utm_source=libgen.li"><span class="badge badge-primary">2</span></a> <a data-toggle="tooltip" data-placement="bottom" data-html="true" title="anna's archive" href="https://en.annas-archive.gl/md5/6d3661d383077d1e1389295d4fa31c4f?r=Ax2w6jC"><span class="badge badge-primary">3</span></a> <a data-toggle="tooltip" data-placement="bottom" data-html="true" title="libgen.pw" href="https://libgen.pw/book/6d3661d383077d1e1389295d4fa31c4f?utm_source=libgen.li"><span class="badge badge-primary">4</span></a> <a data-toggle="tooltip" data-placement="bottom" data-html="true" title="randombook.org" href="https://randombook.org/book/6d3661d383077d1e1389295d4fa31c4f?utm_source=libgen.li"><span class="badge badge-primary">5</span></a> </nobr></td>
+</tr><tr>
+
+<td><a data-toggle="tooltip" data-placement="right" data-html="true" title="Add/Edit : 2015-12-23/2021-10-07; ID: 92462376<br>(Princeton University Press) Happy Lives and the Highest Good_ An Essay on Aristotle s _Nicomachean Ethics_ - Gabriel Richardson Lear (1)" href="edition.php?id=137202667">Happy Lives and the Highest Good: An Essay on Aristotle’s Nicomachean Ethics <i></i></a><br><a data-toggle="tooltip" data-placement="right" data-html="true" title="Add/Edit : 2015-12-23/2021-10-07; ID: 92462376<br>(Princeton University Press) Happy Lives and the Highest Good_ An Essay on Aristotle s _Nicomachean Ethics_ - Gabriel Richardson Lear (1)" href="edition.php?id=137202667"><i><font color="green"> 0691114668; 9780691114668; 9781400826087; 140082608X</font></a></i> 
+<nobr><span class="badge badge-primary"><a data-toggle="tooltip" data-placement="bottom" data-html="true" title="Book">b</a></span> 
+<span class="badge badge-secondary"">l 1425400</span></nobr>
+
+</td>
+<td>Gabriel Richardson Lear</td>
+<td>Princeton University Press</td>
+<td><nobr>2004</nobr></td>
+<td>English</td>
+<td>0 / 238</td>
+<td><nobr><a href="/file.php?id=92462376">3 MB</a></nobr></td>
+<td>epub</td>
+<td><nobr><a data-toggle="tooltip" data-placement="bottom" data-html="true" title="libgen" href="/ads.php?md5=e61315ef7ccbe68932ea62e138ba8f4b"><span class="badge badge-primary">1</span></a> <a data-toggle="tooltip" data-placement="bottom" data-html="true" title="libgen.xyz" href="https://libgen.xyz/book/e61315ef7ccbe68932ea62e138ba8f4b?utm_source=libgen.li"><span class="badge badge-primary">2</span></a> <a data-toggle="tooltip" data-placement="bottom" data-html="true" title="anna's archive" href="https://en.annas-archive.gl/md5/e61315ef7ccbe68932ea62e138ba8f4b?r=Ax2w6jC"><span class="badge badge-primary">3</span></a> <a data-toggle="tooltip" data-placement="bottom" data-html="true" title="libgen.pw" href="https://libgen.pw/book/e61315ef7ccbe68932ea62e138ba8f4b?utm_source=libgen.li"><span class="badge badge-primary">4</span></a> <a data-toggle="tooltip" data-placement="bottom" data-html="true" title="randombook.org" href="https://randombook.org/book/e61315ef7ccbe68932ea62e138ba8f4b?utm_source=libgen.li"><span class="badge badge-primary">5</span></a> </nobr></td>
+</tr><tr>
+
+<td><a data-toggle="tooltip" data-placement="right" data-html="true" title="Add/Edit : 2015-12-23/2021-10-07; ID: 92462377<br>(Princeton University Press) Happy Lives and the Highest Good_ An Essay on Aristotle s _Nicomachean Ethics_ - Gabriel Richardson Lear" href="edition.php?id=137202668">Happy Lives and the Highest Good: An Essay on Aristotle’s Nicomachean Ethics <i></i></a><br><a data-toggle="tooltip" data-placement="right" data-html="true" title="Add/Edit : 2015-12-23/2021-10-07; ID: 92462377<br>(Princeton University Press) Happy Lives and the Highest Good_ An Essay on Aristotle s _Nicomachean Ethics_ - Gabriel Richardson Lear" href="edition.php?id=137202668"><i><font color="green"> 0691114668; 9780691114668; 9781400826087; 140082608X</font></a></i> 
+<nobr><span class="badge badge-primary"><a data-toggle="tooltip" data-placement="bottom" data-html="true" title="Book">b</a></span> 
+<span class="badge badge-secondary"">l 1425401</span></nobr>
+
+</td>
+<td>Gabriel Richardson Lear</td>
+<td>Princeton University Press</td>
+<td><nobr>2004</nobr></td>
+<td>English</td>
+<td>0 / 238</td>
+<td><nobr><a href="/file.php?id=92462377">1 MB</a></nobr></td>
+<td>pdf</td>
+<td><nobr><a data-toggle="tooltip" data-placement="bottom" data-html="true" title="libgen" href="/ads.php?md5=4425a632fafab47b572ce26ec3ab1bd8"><span class="badge badge-primary">1</span></a> <a data-toggle="tooltip" data-placement="bottom" data-html="true" title="libgen.xyz" href="https://libgen.xyz/book/4425a632fafab47b572ce26ec3ab1bd8?utm_source=libgen.li"><span class="badge badge-primary">2</span></a> <a data-toggle="tooltip" data-placement="bottom" data-html="true" title="anna's archive" href="https://en.annas-archive.gl/md5/4425a632fafab47b572ce26ec3ab1bd8?r=Ax2w6jC"><span class="badge badge-primary">3</span></a> <a data-toggle="tooltip" data-placement="bottom" data-html="true" title="libgen.pw" href="https://libgen.pw/book/4425a632fafab47b572ce26ec3ab1bd8?utm_source=libgen.li"><span class="badge badge-primary">4</span></a> <a data-toggle="tooltip" data-placement="bottom" data-html="true" title="randombook.org" href="https://randombook.org/book/4425a632fafab47b572ce26ec3ab1bd8?utm_source=libgen.li"><span class="badge badge-primary">5</span></a> </nobr></td>
+</tr><tr>
+
+<td><b>The Cambridge Companion to Aristotle's <I>Nicomachean Ethics</I></b><p><a data-toggle="tooltip" data-placement="right" data-html="true" title="Add/Edit : 2017-05-02/2021-07-21; ID: 70131759<br>" href="edition.php?id=70443355">The Cambridge Companion to Aristotle's               <i>Nicomachean Ethics</i> || The Eudemian Ethics and Its Controversial Relationship to the Nicomachean Ethics <i></i></a><br><a data-toggle="tooltip" data-placement="right" data-html="true" title="Add/Edit : 2017-05-02/2021-07-21; ID: 70131759<br>" href="edition.php?id=70443355"><i><font color="green"> 9781139022484; 1139022482</font></a></i><br><a data-toggle="tooltip" data-placement="right" data-html="true" title="Add/Edit : 2017-05-02/2021-07-21; ID: 70131759<br>" href="edition.php?id=70443355"><i><font color="green">DOI: 10.1017/CCO9781139022484.019</font></a></i> 
+<nobr><span class="badge badge-primary"><a data-toggle="tooltip" data-placement="bottom" data-html="true" title="Book section">bsect</a></span> 
+<span class="badge badge-secondary"">a 64185822</span></nobr>
+
+</td>
+<td>Jost, Lawrence (author)</td>
+<td>Cambridge University Press</td>
+<td><nobr>2014 June 23</nobr></td>
+<td></td>
+<td>0</td>
+<td><nobr><a href="/file.php?id=70131759">165 kB</a></nobr></td>
+<td>pdf</td>
+<td><a data-toggle="tooltip" data-placement="bottom" data-html="true" title="libgen" href="/ads.php?md5=9f4d3c3acd20c231ce9610006a8a3093&downloadname=10.1017/CCO9781139022484.019"><span class="badge badge-primary">Libgen</span></a> <a data-toggle="tooltip" data-placement="bottom" data-html="true" title="sci-hub" href="http://sci-hub.ru/10.1017/CCO9781139022484.019"><span class="badge badge-primary">Sci-Hub</span></a> <a data-toggle="tooltip" data-placement="bottom" data-html="true" title="libgen.xyz" href="https://libgen.xyz/book/9f4d3c3acd20c231ce9610006a8a3093?utm_source=libgen.li"><span class="badge badge-primary">libgen.xyz</span></a> <a data-toggle="tooltip" data-placement="bottom" data-html="true" title="libgen.pw" href="https://libgen.pw/book/9f4d3c3acd20c231ce9610006a8a3093?utm_source=libgen.li"><span class="badge badge-primary">libgen.pw</span></a> <a data-toggle="tooltip" data-placement="bottom" data-html="true" title="anna's archive" href="https://en.annas-archive.gl/md5/9f4d3c3acd20c231ce9610006a8a3093?r=Ax2w6jC"><span class="badge badge-primary">Anna's arch</span></a> <a data-toggle="tooltip" data-placement="bottom" data-html="true" title="Randombook" href="https://randombook.org/book/9f4d3c3acd20c231ce9610006a8a3093?utm_source=libgen.li"><span class="badge badge-primary">Randombook</span></a> </td>
+</tr><tr>
+
+<td><b>Clarendon Aristotle series</b><br><a data-toggle="tooltip" data-placement="right" data-html="true" title="Add/Edit : 2020-07-26/2020-07-27; ID: 93677320<br>Aristotle - Nicomachean Ethics Books II-IV" href="edition.php?id=138474619">Aristotle: Nicomachean Ethics, Books II-IV <i></i></a><br><a data-toggle="tooltip" data-placement="right" data-html="true" title="Add/Edit : 2020-07-26/2020-07-27; ID: 93677320<br>Aristotle - Nicomachean Ethics Books II-IV" href="edition.php?id=138474619"><i><font color="green"> 9780191568336; 0191568333; 9780198250661; 0198250665</font></a></i> 
+<nobr><span class="badge badge-primary"><a data-toggle="tooltip" data-placement="bottom" data-html="true" title="Book">b</a></span> 
+<span class="badge badge-secondary"">l 2697319</span></nobr>
+
+</td>
+<td>Taylor, C. C. W</td>
+<td>Oxford University Press, UK</td>
+<td><nobr>2006</nobr></td>
+<td>English</td>
+<td>283 / 283 pages</td>
+<td><nobr><a href="/file.php?id=93677320">2 MB</a></nobr></td>
+<td>pdf</td>
+<td><nobr><a data-toggle="tooltip" data-placement="bottom" data-html="true" title="libgen" href="/ads.php?md5=f994538c24681748fc255d6b35cad516"><span class="badge badge-primary">1</span></a> <a data-toggle="tooltip" data-placement="bottom" data-html="true" title="libgen.xyz" href="https://libgen.xyz/book/f994538c24681748fc255d6b35cad516?utm_source=libgen.li"><span class="badge badge-primary">2</span></a> <a data-toggle="tooltip" data-placement="bottom" data-html="true" title="anna's archive" href="https://en.annas-archive.gl/md5/f994538c24681748fc255d6b35cad516?r=Ax2w6jC"><span class="badge badge-primary">3</span></a> <a data-toggle="tooltip" data-placement="bottom" data-html="true" title="libgen.pw" href="https://libgen.pw/book/f994538c24681748fc255d6b35cad516?utm_source=libgen.li"><span class="badge badge-primary">4</span></a> <a data-toggle="tooltip" data-placement="bottom" data-html="true" title="randombook.org" href="https://randombook.org/book/f994538c24681748fc255d6b35cad516?utm_source=libgen.li"><span class="badge badge-primary">5</span></a> </nobr></td>
+</tr><tr>
+
+<td><b>The Routledge Guides to the Great Books</b><br><a data-toggle="tooltip" data-placement="right" data-html="true" title="Add/Edit : 2022-03-08/2022-03-25; ID: 97488422<br>Gerard J. Hughes - The Routledge Guidebook to Aristotle's Nicomachean Ethics (The Routledge Guides to the Great Books) (Retail)" href="edition.php?id=141457118">The Routledge Guidebook to Aristotle's Nicomachean Ethics <i></i></a><br><a data-toggle="tooltip" data-placement="right" data-html="true" title="Add/Edit : 2022-03-08/2022-03-25; ID: 97488422<br>Gerard J. Hughes - The Routledge Guidebook to Aristotle's Nicomachean Ethics (The Routledge Guides to the Great Books) (Retail)" href="edition.php?id=141457118"><i><font color="green"> 9780415663847; 0415663849; 9780415663854; 0415663857; 9780203082782; 0203082788</font></a></i> 
+<nobr><span class="badge badge-primary"><a data-toggle="tooltip" data-placement="bottom" data-html="true" title="Book">b</a></span> 
+<span class="badge badge-secondary"">l 3342256</span></nobr>
+
+</td>
+<td>Hughes, Gerard J.;Aristotle</td>
+<td>Routledge</td>
+<td><nobr>2013</nobr></td>
+<td>English</td>
+<td>289 / x, 272 pages ; 21 cm</td>
+<td><nobr><a href="/file.php?id=97488422">4 MB</a></nobr></td>
+<td>pdf</td>
+<td><nobr><a data-toggle="tooltip" data-placement="bottom" data-html="true" title="libgen" href="/ads.php?md5=8eca7fc0f7028a182cf4a3dd5eb215c1"><span class="badge badge-primary">1</span></a> <a data-toggle="tooltip" data-placement="bottom" data-html="true" title="libgen.xyz" href="https://libgen.xyz/book/8eca7fc0f7028a182cf4a3dd5eb215c1?utm_source=libgen.li"><span class="badge badge-primary">2</span></a> <a data-toggle="tooltip" data-placement="bottom" data-html="true" title="anna's archive" href="https://en.annas-archive.gl/md5/8eca7fc0f7028a182cf4a3dd5eb215c1?r=Ax2w6jC"><span class="badge badge-primary">3</span></a> <a data-toggle="tooltip" data-placement="bottom" data-html="true" title="libgen.pw" href="https://libgen.pw/book/8eca7fc0f7028a182cf4a3dd5eb215c1?utm_source=libgen.li"><span class="badge badge-primary">4</span></a> <a data-toggle="tooltip" data-placement="bottom" data-html="true" title="randombook.org" href="https://randombook.org/book/8eca7fc0f7028a182cf4a3dd5eb215c1?utm_source=libgen.li"><span class="badge badge-primary">5</span></a> </nobr></td>
+</tr><tr>
+
+<td><b>The Cambridge Companion to Aristotle's <I>Nicomachean Ethics</I></b><p><a data-toggle="tooltip" data-placement="right" data-html="true" title="Add/Edit : 2025-08-03/2025-08-03; ID: 109328593<br>10.0000%2Funiversitypublishingonline.org%2Fgeneric-B43FCB6B1EA9" href="edition.php?id=70443355">The Cambridge Companion to Aristotle's               <i>Nicomachean Ethics</i> || The Eudemian Ethics and Its Controversial Relationship to the Nicomachean Ethics <i></i></a><br><a data-toggle="tooltip" data-placement="right" data-html="true" title="Add/Edit : 2025-08-03/2025-08-03; ID: 109328593<br>10.0000%2Funiversitypublishingonline.org%2Fgeneric-B43FCB6B1EA9" href="edition.php?id=70443355"><i><font color="green"> 9781139022484; 1139022482</font></a></i><br><a data-toggle="tooltip" data-placement="right" data-html="true" title="Add/Edit : 2025-08-03/2025-08-03; ID: 109328593<br>10.0000%2Funiversitypublishingonline.org%2Fgeneric-B43FCB6B1EA9" href="edition.php?id=70443355"><i><font color="green">DOI: 10.1017/CCO9781139022484.019</font></a></i> 
+<nobr><span class="badge badge-primary"><a data-toggle="tooltip" data-placement="bottom" data-html="true" title="Book section">bsect</a></span> 
+<span class="badge badge-secondary"">a 88601888</span></nobr>
+
+</td>
+<td>Jost, Lawrence (author)</td>
+<td>Cambridge University Press</td>
+<td><nobr>2014 June 23</nobr></td>
+<td></td>
+<td>19</td>
+<td><nobr><a href="/file.php?id=109328593">151 kB</a></nobr></td>
+<td>pdf</td>
+<td><a data-toggle="tooltip" data-placement="bottom" data-html="true" title="libgen" href="/ads.php?md5=bb9f3f89d9d401e667e16c6b73bdf183&downloadname=10.1017/CCO9781139022484.019"><span class="badge badge-primary">Libgen</span></a> <a data-toggle="tooltip" data-placement="bottom" data-html="true" title="sci-hub" href="http://sci-hub.ru/10.1017/CCO9781139022484.019"><span class="badge badge-primary">Sci-Hub</span></a> <a data-toggle="tooltip" data-placement="bottom" data-html="true" title="libgen.xyz" href="https://libgen.xyz/book/bb9f3f89d9d401e667e16c6b73bdf183?utm_source=libgen.li"><span class="badge badge-primary">libgen.xyz</span></a> <a data-toggle="tooltip" data-placement="bottom" data-html="true" title="libgen.pw" href="https://libgen.pw/book/bb9f3f89d9d401e667e16c6b73bdf183?utm_source=libgen.li"><span class="badge badge-primary">libgen.pw</span></a> <a data-toggle="tooltip" data-placement="bottom" data-html="true" title="anna's archive" href="https://en.annas-archive.gl/md5/bb9f3f89d9d401e667e16c6b73bdf183?r=Ax2w6jC"><span class="badge badge-primary">Anna's arch</span></a> <a data-toggle="tooltip" data-placement="bottom" data-html="true" title="Randombook" href="https://randombook.org/book/bb9f3f89d9d401e667e16c6b73bdf183?utm_source=libgen.li"><span class="badge badge-primary">Randombook</span></a> </td>
+</tr><tr>
+
+<td><b>The Cambridge Companion to Aristotle's <I>Nicomachean Ethics</I></b><p><a data-toggle="tooltip" data-placement="right" data-html="true" title="Add/Edit : 2025-08-04/2025-08-04; ID: 110752098<br>10.0000%2Funiversitypublishingonline.org%2Fgeneric-B43FCB6B1EA9" href="edition.php?id=70443355">The Cambridge Companion to Aristotle's               <i>Nicomachean Ethics</i> || The Eudemian Ethics and Its Controversial Relationship to the Nicomachean Ethics <i></i></a><br><a data-toggle="tooltip" data-placement="right" data-html="true" title="Add/Edit : 2025-08-04/2025-08-04; ID: 110752098<br>10.0000%2Funiversitypublishingonline.org%2Fgeneric-B43FCB6B1EA9" href="edition.php?id=70443355"><i><font color="green"> 9781139022484; 1139022482</font></a></i><br><a data-toggle="tooltip" data-placement="right" data-html="true" title="Add/Edit : 2025-08-04/2025-08-04; ID: 110752098<br>10.0000%2Funiversitypublishingonline.org%2Fgeneric-B43FCB6B1EA9" href="edition.php?id=70443355"><i><font color="green">DOI: 10.1017/CCO9781139022484.019</font></a></i> 
+<nobr><span class="badge badge-primary"><a data-toggle="tooltip" data-placement="bottom" data-html="true" title="Book section">bsect</a></span> 
+<span class="badge badge-secondary"">a 90022650</span></nobr>
+
+</td>
+<td>Jost, Lawrence (author)</td>
+<td>Cambridge University Press</td>
+<td><nobr>2014 June 23</nobr></td>
+<td></td>
+<td>19</td>
+<td><nobr><a href="/file.php?id=110752098">151 kB</a></nobr></td>
+<td>pdf</td>
+<td><a data-toggle="tooltip" data-placement="bottom" data-html="true" title="libgen" href="/ads.php?md5=3ed10b4f913f30b4cb8f67389b6521b8&downloadname=10.1017/CCO9781139022484.019"><span class="badge badge-primary">Libgen</span></a> <a data-toggle="tooltip" data-placement="bottom" data-html="true" title="sci-hub" href="http://sci-hub.ru/10.1017/CCO9781139022484.019"><span class="badge badge-primary">Sci-Hub</span></a> <a data-toggle="tooltip" data-placement="bottom" data-html="true" title="libgen.xyz" href="https://libgen.xyz/book/3ed10b4f913f30b4cb8f67389b6521b8?utm_source=libgen.li"><span class="badge badge-primary">libgen.xyz</span></a> <a data-toggle="tooltip" data-placement="bottom" data-html="true" title="libgen.pw" href="https://libgen.pw/book/3ed10b4f913f30b4cb8f67389b6521b8?utm_source=libgen.li"><span class="badge badge-primary">libgen.pw</span></a> <a data-toggle="tooltip" data-placement="bottom" data-html="true" title="anna's archive" href="https://en.annas-archive.gl/md5/3ed10b4f913f30b4cb8f67389b6521b8?r=Ax2w6jC"><span class="badge badge-primary">Anna's arch</span></a> <a data-toggle="tooltip" data-placement="bottom" data-html="true" title="Randombook" href="https://randombook.org/book/3ed10b4f913f30b4cb8f67389b6521b8?utm_source=libgen.li"><span class="badge badge-primary">Randombook</span></a> </td>
+</tr><tr>
+
+<td><b>The Cambridge Companion to Aristotle's <I>Nicomachean Ethics</I></b><p><a data-toggle="tooltip" data-placement="right" data-html="true" title="Add/Edit : 2025-08-05/2025-08-05; ID: 110862134<br>10.0000%2Fwww.cambridge.org%2Fgeneric-D2FF36065EFA" href="edition.php?id=70443355">The Cambridge Companion to Aristotle's               <i>Nicomachean Ethics</i> || The Eudemian Ethics and Its Controversial Relationship to the Nicomachean Ethics <i></i></a><br><a data-toggle="tooltip" data-placement="right" data-html="true" title="Add/Edit : 2025-08-05/2025-08-05; ID: 110862134<br>10.0000%2Fwww.cambridge.org%2Fgeneric-D2FF36065EFA" href="edition.php?id=70443355"><i><font color="green"> 9781139022484; 1139022482</font></a></i><br><a data-toggle="tooltip" data-placement="right" data-html="true" title="Add/Edit : 2025-08-05/2025-08-05; ID: 110862134<br>10.0000%2Fwww.cambridge.org%2Fgeneric-D2FF36065EFA" href="edition.php?id=70443355"><i><font color="green">DOI: 10.1017/CCO9781139022484.019</font></a></i> 
+<nobr><span class="badge badge-primary"><a data-toggle="tooltip" data-placement="bottom" data-html="true" title="Book section">bsect</a></span> 
+<span class="badge badge-secondary"">a 90132291</span></nobr>
+
+</td>
+<td>Jost, Lawrence (author)</td>
+<td>Cambridge University Press</td>
+<td><nobr>2014 June 23</nobr></td>
+<td></td>
+<td>18</td>
+<td><nobr><a href="/file.php?id=110862134">165 kB</a></nobr></td>
+<td>pdf</td>
+<td><a data-toggle="tooltip" data-placement="bottom" data-html="true" title="libgen" href="/ads.php?md5=7e8b24ae6415d057a7abeef3a26f59c3&downloadname=10.1017/CCO9781139022484.019"><span class="badge badge-primary">Libgen</span></a> <a data-toggle="tooltip" data-placement="bottom" data-html="true" title="sci-hub" href="http://sci-hub.ru/10.1017/CCO9781139022484.019"><span class="badge badge-primary">Sci-Hub</span></a> <a data-toggle="tooltip" data-placement="bottom" data-html="true" title="libgen.xyz" href="https://libgen.xyz/book/7e8b24ae6415d057a7abeef3a26f59c3?utm_source=libgen.li"><span class="badge badge-primary">libgen.xyz</span></a> <a data-toggle="tooltip" data-placement="bottom" data-html="true" title="libgen.pw" href="https://libgen.pw/book/7e8b24ae6415d057a7abeef3a26f59c3?utm_source=libgen.li"><span class="badge badge-primary">libgen.pw</span></a> <a data-toggle="tooltip" data-placement="bottom" data-html="true" title="anna's archive" href="https://en.annas-archive.gl/md5/7e8b24ae6415d057a7abeef3a26f59c3?r=Ax2w6jC"><span class="badge badge-primary">Anna's arch</span></a> <a data-toggle="tooltip" data-placement="bottom" data-html="true" title="Randombook" href="https://randombook.org/book/7e8b24ae6415d057a7abeef3a26f59c3?utm_source=libgen.li"><span class="badge badge-primary">Randombook</span></a> </td>
+</tr><tr>
+
+<td><b>The Cambridge Companion to Aristotle's <I>Nicomachean Ethics</I></b><p><a data-toggle="tooltip" data-placement="right" data-html="true" title="Add/Edit : 2016-12-19/2021-07-21; ID: 69194842<br>" href="edition.php?id=69446040">The Cambridge Companion to Aristotle's               <i>Nicomachean Ethics</i> || Topical Bibliography to Aristotle’s Nicomachean Ethics <i></i></a><br><a data-toggle="tooltip" data-placement="right" data-html="true" title="Add/Edit : 2016-12-19/2021-07-21; ID: 69194842<br>" href="edition.php?id=69446040"><i><font color="green"> 9781139022484; 1139022482</font></a></i><br><a data-toggle="tooltip" data-placement="right" data-html="true" title="Add/Edit : 2016-12-19/2021-07-21; ID: 69194842<br>" href="edition.php?id=69446040"><i><font color="green">DOI: 10.1017/CCO9781139022484.020</font></a></i> 
+<nobr><span class="badge badge-primary"><a data-toggle="tooltip" data-placement="bottom" data-html="true" title="Book section">bsect</a></span> 
+<span class="badge badge-secondary"">a 63188069</span></nobr>
+
+</td>
+<td>Lockwood, Thornton (author)</td>
+<td>Cambridge University Press</td>
+<td><nobr>2014 June 23</nobr></td>
+<td></td>
+<td>0</td>
+<td><nobr><a href="/file.php?id=69194842">277 kB</a></nobr></td>
+<td>pdf</td>
+<td><a data-toggle="tooltip" data-placement="bottom" data-html="true" title="libgen" href="/ads.php?md5=3fd3abba168d3f12826b457791c1aad2&downloadname=10.1017/CCO9781139022484.020"><span class="badge badge-primary">Libgen</span></a> <a data-toggle="tooltip" data-placement="bottom" data-html="true" title="sci-hub" href="http://sci-hub.ru/10.1017/CCO9781139022484.020"><span class="badge badge-primary">Sci-Hub</span></a> <a data-toggle="tooltip" data-placement="bottom" data-html="true" title="libgen.xyz" href="https://libgen.xyz/book/3fd3abba168d3f12826b457791c1aad2?utm_source=libgen.li"><span class="badge badge-primary">libgen.xyz</span></a> <a data-toggle="tooltip" data-placement="bottom" data-html="true" title="libgen.pw" href="https://libgen.pw/book/3fd3abba168d3f12826b457791c1aad2?utm_source=libgen.li"><span class="badge badge-primary">libgen.pw</span></a> <a data-toggle="tooltip" data-placement="bottom" data-html="true" title="anna's archive" href="https://en.annas-archive.gl/md5/3fd3abba168d3f12826b457791c1aad2?r=Ax2w6jC"><span class="badge badge-primary">Anna's arch</span></a> <a data-toggle="tooltip" data-placement="bottom" data-html="true" title="Randombook" href="https://randombook.org/book/3fd3abba168d3f12826b457791c1aad2?utm_source=libgen.li"><span class="badge badge-primary">Randombook</span></a> </td>
+</tr><tr>
+
+<td><b>The Cambridge Companion to Aristotle's <I>Nicomachean Ethics</I></b><p><a data-toggle="tooltip" data-placement="right" data-html="true" title="Add/Edit : 2017-05-02/2021-07-21; ID: 70131754<br>" href="edition.php?id=70443350">The Cambridge Companion to Aristotle's               <i>Nicomachean Ethics</i> || The Nicomachean Ethics on Pleasure <i></i></a><br><a data-toggle="tooltip" data-placement="right" data-html="true" title="Add/Edit : 2017-05-02/2021-07-21; ID: 70131754<br>" href="edition.php?id=70443350"><i><font color="green"> 9781139022484; 1139022482</font></a></i><br><a data-toggle="tooltip" data-placement="right" data-html="true" title="Add/Edit : 2017-05-02/2021-07-21; ID: 70131754<br>" href="edition.php?id=70443350"><i><font color="green">DOI: 10.1017/CCO9781139022484.014</font></a></i> 
+<nobr><span class="badge badge-primary"><a data-toggle="tooltip" data-placement="bottom" data-html="true" title="Book section">bsect</a></span> 
+<span class="badge badge-secondary"">a 64185817</span></nobr>
+
+</td>
+<td>Harte, Verity (author)</td>
+<td>Cambridge University Press</td>
+<td><nobr>2014 June 23</nobr></td>
+<td></td>
+<td>0</td>
+<td><nobr><a href="/file.php?id=70131754">242 kB</a></nobr></td>
+<td>pdf</td>
+<td><a data-toggle="tooltip" data-placement="bottom" data-html="true" title="libgen" href="/ads.php?md5=c1693a72faa9cc32f290843c1d33c500&downloadname=10.1017/CCO9781139022484.014"><span class="badge badge-primary">Libgen</span></a> <a data-toggle="tooltip" data-placement="bottom" data-html="true" title="sci-hub" href="http://sci-hub.ru/10.1017/CCO9781139022484.014"><span class="badge badge-primary">Sci-Hub</span></a> <a data-toggle="tooltip" data-placement="bottom" data-html="true" title="libgen.xyz" href="https://libgen.xyz/book/c1693a72faa9cc32f290843c1d33c500?utm_source=libgen.li"><span class="badge badge-primary">libgen.xyz</span></a> <a data-toggle="tooltip" data-placement="bottom" data-html="true" title="libgen.pw" href="https://libgen.pw/book/c1693a72faa9cc32f290843c1d33c500?utm_source=libgen.li"><span class="badge badge-primary">libgen.pw</span></a> <a data-toggle="tooltip" data-placement="bottom" data-html="true" title="anna's archive" href="https://en.annas-archive.gl/md5/c1693a72faa9cc32f290843c1d33c500?r=Ax2w6jC"><span class="badge badge-primary">Anna's arch</span></a> <a data-toggle="tooltip" data-placement="bottom" data-html="true" title="Randombook" href="https://randombook.org/book/c1693a72faa9cc32f290843c1d33c500?utm_source=libgen.li"><span class="badge badge-primary">Randombook</span></a> </td>
+</tr><tr>
+
+<td><b>The Cambridge Companion to Aristotle's <I>Nicomachean Ethics</I></b><p><a data-toggle="tooltip" data-placement="right" data-html="true" title="Add/Edit : 2025-08-03/2025-08-03; ID: 109327192<br>10.0000%2Funiversitypublishingonline.org%2Fgeneric-A581FC186B5B" href="edition.php?id=70443350">The Cambridge Companion to Aristotle's               <i>Nicomachean Ethics</i> || The Nicomachean Ethics on Pleasure <i></i></a><br><a data-toggle="tooltip" data-placement="right" data-html="true" title="Add/Edit : 2025-08-03/2025-08-03; ID: 109327192<br>10.0000%2Funiversitypublishingonline.org%2Fgeneric-A581FC186B5B" href="edition.php?id=70443350"><i><font color="green"> 9781139022484; 1139022482</font></a></i><br><a data-toggle="tooltip" data-placement="right" data-html="true" title="Add/Edit : 2025-08-03/2025-08-03; ID: 109327192<br>10.0000%2Funiversitypublishingonline.org%2Fgeneric-A581FC186B5B" href="edition.php?id=70443350"><i><font color="green">DOI: 10.1017/CCO9781139022484.014</font></a></i> 
+<nobr><span class="badge badge-primary"><a data-toggle="tooltip" data-placement="bottom" data-html="true" title="Book section">bsect</a></span> 
+<span class="badge badge-secondary"">a 88600487</span></nobr>
+
+</td>
+<td>Harte, Verity (author)</td>
+<td>Cambridge University Press</td>
+<td><nobr>2014 June 23</nobr></td>
+<td></td>
+<td>32</td>
+<td><nobr><a href="/file.php?id=109327192">217 kB</a></nobr></td>
+<td>pdf</td>
+<td><a data-toggle="tooltip" data-placement="bottom" data-html="true" title="libgen" href="/ads.php?md5=611cd1aa5f168d03c4ad6b92837cdb0a&downloadname=10.1017/CCO9781139022484.014"><span class="badge badge-primary">Libgen</span></a> <a data-toggle="tooltip" data-placement="bottom" data-html="true" title="sci-hub" href="http://sci-hub.ru/10.1017/CCO9781139022484.014"><span class="badge badge-primary">Sci-Hub</span></a> <a data-toggle="tooltip" data-placement="bottom" data-html="true" title="libgen.xyz" href="https://libgen.xyz/book/611cd1aa5f168d03c4ad6b92837cdb0a?utm_source=libgen.li"><span class="badge badge-primary">libgen.xyz</span></a> <a data-toggle="tooltip" data-placement="bottom" data-html="true" title="libgen.pw" href="https://libgen.pw/book/611cd1aa5f168d03c4ad6b92837cdb0a?utm_source=libgen.li"><span class="badge badge-primary">libgen.pw</span></a> <a data-toggle="tooltip" data-placement="bottom" data-html="true" title="anna's archive" href="https://en.annas-archive.gl/md5/611cd1aa5f168d03c4ad6b92837cdb0a?r=Ax2w6jC"><span class="badge badge-primary">Anna's arch</span></a> <a data-toggle="tooltip" data-placement="bottom" data-html="true" title="Randombook" href="https://randombook.org/book/611cd1aa5f168d03c4ad6b92837cdb0a?utm_source=libgen.li"><span class="badge badge-primary">Randombook</span></a> </td>
+</tr><tr>
+
+<td><b>The Cambridge Companion to Aristotle's <I>Nicomachean Ethics</I></b><p><a data-toggle="tooltip" data-placement="right" data-html="true" title="Add/Edit : 2025-08-04/2025-08-04; ID: 110752072<br>10.0000%2Funiversitypublishingonline.org%2Fgeneric-A581FC186B5B" href="edition.php?id=70443350">The Cambridge Companion to Aristotle's               <i>Nicomachean Ethics</i> || The Nicomachean Ethics on Pleasure <i></i></a><br><a data-toggle="tooltip" data-placement="right" data-html="true" title="Add/Edit : 2025-08-04/2025-08-04; ID: 110752072<br>10.0000%2Funiversitypublishingonline.org%2Fgeneric-A581FC186B5B" href="edition.php?id=70443350"><i><font color="green"> 9781139022484; 1139022482</font></a></i><br><a data-toggle="tooltip" data-placement="right" data-html="true" title="Add/Edit : 2025-08-04/2025-08-04; ID: 110752072<br>10.0000%2Funiversitypublishingonline.org%2Fgeneric-A581FC186B5B" href="edition.php?id=70443350"><i><font color="green">DOI: 10.1017/CCO9781139022484.014</font></a></i> 
+<nobr><span class="badge badge-primary"><a data-toggle="tooltip" data-placement="bottom" data-html="true" title="Book section">bsect</a></span> 
+<span class="badge badge-secondary"">a 90022624</span></nobr>
+
+</td>
+<td>Harte, Verity (author)</td>
+<td>Cambridge University Press</td>
+<td><nobr>2014 June 23</nobr></td>
+<td></td>
+<td>32</td>
+<td><nobr><a href="/file.php?id=110752072">217 kB</a></nobr></td>
+<td>pdf</td>
+<td><a data-toggle="tooltip" data-placement="bottom" data-html="true" title="libgen" href="/ads.php?md5=5f9247a1c1f16ee63d174efa6d5f28c6&downloadname=10.1017/CCO9781139022484.014"><span class="badge badge-primary">Libgen</span></a> <a data-toggle="tooltip" data-placement="bottom" data-html="true" title="sci-hub" href="http://sci-hub.ru/10.1017/CCO9781139022484.014"><span class="badge badge-primary">Sci-Hub</span></a> <a data-toggle="tooltip" data-placement="bottom" data-html="true" title="libgen.xyz" href="https://libgen.xyz/book/5f9247a1c1f16ee63d174efa6d5f28c6?utm_source=libgen.li"><span class="badge badge-primary">libgen.xyz</span></a> <a data-toggle="tooltip" data-placement="bottom" data-html="true" title="libgen.pw" href="https://libgen.pw/book/5f9247a1c1f16ee63d174efa6d5f28c6?utm_source=libgen.li"><span class="badge badge-primary">libgen.pw</span></a> <a data-toggle="tooltip" data-placement="bottom" data-html="true" title="anna's archive" href="https://en.annas-archive.gl/md5/5f9247a1c1f16ee63d174efa6d5f28c6?r=Ax2w6jC"><span class="badge badge-primary">Anna's arch</span></a> <a data-toggle="tooltip" data-placement="bottom" data-html="true" title="Randombook" href="https://randombook.org/book/5f9247a1c1f16ee63d174efa6d5f28c6?utm_source=libgen.li"><span class="badge badge-primary">Randombook</span></a> </td>
+</tr><tr>
+
+<td><b>The Cambridge Companion to Aristotle's <I>Nicomachean Ethics</I></b><p><a data-toggle="tooltip" data-placement="right" data-html="true" title="Add/Edit : 2025-08-05/2025-08-05; ID: 110850167<br>10.0000%2Fwww.cambridge.org%2Fgeneric-803F738F7672" href="edition.php?id=70443350">The Cambridge Companion to Aristotle's               <i>Nicomachean Ethics</i> || The Nicomachean Ethics on Pleasure <i></i></a><br><a data-toggle="tooltip" data-placement="right" data-html="true" title="Add/Edit : 2025-08-05/2025-08-05; ID: 110850167<br>10.0000%2Fwww.cambridge.org%2Fgeneric-803F738F7672" href="edition.php?id=70443350"><i><font color="green"> 9781139022484; 1139022482</font></a></i><br><a data-toggle="tooltip" data-placement="right" data-html="true" title="Add/Edit : 2025-08-05/2025-08-05; ID: 110850167<br>10.0000%2Fwww.cambridge.org%2Fgeneric-803F738F7672" href="edition.php?id=70443350"><i><font color="green">DOI: 10.1017/CCO9781139022484.014</font></a></i> 
+<nobr><span class="badge badge-primary"><a data-toggle="tooltip" data-placement="bottom" data-html="true" title="Book section">bsect</a></span> 
+<span class="badge badge-secondary"">a 90120413</span></nobr>
+
+</td>
+<td>Harte, Verity (author)</td>
+<td>Cambridge University Press</td>
+<td><nobr>2014 June 23</nobr></td>
+<td></td>
+<td>31</td>
+<td><nobr><a href="/file.php?id=110850167">242 kB</a></nobr></td>
+<td>pdf</td>
+<td><a data-toggle="tooltip" data-placement="bottom" data-html="true" title="libgen" href="/ads.php?md5=42e4b18ba39473b7021bef0a2433baa7&downloadname=10.1017/CCO9781139022484.014"><span class="badge badge-primary">Libgen</span></a> <a data-toggle="tooltip" data-placement="bottom" data-html="true" title="sci-hub" href="http://sci-hub.ru/10.1017/CCO9781139022484.014"><span class="badge badge-primary">Sci-Hub</span></a> <a data-toggle="tooltip" data-placement="bottom" data-html="true" title="libgen.xyz" href="https://libgen.xyz/book/42e4b18ba39473b7021bef0a2433baa7?utm_source=libgen.li"><span class="badge badge-primary">libgen.xyz</span></a> <a data-toggle="tooltip" data-placement="bottom" data-html="true" title="libgen.pw" href="https://libgen.pw/book/42e4b18ba39473b7021bef0a2433baa7?utm_source=libgen.li"><span class="badge badge-primary">libgen.pw</span></a> <a data-toggle="tooltip" data-placement="bottom" data-html="true" title="anna's archive" href="https://en.annas-archive.gl/md5/42e4b18ba39473b7021bef0a2433baa7?r=Ax2w6jC"><span class="badge badge-primary">Anna's arch</span></a> <a data-toggle="tooltip" data-placement="bottom" data-html="true" title="Randombook" href="https://randombook.org/book/42e4b18ba39473b7021bef0a2433baa7?utm_source=libgen.li"><span class="badge badge-primary">Randombook</span></a> </td>
+</tr></tbody></table><table>
+  <tr>
+    <td><script type="text/javascript">
+	atOptions = {
+		'key' : '80ff16b446cdd16fda9f69edcec465d4',
+		'format' : 'iframe',
+		'height' : 60,
+		'width' : 468,
+		'params' : {}
+	};
+</script>
+<script src="https://raisinggrannyexplode.com/80ff16b446cdd16fda9f69edcec465d4/invoke.js"></script>
+
+</td>
+    <td><script type="text/javascript">
+	atOptions = {
+		'key' : '80ff16b446cdd16fda9f69edcec465d4',
+		'format' : 'iframe',
+		'height' : 60,
+		'width' : 468,
+		'params' : {}
+	};
+</script>
+<script src="https://raisinggrannyexplode.com/80ff16b446cdd16fda9f69edcec465d4/invoke.js"></script>
+
+</td>
+  </tr> 
+  <tr>
+    <td><script type="text/javascript">
+	atOptions = {
+		'key' : '80ff16b446cdd16fda9f69edcec465d4',
+		'format' : 'iframe',
+		'height' : 60,
+		'width' : 468,
+		'params' : {}
+	};
+</script>
+<script src="https://raisinggrannyexplode.com/80ff16b446cdd16fda9f69edcec465d4/invoke.js"></script>
+
+</td>
+    <td><script type="text/javascript">
+	atOptions = {
+		'key' : '80ff16b446cdd16fda9f69edcec465d4',
+		'format' : 'iframe',
+		'height' : 60,
+		'width' : 468,
+		'params' : {}
+	};
+</script>
+<script src="https://raisinggrannyexplode.com/80ff16b446cdd16fda9f69edcec465d4/invoke.js"></script>
+
+</td>
+  </tr> 
+  <tr>
+    <td><script type="text/javascript">
+	atOptions = {
+		'key' : '80ff16b446cdd16fda9f69edcec465d4',
+		'format' : 'iframe',
+		'height' : 60,
+		'width' : 468,
+		'params' : {}
+	};
+</script>
+<script src="https://raisinggrannyexplode.com/80ff16b446cdd16fda9f69edcec465d4/invoke.js"></script>
+
+</td>
+    <td><script type="text/javascript">
+	atOptions = {
+		'key' : '80ff16b446cdd16fda9f69edcec465d4',
+		'format' : 'iframe',
+		'height' : 60,
+		'width' : 468,
+		'params' : {}
+	};
+</script>
+<script src="https://raisinggrannyexplode.com/80ff16b446cdd16fda9f69edcec465d4/invoke.js"></script>
+
+</td>
+  </tr> 
+</table><div style="text-align: center;" class="paginator" id="paginator_example_bottom"></div><script type="text/javascript">paginator_example_bottom = new Paginator("paginator_example_bottom", 24, 25, 1, "/index.php?req=Nicomachean+Ethics&res=25&curtab=f&order=&ordermode=desc&filesuns=all&page=" );</script><div class="modal fade text-dark" id="googlemodemodal" tabindex="-1" aria-labelledby="googlemodemodalLabel" aria-hidden="true">
+  <div class="modal-dialog modal-lg">
+    <div class="modal-content">
+      <div class="modal-header">
+        <h5 class="modal-title" id="googlemodemodalLabel">Google mode</h5>
+        <button type="button" class="close" data-dismiss="modal" aria-label="Close">
+          <span aria-hidden="true">&times;</span>
+        </button>
+      </div>
+      <div class="modal-body">
+        
+By default, the search searches for a set of marked fields containing all the words specified in the query in no particular order<br>
+Advanced search mode (Google mode), allows you to set more precise search terms:<br>
+- Quotes: "" - search exactly for the phrase as it is written in the database<br>
+- Mask: * (min 3 chars)- search by part of a word<br>
+- Excluding words: - (minus) - does not display records containing this word, also, these conditions can be combined.<br>
+Example:<br>
+"Physics and Chemistry" Basi * -technology<br>
+means the title of the book contains the exact phrase "Physics and Chemistry", contains the word starting with Basi and does not contain the word technology.<br>
+You can also search for a specific field or view mode that is not displayed for selection in the interface, syntax: field_name:value<br>
+List of add. fields:<br>
+For the Files tab:<br>
+<i>md5</i><br>
+<i>tth</i><br>
+<i>sha1</i><br>
+<i>sha256</i><br>
+<i>crc32</i><br>
+<i>edonkey</i><br>
+<i>doi</i><br>
+
+View modes:<br>
+<i>mode:last</i> - last added entries (for a given object - series, authors, editions, etc.)<br>
+<br>
+<i>fmode:last</i> - last added files (for the given repository)<br>
+<br>
+Add. fields for object "editions" and "files":<br>
+<i>issuevolume</i> - periodical volume<br>
+<i>issuesid</i> - serial ID of the periodical<br>
+<i>issuenumber</i> - the number (within the volume) of the periodical<br>
+<i>issuetnumber</i> is the gross number of the periodical<br>
+<i>issueynumber</i> - intra-annual issue of the periodical<br>
+<i>year</i> - year<br>
+<i>publisherid</i> - Publisher ID<br>
+<i>authorid</i> - Author's ID<br>
+<i>lang</i> - three-letter language code (ISO 639)<br>
+<i>fsize</i> - filesize (MBytes), for example: fsize&gt;10, fsize&lt;20, fsize=15<br>
+<i>ext</i> - File extenstion <br>
+<i>booktopicid</i> - ID of the classifier for books<br>
+<i>tags</i> - Теги (издание, работы, серия)<br>
+<br>
+Add. fields for object "series"<br>
+<i>comtopicid</i> - ID of the classifier for comics<br>
+<i>smtopicid</i> - ID of the classifier for scientific journals<br>
+<i>magtopicid</i> - ID of the classifier for magazines<br>
+<i>issn</i> - ISSN
+
+      </div>
+    </div>
+  </div>
+</div><nav class="navbar sticky-bottom navbar-expand-sm navbar-dark bg-secondary">
+  <div class="collapse navbar-collapse" id="navbarCollapse">
+    <ul class="navbar-nav mr-auto">
+      <li class="nav-item">
+	    <a class="nav-link" href="#" data-toggle="modal" data-target="#dmcamodal">DMCA</a>
+      </li>
+      <li class="nav-item">
+	    <a class="nav-link" href="#" data-toggle="modal" data-target="#aboutmodal">ABOUT</a>
+      </li>
+      <li class="nav-item">
+	    <a class="nav-link" href="#" data-toggle="modal" data-target="#donatemodal" >DONATE</a>
+      </li>
+	
+    </ul>
+	<span class="navbar-text">Users online 6319</span>
+  </div>
+</nav>
+
+<!-- Modal Donate -->
+<div class="modal fade text-dark" id="donatemodal" tabindex="-1" aria-labelledby="donatemodalLabel" aria-hidden="true">
+  <div class="modal-dialog">
+    <div class="modal-content">
+      <div class="modal-header">
+        <h5 class="modal-title" id="donatemodalLabel">Donate</h5>
+        <button type="button" class="close" data-dismiss="modal" aria-label="Close">
+          <span aria-hidden="true">&times;</span>
+        </button>
+      </div>
+      <div class="modal-body">
+        <a href="bitcoin://bc1qlv9lwa5vncm2jjrxyhddfcvu0z3u5vn0s9672r">Bitcoin</a>
+	<br>
+        <a href="monero:48WhyKv4D9x53SyDFNYuMsHsDzuHXEcht4mWoFtXtE3k4KZ3A7goi3CQWBQQZ3A8PSK7CpwnAFKLnfGiZTAbEpcaCQCghvN">Monero</a>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- Modal About -->
+<div class="modal fade text-dark" id="aboutmodal" tabindex="-1" aria-labelledby="aboutmodalLabel" aria-hidden="true">
+  <div class="modal-dialog modal-lg">
+    <div class="modal-content">
+      <div class="modal-header">
+        <h5 class="modal-title" id="aboutmodalLabel">About</h5>
+        <button type="button" class="close" data-dismiss="modal" aria-label="Close">
+          <span aria-hidden="true">&times;</span>
+        </button>
+      </div>
+      <div class="modal-body">
+
+
+<div id="about">
+The Library Genesis aggregator is a community aiming at collecting and cataloging items descriptions for the most part of scientific, 
+scientific and technical directions, as well as file metadata. In addition to the descriptions, 
+the aggregator contains only links to third-party resources hosted by users. 
+All information posted on the website is collected from publicly available public Internet resources and is intended solely for informational purposes.  
+</div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- Modal DMCA -->
+<div class="modal fade text-dark" id="dmcamodal" tabindex="-1" aria-labelledby="dmcamodalLabel" aria-hidden="true">
+  <div class="modal-dialog modal-lg">
+    <div class="modal-content">
+      <div class="modal-header">
+        <h5 class="modal-title" id="dmcamodalLabel">About</h5>
+        <button type="button" class="close" data-dismiss="modal" aria-label="Close">
+          <span aria-hidden="true">&times;</span>
+        </button>
+      </div>
+      <div class="modal-body">
+
+<div id="dmca">
+Library Genesis - aggregator items is a website that collects and organizes online items from users. 
+Item aggregation is done for fact-finding purposes, and website Library Genesis respects the rights of copyright holders and respect dcma.
+
+     Removing Content From Library Genesis / DMCA Policy
+     Library Genesis respects the intellectual property of others.
+</div>
+
+    <div class="dmca">
+     If you believe that your copyrighted work has been copied in a way that constitutes copyright infringement and is accessible on this site, you may notify our copyright agent, as set forth in the Digital Millennium Copyright Act of 1998 (DMCA). For your complaint to be valid under the DMCA, you must provide the following information when providing notice of the claimed copyright infringement:
+</div>
+    <div class="dmca">
+     * A physical or electronic signature of a person authorized to act on behalf of the copyright owner Identification of the copyrighted work claimed to have been infringed <br />
+     * Identification of the material that is claimed to be infringing or to be the subject of the infringing activity and that is to be removed <br />
+     * Information reasonably sufficient to permit the service provider to contact the complaining party, such as an address, telephone number, and, if available, an electronic mail address <br />
+     * A statement that the complaining party "in good faith believes that use of the material in the manner complained of is not authorized by the copyright owner, its agent, or law" <br />
+     * A statement that the "information in the notification is accurate", and "under penalty of perjury, the complaining party is authorized to act on behalf of the owner of an exclusive right that is allegedly infringed" <br />
+     The above information must be submitted as a written, faxed or emailed notification to the following Designated Agent: ianzlib@protonmail.com. Appeals will be reviewed within 72 hours.</div>
+
+
+      </div>
+    </div>
+  </div>
+</div>
+
+
+	<script src="https://cdn.jsdelivr.net/npm/popper.js@1.12.5/dist/popper.min.js"></script>
+	<script src="https://cdn.jsdelivr.net/npm/bootstrap@4.5.3/dist/js/bootstrap.min.js" integrity="sha384-w1Q4orYjBQndcko6MimVbzY0tgp4pWB4lZ7lr30WKz0vr/aWKhXdBNmNb5D92v7s" crossorigin="anonymous"></script>
+	<script src="https://cdn.jsdelivr.net/npm/bootstrap@4.5.3/dist/js/bootstrap.bundle.min.js" integrity="sha384-ho+j7jyWK8fNQe+A12Hb8AhRq26LrZ/JpcUGGOn+Y7RsweNrtN/tE3MoK7ZeZDyx" crossorigin="anonymous"></script>
+	<script src="/js/form-validation.js"></script>
+	<script>
+$('[data-toggle="tooltip"]').tooltip();
+$('.btn-tooltip-bottom').tooltip({
+    placement: 'bottom'
+});
+</script>
+
+</body>
+</html>

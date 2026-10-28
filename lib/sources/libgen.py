@@ -10,6 +10,7 @@ import logging
 import re
 import threading
 import time
+import unicodedata
 from typing import AsyncIterator, List, Optional
 from urllib.parse import parse_qs, urljoin, urlparse
 
@@ -232,6 +233,21 @@ def _has_cover_cell(tds) -> bool:
     return first.find("img") is not None and not first.get_text(strip=True)
 
 
+# Keep script-shaping ZWNJ/ZWJ; remove only named invisible formatting.
+_TITLE_FORMATTING_DENYLIST = frozenset(
+    "\u00ad"  # Soft hyphen.
+    "\u061c"  # Arabic letter mark.
+    "\u200b"  # Zero-width space.
+    "\u200e\u200f"  # Directional marks.
+    "\u202a\u202b\u202c\u202d\u202e"  # Bidi embeddings and overrides.
+    "\u2060"  # Word joiner.
+    "\u2061\u2062\u2063\u2064"  # Invisible math operators.
+    "\u2066\u2067\u2068\u2069"  # Bidi isolates.
+    "\u206a\u206b\u206c\u206d\u206e\u206f"  # Deprecated bidi controls.
+    "\ufeff"  # Byte order mark / zero-width no-break space.
+)
+
+
 def _get_books(self, table):
     """Parse LibGen book and article rows without shifting their columns (#132).
 
@@ -242,7 +258,8 @@ def _get_books(self, table):
 
     Only a direct, nonblank edition link supplies the title and ID. Nested
     journal/issue links and trailing DOI/ISBN metadata are not row identities.
-    Retain upstream title normalization and mirror/cover handling. Install via
+    Preserve Unicode title text and punctuation; strip markup and controls.
+    Retain upstream mirror/cover handling. Install via
     the same local compatibility mechanism as the UA shim; remove when upstream
     supports this layout and object-type evidence itself.
     """
@@ -275,7 +292,12 @@ def _get_books(self, table):
         edition_link = edition_links[0]
         raw_title = edition_link.get_text(" ", strip=True)
         title = re.sub(r"\s+", " ", raw_title.strip())
-        title = re.sub(r"[^A-Za-z0-9 ]+", "", title.strip())
+        title = "".join(
+            c
+            for c in title
+            if unicodedata.category(c) != "Cc" and c not in _TITLE_FORMATTING_DENYLIST
+        )
+        title = re.sub(r"\s+", " ", title).strip()
         id_param = parse_qs(urlparse(edition_link["href"]).query)["id"][0]
 
         author = tds[offset + 1].get_text(strip=True)
@@ -394,10 +416,9 @@ def _unparseable_search_page(
 ) -> Optional[str]:
     """Detail text when a zero-result page is a parse failure, else None.
 
-    A genuinely-empty search still renders the (empty) results table (verified
-    2026-08-17), so a page WITHOUT `tablelibgen` means the mirror served
-    something else entirely — a UA-block stub or a layout change — and "no
-    results" would be a false report (#124).
+    A results table or the active Files tab's zero-count badge establishes a
+    parseable page. CSS, scripts and comments can mention those markers without
+    supplying either element. Other no-table pages remain parse failures (#124).
 
     This is #124's `SourceParseError` folded into the #106 error taxonomy: the
     caller raises it as a `ProviderResponseError`/`protocol_error` attributed
@@ -416,8 +437,20 @@ def _unparseable_search_page(
     if page is None:
         return None
     text = getattr(page, "text", "") or ""
-    if "tablelibgen" in text:
+    soup = BeautifulSoup(text, "html.parser")
+    for inert in soup.select("template, noscript"):
+        inert.decompose()
+    if soup.find("table", id="tablelibgen") is not None:
         return None
+    for tab in soup.select("ul.nav-tabs > li.nav-item > a.nav-link.active[href]"):
+        badge = tab.select_one("span.badge")
+        if (
+            parse_qs(urlparse(tab["href"]).query).get("curtab") == ["f"]
+            and badge is not None
+            and badge.get_text(strip=True) == "0"
+            and tab.get_text(" ", strip=True).split() == ["Files", "0"]
+        ):
+            return None
     status = getattr(page, "status_code", "?")
     title_match = re.search(r"<title>([^<]*)</title>", text, re.I)
     page_title = title_match.group(1).strip() if title_match else ""

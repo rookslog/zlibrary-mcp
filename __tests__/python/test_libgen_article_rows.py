@@ -81,9 +81,9 @@ def test_article_identity_uses_direct_visible_edition_link(parsed_rows):
     article = parsed_rows[1]
     assert (article.id, article.title) == (
         "76430726",
-        "The Inner Citadel P Hadot The Inner Citadel the Meditations of "
-        "Marcus Aurelius  Pp x  351 Cambridge MA and London Harvard "
-        "University Press 1998 Cased 2795 ISBN 0674461711",
+        "The Inner Citadel P. Hadot: The Inner Citadel: the Meditations of "
+        "Marcus Aurelius . Pp. x + 351. Cambridge, MA and London: Harvard "
+        "University Press, 1998. Cased, $27.95. ISBN: 0-674-46171-1.",
     )
 
 
@@ -145,7 +145,7 @@ def test_parsed_rows_match_production_italic_preprocessing(parsed_rows):
     # The retained last book has an italic "Revised" suffix. Production
     # removes it before parsing, so fixture-only parsing must do the same.
     assert parsed_rows[-1].title == (
-        "The Inner Citadel The Meditations of Marcus Aurelius"
+        "The Inner Citadel: The Meditations of Marcus Aurelius"
     )
 
 
@@ -283,3 +283,79 @@ def test_blank_or_nested_only_edition_cannot_supply_identity():
         )
         == []
     )
+
+
+@pytest.mark.parametrize(
+    "markup,expected",
+    [
+        ("L’Étranger : étude — naïve &amp; café", "L’Étranger : étude — naïve & café"),
+        (
+            "<em>中文</em> 日本語 — Русский Ελληνικά العربية हिन्दी",
+            "中文 日本語 — Русский Ελληνικά العربية हिन्दी",
+        ),
+        ("Cafe\u0301 <strong>notes</strong>\x00\x1b\u200b", "Cafe\u0301 notes"),
+        ("  A\n B\tC  ", "A B C"),
+    ],
+)
+def test_title_preserves_unicode_and_punctuation_without_markup_or_controls(
+    markup, expected
+):
+    # The former ASCII-only filter destroys accents, scripts and punctuation.
+    rows = parse_row(f'<a href="edition.php?id=123">{markup}</a>')
+    assert len(rows) == 1
+    assert rows[0].title == expected
+
+
+@pytest.mark.parametrize(
+    "title",
+    [
+        "می\u200cخواهم",
+        "क्\u200dष",
+        "👩\u200d👩\u200d👧",
+    ],
+)
+def test_title_retains_joiners_and_non_joiners(title):
+    rows = parse_row(f'<a href="edition.php?id=123">{title}</a>')
+    assert rows[0].title == title
+
+
+@pytest.mark.parametrize(
+    "formatting",
+    [
+        "\u00ad",  # Soft hyphen.
+        "\u061c",  # Arabic letter mark.
+        "\u200b",  # Zero-width space.
+        "\u200e",
+        "\u200f",  # Directional marks.
+        "\u202a",
+        "\u202b",
+        "\u202c",
+        "\u202d",
+        "\u202e",  # Bidi embedding/overrides.
+        "\u2060",  # Word joiner.
+        "\u2061",
+        "\u2062",
+        "\u2063",
+        "\u2064",  # Invisible math operators.
+        "\u2066",
+        "\u2067",
+        "\u2068",
+        "\u2069",  # Bidi isolates.
+        "\u206a",
+        "\u206b",
+        "\u206c",
+        "\u206d",
+        "\u206e",
+        "\u206f",  # Deprecated bidi controls.
+        "\ufeff",  # Byte order mark / zero-width no-break space.
+    ],
+)
+def test_title_removes_named_invisible_formatting(formatting):
+    rows = parse_row(f'<a href="edition.php?id=123">A{formatting}B</a>')
+    assert rows[0].title == "AB"
+
+
+@pytest.mark.parametrize("title", ["A \x1b B", "A \u200b B", " A \ufeff  B "])
+def test_title_collapses_spaces_after_removing_characters(title):
+    rows = parse_row(f'<a href="edition.php?id=123">{title}</a>')
+    assert rows[0].title == "A B"

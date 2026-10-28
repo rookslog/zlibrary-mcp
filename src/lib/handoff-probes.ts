@@ -12,7 +12,7 @@ import type {
 } from '@modelcontextprotocol/sdk/types.js';
 import { z } from 'zod';
 import { getPythonScriptPath } from './paths.js';
-import { pageRenderQueue } from './pdf-queue.js';
+import { pageRenderQueue, PdfQueueBusyError } from './pdf-queue.js';
 
 class ProbeError extends Error {}
 
@@ -261,7 +261,10 @@ export class HandoffProbes {
       }
     } catch (error) {
       // Never include helper stderr, PDF bytes, extracted text or raw OS paths.
-      const message = error instanceof ProbeError ? error.message : 'file probe could not complete';
+      const message =
+        error instanceof ProbeError || error instanceof PdfQueueBusyError
+          ? error.message
+          : 'file probe could not complete';
       return { isError: true, content: [{ type: 'text', text: `Probe error: ${message}` }] };
     }
   }

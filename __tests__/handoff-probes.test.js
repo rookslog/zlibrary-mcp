@@ -8,6 +8,7 @@ import { promisify } from 'node:util';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { InMemoryTransport } from '@modelcontextprotocol/sdk/inMemory.js';
 import { createServer } from '../dist/index.js';
+import { pageRenderQueue } from '../dist/lib/pdf-queue.js';
 
 // Mutations caught: flag leakage, containment/cap bypass, changed bytes, unbounded
 // resource ids, stale ids, ignored page/DPI bounds, or leaking document text.
@@ -293,4 +294,35 @@ imageTest('three concurrent probe renders queue instead of returning busy', asyn
     expect(result.isError).not.toBe(true);
     expect(result.content[0].type).toBe('image');
   }
+});
+
+
+test('full render queue reports a valid request and busy server through the probe', async () => {
+  // The configured renderer cannot run: the queue refuses before job execution.
+  process.env.ZLIBRARY_PROBE_PYTHON = path.join(directory, 'nonexistent-python');
+  let release;
+  const first = pageRenderQueue.run(() => new Promise((resolve) => {
+    release = resolve;
+  }), 10000);
+  const waiting = Array.from({ length: 8 }, () => pageRenderQueue.run(async () => 'drained', 10000));
+  try {
+    await connect();
+    const reply = await image();
+    expectError(reply, /request was valid; the server is busy.*full/i);
+    expect(JSON.stringify(reply)).not.toContain(directory);
+    expect(JSON.stringify(reply)).not.toContain('PRIVATE_CONTENT');
+  } finally {
+    release('first');
+    await Promise.all([first, ...waiting]);
+  }
+});
+
+
+test('unexpected queue errors remain neutral and do not expose their message', async () => {
+  process.env.ZLIBRARY_PROBE_PYTHON = path.join(directory, 'nonexistent-python');
+  jest.spyOn(pageRenderQueue, 'run').mockRejectedValue(new Error('untrusted helper path and bytes'));
+  await connect();
+  const reply = await image();
+  expectError(reply, /file probe could not complete/);
+  expect(JSON.stringify(reply)).not.toContain('untrusted helper path and bytes');
 });

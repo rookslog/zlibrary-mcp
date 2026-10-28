@@ -17,6 +17,8 @@ test.each([
       operation: 'download',
       retry,
     });
+    expect(reply.error.recovery).toContain('The request was valid; its outcome is unknown.');
+    expect(reply.error.recovery).not.toContain('the source failed');
     expect(reply.error.recovery).toMatch(/disk receipts are checked first/);
     expect(reply.error.recovery).toMatch(advice);
     expect(ErrorEnvelopeSchema.safeParse(reply).success).toBe(true);

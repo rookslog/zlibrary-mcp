@@ -123,7 +123,7 @@ class AcquisitionServer extends Server {
     const probes = process.env.ZLIBRARY_PROBE_TOOLS === '1' ? new HandoffProbes() : undefined;
     const chatFiles = process.env.ZLIBRARY_CHAT_FILES === '1' ? new ChatFiles() : undefined;
     super(
-      { name: 'book-acquisition', version: getPackageVersion() },
+      { name: 'book-acquisition', version: getServerVersion() },
       { capabilities: { tools: {}, ...(probes || chatFiles ? { resources: {} } : {}) } },
     );
     this.setRequestHandler(ListToolsRequestSchema, async () => ({
@@ -175,6 +175,19 @@ function getPackageVersion(): string {
     return JSON.parse(fs.readFileSync(new URL('../package.json', import.meta.url), 'utf8')).version;
   } catch {
     return 'unknown';
+  }
+}
+/** Package version plus the commit dist/ was built from (`1.4.0+54e8368`), so clients can tell builds apart. */
+export function getServerVersion(
+  buildInfoUrl = new URL('../build-info.json', import.meta.url),
+): string {
+  const version = getPackageVersion();
+  try {
+    const info = JSON.parse(fs.readFileSync(buildInfoUrl, 'utf8'));
+    if (typeof info.commit !== 'string' || !/^[0-9a-f]{7,40}$/.test(info.commit)) return version;
+    return `${version}+${info.commit}${info.dirty === true ? '.dirty' : ''}`;
+  } catch {
+    return version;
   }
 }
 export async function start(opts: { testing?: boolean } = {}) {

@@ -13,7 +13,7 @@
   },
   "scripts": {
     "build": "tsc",
-    "postbuild": "node scripts/validate-python-bridge.js",
+    "postbuild": "node scripts/write-build-info.mjs && node scripts/validate-python-bridge.js",
     "validate": "node scripts/validate-python-bridge.js",
     "audit:release": "node scripts/release-audit.mjs",
     "doctor": "uv run --no-dev python scripts/check_upstream.py && node scripts/release-audit.mjs",
@@ -49,6 +49,7 @@
   "license": "MIT",
   "files": [
     "dist/",
+    "build-info.json",
     "lib/",
     "zlibrary/",
     "!zlibrary/src/test.py",
@@ -58,6 +59,7 @@
     "docs/optional-dependencies.md",
     "!**/__pycache__/",
     "!**/*.pyc",
+    "scripts/write-build-info.mjs",
     "scripts/validate-python-bridge.js",
     "scripts/check_upstream.py",
     "scripts/release-audit.mjs",

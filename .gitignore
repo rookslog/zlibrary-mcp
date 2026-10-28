@@ -116,3 +116,4 @@ test_files/*_visualization.png
 
 # Offline chat-file smoke hardlinks and private caches: never publish books.
 /local-smoke-root/
+/build-info.json

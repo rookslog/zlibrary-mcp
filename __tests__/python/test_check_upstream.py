@@ -42,8 +42,9 @@ def test_required_failure_is_actionable(check_upstream):
     assert result.symbol == "FAIL"
 
 
-def test_optional_failure_is_a_warning(check_upstream):
-    """LibGen/Anna's are fallbacks; their absence must not read as a hard failure."""
+def test_excluded_source_failure_is_a_warning(check_upstream, monkeypatch):
+    """The operator can retain warning-only behaviour for a fallback."""
+    monkeypatch.setenv("UPSTREAM_RELIED_SOURCES", "zlibrary")
     result = check_upstream.ProbeResult(
         name="libgen:search", ok=False, detail="boom", required=False
     )
@@ -57,12 +58,12 @@ def test_passing_probe_reports_ok(check_upstream):
 
 def test_render_summarises_required_and_optional_failures(check_upstream):
     results = [
-        check_upstream.ProbeResult("a", True, "fine"),
-        check_upstream.ProbeResult("b", False, "broken", required=True),
-        check_upstream.ProbeResult("c", False, "broken", required=False),
+        check_upstream.ProbeResult("zlibrary:a", True, "fine"),
+        check_upstream.ProbeResult("zlibrary:b", False, "broken", required=True),
+        check_upstream.ProbeResult("unused:c", False, "broken", required=False),
     ]
     report = check_upstream.render(results)
-    assert "1 passing, 1 required failing, 1 optional failing" in report
+    assert "1 passing, 1 relied-on failing, 1 warnings" in report
     assert "FAIL" in report and "WARN" in report and "OK" in report
 
 
@@ -124,27 +125,36 @@ def test_blocked_probe_reports_block_not_fail(check_upstream):
     assert result.symbol == "BLOCK"
 
 
-def test_blocked_probe_is_not_actionable(check_upstream):
-    """Blocked probes must not set the failed flag that files the drift issue —
-    otherwise CI's datacenter address keeps the rolling issue open forever."""
+def test_blocked_relied_on_probe_is_actionable(check_upstream):
+    """Blocks alert independently of whether the router requires the source."""
     results = [
-        check_upstream.ProbeResult("a", True, "fine"),
-        check_upstream.ProbeResult("b", False, "walled", required=True, blocked=True),
+        check_upstream.ProbeResult("zlibrary:a", True, "fine"),
+        check_upstream.ProbeResult(
+            "zlibrary:b", False, "walled", required=True, blocked=True
+        ),
     ]
-    assert check_upstream.actionable_failures(results) == []
-    results.append(check_upstream.ProbeResult("c", False, "drift", required=True))
-    assert [r.name for r in check_upstream.actionable_failures(results)] == ["c"]
+    assert check_upstream.actionable_failures(results) == [results[1]]
+    results.append(
+        check_upstream.ProbeResult("libgen:c", False, "drift", required=False)
+    )
+    assert [r.name for r in check_upstream.actionable_failures(results)] == [
+        "zlibrary:b",
+        "libgen:c",
+    ]
 
 
 def test_render_counts_blocked_separately(check_upstream):
     results = [
-        check_upstream.ProbeResult("a", True, "fine"),
-        check_upstream.ProbeResult("b", False, "walled", required=True, blocked=True),
+        check_upstream.ProbeResult("zlibrary:a", True, "fine"),
+        check_upstream.ProbeResult(
+            "zlibrary:b", False, "walled", required=True, blocked=True
+        ),
     ]
     report = check_upstream.render(results)
     assert "BLOCK" in report
-    assert "1 passing, 0 required failing, 0 optional failing" in report
-    assert "1 blocked (network-level, not drift)" in report
+    assert "1 passing, 1 relied-on failing, 0 warnings" in report
+    assert "### Source blocked" in report
+    assert "### Source changed" not in report
 
 
 def test_block_detail_classifies_bare_403(check_upstream):
@@ -293,7 +303,7 @@ def test_libgen_download_probe_detects_expired_key_bounce(
 
     result = libgen_download(handler)
     assert result.ok is False
-    assert result.symbol == "WARN"
+    assert result.symbol == "FAIL"
     assert "/ads.php" in result.detail
     assert "expired" in result.detail
     # Both mirrors bounced, and neither was a network-level refusal.
@@ -431,7 +441,7 @@ def test_libgen_download_probe_is_not_blocked_when_a_mirror_answered(
     result = libgen_download(handler)
     assert result.ok is False
     assert result.blocked is False
-    assert result.symbol == "WARN"
+    assert result.symbol == "FAIL"
 
 
 def test_libgen_key_extraction_takes_the_key_bearing_anchor(check_upstream):
@@ -1208,7 +1218,7 @@ class TestLibgenSearchProbeReportsUserAgentBlocks:
 
         assert result.ok is False
         assert result.blocked is False
-        assert result.symbol == "WARN"
+        assert result.symbol == "FAIL"
 
     def test_a_libgen_block_does_not_imply_a_zlibrary_block(self, check_upstream):
         """`zlibrary_blocked` must stay source-scoped (#141).
@@ -1254,7 +1264,7 @@ class TestLibgenSearchProbeReportsUserAgentBlocks:
 
         assert result.ok is False
         assert result.blocked is False
-        assert result.symbol == "WARN"
+        assert result.symbol == "FAIL"
 
     def test_an_empty_failure_list_is_not_reported_as_blocked(self, check_upstream):
         """`all()` over an empty list is True, which would invent a wall."""
@@ -1266,3 +1276,269 @@ class TestLibgenSearchProbeReportsUserAgentBlocks:
         result = self._run(check_upstream, empty)
 
         assert result.blocked is False
+
+
+@pytest.mark.parametrize("status", [403, 429])
+def test_annas_http_refusal_is_blocked(check_upstream, status):
+    async def probe():
+        async with httpx.AsyncClient(
+            transport=httpx.MockTransport(lambda request: httpx.Response(status))
+        ) as client:
+            return await check_upstream.probe_annas(client)
+
+    result = asyncio.run(probe())
+    assert not result.ok
+    assert result.blocked
+    assert f"HTTP {status}" in result.detail
+
+
+@pytest.mark.parametrize(
+    "relied,ok,blocked,failed",
+    [
+        (None, False, True, True),
+        (None, False, False, True),
+        ("zlibrary,libgen", False, True, False),
+        ("zlibrary,libgen", False, False, False),
+        (None, True, False, False),
+        ("", False, False, True),
+    ],
+)
+def test_reliance_controls_alerts_independently_of_router(
+    check_upstream, monkeypatch, relied, ok, blocked, failed
+):
+    if relied is None:
+        monkeypatch.delenv("UPSTREAM_RELIED_SOURCES", raising=False)
+    else:
+        monkeypatch.setenv("UPSTREAM_RELIED_SOURCES", relied)
+    result = check_upstream.ProbeResult(
+        "annas-archive:search", ok, "test reason", required=False, blocked=blocked
+    )
+    assert bool(check_upstream.actionable_failures([result])) is failed
+    report = check_upstream.render([result])
+    if failed:
+        assert ("### Source blocked" if blocked else "### Source changed") in report
+    elif not ok:
+        assert "WARN" in report
+
+
+def test_invalid_reliance_is_rejected_before_probing(check_upstream, monkeypatch):
+    monkeypatch.setenv("UPSTREAM_RELIED_SOURCES", "annas-archve")
+    with pytest.raises(ValueError, match="annas-archve"):
+        check_upstream.actionable_failures([])
+
+
+def test_first_seen_survives_issue_body_round_trip(check_upstream, monkeypatch):
+    monkeypatch.delenv("UPSTREAM_RELIED_SOURCES", raising=False)
+    result = check_upstream.ProbeResult(
+        "annas-archive:search", False, "HTTP 403", required=False, blocked=True
+    )
+    previous = check_upstream.render([result], today="2026-10-20")
+    report = check_upstream.render([result], previous_body=previous, today="2026-10-23")
+    assert "First seen: 2026-10-20" in report
+    summary = check_upstream.summarize(
+        [result], previous_body=report, today="2026-10-24"
+    )
+    row = summary["results"][0]
+    assert {key: row[key] for key in ("source", "status", "reason", "first_seen")} == {
+        "source": "annas-archive",
+        "status": "blocked",
+        "reason": "HTTP 403",
+        "first_seen": "2026-10-20",
+    }
+    # A healthy intervening run removes the failure from persistent state.
+    healthy = check_upstream.render([], previous_body=report, today="2026-10-24")
+    again = check_upstream.summarize(
+        [result], previous_body=healthy, today="2026-10-25"
+    )
+    assert again["results"][0]["first_seen"] == "2026-10-25"
+
+
+@pytest.mark.parametrize(
+    "previous",
+    ["", "Old issue with no source dates", "<!-- upstream-source-status: {bad} -->"],
+)
+def test_old_issue_does_not_backdate_failure(check_upstream, previous):
+    result = check_upstream.ProbeResult(
+        "annas-archive:search", False, "403", blocked=True
+    )
+    summary = check_upstream.summarize(
+        [result], previous_body=previous, today="2026-10-23"
+    )
+    assert summary["results"][0]["first_seen"] == "2026-10-23"
+
+
+@pytest.mark.parametrize("ok,expected_exit", [(False, 1), (True, 0)])
+def test_main_writes_text_and_json_on_success_and_failure(
+    check_upstream, monkeypatch, tmp_path, capsys, ok, expected_exit
+):
+    import json
+
+    async def probes():
+        return [
+            check_upstream.ProbeResult(
+                "annas-archive:search", ok, "fixture", blocked=not ok
+            )
+        ]
+
+    monkeypatch.setattr(check_upstream, "run_probes", probes)
+    monkeypatch.delenv("UPSTREAM_RELIED_SOURCES", raising=False)
+    monkeypatch.setenv("GITHUB_OUTPUT", str(tmp_path / "github-output"))
+    previous = tmp_path / "previous.md"
+    previous.write_text("Old issue")
+    target = tmp_path / "upstream-report.txt"
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "check_upstream.py",
+            "--github-output",
+            "--report-file",
+            str(target),
+            "--previous-issue",
+            str(previous),
+        ],
+    )
+    assert check_upstream.main() == expected_exit
+    summary = json.loads(target.with_suffix(".json").read_text())
+    assert summary["failed"] is (not ok)
+    assert summary["results"][0]["status"] == ("passed" if ok else "blocked")
+    if ok:
+        assert summary["results"][0]["first_seen"] is None
+    else:
+        assert summary["results"][0]["first_seen"]
+    assert target.read_text().rstrip() == capsys.readouterr().out.rstrip()
+    assert (
+        f"failed={'false' if ok else 'true'}"
+        in (tmp_path / "github-output").read_text()
+    )
+
+
+@pytest.mark.parametrize(
+    "body,headers,expected_ok,expected_blocked",
+    [
+        ('<a href="/md5/abc">DDoS-Guard: a study</a>', {}, True, False),
+        ('<a href="/md5/abc">A real result</a>', {"server": "ddos-guard"}, True, False),
+        ('<script src="/.well-known/ddos-guard/check.js"></script>', {}, False, True),
+        ("Check your browser", {"server": "ddos-guard"}, False, True),
+    ],
+)
+def test_annas_distinguishes_catalog_text_from_challenge(
+    check_upstream, body, headers, expected_ok, expected_blocked
+):
+    async def probe():
+        async with httpx.AsyncClient(
+            transport=httpx.MockTransport(
+                lambda request: httpx.Response(200, text=body, headers=headers)
+            )
+        ) as client:
+            return await check_upstream.probe_annas(client)
+
+    result = asyncio.run(probe())
+    assert result.ok is expected_ok
+    assert result.blocked is expected_blocked
+
+
+@pytest.mark.parametrize(
+    "leading",
+    [
+        '<!-- upstream-source-status: {"annas-archive:search":"2020-01-01"} -->',
+        "<!-- upstream-source-status: {broken} -->",
+    ],
+)
+def test_last_issue_marker_controls_first_seen(check_upstream, leading):
+    previous = (
+        leading
+        + '\n<!-- upstream-source-status: {"annas-archive:search":"2026-10-23"} -->'
+    )
+    result = check_upstream.ProbeResult(
+        "annas-archive:search", False, "HTTP 403", blocked=True
+    )
+    summary = check_upstream.summarize(
+        [result], previous_body=previous, today="2026-10-24"
+    )
+    assert summary["results"][0]["first_seen"] == "2026-10-23"
+
+
+@pytest.mark.parametrize("ok", [True, False])
+def test_upstream_text_cannot_escape_report_code_blocks(check_upstream, ok):
+    import json
+    import re
+
+    # An upstream title tries to close an ordinary fence, mention a user,
+    # render HTML, and forge both a comment closer and a state marker.
+    title = (
+        "unsafe\n```\n@name <img src=x> -->\n"
+        '<!-- upstream-source-status: {"annas-archive:search":"2020-01-01"} -->\n````'
+    )
+    result = check_upstream.ProbeResult("annas-archive:search", ok, title)
+    report = check_upstream.render([result], today="2026-10-24")
+    # Interpret CommonMark backtick fence boundaries independently of the
+    # renderer. Everything upstream-controlled must be inside a code block.
+    outside = []
+    fence_length = 0
+    for line in report.splitlines():
+        match = re.fullmatch(r"(`{3,})(.*)", line)
+        if not fence_length and match:
+            fence_length = len(match[1])
+        elif fence_length:
+            if match and len(match[1]) >= fence_length and not match[2].strip():
+                fence_length = 0
+        else:
+            outside.append(line)
+    assert fence_length == 0
+    assert "@name" not in "\n".join(outside)
+    assert "<img" not in "\n".join(outside)
+    assert "unsafe" not in "\n".join(outside)
+    markers = re.findall(r"<!-- upstream-source-status: (.*?) -->", report)
+    assert len(markers) == 1
+    assert json.loads(markers[0]) == (
+        {} if ok else {"annas-archive:search": "2026-10-24"}
+    )
+    assert "&lt;!--" in report and "--&gt;" in report
+    if not ok:
+        assert "### Source changed" in outside
+        assert "#### annas-archive:search" in outside
+        assert any(line.startswith("First seen: 2026-10-24") for line in outside)
+
+
+@pytest.mark.parametrize("json_stdout", [False, True])
+@pytest.mark.parametrize("ok", [False, True])
+def test_doctor_probe_without_report_flag_does_not_write_files(
+    check_upstream, monkeypatch, tmp_path, capsys, json_stdout, ok
+):
+    import json
+
+    async def probes():
+        return [check_upstream.ProbeResult("annas-archive:search", ok, "fixture")]
+
+    def refused_write(*args, **kwargs):
+        raise AssertionError("Report writes require an explicit --report-file")
+
+    monkeypatch.setattr(check_upstream, "run_probes", probes)
+    monkeypatch.setattr(Path, "write_text", refused_write)
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.delenv("GITHUB_OUTPUT", raising=False)
+    monkeypatch.setattr(
+        sys, "argv", ["check_upstream.py"] + (["--json"] if json_stdout else [])
+    )
+    assert check_upstream.main() == (0 if ok else 1)
+    printed = capsys.readouterr().out
+    if json_stdout:
+        assert json.loads(printed)["failed"] is (not ok)
+    else:
+        assert "annas-archive:search" in printed
+    assert list(tmp_path.iterdir()) == []
+
+
+@pytest.mark.parametrize("value", ["", " ", "\t\n"])
+def test_blank_policy_uses_all_sources(check_upstream, monkeypatch, value):
+    monkeypatch.setenv("UPSTREAM_RELIED_SOURCES", value)
+    results = [
+        check_upstream.ProbeResult(f"{source}:search", False, "fixture", blocked=True)
+        for source in ("zlibrary", "annas-archive", "libgen")
+    ]
+    assert [r.name for r in check_upstream.actionable_failures(results)] == [
+        "zlibrary:search",
+        "annas-archive:search",
+        "libgen:search",
+    ]

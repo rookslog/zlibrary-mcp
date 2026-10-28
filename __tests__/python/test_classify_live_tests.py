@@ -256,6 +256,7 @@ def test_workflow_live_step_classifies_and_retains_evidence(
     fake_uv.write_text(
         f"#!{sys.executable}\nimport os, sys, shutil\nfrom pathlib import Path\n"
         "if sys.argv[1:3] == ['run', 'pytest']:\n"
+        "    if '--collect-only' in sys.argv:\n        sys.exit(0)\n"
         "    shutil.copyfile(os.environ['SYNTHETIC_REPORT'], 'live.xml')\n"
         f"    print('offline pytest log')\n    sys.exit({exit_code})\n"
         "assert sys.argv[1:3] == ['run', 'python']\n"
@@ -346,7 +347,7 @@ const fs = require('fs');
 const data = JSON.parse(fs.readFileSync(0, 'utf8'));
 const enabled = new Function('needs', 'github', 'always', 'return ' + data.condition)(data.needs, {event_name:'schedule'}, () => true);
 let body = '';
-const github = {rest: {issues: {
+const github = {paginate: async () => [], rest: {issues: {
   listForRepo: async () => ({data: []}),
   create: async value => { body = value.body; },
 }}};
@@ -372,7 +373,10 @@ Object.assign(process.env, data.env);
         check=True,
     )
     result = json.loads(run.stdout)
-    assert result["enabled"] is failed
+    # The report job also runs on recovery to refresh existing issue dates;
+    # a healthy run with no existing issue must still create nothing.
+    assert result["enabled"] is True
+    assert bool(result["body"]) is failed
     if failed:
         line = (
             "Z-Library reachability probe reported an anti-bot wall on "
@@ -381,3 +385,128 @@ Object.assign(process.env, data.env);
         assert (line in result["body"]) is probe_blocked
         assert "corroborated" not in result["body"]
         assert "runner's IP" not in result["body"]
+
+
+@pytest.mark.parametrize(
+    "probe_case,block_value,expected",
+    [
+        ("empty-outputs", None, "unknown"),
+        ("failed-probe", None, "unknown"),
+        ("reported", "", "unknown"),
+        ("reported", "maybe", "unknown"),
+        ("reported", "False", "unknown"),
+        ("reported", "true", "blocked"),
+        ("reported", "false", "ran"),
+    ],
+)
+def test_live_job_never_invokes_integration_without_explicit_unblocked(
+    workflow, tmp_path, probe_case, block_value, expected
+):
+    """Run the job's actual shell/conditions; only uv's child calls are fake."""
+    outputs = {}
+    probe_result = "failure" if probe_case == "failed-probe" else "success"
+    if probe_case == "failed-probe":
+        # Real failed probe: missing prior issue fails before run_probes, with no
+        # network call and no zlib_blocked output to authorize a login.
+        probe_output = tmp_path / "probe-output"
+        probe = subprocess.run(
+            [
+                sys.executable,
+                str(ROOT / "scripts/check_upstream.py"),
+                "--github-output",
+                "--previous-issue",
+                str(tmp_path / "missing.md"),
+            ],
+            cwd=tmp_path,
+            capture_output=True,
+            text=True,
+            env={**os.environ, "GITHUB_OUTPUT": str(probe_output)},
+        )
+        assert probe.returncode != 0
+        assert "FileNotFoundError" in probe.stderr
+        assert not probe_output.exists()
+    elif probe_case == "reported":
+        outputs = {"zlib_blocked": block_value, "zlib_domain": "offline.example.test"}
+
+    needs = {"reachability": {"result": probe_result, "outputs": outputs}}
+    steps = {"live": {"outputs": {}}}
+    calls = tmp_path / "uv-calls"
+    fake_uv = tmp_path / "uv"
+    fake_uv.write_text(
+        f"#!{sys.executable}\nimport json, sys\nfrom pathlib import Path\n"
+        f"with Path({str(calls)!r}).open('a') as output:\n"
+        "    output.write(json.dumps(sys.argv[1:]) + '\\n')\n"
+    )
+    fake_uv.chmod(0o755)
+    live_output = tmp_path / "live-output"
+
+    def enabled(condition):
+        result = subprocess.run(
+            [
+                "node",
+                "-e",
+                "const fs=require('fs');const d=JSON.parse(fs.readFileSync(0,'utf8'));"
+                # GitHub compares expression strings without case sensitivity.
+                "const lower=v=>typeof v==='string'?v.toLowerCase():"
+                "v&&typeof v==='object'?Object.fromEntries(Object.entries(v).map(([k,x])=>[k,lower(x)])):v;"
+                "console.log(new Function('needs','steps','return '+d.condition)(lower(d.needs),lower(d.steps)));",
+            ],
+            input=json.dumps({"condition": condition, "needs": needs, "steps": steps}),
+            capture_output=True,
+            text=True,
+            check=True,
+        )
+        return result.stdout.strip() == "true"
+
+    for step in workflow["jobs"]["live_tests"]["steps"]:
+        if "run" not in step or not enabled(step.get("if", "true")):
+            continue
+        step_env = {}
+        contexts = {
+            "needs": needs,
+            "secrets": {
+                "ZLIBRARY_EMAIL": "dummy@example.test",
+                "ZLIBRARY_PASSWORD": "dummy",
+            },
+        }
+        for key, expression in step.get("env", {}).items():
+            value = contexts
+            for part in expression.removeprefix("${{ ").removesuffix(" }}").split("."):
+                value = value.get(part, "") if isinstance(value, dict) else ""
+            step_env[key] = value
+        run = subprocess.run(
+            ["bash", "-e", "-o", "pipefail", "-c", step["run"]],
+            cwd=tmp_path,
+            capture_output=True,
+            text=True,
+            env={
+                **os.environ,
+                **step_env,
+                "PATH": f"{tmp_path}:{os.environ['PATH']}",
+                "GITHUB_OUTPUT": str(live_output),
+            },
+        )
+        assert run.returncode == 0, run.stdout + run.stderr
+        if step.get("id") == "live" and live_output.exists():
+            steps["live"]["outputs"] = dict(
+                line.split("=", 1) for line in live_output.read_text().splitlines()
+            )
+    invocations = (
+        [json.loads(line) for line in calls.read_text().splitlines()]
+        if calls.exists()
+        else []
+    )
+    integration = [
+        args
+        for args in invocations
+        if args[:4] == ["run", "pytest", "-m", "integration"]
+    ]
+    if expected == "ran":
+        assert len(integration) == 2  # collection plus execution, both stubbed
+    else:
+        assert integration == [], invocations
+        assert steps["live"]["outputs"]["status"] == expected
+        if expected == "blocked":
+            assert steps["live"]["outputs"]["blocked"] == "true"
+        else:
+            assert steps["live"]["outputs"].get("blocked") != "true"

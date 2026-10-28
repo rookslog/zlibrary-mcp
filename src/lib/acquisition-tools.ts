@@ -1,4 +1,6 @@
 import { z } from 'zod';
+import { ViaSchema } from './route-trace.js';
+import type { Via } from './route-trace.js';
 import { RefStore } from './refs.js';
 import { decodeMarcMnemonics } from './marc-mnemonics.js';
 import { normalizeLanguages } from './filter-languages.js';
@@ -90,6 +92,7 @@ interface Attempt {
   code?: string;
   reason?: string;
   http_status?: number;
+  route?: 'api' | 'html' | 'browser';
 }
 const allSources: Source[] = ['libgen', 'zlibrary', 'annas'];
 // Match lib/sources/config.py. The cross-language reporting test guards drift.
@@ -147,6 +150,7 @@ function sizeMB(book: any): number | undefined {
     ) / 100
   );
 }
+const observedVia = (value: unknown): Via => ViaSchema.parse(value ?? []);
 const DownloadReplySchema = z
   .object({
     path: z.string(),
@@ -155,6 +159,7 @@ const DownloadReplySchema = z
     transfer_skipped: z.boolean(),
     verified: z.literal('sha256'),
     record: z.string(),
+    via: ViaSchema.default([]),
     quota_estimate: z
       .object({
         source: z.enum(['zlibrary', 'annas']),
@@ -356,10 +361,36 @@ export class AcquisitionTools {
     const result: any = {
       ...(this.defaultOrder ? { default_order: this.defaultOrder } : {}),
       sources: {},
+      routes: {},
     };
     for (const source of args.sources ?? allSources) {
       const capability = this.capabilities(source);
       result.sources[source] = capability;
+      if (source === 'annas') {
+        const enabled = ['1', 'true', 'yes'].includes((this.env.ANNAS_BROWSER_ENABLED ?? '').trim().toLowerCase());
+        let browser: Record<string, any> = { enabled: false };
+        if (enabled) {
+          try {
+            browser = await this.invoke('get_annas_browser_limits', {}, options);
+          } catch (error) {
+            browser = {
+              enabled: true, used_today: null, daily_cap: null, min_interval_s: null,
+              next_slot_in_s: null, one_at_a_time: true, counter_status: 'unavailable',
+              error: errorEnvelope(error, 'get_limits', 'annas', this.env).error,
+            };
+          }
+        }
+        result.routes.annas = {
+          routes: ['html', 'api', ...(enabled ? ['browser'] : [])],
+          account_required: { html: false, api: true, browser: false },
+          browser: { ...browser, ...(enabled ? {
+            note: "Anna's browser requests run one at a time, at least 20 s apart, and usually take 5–25 s each plus any queue wait.",
+          } : {}) },
+        };
+      } else result.routes[source] = {
+        routes: [source === 'zlibrary' ? 'api' : 'html'],
+        account_required: source === 'zlibrary',
+      };
       if (args.mode === 'live' && source === 'zlibrary') {
         try {
           this.configured(source);
@@ -401,10 +432,14 @@ export class AcquisitionTools {
         return errorEnvelope(error, 'get_book', selection.source, this.env);
       }
     }
+    const via = observedVia(detail.via);
+    detail = { ...detail };
+    delete detail.via;
     const merged = { ...b, ...nonempty(detail) };
     const description = merged.description;
     return nonempty({
       ...this.compact({ ...selection, book: merged }, false),
+      via,
       ref,
       isbn: merged.isbn ?? merged.isbn_13 ?? merged.isbn_10,
       series: decodeMarcMnemonics(merged.series),
@@ -456,6 +491,7 @@ export class AcquisitionTools {
     const count = args.limit ?? 10;
     const attempts: Attempt[] = [];
     const failures: ToolFailure[] = [];
+    const via: Via = [];
     let answered = false;
     let selected: Source | undefined;
     let books: any[] = [];
@@ -471,6 +507,7 @@ export class AcquisitionTools {
       try {
         this.configured(source);
         let fetched: any[];
+        let reply: any;
         const page = cursor?.page ?? 1;
         if (cursor?.held) fetched = cursor.held;
         else if (operation === 'get_history')
@@ -479,8 +516,7 @@ export class AcquisitionTools {
           const languages = normalizeLanguages(args.languages ?? []);
           if (languages.unrecognized.length)
             logger.warn('Z-Library languages unrecognized; sent literally:', JSON.stringify(languages.unrecognized));
-          fetched = (
-            await this.invoke(
+          reply = await this.invoke(
               'search',
               {
                 query: args.query ?? '',
@@ -494,14 +530,14 @@ export class AcquisitionTools {
                 page,
               },
               options,
-            )
-          ).books;
+            );
+          fetched = reply.books;
         } else {
           const query = [args.query, args.author].filter(Boolean).join(' ');
-          fetched = (
-            await this.invoke('search_multi_source', { query, source, count: 50 }, options)
-          ).books;
+          reply = await this.invoke('search_multi_source', { query, source, count: 50 }, options);
+          fetched = reply.books;
         }
+        if (operation === 'search' && reply) via.push(...observedVia(reply.via));
         if (!Array.isArray(fetched))
           throw new ToolFailure('provider_error', 'Provider returned an invalid page.', {
             source,
@@ -540,6 +576,8 @@ export class AcquisitionTools {
         if (books.length || cursor) break;
       } catch (e) {
         const failure = classifyFailure(e, operation, source, this.env);
+        const failedVia = ViaSchema.safeParse((e as any)?.context?.details?.via);
+        if (failedVia.success) via.push(...failedVia.data);
         failures.push(failure);
         attempts.push({
           source,
@@ -548,6 +586,7 @@ export class AcquisitionTools {
               ? 'skipped'
               : 'failed',
           code: failure.code,
+          ...(failedVia.success && failedVia.data.length ? { route: failedVia.data.at(-1)!.route } : {}),
           reason: failure.info.detail?.reason,
           // Set only for browser_check (see classifyFailure); review F2.
           ...(Number.isInteger(failure.info.detail?.http_status)
@@ -609,6 +648,7 @@ export class AcquisitionTools {
       ...(next ? { next_cursor: this.refs.mintStable('c', next) } : {}),
       ...(operation === 'search'
         ? {
+            via,
             routing: nonempty({
               requested,
               served_by: rows.length ? selected : undefined,

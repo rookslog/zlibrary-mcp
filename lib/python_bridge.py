@@ -65,6 +65,12 @@ from lib import enhanced_metadata
 # Import multi-source router
 from lib.sources.router import SourceRouter
 from lib.sources.annas import _BrowserDownloadResult
+from lib.sources.route_trace import (
+    reply_with_via,
+    api_attempt,
+    route_attempt,
+    public_routes,
+)
 from lib.sources.config import SourceConfig, get_preflight_timeout, get_source_config
 from lib.sources.errors import (
     AllSourcesFailedError,
@@ -637,6 +643,8 @@ async def eapi_health_check() -> dict:
         }
 
 
+@reply_with_via
+@api_attempt
 async def search(
     query,
     exact=False,
@@ -1839,12 +1847,13 @@ async def download_book(
             receipt_options = {}
             if publication_hook is not None:
                 receipt_options["host_observer"] = observe_eapi_host
-            original_download_path_str = await eapi.download_file(
-                book_id=int(book_id),
-                book_hash=book_hash,
-                output_dir=eapi_staging.name,
-                **receipt_options,
-            )
+            with route_attempt("zlibrary", "api"):
+                original_download_path_str = await eapi.download_file(
+                    book_id=int(book_id),
+                    book_hash=book_hash,
+                    output_dir=eapi_staging.name,
+                    **receipt_options,
+                )
             if publication_hook is not None:
                 # Link resolution can recover onto a different EAPI domain.
                 eapi_provenance["mirror"] = _provenance_hostname(
@@ -1959,6 +1968,8 @@ async def download_book(
                 eapi_staging.cleanup()
 
 
+@reply_with_via
+@api_attempt
 async def get_book_metadata_complete(book_id: str, book_hash: str = None) -> dict:
     """
     Fetch complete metadata for a book by ID via EAPI.
@@ -2126,6 +2137,7 @@ async def get_source_router(*, for_download: bool = False) -> SourceRouter:
     return _source_router
 
 
+@reply_with_via
 async def search_multi_source(
     query: str,
     source: str = "auto",
@@ -2191,7 +2203,11 @@ def _requires_eapi_client(function_name: str, args_dict: dict) -> bool:
     Z-Library branch, and logging in up front took LibGen — the
     credential-free fallback — down with every Z-Library auth outage (#129).
     """
-    if function_name in {"search_multi_source", "acquire_book"}:
+    if function_name in {
+        "search_multi_source",
+        "acquire_book",
+        "get_annas_browser_limits",
+    }:
         return False
     if function_name == "download_book":
         source = str((args_dict.get("book_details") or {}).get("source") or "").lower()
@@ -2364,6 +2380,11 @@ async def main():
                     )
                 }
             logger.warning("", extra={"auth_diagnostics": diagnostics})
+        # Route facts survive provider and EAPI diagnostic projection.
+        # The closed projection cannot transport provider prose or URLs.
+        via = public_routes(getattr(e, "via", None))
+        if via:
+            error_info.setdefault("details", {})["via"] = via
         if (
             diagnostics is not None
             and _session_input is not None
@@ -2429,6 +2450,35 @@ async def main():
 
 async def _dispatch_bridge_function(function_name: str, args_dict: dict):
     """Dispatch one parsed bridge operation after lifecycle setup."""
+    if function_name == "get_annas_browser_limits":
+        from lib.sources.annas_usage import DailyUsage, UsageCounterUnavailableError
+
+        config = get_source_config()
+        if not config.annas_browser_enabled:
+            return {"enabled": False}
+        result = {
+            "enabled": True,
+            "daily_cap": config.annas_browser_daily_limit,
+            "min_interval_s": config.annas_browser_min_interval,
+            "one_at_a_time": True,
+        }
+        try:
+            result.update(
+                DailyUsage(
+                    os.path.realpath(
+                        os.path.join(
+                            config.annas_browser_profile_dir,
+                            "..",
+                            "annas-browser-usage.json",
+                        )
+                    )
+                ).snapshot(config.annas_browser_daily_limit)
+            )
+        except UsageCounterUnavailableError:
+            result.update(
+                used_today=None, next_slot_in_s=None, counter_status="unavailable"
+            )
+        return result
     if function_name == "acquire_book":
         from lib.acquisition import acquire, AcquisitionError
 

@@ -201,3 +201,12 @@ test('raw null search failures open LibGen and leave the auto scope admitted', a
     books: [],
   });
 });
+
+test('local browser budget remains readable while the auto provider breaker is open', async () => {
+  await load();
+  down.add('auto');
+  for (let i = 0; i < 5; i++) await api.invokeAcquisitionBridge('search_multi_source', { query: 'x', source: 'auto' }).catch(() => {});
+  down.delete('auto');
+  runner.mockImplementationOnce(async () => envelope({ enabled: true, used_today: 12, daily_cap: 50 }));
+  expect(await api.invokeAcquisitionBridge('get_annas_browser_limits')).toMatchObject({ used_today: 12, daily_cap: 50 });
+});

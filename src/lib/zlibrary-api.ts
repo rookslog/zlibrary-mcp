@@ -1,4 +1,5 @@
 import type { SessionInput } from './eapi-session.js';
+import { readVia, type Via } from './route-trace.js';
 import type { Options as PythonShellOptions } from 'python-shell';
 import { randomUUID } from 'node:crypto';
 import { authDiagnosticsFor, readAuthDiagnostics } from './auth-diagnostics.js';
@@ -165,6 +166,7 @@ async function callPythonFunction(
   const diagnosticEapi = needsEapi(functionName, args) || acquisitionUsesEapi;
   const requestId = randomUUID();
   let bridgeAttempted = false;
+  let failedRoutes: Via | undefined;
   // A diagnostic describes a request attempt, not merely an EAPI-capable tool.
   // Explicit child evidence wins; local refusals never invent attempt 1.
   const hasRequestEvidence = (error: any) =>
@@ -176,7 +178,7 @@ async function callPythonFunction(
       !['ValueError', 'TypeError', 'AcquisitionError'].includes(error?.context?.pythonErrorType));
   const finishCall = (work: Promise<any>) =>
     work.catch((error: any) => {
-      if (controlFailures.has(error)) {
+      if (controlFailures.has(error) || (failedRoutes && error && typeof error === 'object')) {
         const shared = error;
         error = Object.create(
           Object.getPrototypeOf(shared),
@@ -187,7 +189,10 @@ async function callPythonFunction(
           writable: true,
           configurable: true,
         });
-        error.context = { ...shared.context };
+        error.context = {
+          ...shared.context,
+          ...(failedRoutes ? { details: { ...shared.context?.details, via: failedRoutes } } : {}),
+        };
       }
       if (diagnosticEapi && hasRequestEvidence(error)) {
         const prior = readAuthDiagnostics(error?.context?.diagnostics);
@@ -402,6 +407,10 @@ async function callPythonFunction(
               );
             }
 
+            // Keep per-call route facts outside session/backoff errors: refresh
+            // may replace the Error, and its shared login must not own our trace.
+            const routeFacts = readVia(resultData?.details?.via);
+            if (routeFacts?.length) failedRoutes = routeFacts;
             if (activeTransport?.action === 'login' && resultData?.login_failed) {
               const failure = resultData.login_failed;
               throw new PythonBridgeError(
@@ -633,7 +642,7 @@ async function callPythonFunction(
     // Account the logical call's final verdict, after its retry budget. A lazy
     // child is admitted once at its session request above, including owner
     // control children; receipt-only and intentional auth retries stay outside.
-    return lazyAcquisition || receiptOnly || transport?.authRetry
+    return lazyAcquisition || receiptOnly || transport?.authRetry || functionName === 'get_annas_browser_limits'
       ? invokeWithRetry(transport, signal)
       : breaker.execute((admission) => {
           boundProbe(admission);

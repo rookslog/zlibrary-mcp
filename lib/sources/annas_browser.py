@@ -24,6 +24,9 @@ from urllib.parse import quote, unquote, urlsplit
 from bs4 import BeautifulSoup, Comment, NavigableString
 
 from ..filename_utils import SAFE_DOCUMENT_EXTENSIONS
+from time import monotonic
+from .route_trace import queued_since
+
 from .annas_usage import (
     CrossProcessLock,
     DailyUsage,
@@ -150,7 +153,11 @@ class _RateLimiter:
         # The wait was computed and the next slot reserved inside the lock, so
         # sleeping it here cannot race another process into the same slot.
         if reserve and wait > 0:
-            await asyncio.sleep(wait)
+            started = monotonic()
+            try:
+                await asyncio.sleep(wait)
+            finally:
+                queued_since(started)
         return remaining
 
     def penalise(self, seconds: float) -> None:
@@ -718,14 +725,20 @@ class AnnasBrowserSession:
 
         async def run_operation():
             nonlocal page, session_locked, process_locked
-            await self._lock.acquire()
-            session_locked = True
+            started = monotonic()
             try:
-                while not self._process_lock.acquire(0, strict=True):
-                    await asyncio.sleep(0.05)
-            except UsageCounterUnavailableError as exc:
-                raise ProviderConfigurationError(PROVIDER, self.host, str(exc)) from exc
-            process_locked = True
+                await self._lock.acquire()
+                session_locked = True
+                try:
+                    while not self._process_lock.acquire(0, strict=True):
+                        await asyncio.sleep(0.05)
+                except UsageCounterUnavailableError as exc:
+                    raise ProviderConfigurationError(
+                        PROVIDER, self.host, str(exc)
+                    ) from exc
+                process_locked = True
+            finally:
+                queued_since(started)
             try:
                 with tempfile.TemporaryFile(dir=self.config.annas_browser_profile_dir):
                     pass

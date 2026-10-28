@@ -117,6 +117,19 @@ Corrected-target contention refuses without waiting, potentially after a
 quota-counting transfer: `request_issued: true` maps to `retry: "may_spend_quota"`
 and invalidates the estimate. A refusal before transfer does not spend quota.
 
+## Route observations
+
+Successful `search`, `get_book` and `download` replies include `via`, an ordered
+array of `{source, route, ms}` observations. `api` means Z-Library EAPI or Anna's
+keyed JSON; `html` means a plain page fetch; `browser` means Anna's visible browser
+route. Anna's reports the adapter's decision, including browser fallback after a
+rejected key, rather than the configured preference. `ms` is elapsed time for the
+source attempt, including browser waiting; `queued_ms`, when present, is the
+part spent waiting for browser locks or pacing. Empty search sources are included.
+Held-row details, held continuation pages and receipt-only downloads return `[]`:
+no new source request was made. Fresh page re-queries can have different timings.
+Existing receipt provenance and quota semantics are unchanged.
+
 ## get_limits
 
 Optional `sources` (same array contract as search; default all) and `mode`
@@ -144,6 +157,23 @@ a cap-only profile omits `remaining` and reports `limit.kind: "unparsed"`.
 A failed lookup stays in that source's `error` entry while other
 sources' reports remain usable. LibGen and Anna's local capability reports cost
 no account calls even in live mode. Availability is not a reachability check.
+
+`routes` adds each source's possible routes and account requirements. LibGen uses
+HTML without an account; Z-Library uses EAPI with an account. Anna's uses HTML
+without an account, keyed JSON with an account key, and the browser when enabled;
+its `account_required` map names these separately. These are capabilities, not a
+claim that a route was used or that its provider is currently reachable.
+
+`routes.annas.browser` is `{enabled:false}` when the browser flag is unset. When
+on, it includes `used_today`, `daily_cap` (ANNAS_BROWSER_DAILY_LIMIT),
+`min_interval_s`, `next_slot_in_s`, `one_at_a_time:true`, and a timing note.
+The counter read is local, read-only, and bypasses account authentication and
+provider circuit breakers. It uses the browser's rolling 24-hour counter and
+pacing floor. `next_slot_in_s` is a snapshot of that floor and daily reset;
+completion of a current browser holder can add more wait. An unreadable counter
+reports null count/wait with `counter_status:"unavailable"`, never a fresh budget.
+If the local bridge cannot start, Anna's budget fields are unknown with a scoped
+error; the other source capabilities remain available.
 
 ## get_history
 

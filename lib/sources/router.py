@@ -19,6 +19,7 @@ from .errors import AllSourcesFailedError, SourceError
 from .libgen import LibgenAdapter
 from .models import DownloadResult, UnifiedBookResult
 from .net import WalkDeadline
+from .route_trace import route_attempt
 
 logger = logging.getLogger("zlibrary.sources")
 
@@ -167,9 +168,10 @@ class SourceRouter:
 
         for name in candidates:
             try:
-                results = await self._adapter_for(name).search(
-                    query, deadline=deadline, **kwargs
-                )
+                with route_attempt(name, "html" if name == "libgen" else None):
+                    results = await self._adapter_for(name).search(
+                        query, deadline=deadline, **kwargs
+                    )
             except AllSourcesFailedError as exc:
                 # A provider that walks its own mirrors (LibGen) reports a set.
                 failures.extend(exc.failures)
@@ -285,11 +287,12 @@ class SourceRouter:
 
                     provider_stream = single_candidate()
 
-                async for result in provider_stream:
-                    if result.quota_info and result.quota_info.downloads_left == 0:
-                        raise QuotaExhaustedError(f"{name} quota exhausted")
-                    with deadline.suspended():
-                        yield result
+                with route_attempt(name, "html" if name == "libgen" else None):
+                    async for result in provider_stream:
+                        if result.quota_info and result.quota_info.downloads_left == 0:
+                            raise QuotaExhaustedError(f"{name} quota exhausted")
+                        with deadline.suspended():
+                            yield result
             except QuotaExhaustedError as exc:
                 failures.append(
                     SourceError(name, detail=str(exc), reason="quota_exhausted")

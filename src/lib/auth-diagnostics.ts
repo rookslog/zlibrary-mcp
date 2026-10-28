@@ -1,3 +1,4 @@
+import { readVia } from './route-trace.js';
 /** Closed diagnostics shared by the error envelope and logger; never upstream prose. */
 export interface AuthDiagnostics {
   failure_kind: 'auth_rejected' | 'transport' | 'wall' | 'ambiguous_status';
@@ -193,5 +194,7 @@ export function safeEapiFailureEnvelope(value: any): Record<string, any> | undef
         : {}),
     };
   }
+  const via = readVia(value.details?.via);
+  if (via) result.details = { ...result.details, via };
   return result;
 }

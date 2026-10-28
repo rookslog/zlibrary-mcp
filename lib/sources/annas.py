@@ -19,6 +19,7 @@ from bs4 import BeautifulSoup
 from bs4.element import Tag
 
 from .base import SourceAdapter
+from .route_trace import decided_route
 from .annas_browser import (
     AnnasBrowserSession,
     is_browser_check as is_browser_launch_check,
@@ -371,6 +372,7 @@ class AnnasArchiveAdapter(SourceAdapter):
             ProviderUnreachableError: If the host does not resolve or connect
             ProviderResponseError: If it answers with an HTTP or protocol error
         """
+        decided_route("html")
         await self._preflight(deadline)
 
         client = await self._get_client()
@@ -404,6 +406,7 @@ class AnnasArchiveAdapter(SourceAdapter):
                         reason="browser_check",
                         status_code=response.status_code,
                     )
+                decided_route("browser")
                 if self._browser is None:
                     self._browser = AnnasBrowserSession(self.config)
                 page_html = await self._browser.search_html(query, deadline=attempt)
@@ -545,6 +548,7 @@ class AnnasArchiveAdapter(SourceAdapter):
             else:
                 yield result
                 return
+        decided_route("browser")
         if self._browser is None:
             self._browser = AnnasBrowserSession(self.config)
         stream = self._browser.iter_download_urls(md5, deadline=deadline)
@@ -582,6 +586,7 @@ class AnnasArchiveAdapter(SourceAdapter):
                 never sent to unverified hosts)
             ProviderResponseError: If the API returns an error or omits download_url
         """
+        decided_route("api")
         host = (urlsplit(self.base_url).hostname or "").lower()
         if not self.secret_key:
             raise ProviderConfigurationError(

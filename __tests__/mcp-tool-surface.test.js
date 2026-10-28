@@ -23,15 +23,15 @@ beforeEach(async () => {
 });
 afterEach(async () => { await client.close(); await server.close(); process.env = previous; });
 const call = async (name, args = {}) => (await client.callTool({ name, arguments: args })).structuredContent;
-test('tools/list stays under 6600 characters with success/error output schemas when the browser is enabled', async () => {
+test('tools/list stays under 7100 bytes with success/error output schemas when the browser is enabled', async () => {
   await client.close(); await server.close();
   process.env.ANNAS_BROWSER_ENABLED = 'true';
   server = createServer(); client = new Client({ name: 'browser-wire', version: '1' });
   const [a, b] = InMemoryTransport.createLinkedPair();
   await Promise.all([client.connect(a), server.connect(b)]);
   const list = await client.listTools();
-  expect(JSON.stringify(list).length).toBeLessThan(6600);
-  expect(JSON.stringify(list).length).toBe(6551);
+  expect(Buffer.byteLength(JSON.stringify(list))).toBeLessThan(7100);
+  expect(Buffer.byteLength(JSON.stringify(list))).toBe(6932);
   expect(ERROR_CODES).toHaveLength(19);
   expect(list.tools.map(t => t.name)).toEqual(['search', 'get_book', 'download', 'get_limits', 'get_history']);
   for (const t of list.tools) expect(t.outputSchema.oneOf).toHaveLength(2);
@@ -49,7 +49,7 @@ test.each(['false', 'true'])('tools/list bytes and Anna description with browser
       ? 'annas searches without a key; downloads need a key or the opted-in visible browser (ANNAS_BROWSER_ENABLED)'
       : 'annas searches without a key, downloads with one.',
   );
-  expect(Buffer.byteLength(wire, 'utf8')).toBe(flag === 'true' ? 6551 : 6493);
+  expect(Buffer.byteLength(wire, 'utf8')).toBe(flag === 'true' ? 6932 : 6874);
   console.log(`tools/list flag=${flag} characters=${wire.length} bytes=${Buffer.byteLength(wire, 'utf8')}`);
 });
 test('tools/list retains current annotations, descriptions, schemas and server identity on the wire', async () => {
@@ -228,7 +228,7 @@ test('every advertised input field is exercised through SDK calls with literal b
     },
     2400000,
   );
-  expect(receipt).toEqual(downloadReply);
+  expect(receipt).toEqual({ ...downloadReply, via: [] });
   const limits = await exercise(
     'get_limits',
     { mode: 'live', sources: ['zlibrary'] },

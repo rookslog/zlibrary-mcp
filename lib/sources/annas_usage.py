@@ -386,6 +386,24 @@ class DailyUsage:
         finally:
             self._release()
 
+    def snapshot(self, limit: int) -> dict:
+        """Read the atomic counter without locks, directories or any writes.
+
+        Match spend's rolling window and clock-rollback adjustment. A spent
+        ceiling also waits for the window reset, even if pacing has expired.
+        """
+        window_started, spent, next_allowed = self._read()
+        now = time.time()
+        if now - window_started >= 86400:
+            window_started, spent = now, 0
+        elif now < window_started:
+            next_allowed = max(0.0, next_allowed - (window_started - now))
+            window_started = now
+        start_at = max(now, next_allowed)
+        if spent >= limit:
+            start_at = max(start_at, window_started + 86400)
+        return {"used_today": spent, "next_slot_in_s": max(0.0, start_at - now)}
+
     def remaining(self, limit: int) -> int:
         """Budget left, without spending any. Never blocks on the lock."""
         window_started, spent, _ = self._read()

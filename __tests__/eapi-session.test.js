@@ -679,3 +679,23 @@ test.each([false, undefined])(
     expect(counts).toMatchObject({ login: 1, grants: 1, quota: 1 });
   },
 );
+
+test.each(['refresh-login', 'second-rejection'])('failed search route survives session %s replacement', async (failureMode) => {
+  fakeBackend();
+  await call(); // warm private session before the search under test
+  const diagnostics = { failure_kind: 'auth_rejected', attempt: 1, refresh_count: 0, request_id: '00000000-0000-4000-8000-000000000001' };
+  runPythonBridge.mockImplementation(async (_script, options, ro) => {
+    if (options.args[0] === 'search_multi_source') return envelope({ books: [{ source: 'libgen', md5: 'a'.repeat(32), title: 'Fixture' }], via: [{ source: 'libgen', route: 'html', ms: 4 }] });
+    const input = ro.sessionInput;
+    if (input.action === 'login') {
+      if (failureMode === 'refresh-login') return envelope({ error: 'fixture login refusal', type: 'EAPIAuthenticationError', login_failed: { status_code: 401, token: 'Authentication rejected' }, diagnostics });
+      ro.onSession(session(input.generation, 'fresh-cookie'));
+      return envelope({ authenticated: true });
+    }
+    return envelope({ error: 'fixture rejection', type: 'EAPIAuthenticationError', auth_rejected: { generation: input.generation }, diagnostics, details: { via: [{ source: 'zlibrary', route: 'api', ms: 9 }] } });
+  });
+  const { AcquisitionTools } = await import('../lib/acquisition-tools.js');
+  const tools = new AcquisitionTools(api.invokeAcquisitionBridge, process.env);
+  const result = await tools.call('search', { query: 'fixture', sources: ['zlibrary', 'libgen'] });
+  expect(result.via.map(({ source, route }) => ({ source, route }))).toEqual([{ source: 'zlibrary', route: 'api' }, { source: 'libgen', route: 'html' }]);
+});

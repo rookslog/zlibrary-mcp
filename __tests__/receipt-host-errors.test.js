@@ -26,5 +26,5 @@ test('receipt host observations do not leak into public download failures', asyn
   expect(JSON.stringify(result)).not.toMatch(/private\.invalid|secret|host|mirror|provenance/);
   expect(ERROR_CODES).toHaveLength(19);
   expect(TOOL_DEFINITIONS.map((tool) => tool.name)).toEqual(['search', 'get_book', 'download', 'get_limits', 'get_history']);
-  expect(JSON.stringify({ tools: TOOL_DEFINITIONS })).toHaveLength(6493);
+  expect(Buffer.byteLength(JSON.stringify({ tools: TOOL_DEFINITIONS }))).toBe(6874);
 });

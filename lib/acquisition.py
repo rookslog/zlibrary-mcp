@@ -4,6 +4,8 @@ The output-root guard is argument admission, not protection against an operator
 concurrently swapping directories. Receipts are not authorization tokens.
 """
 
+from lib.sources.route_trace import reply_with_via
+
 import asyncio
 from contextlib import asynccontextmanager, ExitStack
 from contextvars import ContextVar
@@ -553,6 +555,7 @@ def _remaining_transfer_budget(configured):
     )
 
 
+@reply_with_via
 async def acquire(
     book_details,
     output_dir=None,

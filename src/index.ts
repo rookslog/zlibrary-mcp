@@ -21,14 +21,14 @@ import { ChatFiles, CHAT_FILE_TOOL_DEFINITIONS } from './lib/chat-files.js';
 import { getRuntimeDigest } from './lib/build-info.js';
 
 const browserSearchDescription =
-  'Metadata, not book text. Give query and/or author; exact covers both. sources is ordered: libgen needs no account/quota; zlibrary needs an account, downloads spend quota; annas searches without a key; downloads need a key or the opted-in visible browser (ANNAS_BROWSER_ENABLED). Defaults: get_limits. Use refs. Refs last this process and 5,000 recent entries; on ref_unavailable search and choose again. Pass cursor alone: replay fetches the same position; pages are re-queried, not frozen.';
+  'Metadata, not book text. Give query and/or author; exact covers both. sources is ordered: libgen needs no account/quota; zlibrary needs an account, downloads spend quota; annas searches without a key; downloads need a key or the opted-in visible browser (ANNAS_BROWSER_ENABLED). Defaults: get_limits. Use refs. Refs last this process and 5,000 recent entries; on ref_unavailable search and choose again. Pass cursor alone: replay fetches the same position; pages are re-queried, not frozen. Anna’s may be slow: its browser handles one page at a time; get_limits shows the queue.';
 const descriptions: Record<ToolName, string> = {
   search:
-    'Metadata, not book text. Give query and/or author; exact covers both. sources is ordered: libgen needs no account/quota; zlibrary needs an account, downloads spend quota; annas searches without a key, downloads with one. Defaults: get_limits. Use refs. Refs last this process and 5,000 recent entries; on ref_unavailable search and choose again. Pass cursor alone: replay fetches the same position; pages are re-queried, not frozen.',
+    'Metadata, not book text. Give query and/or author; exact covers both. sources is ordered: libgen needs no account/quota; zlibrary needs an account, downloads spend quota; annas searches without a key, downloads with one. Defaults: get_limits. Use refs. Refs last this process and 5,000 recent entries; on ref_unavailable search and choose again. Pass cursor alone: replay fetches the same position; pages are re-queried, not frozen. Anna’s may be slow: its browser handles one page at a time; get_limits shows the queue.',
   get_book:
     'Edition evidence for a ref. Zlibrary costs one detail call; others return held rows. Description capped at 1,000 characters.',
   download:
-    'Download a ref to server disk: path, bytes and record sidecar, not text. Repeats at the same destination re-hash sha256 and skip an intact copy without quota; different output_dir or filename transfers again. Local O_EXCL locks coalesce processes.',
+    'Download a ref to server disk: path, bytes and record sidecar, not text. Repeats at the same destination re-hash sha256 and skip an intact copy without quota; different output_dir or filename transfers again. Local O_EXCL locks coalesce processes. Anna’s may be slow: its browser handles one page at a time; get_limits shows the queue.',
   get_limits:
     'Capabilities and default source order. mode:local (default) costs no network. mode:live fetches account numbers for named sources; only zlibrary costs an account call. Other clients can change estimates; errors are per source.',
   get_history:
@@ -51,27 +51,30 @@ const errorShape = {
     },
   },
 };
+const viaShape = { type: 'array', items: { type: 'object' } };
 const successShapes: Record<ToolName, Record<string, any>> = {
   search: {
-    required: ['rows', 'routing'],
+    required: ['rows', 'routing', 'via'],
     properties: {
       rows: { type: 'array', items: { type: 'object', required: ['ref', 'source'] } },
+      via: viaShape,
       routing: { type: 'object', required: ['requested', 'attempts', 'fell_back'] },
       next_cursor: { type: 'string' },
       note: { type: 'string' },
     },
   },
   get_book: {
-    required: ['ref', 'source', 'identifiers', 'evidence'],
+    required: ['ref', 'source', 'identifiers', 'evidence', 'via'],
     properties: {
       ref: { type: 'string' },
+      via: viaShape,
       identifiers: { type: 'object' },
       evidence: { type: 'object' },
       description: { type: 'string', maxLength: 1000 },
     },
   },
   download: {
-    required: ['path', 'bytes', 'reused', 'transfer_skipped', 'verified', 'record'],
+    required: ['path', 'bytes', 'reused', 'transfer_skipped', 'verified', 'record', 'via'],
     properties: {
       path: { type: 'string' },
       bytes: { type: 'integer', minimum: 0 },
@@ -79,13 +82,15 @@ const successShapes: Record<ToolName, Record<string, any>> = {
       transfer_skipped: { type: 'boolean' },
       verified: { const: 'sha256' },
       record: { type: 'string' },
+      via: viaShape,
       quota_estimate: { type: 'object' },
     },
   },
   get_limits: {
-    required: ['sources'],
+    required: ['sources', 'routes'],
     properties: {
       sources: { type: 'object' },
+      routes: { type: 'object' },
       default_order: { type: 'array', items: { type: 'string' } },
     },
   },

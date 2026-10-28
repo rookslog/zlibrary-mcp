@@ -155,7 +155,7 @@ test('S5 capture observed tool names and argument names (not an approved surface
       true,
     );
     expect(surface.map(t => t.name)).toEqual(['download', 'get_book', 'get_history', 'get_limits', 'search']);
-    expect(JSON.stringify(listed).length).toBeLessThan(6600);
+    expect(JSON.stringify(listed).length).toBeLessThan(7100);
     await h.captureSurface(surface);
   });
 });
@@ -245,7 +245,11 @@ test('I2 lost-reply cursor replay repeats position and local limits cost no upst
     expect(nextDetail.identifiers).toEqual({ id: '1050', hash: 'hash1050' });
     const replay = await h.call(c, 'search', { cursor });
     expect(replay.rows.map(r => r.title)).toEqual(lost.rows.map(r => r.title));
-    expect(replay).toEqual(lost);
+    // Re-query keeps the page contract; per-call route timings can differ.
+    const { via: replayVia, ...replayPage } = replay;
+    const { via: lostVia, ...lostPage } = lost;
+    expect(replayPage).toEqual(lostPage);
+    expect(replayVia.map(({ source, route }) => ({ source, route }))).toEqual(lostVia.map(({ source, route }) => ({ source, route })));
     const at = await h.stats();
     const invalid = await h.call(c, 'search', { cursor, limit: 2 }, true);
     expect(invalid.error.code).toBe('invalid_argument');

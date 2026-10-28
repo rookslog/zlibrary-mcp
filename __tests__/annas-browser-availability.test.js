@@ -11,7 +11,7 @@ test.each([
   expect(local.sources.annas.download_available).toBe(expected);
   expect(local.sources.annas.search_available).toBe(true);
   expect(local.sources.annas.limit).toEqual({ kind: 'unknown' });
-  expect(invoke).not.toHaveBeenCalled();
+  expect(invoke.mock.calls.map(([operation]) => operation)).toEqual(expected ? ['get_annas_browser_limits'] : []);
 });
 
 test.each([

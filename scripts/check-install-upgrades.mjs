@@ -11,6 +11,7 @@ import { fileURLToPath } from 'node:url';
 import {
   packArtifact,
   inspectInstalledPackage,
+  inspectBuildIdentity,
   protocolSmoke,
   acquisitionJourney,
   run,
@@ -297,6 +298,8 @@ export async function main(args = process.argv.slice(2)) {
       }
       await assertPreserved(home, before);
       const { manifest } = await inspectInstalledPackage(installed);
+      // The candidate may carry a build stamp; its server version must match it.
+      const buildInfo = await inspectBuildIdentity(installed);
       await run('bash', ['setup-uv.sh', '--no-dev'], { cwd: installed, env });
       await run(
         python,
@@ -358,7 +361,7 @@ export async function main(args = process.argv.slice(2)) {
           droppedEnvironment:
             'RAG_QUALITY_STRATEGY has no processing effect; old processing calls refused',
         };
-      });
+      }, { buildInfo });
       assert((await fake.stats()).logins > baseline.logins);
       for (const source of ['libgen', 'zlibrary']) {
         await fake.mode({ mode: 'healthy', reset: true, remaining: 7 });
@@ -375,6 +378,7 @@ export async function main(args = process.argv.slice(2)) {
           expected,
           manifest.version,
           (call) => acquisitionJourney(call, fake, source, output),
+          { buildInfo },
         );
       }
       await assertPreserved(home, before);

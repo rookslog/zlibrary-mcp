@@ -417,9 +417,59 @@ def is_browser_check(response) -> bool:
 
 
 def _settled_search_page(soup) -> bool:
-    return bool(
-        soup.select_one("form.js-search-form[role='search']")
-    ) and not _challenge_page("", soup=soup)
+    """A form can arrive before its streamed result cards and partial matches.
+
+    Require the trailing footer and every row announced by the result headings.
+    Unknown/localized markup refuses conservatively rather than claiming empty.
+    Lazy cover images and incidental "loading" prose are not list state.
+    """
+    form = soup.select_one("form.js-search-form[role='search']")
+    if form is None or _challenge_page("", soup=soup) or not form.find_next("footer"):
+        return False
+    lists = form.select(".js-aarecord-list-outer")
+    number = r"[\d,]+"
+    range_re = re.compile(rf"Results ({number})-({number}) \(.+ total\)")
+    partial_re = re.compile(rf"({number})\+? partial matches")
+    ranges = [
+        match
+        for node in form.select("div")
+        if (match := range_re.fullmatch(node.get_text(" ", strip=True)))
+    ]
+    no_matches = any(
+        node.get_text(" ", strip=True) == "No files found."
+        and not _hidden_link(node)
+        and node.find_parent("a") is None
+        and node.find_parent(class_="js-aarecord-list-outer") is None
+        for node in form.select("div > span.font-bold")
+    )
+    if len(ranges) > 1 or (not ranges and not no_matches):
+        return False
+    expected = 0
+    if ranges:
+        first, last = (int(value.replace(",", "")) for value in ranges[0].groups())
+        expected = last - first + 1
+        if expected <= 0 or not lists:
+            return False
+    for index, node in enumerate(lists):
+        partial = next(
+            (
+                match
+                for heading in node.select("div")
+                if (match := partial_re.fullmatch(heading.get_text(" ", strip=True)))
+            ),
+            None,
+        )
+        count = len(
+            {
+                link["href"]
+                for link in node.select("a[href^='/md5/']")
+                if link.get_text(strip=True)
+            }
+        )
+        want = int(partial[1].replace(",", "")) if partial else expected
+        if (index > 0 and partial is None) or count != want:
+            return False
+    return True
 
 
 def needs_human_check(page_html: str) -> bool:
@@ -427,7 +477,10 @@ def needs_human_check(page_html: str) -> bool:
     soup = BeautifulSoup(page_html, "html.parser")
     if soup.select_one("#ddg-captcha, #ddg-iframe"):
         return True
-    if _settled_search_page(soup):
+    # Preserve the challenge detector's form rule even while results stream.
+    if soup.select_one("form.js-search-form[role='search']") and not _challenge_page(
+        "", soup=soup
+    ):
         return False
     return "complete the manual check" in soup.get_text(" ", strip=True).lower()
 
@@ -830,6 +883,11 @@ class AnnasBrowserSession:
             if page_html is not None:
                 soup = BeautifulSoup(page_html, "html.parser")
                 challenge = _challenge_page("", soup=soup)
+                pending_search = (
+                    kind == "search"
+                    and bool(soup.select_one("form.js-search-form[role='search']"))
+                    and not challenge
+                )
                 ready = (
                     _settled_search_page(soup)
                     if kind == "search"
@@ -870,6 +928,8 @@ class AnnasBrowserSession:
                     not challenge
                     and status is not None
                     and status >= 400
+                    # The initial check hop can precede an unfinished search.
+                    and not pending_search
                     # A challenge hop can answer 403 before the genuine
                     # partner countdown loads. Wait for its visible file link.
                     and not (status == 403 and (pending_partner or confirming_refusal))
@@ -889,6 +949,13 @@ class AnnasBrowserSession:
                 if page_html is not None and _challenge_page(page_html):
                     raise self._browser_check(
                         "The browser check did not clear before its settle timeout."
+                    )
+                if page_html is not None and pending_search:
+                    raise ProviderTimeoutError(
+                        PROVIDER,
+                        self.host,
+                        "Anna search result list did not finish before its settle timeout.",
+                        reason="read_timeout",
                     )
                 raise ProviderResponseError(
                     PROVIDER,

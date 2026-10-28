@@ -26,8 +26,8 @@ REASON_TEXT = {
     "read_timeout": "accepted the connection but sent no response before the deadline",
     "search_timeout": "did not finish the search before the deadline",
     "http_error": "returned an HTTP error",
-    # DDoS-Guard answers in the provider's place; the connector does not try
-    # to pass the challenge, so retrying the same host will not help.
+    # With the browser flag off, HTTP cannot clear the check. With it on, the
+    # visible browser may need a person, or its shared pacing/backoff must end.
     "browser_check": "answered with a DDoS-Guard browser check instead of a result",
     "quota_exhausted": "has no downloads left on this account today",
     "protocol_error": "returned a malformed response",

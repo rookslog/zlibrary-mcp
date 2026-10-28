@@ -1,4 +1,7 @@
-"""FU-1 falsifiers. Real saved HTML; browser/transport boundaries are fakes."""
+"""FU-1 falsifiers. Saved HTML with marked synthetic completion metadata.
+
+Browser/transport boundaries are fakes; original captures remain unchanged.
+"""
 
 import asyncio
 import json
@@ -9,6 +12,8 @@ from unittest.mock import AsyncMock
 import httpx
 import pytest
 
+from annas_browser_test_fixtures import read_browser_fixture
+
 from lib.sources.annas import AnnasArchiveAdapter
 from lib.sources.annas_browser import AnnasBrowserSession, is_browser_check
 from lib.sources.config import SourceConfig
@@ -18,7 +23,7 @@ PAGES = Path(__file__).parent / "fixtures" / "annas-browser"
 
 
 def saved(name):
-    return (PAGES / name).read_text()
+    return read_browser_fixture(PAGES / name)
 
 
 @pytest.mark.parametrize("enabled", [False, True])

@@ -271,9 +271,18 @@ class DailyUsage:
     # -- the operations the limiter needs ---------------------------------
 
     def spend(
-        self, limit: int, min_interval: float = 0.0, *, max_wait: Optional[float] = None
+        self,
+        limit: int,
+        min_interval: float = 0.0,
+        *,
+        max_wait: Optional[float] = None,
+        reserve: bool = True,
     ) -> Tuple[bool, Optional[int], float]:
         """Take one request from today's budget.
+
+        With reserve=False, check the same admission rules under the lock but
+        leave count and request floor unchanged. This is only a preview: a
+        caller must reserve again before visiting, after browser startup.
 
         Returns `(allowed, remaining_after, wait_seconds)`, where `remaining_after` is
         **None** when the count could not be read — unknown, not zero. A
@@ -344,7 +353,8 @@ class DailyUsage:
             # The next slot is reserved *before* the wait, under the lock, so
             # two processes queueing at once get consecutive slots rather than
             # both computing the same start time and going together.
-            self._write(window_started, spent + 1, start_at + min_interval)
+            if reserve:
+                self._write(window_started, spent + 1, start_at + min_interval)
             return True, max(0, limit - (spent + 1)), wait
         finally:
             self._release()

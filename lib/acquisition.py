@@ -821,6 +821,14 @@ async def _acquire(
                 canonical_path,
                 False,
             )
-            if result.get("quota_estimate"):
+            if (
+                source in {"annas", "annas_archive"}
+                and (result.get("provenance") or {}).get("route") == "mirror_download"
+            ):
+                # A browser transfer may adopt an older keyed canonical receipt
+                # after format correction. Keep its provenance immutable, but
+                # do not let this call decrement a cached membership estimate.
+                reply["quota_estimate"] = None
+            elif result.get("quota_estimate"):
                 reply["quota_estimate"] = result["quota_estimate"]
             return reply

@@ -102,7 +102,11 @@ class _RateLimiter:
         return self.usage.remaining(self.daily_limit)
 
     async def acquire(
-        self, deadline: Optional[WalkDeadline] = None, *, operation: str = "browser"
+        self,
+        deadline: Optional[WalkDeadline] = None,
+        *,
+        operation: str = "browser",
+        reserve: bool = True,
     ) -> Optional[int]:
         """Take a slot from the day's budget, then wait out the interval.
 
@@ -115,6 +119,7 @@ class _RateLimiter:
                 self.daily_limit,
                 self.min_interval,
                 max_wait=None if deadline is None else deadline.remaining(),
+                reserve=reserve,
             )
         except UsageWaitExceedsDeadlineError as exc:
             retry_at = datetime.fromtimestamp(
@@ -144,7 +149,7 @@ class _RateLimiter:
             )
         # The wait was computed and the next slot reserved inside the lock, so
         # sleeping it here cannot race another process into the same slot.
-        if wait > 0:
+        if reserve and wait > 0:
             await asyncio.sleep(wait)
         return remaining
 
@@ -167,6 +172,7 @@ _CHALLENGE_MAX_BYTES = 256 * 1024
 _MD5_RE = re.compile(r"[a-f0-9]{32}")
 _SLOW_LINK_RE = re.compile(r"/slow_download/([a-f0-9]{32})/0/\d+")
 _DOWNLOAD_LABEL_RE = re.compile(r"\b(?:download|save|get\s+file)\b", re.I)
+_PARTNER_REFUSAL_CONFIRM_SECONDS = 3.0
 
 
 def _slow_download_paths(page_html: str, md5: str) -> list[str]:
@@ -199,15 +205,8 @@ def _hidden_link(anchor) -> bool:
     return False
 
 
-def _direct_file_url(page_html, base_host: str) -> Optional[str]:
-    """Select the partner download block or Download now, never a card link."""
-    soup = (
-        BeautifulSoup(page_html, "html.parser")
-        if isinstance(page_html, str)
-        else page_html
-    )
-    if _partner_countdown(soup):
-        return None
+def _partner_block(soup):
+    """The immediate sibling of the partner heading, excluding the book card."""
     marker = next(
         (
             p
@@ -216,7 +215,17 @@ def _direct_file_url(page_html, base_host: str) -> Optional[str]:
         ),
         None,
     )
-    block = marker.find_next_sibling() if marker is not None else None
+    return marker.find_next_sibling() if marker is not None else None
+
+
+def _direct_file_url(page_html, base_host: str) -> Optional[str]:
+    """A visible selected file link wins over incidental countdown evidence."""
+    soup = (
+        BeautifulSoup(page_html, "html.parser")
+        if isinstance(page_html, str)
+        else page_html
+    )
+    block = _partner_block(soup)
     block_links = (
         []
         if block is None
@@ -271,25 +280,36 @@ def _direct_file_url(page_html, base_host: str) -> Optional[str]:
 
 
 def _partner_countdown(soup) -> bool:
-    """Positive visible countdown evidence; the normal heading is not a wait."""
-    for node in soup.select(
-        "main .js-download-countdown, main .js-countdown, main #countdown, main [data-countdown]"
-    ):
-        if not _hidden_link(node):
-            return True
-    main = soup.select_one("main")
-    if main is None:
-        return False
+    """Wait evidence after ready-link selection, with refusal taking precedence.
+
+    Explicit markers remain usable while JavaScript fills in a number. Free
+    text belongs only to the partner block, never the book card or description.
+    """
+    block = _partner_block(soup)
     text = " ".join(
         str(s)
-        for s in main.find_all(string=True)
+        for s in (() if block is None else block.find_all(string=True))
         if not isinstance(s, Comment)
         and s.parent.name not in ("script", "style")
         and not _hidden_link(s.parent)
     )
+    if re.search(
+        r"\b(?:too\s+many\s+requests|rate[\s-]*limit(?:ed|ing)?|"
+        r"downloads?\s+refused|access\s+denied|try\s+again\s+later)\b",
+        text,
+        re.I,
+    ):
+        return False
+    for node in soup.select(
+        "main .js-download-countdown, main .js-countdown, main #countdown, "
+        "main [data-countdown], main .js-partner-countdown"
+    ):
+        if not _hidden_link(node):
+            return True
     return bool(
         re.search(
-            r"\b(?:wait(?:\s+for)?|(?:ready|available)\s+in)\s+\d+(?:\.\d+)?\s*(?:seconds?|minutes?)\b",
+            r"\b(?:wait(?:\s+for)?|(?:ready|available|will\s+start)\s+in)\s+"
+            r"(?:\d+(?:\.\d+)?\s*)?(?:seconds?|minutes?)\b",
             text,
             re.I,
         )
@@ -607,9 +627,14 @@ class AnnasBrowserSession:
                 raise ProviderConfigurationError(
                     PROVIDER, self.host, f"unusable Anna's browser profile: {exc}"
                 ) from exc
-            await self._limiter.acquire(deadline, operation=operation)
+            # Refuse known quota/backoff/counter failures before starting Chrome,
+            # without spending a slot that a failed launch cannot use.
+            await self._limiter.acquire(deadline, operation=operation, reserve=False)
             context = await self._ensure_context()
             page = await context.new_page()
+            # Another profile can share this counter: recheck and reserve
+            # atomically only when this context and page are ready to visit.
+            await self._limiter.acquire(deadline, operation=operation)
             return await visit(page, deadline)
 
         try:
@@ -737,6 +762,7 @@ class AnnasBrowserSession:
         status = getattr(response, "status", None)
         loop = asyncio.get_running_loop()
         expires = loop.time() + self.config.annas_browser_settle_seconds
+        refusal_since = None
         while True:
             try:
                 page_html = await page.content()
@@ -746,8 +772,11 @@ class AnnasBrowserSession:
                 # An automatic check can navigate while content is read.
                 # Retry the DOM read only; never reload or click the check.
                 page_html = None
+            if page_html is None:
+                refusal_since = None
             if page_html is not None:
                 soup = BeautifulSoup(page_html, "html.parser")
+                challenge = _challenge_page("", soup=soup)
                 ready = (
                     _settled_search_page(soup)
                     if kind == "search"
@@ -760,7 +789,7 @@ class AnnasBrowserSession:
                 if (
                     ready
                     and not soup.select_one("#ddg-captcha, #ddg-iframe")
-                    and not _challenge_page("", soup=soup)
+                    and not challenge
                 ):
                     # Settled content wins over incidental manual-check prose
                     # in a result, and over an initial challenge-hop status.
@@ -770,13 +799,27 @@ class AnnasBrowserSession:
                         "Anna's asks for a person in the visible Chrome window."
                     )
                 pending_partner = kind == "partner" and _partner_countdown(soup)
+                confirming_refusal = False
+                if kind == "partner" and status == 403:
+                    if pending_partner or challenge:
+                        refusal_since = None
+                    elif refusal_since is None:
+                        # A 403 hop can precede JS countdown content. The first
+                        # no-countdown read can never confirm a refusal alone.
+                        refusal_since = loop.time()
+                        confirming_refusal = True
+                    else:
+                        confirming_refusal = (
+                            loop.time() - refusal_since
+                            < _PARTNER_REFUSAL_CONFIRM_SECONDS
+                        )
                 if (
-                    not _challenge_page(page_html)
+                    not challenge
                     and status is not None
                     and status >= 400
                     # A challenge hop can answer 403 before the genuine
                     # partner countdown loads. Wait for its visible file link.
-                    and not (status == 403 and pending_partner)
+                    and not (status == 403 and (pending_partner or confirming_refusal))
                 ):
                     if status in (403, 429, 503):
                         raise self._browser_check(

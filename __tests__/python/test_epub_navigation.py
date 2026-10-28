@@ -104,10 +104,10 @@ def test_manifest_targets_cannot_escape_archive(href):
 @pytest.mark.parametrize(
     "member", ["../outside", "/outside", "OPS/../../outside", "OPS\\outside"]
 )
-def test_unsafe_zip_member_is_rejected_even_when_unused(member):
+def test_unsafe_zip_member_is_ignored_when_unused(member):
     contents = fixture.entries()
     contents[member] = "not extracted"
-    assert read_entries(contents) == []
+    assert read_entries(contents) == EXPECTED
 
 
 @pytest.mark.parametrize(
@@ -250,3 +250,128 @@ def test_unknown_xml_encoding_returns_empty_sections():
         b'<?xml version="1.0" encoding="not-a-real-codec"?><html/>'
     )
     assert read_entries(contents) == []
+
+
+# Follow-up 1: a malformed nav must not suppress an independently valid NCX.
+@pytest.mark.parametrize(
+    "payload", ["<broken>", fixture.NAV.replace("Part <em>One</em>", "Part&nbsp;One")]
+)
+def test_nav_parse_exception_falls_through_to_ncx(payload):
+    contents = fixture.entries(3, both=True)
+    contents["OPS/nav/toc.xhtml"] = payload
+    assert read_entries(contents) == EXPECTED
+
+
+@pytest.mark.parametrize("version", [2, 3])
+def test_empty_labels_promote_children_and_renumber_without_inventing_titles(version):
+    contents = fixture.entries(version)
+    key = "OPS/nav/toc.xhtml" if version == 3 else "OPS/outline/book.ncx"
+    contents[key] = contents[key].replace(
+        "Part <em>One</em>" if version == 3 else "Part One",
+        "<img/>" if version == 3 else "",
+    )
+    assert read_entries(contents) == [
+        {"id": "1", "title": "Chapter 1 & start", "level": 1, "children": []},
+        {"id": "2", "title": "Chapter 2", "level": 1, "children": []},
+        {"id": "3", "title": "End", "level": 1, "children": []},
+    ]
+
+
+@pytest.mark.parametrize(
+    "member", ["../outside", "/outside", "OPS/../../outside", "OPS\\outside", "OPS/a:b"]
+)
+def test_unused_unsafe_members_do_not_discard_navigation(member):
+    contents = fixture.entries()
+    contents[member] = "unused"
+    assert read_entries(contents) == EXPECTED
+
+
+@pytest.mark.parametrize("used", [False, True])
+def test_symlink_member_is_refused_only_when_read(used):
+    stream = io.BytesIO()
+    contents = fixture.entries()
+    key = "OPS/nav/toc.xhtml" if used else "unused-link"
+    if used:
+        del contents[key]
+    fixture.write(stream, contents)
+    with zipfile.ZipFile(stream, "a") as archive:
+        info = zipfile.ZipInfo(key)
+        info.create_system = 3
+        info.external_attr = 0o120777 << 16
+        archive.writestr(info, fixture.NAV)
+    stream.seek(0)
+    assert chat_files.epub_sections(stream) == ([] if used else EXPECTED)
+
+
+def test_unflagged_utf8_member_names_resolve_from_opf():
+    import struct
+
+    contents = fixture.entries()
+    contents["OPS/package.opf"] = contents["OPS/package.opf"].replace(
+        "nav/toc.xhtml", "nav/tóc.xhtml"
+    )
+    contents["OPS/nav/tóc.xhtml"] = contents.pop("OPS/nav/toc.xhtml")
+    stream = io.BytesIO()
+    fixture.write(stream, contents)
+    data = bytearray(stream.getvalue())
+    for signature, flag_offset in [(b"PK\x03\x04", 6), (b"PK\x01\x02", 8)]:
+        start = 0
+        while (offset := data.find(signature, start)) >= 0:
+            flags = struct.unpack_from("<H", data, offset + flag_offset)[0]
+            struct.pack_into("<H", data, offset + flag_offset, flags & ~0x800)
+            start = offset + 4
+    assert chat_files.epub_sections(io.BytesIO(data)) == EXPECTED
+
+
+@pytest.mark.parametrize("version", [2, 3])
+@pytest.mark.parametrize(
+    "target",
+    ["https://example.invalid/chapter", "missing.xhtml", "../../../escape", ""],
+)
+def test_bad_entry_target_drops_parent_but_promotes_children(version, target):
+    contents = fixture.entries(version)
+    if version == 3:
+        contents["OPS/nav/toc.xhtml"] = contents["OPS/nav/toc.xhtml"].replace(
+            "<span>Part <em>One</em></span>", f'<a href="{target}">Part One</a>'
+        )
+    else:
+        contents["OPS/outline/book.ncx"] = contents["OPS/outline/book.ncx"].replace(
+            '<content src="../c.xhtml"/>', f'<content src="{target}"/>', 1
+        )
+    assert read_entries(contents) == [
+        {"id": "1", "title": "Chapter 1 & start", "level": 1, "children": []},
+        {"id": "2", "title": "Chapter 2", "level": 1, "children": []},
+        {"id": "3", "title": "End", "level": 1, "children": []},
+    ]
+
+
+@pytest.mark.parametrize("version", [2, 3])
+def test_linkless_leaf_dropped_but_linkless_group_kept(version):
+    contents = fixture.entries(version)
+    if version == 3:
+        contents["OPS/nav/toc.xhtml"] = contents["OPS/nav/toc.xhtml"].replace(
+            ' href="../c.xhtml#end"', ""
+        )
+    else:
+        contents["OPS/outline/book.ncx"] = (
+            contents["OPS/outline/book.ncx"]
+            .replace('<content src="../c.xhtml"/>', "", 1)
+            .replace('<content src="../c.xhtml#end"/>', "")
+        )
+    assert read_entries(contents) == EXPECTED[:1]
+
+
+def test_fragment_only_href_resolves_to_navigation_manifest_item():
+    contents = fixture.entries()
+    contents["OPS/nav/toc.xhtml"] = contents["OPS/nav/toc.xhtml"].replace(
+        "../c.xhtml#end", "#end"
+    )
+    assert read_entries(contents) == EXPECTED
+
+
+@pytest.mark.parametrize("version", [2, 3])
+def test_entry_paths_resolve_from_navigation_document_not_opf(version):
+    contents = fixture.entries(version)
+    key = "OPS/nav/toc.xhtml" if version == 3 else "OPS/outline/book.ncx"
+    contents[key] = contents[key].replace("../c.xhtml#end", "c.xhtml#end")
+    assert read_entries(contents) == EXPECTED[:1]

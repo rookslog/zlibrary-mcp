@@ -4,6 +4,7 @@ import * as path from 'node:path';
 import type { CallToolResult, Tool } from '@modelcontextprotocol/sdk/types.js';
 import { z } from 'zod';
 import { getPythonScriptPath } from './paths.js';
+import { logger } from './logger.js';
 import { getManagedPythonPath } from './venv-manager.js';
 import { PdfQueue, pageRenderQueue } from './pdf-queue.js';
 import {
@@ -110,10 +111,25 @@ async function documentHelper(
   args: Facts,
   signal?: AbortSignal,
 ): Promise<Facts> {
-  const python =
-    command === 'epub-map' ? await getManagedPythonPath() : process.env.ZLIBRARY_PDF_PYTHON;
+  const epub = command === 'epub-map';
+  const kind = epub ? 'EPUB' : 'PDF';
+  const failed = epub
+    ? (message: string) => new Error(`The request was valid; the EPUB helper failed: ${message}`)
+    : helperFailure;
+  let python: string | undefined;
+  if (epub) {
+    try {
+      python = await getManagedPythonPath();
+    } catch {
+      throw failed('managed Python environment is unavailable; run setup-uv.sh');
+    }
+  } else python = process.env.ZLIBRARY_PDF_PYTHON;
   if (!python || !path.isAbsolute(python))
-    throw helperFailure('ZLIBRARY_PDF_PYTHON must be an absolute interpreter path with PyMuPDF');
+    throw failed(
+      epub
+        ? 'managed Python must be an absolute interpreter path; run setup-uv.sh'
+        : 'ZLIBRARY_PDF_PYTHON must be an absolute interpreter path with PyMuPDF',
+    );
   const queue =
     command === 'epub-map' ? epubQueue : command === 'render' ? pageRenderQueue : pdfQueue;
   const deadline = command === 'epub-map' ? 10000 : PDF_DEADLINES_MS[command];
@@ -136,27 +152,27 @@ async function documentHelper(
         // starting, and the helper dying. Only the second is a setting problem.
         const stopped = () =>
           childSignal.reason === 'timeout'
-            ? helperFailure(
-                `PDF ${command} did not finish within ${deadline / 1000} s and was stopped; the machine may be busy, retry shortly`,
+            ? failed(
+                `${kind} ${command} did not finish within ${deadline / 1000} s and was stopped; the machine may be busy, retry shortly`,
               )
-            : new Error('PDF request was cancelled');
+            : new Error(`${kind} request was cancelled`);
         child.on('error', (error: NodeJS.ErrnoException) => {
           if (childSignal.aborted) reject(stopped());
           else
             reject(
-              helperFailure(
-                `PDF helper could not start (${error.code ?? 'spawn error'}); check ZLIBRARY_PDF_PYTHON`,
+              failed(
+                `${kind} helper could not start (${error.code ?? 'spawn error'}); ${epub ? 'check the managed Python environment' : 'check ZLIBRARY_PDF_PYTHON'}`,
               ),
             );
         });
         child.on('close', (code, killSignal) => {
           if (childSignal.aborted) return reject(stopped());
           if (length > OUTPUT_LIMIT)
-            return reject(helperFailure('PDF helper output exceeded its 5 MiB limit'));
+            return reject(failed(`${kind} helper output exceeded its 5 MiB limit`));
           if (code !== 0)
             return reject(
-              helperFailure(
-                `PDF helper exited abnormally (${code === null ? `signal ${killSignal}` : `status ${code}`})`,
+              failed(
+                `${kind} helper exited abnormally (${code === null ? `signal ${killSignal}` : `status ${code}`})`,
               ),
             );
           try {
@@ -166,7 +182,7 @@ async function documentHelper(
             if (value.error) reject(new Error(value.error));
             else resolve(value);
           } catch {
-            reject(helperFailure('PDF helper returned an invalid result'));
+            reject(failed(`${kind} helper returned an invalid result`));
           }
         });
         child.stdin!.on('error', () => {});
@@ -208,7 +224,13 @@ export class ChatFiles {
         format === 'epub'
           ? await documentHelper('epub-map', source, cache, {}, signal)
               .then((r) => r.sections ?? [])
-              .catch(() => [])
+              .catch((error: unknown) => {
+                // Keep the existing map reply, but make operational failures
+                // visible through the stderr logger (never the protocol stream).
+                const message = error instanceof Error ? error.message : 'helper failed';
+                logger.warn('EPUB navigation unavailable:', message.replaceAll('PDF', 'EPUB'));
+                return [];
+              })
           : [];
       return {
         ...base,

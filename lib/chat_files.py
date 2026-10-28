@@ -36,6 +36,19 @@ XHTML = "{http://www.w3.org/1999/xhtml}"
 NCX = "{http://www.daisy.org/z3986/2005/ncx/}"
 
 
+EPUB_PARSE_ERRORS = (
+    OSError,
+    ValueError,
+    LookupError,
+    RuntimeError,
+    EOFError,
+    expat.ExpatError,
+    zipfile.BadZipFile,
+    zlib.error,
+    NotImplementedError,
+)
+
+
 def epub_path(base, href):
     """Resolve a local archive URI, never a host path or external URL."""
     uri = urlsplit(href)
@@ -94,33 +107,68 @@ def epub_xml(data):
     return builder.close()
 
 
-def epub_outline(parent, ncx=False, prefix="", level=1, total=None):
-    total = [0] if total is None else total
-    if level > 32:
-        raise ValueError("EPUB outline exceeds depth limit")
-    result = []
-    tag = NCX + "navPoint" if ncx else XHTML + "li"
-    for item in parent.findall(tag):
-        label = (
-            item.find(NCX + "navLabel/" + NCX + "text")
-            if ncx
-            else next((n for n in item if n.tag in (XHTML + "a", XHTML + "span")), None)
-        )
-        title = " ".join("".join(label.itertext()).split()) if label is not None else ""
-        total[0] += 1
-        if not title or len(title) > 2000 or total[0] > EPUB_MAX_SECTIONS:
-            raise ValueError("invalid or excessive EPUB outline")
-        identifier = prefix + str(len(result) + 1)
-        child = item if ncx else item.find(XHTML + "ol")
-        children = (
-            epub_outline(child, ncx, identifier + ".", level + 1, total)
-            if child is not None and len(child)
-            else []
-        )
-        result.append(
-            {"id": identifier, "title": title, "level": level, "children": children}
-        )
-    return result
+def epub_outline(parent, ncx=False, document_name="", targets=None):
+    total = 0
+
+    def collect(parent, depth=1):
+        nonlocal total
+        if depth > 32:
+            raise ValueError("EPUB outline exceeds depth limit")
+        result = []
+        tag = NCX + "navPoint" if ncx else XHTML + "li"
+        for item in parent.findall(tag):
+            label = (
+                item.find(NCX + "navLabel/" + NCX + "text")
+                if ncx
+                else next(
+                    (n for n in item if n.tag in (XHTML + "a", XHTML + "span")), None
+                )
+            )
+            title = (
+                " ".join("".join(label.itertext()).split()) if label is not None else ""
+            )
+            total += 1
+            if len(title) > 2000 or total > EPUB_MAX_SECTIONS:
+                raise ValueError("invalid or excessive EPUB outline")
+            child = item if ncx else item.find(XHTML + "ol")
+            children = (
+                collect(child, depth + 1) if child is not None and len(child) else []
+            )
+            link = item.find(NCX + "content") if ncx else label
+            href = link.get("src" if ncx else "href") if link is not None else None
+            valid = True
+            if targets is not None and href is not None:
+                try:
+                    # A fragment-only URI names the navigation document itself.
+                    target = (
+                        epub_path(
+                            document_name,
+                            href.split("#", 1)[0] or posixpath.basename(document_name),
+                        )
+                        if href
+                        else None
+                    )
+                    valid = target in targets
+                except (ValueError, UnicodeError):
+                    valid = False
+            if (
+                not title
+                or not valid
+                or (targets is not None and href is None and not children)
+            ):
+                result.extend(children)
+            else:
+                result.append({"title": title, "children": children})
+        return result
+
+    def number(nodes, prefix="", level=1):
+        for index, node in enumerate(nodes, 1):
+            identifier = prefix + str(index)
+            node.update(id=identifier, level=level)
+            number(node["children"], identifier + ".", level + 1)
+        return nodes
+
+    return number(collect(parent))
 
 
 def epub_sections(stream):
@@ -154,21 +202,36 @@ def epub_sections(stream):
             names = {item.filename for item in members}
             if len(members) != count or len(names) != count:
                 return []
+            # Some older ZIP writers stored UTF-8 bytes without setting bit 11.
+            # Retain ZipInfo for the read, so local-header validation still uses
+            # the original decoded ZIP name. Refuse ambiguous aliases on lookup.
+            lookup = {}
             for item in members:
-                name = item.filename
-                if (
-                    not name
-                    or name.startswith("/")
-                    or "\\" in name
-                    or ":" in name
-                    or "\0" in item.orig_filename
-                    or ".." in name.split("/")
-                    or (item.external_attr >> 16) & 0o170000 == 0o120000
-                ):
-                    return []
+                aliases = {item.filename}
+                if not item.flag_bits & 0x800:
+                    try:
+                        aliases.add(item.filename.encode("cp437").decode("utf-8"))
+                    except UnicodeError:
+                        pass
+                for alias in aliases:
+                    lookup.setdefault(alias, []).append(item)
 
             def read_xml(name):
-                info = archive.getinfo(name)
+                matches = lookup.get(name, [])
+                if len(matches) != 1:
+                    raise ValueError("missing or ambiguous EPUB member")
+                info = matches[0]
+                member = info.filename
+                if (
+                    not member
+                    or member.startswith("/")
+                    or "\\" in member
+                    or ":" in member
+                    or "\0" in info.orig_filename
+                    or ".." in member.split("/")
+                    or (info.external_attr >> 16) & 0o170000 == 0o120000
+                ):
+                    raise ValueError("unsafe EPUB member")
                 if (
                     info.file_size > EPUB_MAX_XML
                     or info.flag_bits & 1
@@ -193,25 +256,37 @@ def epub_sections(stream):
             package_name = epub_path("", root.attrib["full-path"])
             package = read_xml(package_name)
             items = package.findall(OPF + "manifest/" + OPF + "item")
+            targets = set()
+            for item in items:
+                try:
+                    targets.add(epub_path(package_name, item.attrib["href"]))
+                except (ValueError, LookupError):
+                    continue
             navigation = next(
                 (n for n in items if "nav" in n.get("properties", "").split()), None
             )
             if navigation is not None:
-                document = read_xml(epub_path(package_name, navigation.attrib["href"]))
-                toc = next(
-                    (
-                        n
-                        for n in document.iter(XHTML + "nav")
-                        if "toc"
-                        in n.get("{http://www.idpf.org/2007/ops}type", "").split()
-                    ),
-                    None,
-                )
-                ordered = toc.find(XHTML + "ol") if toc is not None else None
-                if ordered is not None:
-                    sections = epub_outline(ordered)
-                    if sections:
-                        return sections
+                try:
+                    document_name = epub_path(package_name, navigation.attrib["href"])
+                    document = read_xml(document_name)
+                    toc = next(
+                        (
+                            n
+                            for n in document.iter(XHTML + "nav")
+                            if "toc"
+                            in n.get("{http://www.idpf.org/2007/ops}type", "").split()
+                        ),
+                        None,
+                    )
+                    ordered = toc.find(XHTML + "ol") if toc is not None else None
+                    if ordered is not None:
+                        sections = epub_outline(
+                            ordered, document_name=document_name, targets=targets
+                        )
+                        if sections:
+                            return sections
+                except EPUB_PARSE_ERRORS:
+                    pass  # A broken nav must not suppress an independent NCX.
             spine = package.find(OPF + "spine")
             toc_id = spine.get("toc") if spine is not None else None
             navigation = next(
@@ -227,21 +302,14 @@ def epub_sections(stream):
                     None,
                 )
             if navigation is not None:
-                document = read_xml(epub_path(package_name, navigation.attrib["href"]))
+                document_name = epub_path(package_name, navigation.attrib["href"])
+                document = read_xml(document_name)
                 toc = document.find(NCX + "navMap")
                 if toc is not None:
-                    return epub_outline(toc, ncx=True)
-    except (
-        OSError,
-        ValueError,
-        LookupError,
-        RuntimeError,
-        EOFError,
-        expat.ExpatError,
-        zipfile.BadZipFile,
-        zlib.error,
-        NotImplementedError,
-    ):
+                    return epub_outline(
+                        toc, ncx=True, document_name=document_name, targets=targets
+                    )
+    except EPUB_PARSE_ERRORS:
         pass
     return []
 

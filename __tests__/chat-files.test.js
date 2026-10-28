@@ -233,9 +233,10 @@ test.each([2, 3])(
   },
 );
 test('malformed EPUB retains the existing map reply', async () => {
+  await fs.copyFile('__tests__/fixtures/malformed.epub', path.join(root, 'malformed.epub'));
   delete process.env.ZLIBRARY_PDF_PYTHON;
   await connect();
-  const r = await call('get_book_map', { file: 'book.epub' });
+  const r = await call('get_book_map', { file: 'malformed.epub' });
   expect(r.isError).toBeUndefined();
   expect(facts(r).sections).toEqual([]);
   expect(facts(r).guidance).toBe('Send whole if it fits; EPUB splitting is not supported yet.');

@@ -73,10 +73,10 @@ export function usageFrom(driver, events) {
 }
 export function finalFrom(driver, events) {
   if (driver === 'codex')
-    return events
-      .filter((e) => e.type === 'item.completed' && e.item?.type === 'agent_message')
-      .map((e) => e.item.text)
-      .join('\n');
+    return (
+      events.findLast((e) => e.type === 'item.completed' && e.item?.type === 'agent_message')?.item
+        .text ?? ''
+    );
   return events.findLast((e) => e.type === 'result')?.result ?? '';
 }
 export function sessionFrom(driver, events) {
@@ -375,6 +375,14 @@ export function commandFor({
     'plugins',
     '--disable',
     'shell_tool',
+    '--disable',
+    'apps',
+    '--disable',
+    'image_generation',
+    '--disable',
+    'browser_use',
+    '--disable',
+    'computer_use',
     ...config.flatMap(([key, value]) => ['-c', `${key}=${JSON.stringify(value)}`]),
     ...(session ? [session] : []),
   ];

@@ -75,9 +75,10 @@ export async function scoreSlice2({
       !searches.some(
         (s) =>
           ok(s) &&
-          source(s, 'zlibrary') &&
           before(s, c) &&
-          rowsOf(data(s)).some((r) => r.ref === c.args.ref && same(r, c.selected)),
+          rowsOf(data(s)).some(
+            (r) => r.source === 'zlibrary' && r.ref === c.args.ref && same(r, c.selected),
+          ),
       )
     )
       mark('missing same-task observed selection before acquisition');

@@ -139,11 +139,16 @@ it). The actual driver request behavior is untested without paid execution.
 
 Codex flags: `exec --ignore-user-config --ignore-rules --skip-git-repo-check
 --json --model gpt-6.1-sol --disable code_mode_tool_search --disable code_mode
---disable multi_agent --disable memories --disable plugins --disable shell_tool`,
-plus recorded `-c` values for high effort, read-only sandbox, no approvals, web
-search disabled, the single stdio `mcp_servers.books` proxy and fixed developer
-instructions. Warm turns use `exec resume UUID` with the same settings. Local
-`codex features list` shows `code_mode_tool_search` and `code_mode` available;
+--disable multi_agent --disable memories --disable plugins --disable shell_tool
+--disable apps --disable image_generation --disable browser_use --disable computer_use`,
+plus recorded `-c` values for high effort, read-only sandbox,
+`approval_policy="never"`, books-only tool approval, web search disabled,
+the single stdio `mcp_servers.books` proxy and fixed developer
+instructions. Only the last completed Codex `agent_message` supplies the final
+answer; earlier progress messages are excluded. Prose inside that final message
+still fails the JSON-only format gate. Warm turns use `exec resume UUID` with
+the same settings. Local `codex features list` shows `code_mode_tool_search` and
+`code_mode` available;
 legacy `tool_search` and `tool_search_always_defer_mcp_tools` are removed and are
 **not** passed. A supported provider-cache flush/off control was not found. Tool
 exposure/resume were exercised only on the lead's supplied Codex 0.162.1 smoke
@@ -697,7 +702,11 @@ completed receipt and provider/quota evidence. E12 really restarts the process,
 recovers the same edition through a fresh search. The expired-ref failure is
 tested but need not be attempted when the restart is already known. Targeted searches
 that identify the right record can acquire it without an extra detail call;
-both paths have executed good controls. At least one bad
+both paths have executed good controls. E1/E2/E3/E12 also execute targeted searches
+requesting `["libgen", "zlibrary"]`: the matched selected row must be served by
+Z-Library, while issuance, transfer, bytes and receipt checks remain unchanged.
+Synthetic controls relabel the matching row as LibGen and must fail selection;
+the fake LibGen catalogue cannot serve these same target identities. At least one bad
 trace per E fixture executes a wrong call with its own provider events/quota/
 files; replay/tamper controls add narrower checks.
 

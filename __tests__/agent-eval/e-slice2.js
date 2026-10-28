@@ -35,13 +35,16 @@ export const eCases = [
   'E18-malformed',
   'E1',
   'E1-recover',
+  'E1-mixed',
   'E1-query',
   'E1-direct',
   'E2',
   'E2-query',
+  'E2-mixed',
   'E2-direct',
   'E3',
   'E3-query',
+  'E3-mixed',
   'E3-direct',
   'E7',
   'E9',
@@ -51,6 +54,7 @@ export const eCases = [
   'E10-canonical',
   'E12',
   'E12-query',
+  'E12-mixed',
   'E12-direct',
   'E12-fresh',
   'E14',
@@ -90,14 +94,19 @@ export async function exerciseSlice2(id, consume, options = {}) {
   const s = await EDiagnosticServer.start({ ...task, variant });
   const context = { variant, caseId: id, executedWrong: !!options.wrongMove };
   const call = async (name, args = {}) => dataOf(await s.call(name, args));
-  const search = (query, extra = {}) => call('search', { query, sources: ['zlibrary'], ...extra });
+  const search = (query, extra = {}) =>
+    call('search', {
+      query,
+      sources: variant === 'mixed' ? ['libgen', 'zlibrary'] : ['zlibrary'],
+      ...extra,
+    });
   const download = (row) => call('download', { ref: row.ref, output_dir: s.downloads });
   let answer;
   try {
     if (variant === 'recover') await call('search', { query: task.prompt });
     if (['E1', 'E2', 'E3', 'E12'].includes(base)) {
       const target = { E1: 502, E2: 504, E3: 501, E12: 502 }[base];
-      const query = ['query', 'direct'].includes(variant)
+      const query = ['query', 'direct', 'mixed'].includes(variant)
         ? {
             E1: 'Leavey Rand Glas',
             E2: 'Gayatri Grammatology',

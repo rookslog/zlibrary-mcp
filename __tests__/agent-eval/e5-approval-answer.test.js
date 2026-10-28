@@ -1,10 +1,10 @@
 import { test, expect } from '@jest/globals';
 import path from 'node:path';
-import { commandFor } from './drivers.js';
+import { commandFor, finalFrom } from './drivers.js';
 import { here } from './server.js';
 import { evaluateEAnswer } from './answers.js';
 import { exerciseEFixture } from './e-scripted.js';
-import { scoreTask } from './oracles.js';
+import { scoreTask, dataOf, rowsOf } from './oracles.js';
 import { eRunTotals } from './e-runner.js';
 
 // Catches a missing/misspelled books override or accidental widening of tool access.
@@ -38,6 +38,14 @@ for (const session of [undefined, 'saved-session']) {
       'plugins',
       '--disable',
       'shell_tool',
+      '--disable',
+      'apps',
+      '--disable',
+      'image_generation',
+      '--disable',
+      'browser_use',
+      '--disable',
+      'computer_use',
       '-c',
       'model_reasoning_effort="high"',
       '-c',
@@ -86,6 +94,12 @@ for (const [final, factStatus, formatStatus] of [
 
 test('E1 accepts integer/numeric-string identity, keeps format and acquisition strict', async () => {
   await exerciseEFixture('E1', async (sample) => {
+    const extracted = finalFrom('codex', [
+      { type: 'item.completed', item: { type: 'agent_message', text: 'I selected it.' } },
+      { type: 'item.completed', item: { type: 'agent_message', text: '{"downloaded":"502"}' } },
+    ]);
+    expect(extracted).toBe('{"downloaded":"502"}');
+    expect((await scoreTask({ ...sample, final: extracted })).success).toBe(true);
     for (const downloaded of [502, '502']) {
       const score = await scoreTask({ ...sample, final: JSON.stringify({ downloaded }) });
       expect(score.success).toBe(true);
@@ -110,9 +124,74 @@ test('E1 accepts integer/numeric-string identity, keeps format and acquisition s
 
 test('E4 also separates malformed truthful facts from wrong decisions', async () => {
   await exerciseEFixture('E4', async (sample) => {
-    const score = await scoreTask({ ...sample, final: 'Done.\n{"downloaded":"202"}' });
+    const final = finalFrom('codex', [
+      { type: 'item.completed', item: { type: 'agent_message', text: 'Working.' } },
+      { type: 'item.completed', item: { type: 'agent_message', text: '{"downloaded":"202"}' } },
+      { type: 'item.started', item: { type: 'agent_message', text: 'unfinished' } },
+      { type: 'item.completed', item: { type: 'mcp_tool_call', text: 'tool output' } },
+    ]);
+    expect(final).toBe('{"downloaded":"202"}');
+    expect((await scoreTask({ ...sample, final })).success).toBe(true);
+    const malformed = finalFrom('codex', [
+      {
+        type: 'item.completed',
+        item: { type: 'agent_message', text: 'Done.\n{"downloaded":"202"}' },
+      },
+    ]);
+    const score = await scoreTask({ ...sample, final: malformed });
     expect(score).toMatchObject({ success: false, wrongDecisions: 0, formatFailures: 1 });
     expect(score.answer.facts.status).toBe('correct');
+  });
+}, 300000);
+
+test('Codex final extraction returns empty when no completed answer exists', () => {
+  expect(finalFrom('codex', [])).toBe('');
+  expect(
+    finalFrom('codex', [
+      { type: 'item.started', item: { type: 'agent_message', text: 'pending' } },
+    ]),
+  ).toBe('');
+});
+
+// Removing matched-row provenance must let these synthetic bad traces through.
+// Positive controls execute real searches against the local fake providers.
+for (const id of ['E1', 'E2', 'E3', 'E12']) {
+  test(`${id}: mixed requested sources retain strict matched-row provenance`, async () => {
+    await exerciseEFixture(`${id}-mixed`, async (sample) => {
+      const searches = sample.trace.filter((c) => c.name === 'search');
+      expect(searches.length).toBeGreaterThan(0);
+      for (const search of searches) expect(search.args.sources).toEqual(['libgen', 'zlibrary']);
+      const acquired = sample.trace.find((c) => c.name === 'download' && !dataOf(c.reply).error);
+      expect(acquired.selected.source).toBe('zlibrary');
+      expect(await scoreTask(sample)).toMatchObject({ success: true, wrongDecisions: 0 });
+      const trace = structuredClone(sample.trace);
+      for (const c of trace) {
+        if (c.selected) c.selected.source = 'libgen';
+        if (c.name === 'search') {
+          const reply = dataOf(c.reply);
+          for (const row of rowsOf(reply)) row.source = 'libgen';
+          if (!c.reply.structuredContent) {
+            c.reply.content.find((b) => b.type === 'text').text = JSON.stringify(reply);
+          }
+        }
+      }
+      const bad = await scoreTask({ ...sample, trace });
+      expect(bad.success).toBe(false);
+      expect(bad.wrong).toContainEqual({
+        reason: 'missing same-task observed selection before acquisition',
+      });
+    });
+  }, 300000);
+}
+
+// This asserts gate behavior, not the existence of new diagnostic fields.
+test('E1 rejects fenced JSON and wrong-ID answers at the strict success gate', async () => {
+  await exerciseEFixture('E1', async (sample) => {
+    expect((await scoreTask(sample)).success).toBe(true);
+    expect((await scoreTask({ ...sample, final: '{"downloaded":501}' })).success).toBe(false);
+    expect(
+      (await scoreTask({ ...sample, final: '```json\n{"downloaded":502}\n```' })).success,
+    ).toBe(false);
   });
 }, 300000);
 

@@ -619,3 +619,51 @@ The initial READY, hashes and lead's old excluded-entry control are retained as
 history; the revised READY identifies final bytes and new red/green/full checks.
 The same guarded-read, unsupported shared-no-hidden-lock, no OS/hermetic/memory/
 supply-chain claim and lead-owned committed startup/CI boundaries still apply.
+
+## E fixtures: current-interface offline diagnostics
+
+`eTasks` in `tasks.js` is opt-in, separate from the unchanged T1–T12 episode and
+matrix. E4, E6, E8 (rows and empty variants), E11, E13 and E16 run with a fresh
+MCP server, refs, fake provider, output directory and scripted context per case.
+No context from T tasks is inherited. No model or driver is started.
+
+```sh
+node __tests__/agent-eval/run.mjs --e-self-test --out /tmp/e-self-test.json
+node --experimental-vm-modules node_modules/jest/bin/jest.js __tests__/agent-eval/e-fixtures.test.js --runInBand --coverage=false
+```
+
+This path checks pinned production/config bytes and a fresh reproducible build,
+records hashes of the working evaluator bytes, and checks identity again at the
+end. It is explicitly **diagnostic**, outside the comparison bar; it does not
+satisfy clean committed evaluator admission or select this five-tool checkout
+as settled A. The original `--self-test` still requires the settled 12-tool A
+baseline. On 973ccd6 it rejects source equivalence before launch. No pin,
+comparison admission rule, T scoring contract or matrix command is changed.
+The uncommitted evaluator is intentional for a lead-owned commit workflow.
+
+Each E oracle requires positive observed evidence and a whole canonical JSON
+answer (see `e-scripted.js`); arbitrary prose is not semantically judged. Every
+case checks abstention, the expected answer without tools, and targeted wrong
+moves. Download cases check exact synthetic bytes inside the isolated root.
+`expectedErrors` accepts only the declared tool/code and optional issuance
+flag; transport exceptions and unrelated errors still count as wrong. An
+accepted E13 error is retained in `invalidCalls` and `expectedErrors` diagnostics
+but contributes no wrong decision. E13 requires exactly one issuance and
+transfer request, explicit uncertainty and receipt-first/fresh-intent recovery.
+
+E-only catalogue IDs 401–403 and history ID 902 are fixed in the authoritative
+Python catalogue and `inventory.json`. `e_history` selects [902, 901], leaving
+legacy HISTORY untouched. E11 and E16 force `limit:1` and cursor-only page two.
+E13's `e_outcome_unknown` mode marks a file response **after** link issuance;
+the evaluation-only Python seam injects an issued acquisition deadline error.
+This exercises production error classification without waiting for a timeout;
+it does not establish real network timeout or completion-after-timeout behavior.
+Temporary artifacts are scored before cleanup; receipt paths are not retained
+files. No real credentials, downloads, providers, browser routes or model calls
+are exercised.
+
+Slice 2: E1–E3 need decoy/review data; E5 a browser-check reply; E7 transient
+failure then rows; E9–E10 French and unknown-language fixtures; E12 restart/ref
+eviction; E14 a valid PDF/reader and page-label evidence; E15 reader/oversize
+errors with image/link preservation; E17 browser pacing/person-check/runtime/
+visit-ceiling modes; E18 no-account setup and malformed-success injection.

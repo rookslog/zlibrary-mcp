@@ -1,5 +1,6 @@
 import { readFile, realpath } from 'node:fs/promises';
 import path from 'node:path';
+import { scoreETask } from './e-oracles.js';
 import { evaluateAnswer } from './answers.js';
 
 export function dataOf(reply) {
@@ -77,6 +78,7 @@ export async function scoreTask({
   remainingBefore,
   context = {},
 }) {
+  if (task.id.startsWith('E')) return scoreETask({task, arm, trace, final, quotaSpent, providerEvents, downloads, context});
   const wrong = [],
     wrongCalls = new Set();
   let activeCallIndex;
@@ -127,7 +129,7 @@ export async function scoreTask({
       (!b && !allowedA[task.id].includes(c.name))
     )
       mark('off-oracle tool', c);
-    if (c.error || c.reply?.isError || dataOf(c.reply ?? {}).error) mark('invalid/error call', c);
+    if ((c.error || c.reply?.isError || dataOf(c.reply ?? {}).error) && !expectedError(task, c)) mark('invalid/error call', c);
     if (kind === 'download') {
       if (
         task.id === 'T1' &&
@@ -362,4 +364,12 @@ export async function scoreTask({
     refUnavailable: trace.filter((c) => dataOf(c.reply ?? {}).error?.code === 'ref_unavailable')
       .length,
   };
+}
+
+// Transport exceptions have no structured error contract and cannot be expected away.
+export function expectedError(task, call) {
+  const error = dataOf(call.reply ?? {}).error;
+  return !call.error && !!error && (task.expectedErrors ?? []).some(rule =>
+    rule.tool === call.name && rule.code === error.code &&
+    (rule.requestIssued === undefined || error.detail?.request_issued === rule.requestIssued));
 }

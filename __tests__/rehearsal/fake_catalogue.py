@@ -127,7 +127,20 @@ LIBGEN = [
 for row in LIBGEN:
     row["md5"] = hashlib.md5(str(row["id"]).encode()).hexdigest()
 LIBGEN[-1]["md5"] = "0123456789abcdef0123456789abcdef"
-ALL = {str(b["id"]): b for b in REHEARSAL + CATALOGUE + PAGING + HISTORY + LIBGEN}
+# E-only records do not alter any legacy row or legacy account history.
+E_CATALOGUE = [
+    book(401, "Crystal Forms", "Niggli", 1979, edition="Look-alike"),
+    book(402, "Crystal Forms", "Niggli", 1981, edition="Requested 1981 edition"),
+    book(403, "Uncertain Transfer", "Offline E Author", 2026),
+]
+E_HISTORY = [
+    book(902, "Being and Time", "Martin Heidegger", 1996, translator="Joan Stambaugh"),
+    HISTORY[1],
+]
+ALL = {
+    str(b["id"]): b
+    for b in REHEARSAL + CATALOGUE + PAGING + HISTORY + LIBGEN + E_CATALOGUE + E_HISTORY
+}
 
 
 def norm(text):
@@ -144,7 +157,7 @@ def select(query, source="zlibrary", fields=None, mode="healthy"):
     elif source == "libgen" and q == "fixture":
         rows = [LIBGEN[-1]]
     else:
-        rows = LIBGEN if source == "libgen" else CATALOGUE + PAGING
+        rows = LIBGEN if source == "libgen" else CATALOGUE + PAGING + E_CATALOGUE
         words = q.split()
         rows = [
             b

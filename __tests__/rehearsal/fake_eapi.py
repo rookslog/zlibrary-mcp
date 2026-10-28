@@ -1,7 +1,7 @@
 """Loopback-only EAPI contract double. Never forwards a request upstream."""
 
 from collections import Counter
-from fake_catalogue import ALL, HISTORY, LIBGEN, select, payload, libgen_html
+from fake_catalogue import ALL, HISTORY, E_HISTORY, LIBGEN, select, payload, libgen_html
 from fake_annas import EMPTY_SEARCH
 from http.cookies import SimpleCookie
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -36,6 +36,8 @@ USER_ID = "rehearsal-cookie-id"
 USER_KEY = "rehearsal-cookie-key"
 MODES = {
     "healthy",
+    "e_history",
+    "e_outcome_unknown",
     "drop_transfer",
     "empty",
     "quota_exhausted",
@@ -189,6 +191,12 @@ class Handler(BaseHTTPRequestHandler):
                 )
             if mode == "drop_transfer":
                 return self.reply(b"", 503, "application/octet-stream")
+            if mode == "e_outcome_unknown":
+                return self.reply(
+                    b"",
+                    content_type="application/octet-stream",
+                    headers={"X-Eval-Outcome": "issued-unknown"},
+                )
             return self.reply(
                 payload(row),
                 content_type="application/octet-stream",
@@ -268,7 +276,12 @@ class Handler(BaseHTTPRequestHandler):
             limit = int(fields.get("limit", ["10"])[0])
             page = int(fields.get("page", ["1"])[0])
             return self.reply(
-                {"success": 1, "books": HISTORY[(page - 1) * limit : page * limit]}
+                {
+                    "success": 1,
+                    "books": (E_HISTORY if mode == "e_history" else HISTORY)[
+                        (page - 1) * limit : page * limit
+                    ],
+                }
             )
         match = re.fullmatch(r"/eapi/book/(\d+)/(hash\d+)(/file)?", route)
         if match:
@@ -297,6 +310,12 @@ class Handler(BaseHTTPRequestHandler):
             row = ALL[match[1]]
             if mode == "drop_transfer":
                 return self.reply(b"", 503, "application/octet-stream")
+            if mode == "e_outcome_unknown":
+                return self.reply(
+                    b"",
+                    content_type="application/octet-stream",
+                    headers={"X-Eval-Outcome": "issued-unknown"},
+                )
             return self.reply(
                 payload(row),
                 content_type="application/octet-stream",

@@ -113,3 +113,14 @@ export const arms = [
   },
   { id: 'B-history-disabled', build: 'B', textCopy: true, defaultOrder: null, history: false },
 ];
+
+// Opt-in diagnostics on today's interface; never part of the T1–T12 matrix.
+export const eTasks = [
+  { id: 'E4', prompt: 'Download the Graver translation of Seneca Letters.', coldSession: true },
+  { id: 'E6', prompt: "Search only Anna's for Persuasion; does it have it?", coldSession: true },
+  { id: 'E8', prompt: "Search LibGen then Anna's for Persuasion. Does Anna's have it?", coldSession: true },
+  { id: 'E11', prompt: 'Get the 1981 Niggli edition of Crystal Forms. Continue past look-alikes.', coldSession: true, limit: 1 },
+  { id: 'E13', prompt: 'Get Uncertain Transfer. Do not repeat an uncertain transfer without fresh intent.', coldSession: true,
+    expectedErrors: [{ tool: 'download', code: 'outcome_unknown', requestIssued: true }] },
+  { id: 'E16', prompt: 'Did I download the Macquarrie–Robinson translation of Being and Time? Check both pages.', coldSession: true, limit: 1 },
+];

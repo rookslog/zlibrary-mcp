@@ -1182,7 +1182,9 @@
       "translator": "John Macquarrie and Edward Robinson"
     }
   ],
-  "historyOnlyIds": [901],
+  "historyOnlyIds": [
+    901
+  ],
   "initialDiskFiles": [],
   "evalLimits": {
     "dailyLimit": 10,
@@ -1210,5 +1212,84 @@
     "306": "383a79aa3f848fcc9a8c1adec0307a13",
     "101": "3862aca54722db352f1e478b4e9cd9c9",
     "901": "922e758def7c90b15a90ad4f46d5ae53"
+  },
+  "eFixtures": {
+    "catalogue": [
+      {
+        "id": 401,
+        "hash": "hash401",
+        "title": "Crystal Forms",
+        "author": "Niggli",
+        "year": "1979",
+        "extension": "pdf",
+        "language": "english",
+        "filesize": 1024,
+        "pages": 100,
+        "publisher": "Fixture Press",
+        "edition": "Look-alike"
+      },
+      {
+        "id": 402,
+        "hash": "hash402",
+        "title": "Crystal Forms",
+        "author": "Niggli",
+        "year": "1981",
+        "extension": "pdf",
+        "language": "english",
+        "filesize": 1024,
+        "pages": 100,
+        "publisher": "Fixture Press",
+        "edition": "Requested 1981 edition"
+      },
+      {
+        "id": 403,
+        "hash": "hash403",
+        "title": "Uncertain Transfer",
+        "author": "Offline E Author",
+        "year": "2026",
+        "extension": "pdf",
+        "language": "english",
+        "filesize": 1024,
+        "pages": 100,
+        "publisher": "Fixture Press"
+      }
+    ],
+    "history": [
+      {
+        "id": 902,
+        "hash": "hash902",
+        "title": "Being and Time",
+        "author": "Martin Heidegger",
+        "year": "1996",
+        "extension": "pdf",
+        "language": "english",
+        "filesize": 1024,
+        "pages": 100,
+        "publisher": "Fixture Press",
+        "translator": "Joan Stambaugh"
+      },
+      {
+        "id": 901,
+        "hash": "hash901",
+        "title": "Being and Time",
+        "author": "Martin Heidegger",
+        "year": "1962",
+        "extension": "pdf",
+        "language": "english",
+        "filesize": 1024,
+        "pages": 100,
+        "publisher": "Fixture Press",
+        "translator": "John Macquarrie and Edward Robinson"
+      }
+    ],
+    "downloadSha256": {
+      "401": "183eeab3ca8538be3201837dd133ab5d0864916332da4cf22bc522daad734207",
+      "402": "5fe19767723f8118c23f63bde2c30690bcd301f2b39d29d8a3f682a8b36fa6dd",
+      "403": "f42f7b2596f353697a92343811fd377a18a85341f3c2bb7d3d353e2664d6c4e1",
+      "902": "790aa6b1c82e62eea832ba5ffd5e4a77bee2e0b868a91f5dc885978abbb1986e",
+      "901": "cf4cf038bdb14a7c6ecbe33122b14cf7766f16aa76acfcf2ca4ab7b3291cb465"
+    },
+    "mode": "e_history selects competing history without changing legacy HISTORY",
+    "unknownOutcome": "e_outcome_unknown marks the transfer response after link issuance; evaluation sitecustomize injects issued walk-budget exhaustion"
   }
 }

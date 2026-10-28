@@ -22,7 +22,22 @@ async def _send(self, request, *args, **kwargs):
             + ("?" + parsed.query if parsed.query else "")
         )
         request.headers["host"] = request.url.netloc.decode()
-    return await _original_send(self, request, *args, **kwargs)
+    response = await _original_send(self, request, *args, **kwargs)
+    # Controlled E13 injection AFTER the real fake has issued a link and observed
+    # a transfer request. Model a spent acquisition deadline, without a long sleep.
+    if (
+        parsed.path.startswith("/files/")
+        and response.headers.get("X-Eval-Outcome") == "issued-unknown"
+    ):
+        from lib.acquisition import AcquisitionError
+
+        await response.aclose()
+        raise AcquisitionError(
+            "walk_budget_exhausted",
+            "Synthetic post-issuance unknown outcome",
+            issued=True,
+        )
+    return response
 
 
 httpx.AsyncClient.send = _send

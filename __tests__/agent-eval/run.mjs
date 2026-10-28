@@ -22,6 +22,7 @@ import { scriptedTask } from './scripted.js';
 const { values: opts } = parseArgs({
   options: {
     'self-test': { type: 'boolean' },
+    'e-self-test': { type: 'boolean' },
     'dry-run': { type: 'boolean' },
     paid: { type: 'boolean' },
     'server-root': { type: 'string', default: root },
@@ -37,6 +38,14 @@ const { values: opts } = parseArgs({
     out: { type: 'string', default: path.resolve(root, 'test_output/agent-eval.json') },
   },
 });
+if (opts['e-self-test']) {
+  if (opts.paid || opts['self-test'] || opts['dry-run'])
+    throw new Error('E diagnostics cannot be combined with paid or other runner modes');
+  const { runESelfTest } = await import('./e-self-test.js');
+  const receipt = await runESelfTest(opts.out);
+  process.stdout.write(`${receipt.status}; ${receipt.results.length} cold cases; ${opts.out}\n`);
+  process.exit(0);
+}
 const arm = arms.find((a) => a.id === opts.arm);
 if (!arm) throw new Error('unknown arm');
 if (!driverPins[opts.driver]) throw new Error('unknown driver');

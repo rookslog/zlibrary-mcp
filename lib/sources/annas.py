@@ -242,6 +242,8 @@ class AnnasArchiveAdapter(SourceAdapter):
         self.scheme = urlsplit(self.base_url).scheme or "https"
         self._client: Optional[httpx.AsyncClient] = None
         self._browser: Optional[AnnasBrowserSession] = None
+        # Internal hook for route transparency; public row schemas stay fixed.
+        self.last_fetch_method = None
 
     async def _get_client(self) -> httpx.AsyncClient:
         """Get or create HTTP client.
@@ -384,6 +386,14 @@ class AnnasArchiveAdapter(SourceAdapter):
             search_budget = min(search_budget, max(0.0, deadline.remaining()))
         attempt = WalkDeadline(search_budget)
         try:
+            if (
+                self.config.annas_browser_enabled
+                and self.config.annas_session_reuse
+                and self._browser is not None
+            ):
+                page_html = await self._browser.search_html(query, deadline=attempt)
+                self.last_fetch_method = page_html.method
+                return self._parse_search_html(page_html)
             # httpx bounds each phase separately and restarts its read deadline
             # on every chunk, so a host that trickles bytes never trips it. The
             # HTTP keeps its existing limit even when browser search opts in
@@ -407,8 +417,10 @@ class AnnasArchiveAdapter(SourceAdapter):
                 if self._browser is None:
                     self._browser = AnnasBrowserSession(self.config)
                 page_html = await self._browser.search_html(query, deadline=attempt)
+                self.last_fetch_method = getattr(page_html, "method", "browser")
             else:
                 page_html = response.text
+                self.last_fetch_method = "http"
         except Exception as exc:
             raise self._as_source_error(exc) from exc
 

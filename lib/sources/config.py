@@ -201,6 +201,10 @@ class SourceConfig:
     walk_budget: float = DEFAULT_WALK_BUDGET
     bridge_overhead: float = WALK_OVERHEAD_ALLOWANCE
     download_resume_attempts: int = 2
+    annas_browser_display: str = "desktop"
+    annas_xvfb_path: str = ""
+    annas_session_reuse: bool = False
+    annas_session_ttl: float = 900.0
     annas_browser_enabled: bool = False
     annas_browser_profile_dir: str = DEFAULT_ANNAS_BROWSER_PROFILE_DIR
     annas_browser_min_interval: float = DEFAULT_ANNAS_BROWSER_MIN_INTERVAL
@@ -377,6 +381,15 @@ def get_source_config(*, for_download: bool = False) -> SourceConfig:
         # Opt-in, and it stays opt-in. The route needs a real display and a
         # human to solve the challenge once, so a server that switched it on by
         # default would hang waiting for a window nobody can see.
+        annas_browser_display=os.environ.get("ANNAS_BROWSER_DISPLAY", "desktop")
+        .strip()
+        .lower(),
+        annas_xvfb_path=os.environ.get("ANNAS_XVFB_PATH", "").strip(),
+        annas_session_reuse=os.environ.get("ANNAS_SESSION_REUSE", "false")
+        .strip()
+        .lower()
+        == "true",
+        annas_session_ttl=_positive_float("ANNAS_SESSION_TTL", 900.0),
         annas_browser_enabled=os.environ.get("ANNAS_BROWSER_ENABLED", "false")
         .strip()
         .lower()

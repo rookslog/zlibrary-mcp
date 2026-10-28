@@ -135,13 +135,22 @@ and retry after the backoff. A person's normal browser profile is never imported
 | Setting | Default / effect |
 |---|---|
 | `ANNAS_BROWSER_PROFILE_DIR` | `~/.cache/zlibrary-mcp/annas-browser-profile`; persistent clearance/profile |
-| `ANNAS_BROWSER_MIN_INTERVAL` | 20 seconds between scheduled browser visits |
-| `ANNAS_BROWSER_DAILY_LIMIT` | 30 scheduled visits per rolling 24-hour window; counts requests, not books |
+| `ANNAS_BROWSER_DISPLAY` | `desktop`; `virtual` owns Xvfb, never headless |
+| `ANNAS_XVFB_PATH` | `Xvfb` on `PATH`; optional executable override |
+| `ANNAS_SESSION_REUSE` | `false`; opt-in memory-only cookies/user agent for search HTTP |
+| `ANNAS_SESSION_TTL` | 900 seconds; expires on first rejection |
+| `ANNAS_BROWSER_MIN_INTERVAL` | 20 seconds between scheduled browser/session page fetches |
+| `ANNAS_BROWSER_DAILY_LIMIT` | 30 scheduled page fetches per rolling 24-hour window; counts both methods, not books |
 | `ANNAS_BROWSER_BACKOFF` | 300 seconds after an uncleared check or refusal |
 | `ANNAS_BROWSER_NAV_TIMEOUT` | 60 seconds for initial navigation |
 | `ANNAS_BROWSER_SEARCH_TIMEOUT` | 120 seconds for opted-in search's HTTP/browser work and cleanup |
 | `ANNAS_BROWSER_SETTLE` | Up to 90 seconds for automatic verification after navigation |
 | `ANNAS_BROWSER_MAX_SERVERS` | 3 slow-partner candidates per download, in site order; unused by search |
+
+Reuse selects an ephemeral browser context and keeps earned clearance only in
+the current Python process; the one-process-per-operation MCP bridge does not
+share it across tool calls. A rejected session attempt and its one browser
+fallback each spend a page slot. See [setup and internal method hook](docs/optional-dependencies.md#optional-virtual-display-and-search-session-reuse).
 
 Usage and lock files live beside the profile. Profiles with the same parent
 share one budget; changing parent directories creates separate state. Counter

@@ -14,6 +14,9 @@ import math
 import os
 import re
 import signal
+import time
+
+import httpx
 from pathlib import Path
 import tempfile
 from dataclasses import dataclass
@@ -24,6 +27,7 @@ from urllib.parse import quote, unquote, urlsplit
 from bs4 import BeautifulSoup, Comment, NavigableString
 
 from ..filename_utils import SAFE_DOCUMENT_EXTENSIONS
+from .annas_display import VirtualDisplay
 from .annas_usage import (
     CrossProcessLock,
     DailyUsage,
@@ -485,6 +489,25 @@ def needs_human_check(page_html: str) -> bool:
     return "complete the manual check" in soup.get_text(" ", strip=True).lower()
 
 
+class FetchHTML(str):
+    """HTML with an internal `method` hook (`browser` or `session`).
+
+    String compatibility preserves existing callers and public reply shapes.
+    """
+
+    def __new__(cls, html: str, method: str):
+        value = super().__new__(cls, html)
+        value.method = method
+        return value
+
+
+@dataclass(repr=False)
+class _EarnedSession:
+    cookies: list
+    user_agent: str
+    expires: float
+
+
 class AnnasBrowserSession:
     """Serialized browser owner; Chrome closes before releasing the OS lock."""
 
@@ -515,6 +538,10 @@ class AnnasBrowserSession:
         )
         self._playwright = None
         self._context = None
+        self._browser = None
+        self._display = None
+        self._earned_session = None
+        self.last_fetch_method = None
         # The in-process lock keeps coroutines in order; this one keeps
         # *processes* in order, which is the level that actually matters here
         # since every MCP operation gets its own bridge process.
@@ -547,14 +574,28 @@ class AnnasBrowserSession:
 
         self._playwright = await async_playwright().start()
         try:
-            self._context = await self._playwright.chromium.launch_persistent_context(
-                self.config.annas_browser_profile_dir,
+            options = dict(
                 headless=False,
                 channel="chrome",
                 args=["--disable-blink-features=AutomationControlled"],
                 ignore_default_args=["--enable-automation"],
             )
+            if self.config.annas_browser_display == "virtual":
+                self._display = VirtualDisplay(self.config.annas_xvfb_path)
+                options["env"] = {**os.environ, "DISPLAY": await self._display.start()}
+            if self.config.annas_session_reuse:
+                # Incognito context: earned clearance must never enter the
+                # existing persistent profile or a storage_state file.
+                self._browser = await self._playwright.chromium.launch(**options)
+                self._context = await self._browser.new_context()
+            else:
+                self._context = (
+                    await self._playwright.chromium.launch_persistent_context(
+                        self.config.annas_browser_profile_dir, **options
+                    )
+                )
         except Exception as exc:  # noqa: BLE001 - surfaced as configuration
+            await self.close()
             raise BrowserUnavailableError(
                 PROVIDER,
                 self.host,
@@ -656,17 +697,22 @@ class AnnasBrowserSession:
                     lambda done: None if done.cancelled() else done.exception()
                 )
 
-    async def close(self, *, page=None, deadline=None) -> None:
+    async def close(self, *, page=None, deadline=None, keep_session=False) -> None:
         """Bound page/context/driver cleanup, forcing owned processes on failure."""
+        if not keep_session:
+            self._earned_session = None
         budget = 2.0 if deadline is None else min(2.0, max(0.0, deadline.remaining()))
         cleanup = WalkDeadline(budget)
         driver = self._driver_process()
         pinned = self._pin_owned_processes(driver)
         context, self._context = self._context, None
         playwright, self._playwright = self._playwright, None
+        browser, self._browser = self._browser, None
+        display, self._display = self._display, None
         operations = (
             ([page.close] if page is not None else [])
             + ([context.close] if context is not None else [])
+            + ([browser.close] if browser is not None else [])
             + ([playwright.stop] if playwright is not None else [])
         )
         force = True
@@ -685,6 +731,75 @@ class AnnasBrowserSession:
                 self._force_kill_owned(pinned, driver)
             for fd in pinned:
                 os.close(fd)
+            if display is not None:
+                await display.close()
+
+    def _served(self, html, method):
+        self.last_fetch_method = method
+        logger.info("Anna page fetch method=%s", method)
+        return FetchHTML(html, method)
+
+    async def _reuse_search(self, url, deadline):
+        earned = self._earned_session
+        if earned is None:
+            return None
+        if time.monotonic() >= earned.expires:
+            self._earned_session = None
+            return None
+        # Both this request and any browser fallback reserve their own page
+        # slot under the same process lock and pacing clock.
+        await self._limiter.acquire(deadline, operation="session search")
+
+        async def same_origin(request):
+            if (request.url.scheme, request.url.host, request.url.port) != (
+                httpx.URL(self.base_url).scheme,
+                httpx.URL(self.base_url).host,
+                httpx.URL(self.base_url).port,
+            ):
+                raise ValueError("Anna session redirect left its origin")
+
+        jar = httpx.Cookies()
+        for cookie in earned.cookies:
+            jar.set(
+                cookie["name"],
+                cookie["value"],
+                domain=cookie["domain"],
+                path=cookie["path"],
+            )
+        try:
+            budget = min(self.config.total_timeout, deadline.remaining() / 2)
+            async with httpx.AsyncClient(
+                cookies=jar,
+                headers={"User-Agent": earned.user_agent},
+                follow_redirects=True,
+                max_redirects=5,
+                timeout=httpx.Timeout(
+                    self.config.read_timeout, connect=self.config.connect_timeout
+                ),
+                event_hooks={"request": [same_origin]},
+                trust_env=False,
+            ) as client:
+                response = await bounded_await(
+                    client.get(url),
+                    budget,
+                    provider=PROVIDER,
+                    host=self.host,
+                    operation="session search",
+                )
+            if (
+                response.status_code == 200
+                and not needs_human_check(response.text)
+                and _settled_search_page(BeautifulSoup(response.text, "html.parser"))
+            ):
+                return self._served(response.text, "session")
+        except asyncio.CancelledError:
+            self._earned_session = None
+            raise
+        except Exception:
+            # Never log client exceptions: they may contain private headers.
+            pass
+        self._earned_session = None
+        return None
 
     async def search_html(
         self, query: str, deadline: Optional[WalkDeadline] = None
@@ -703,13 +818,38 @@ class AnnasBrowserSession:
     async def _search_html(
         self, query: str, *, deadline: WalkDeadline, cleanup_deadline: WalkDeadline
     ) -> str:
-        async def search(page, operation_deadline):
-            return await self._visit(page, f"{self.base_url}/search?q={quote(query)}")
+        url = f"{self.base_url}/search?q={quote(query)}"
 
-        return await self._run_page(search, deadline, cleanup_deadline)
+        async def search(page, operation_deadline):
+            html = await self._visit(page, url)
+            if self.config.annas_session_reuse:
+                try:
+                    cookies = await self._context.cookies([self.base_url])
+                    user_agent = await page.evaluate("navigator.userAgent")
+                    self._earned_session = _EarnedSession(
+                        cookies,
+                        user_agent,
+                        time.monotonic() + self.config.annas_session_ttl,
+                    )
+                except Exception:
+                    self._earned_session = None
+            return self._served(html, "browser")
+
+        async def reuse(operation_deadline):
+            if self.config.annas_session_reuse:
+                return await self._reuse_search(url, operation_deadline)
+            return None
+
+        return await self._run_page(search, deadline, cleanup_deadline, reuse=reuse)
 
     async def _run_page(
-        self, visit, deadline, cleanup_deadline, *, operation="browser search"
+        self,
+        visit,
+        deadline,
+        cleanup_deadline,
+        *,
+        operation="browser search",
+        reuse=None,
     ):
         """Reserve the first visit and own its page/driver/locks through cleanup."""
         page = None
@@ -736,7 +876,12 @@ class AnnasBrowserSession:
             # Refuse known quota/backoff/counter failures before starting Chrome,
             # without spending a slot that a failed launch cannot use.
             await self._limiter.acquire(deadline, operation=operation, reserve=False)
+            if reuse is not None:
+                reused = await reuse(deadline)
+                if reused is not None:
+                    return reused
             context = await self._ensure_context()
+            self._context = context
             page = await context.new_page()
             # Another profile can share this counter: recheck and reserve
             # atomically only when this context and page are ready to visit.
@@ -754,16 +899,22 @@ class AnnasBrowserSession:
                 operation=operation,
             )
         except ProviderTimeoutError as exc:
+            self._earned_session = None
             if operation == "browser download":
                 raise _DownloadTimeoutError(
                     exc.provider, exc.host, exc.detail, reason=exc.reason
                 ) from None
             raise
+        except BaseException:
+            self._earned_session = None
+            raise
         finally:
             try:
                 if process_locked:
                     try:
-                        await self.close(page=page, deadline=cleanup_deadline)
+                        await self.close(
+                            page=page, deadline=cleanup_deadline, keep_session=True
+                        )
                     finally:
                         self._process_lock.release()
             finally:

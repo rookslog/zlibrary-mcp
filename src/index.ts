@@ -18,6 +18,7 @@ import { invokeAcquisitionBridge } from './lib/zlibrary-api.js';
 import { logger } from './lib/logger.js';
 import { HandoffProbes, PROBE_TOOL_DEFINITIONS } from './lib/handoff-probes.js';
 import { ChatFiles, CHAT_FILE_TOOL_DEFINITIONS } from './lib/chat-files.js';
+import { getRuntimeDigest } from './lib/build-info.js';
 
 const browserSearchDescription =
   'Metadata, not book text. Give query and/or author; exact covers both. sources is ordered: libgen needs no account/quota; zlibrary needs an account, downloads spend quota; annas searches without a key; downloads need a key or the opted-in visible browser (ANNAS_BROWSER_ENABLED). Defaults: get_limits. Use refs. Refs last this process and 5,000 recent entries; on ref_unavailable search and choose again. Pass cursor alone: replay fetches the same position; pages are re-queried, not frozen.';
@@ -195,6 +196,12 @@ export function getServerVersion(
   try {
     const info = JSON.parse(fs.readFileSync(buildInfoUrl, 'utf8'));
     if (typeof info.commit !== 'string' || !/^[0-9a-f]{7,40}$/.test(info.commit)) return version;
+    if (
+      typeof info.runtime_sha256 !== 'string' ||
+      !/^[0-9a-f]{64}$/.test(info.runtime_sha256) ||
+      info.runtime_sha256 !== getRuntimeDigest(fileURLToPath(new URL('./', import.meta.url)))
+    )
+      return version;
     return `${version}+${info.commit}${info.dirty === true ? '.dirty' : ''}`;
   } catch {
     return version;

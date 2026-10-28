@@ -24,10 +24,35 @@ import { createInterface } from 'node:readline';
 import { fileURLToPath } from 'node:url';
 import { promisify } from 'node:util';
 import { Rehearsal } from '../__tests__/rehearsal/harness.js';
+import { getRuntimeDigest } from '../dist/lib/build-info.js';
 
 const execute = promisify(execFile);
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const rehearsal = path.join(root, '__tests__/rehearsal');
+
+// Release compatibility and build attribution are separate acceptance checks.
+export function assertServerVersion(actual, release, buildInfo) {
+  assert.equal(typeof actual, 'string', 'Server version must be a string');
+  const [base, metadata, ...extra] = actual.split('+');
+  assert.equal(base, release, 'Server release differs from package manifest');
+  assert.equal(extra.length, 0, 'Invalid build metadata');
+  if (metadata !== undefined)
+    assert(/^[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*$/.test(metadata), 'Invalid build metadata');
+  const identity = buildInfo?.commit == null
+    ? undefined
+    : `${buildInfo.commit}${buildInfo.dirty === true ? '.dirty' : ''}`;
+  assert.equal(metadata, identity, 'Server build identity differs from packed stamp');
+}
+
+export async function inspectBuildIdentity(directory) {
+  let info;
+  try { info = JSON.parse(await readFile(path.join(directory, 'build-info.json'), 'utf8')); }
+  catch (error) { if (error.code === 'ENOENT') return undefined; throw error; }
+  if (info.commit === null) return info;
+  assert(typeof info.commit === 'string' && /^[0-9a-f]{7,40}$/.test(info.commit), 'Invalid packed commit');
+  assert.equal(info.runtime_sha256, getRuntimeDigest(path.join(directory, 'dist')), 'Packed runtime digest mismatch');
+  return info;
+}
 
 export async function inspectInstalledPackage(directory) {
   const manifest = JSON.parse(await readFile(path.join(directory, 'package.json'), 'utf8'));
@@ -101,7 +126,7 @@ export async function protocolSmoke(
   expected,
   version,
   journey,
-  { legacy = false } = {},
+  { legacy = false, buildInfo } = {},
 ) {
   // Spawn the npm-created executable link itself, not node <source>/dist/index.js.
   await access(bin);
@@ -182,7 +207,7 @@ export async function protocolSmoke(
       clientInfo: { name: 'packed-install-smoke', version: '1' },
     });
     assert.equal(initialized.serverInfo.name, legacy ? 'zlibrary-mcp' : 'book-acquisition');
-    assert.equal(initialized.serverInfo.version, version);
+    assertServerVersion(initialized.serverInfo.version, version, buildInfo);
     child.stdin.write(
       JSON.stringify({ jsonrpc: '2.0', method: 'notifications/initialized' }) + '\n',
     );
@@ -375,6 +400,7 @@ export async function main(args = process.argv.slice(2)) {
     );
     const installed = path.join(prefix, 'node_modules/zlibrary-mcp');
     const { manifest, targets } = await inspectInstalledPackage(installed);
+    const buildInfo = await inspectBuildIdentity(installed);
     process.stdout.write(`Installed target checks: ${JSON.stringify(targets)}\n`);
     // README Quick Start, with --no-dev: no test/processing extras or hand-added deps.
     await run('bash', ['setup-uv.sh', '--no-dev'], { cwd: installed, env });
@@ -458,6 +484,7 @@ export async function main(args = process.argv.slice(2)) {
         };
         await protocolSmoke(bin, home, providerEnv, expected, manifest.version, (call) =>
           acquisitionJourney(call, fake, source, output, control === 'drop-transfer'),
+          { buildInfo },
         );
         assert.equal(await readFile(trap, 'utf8'), '', 'Journey attempted non-loopback egress');
       }

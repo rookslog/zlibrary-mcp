@@ -27,7 +27,7 @@ export async function exerciseEFixture(id, consume, options = {}) {
           break;
         }
       }
-      answer = { downloaded: 'graver' };
+      answer = { downloaded: 202 };
     } else if (base === 'E6') {
       const result = await search(variant === 'query' ? 'Persuasion Jane Austen' : 'Persuasion', {
         sources: ['annas'],
@@ -72,7 +72,7 @@ export async function exerciseEFixture(id, consume, options = {}) {
       } while (true);
       if (!selected) throw new Error('fixed Niggli target missing');
       await download(selected);
-      answer = { downloaded: 'niggli-1981' };
+      answer = { downloaded: 402 };
     } else if (base === 'E13') {
       const row = rowsOf(await search('Uncertain Transfer'))[0];
       await download(row);

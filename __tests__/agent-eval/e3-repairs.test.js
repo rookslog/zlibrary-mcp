@@ -92,7 +92,7 @@ test('default E dry plan includes order and timeout controls and E-only compiler
     );
     expect(plan.compileTimeoutMs).toBe(180000);
     expect(plan.modelCalls).toBe(0);
-    expect(plan.commands).toEqual([]);
+    expect(plan.commands).toHaveLength(plan.tasks.length);
   } finally {
     await rm(dir, { recursive: true, force: true });
   }
@@ -154,8 +154,14 @@ test('E runner counts current results separately from future gap-only and future
     runner.eRunTotals([
       { score: { success: true, contractGaps: [], wrongDecisions: 0 } },
       { score: { success: false, contractGaps: [], wrongDecisions: 1 } },
-      { score: { success: false, contractGaps: ['gap'], wrongDecisions: 1 } },
-      { score: { success: false, contractGaps: ['gap'], wrongDecisions: 2 } },
+      {
+        task: { futureOnly: 'declared future case' },
+        score: { success: false, contractGaps: ['gap'], wrongDecisions: 1 },
+      },
+      {
+        task: { futureOnly: 'declared future case' },
+        score: { success: false, contractGaps: ['gap'], wrongDecisions: 2 },
+      },
     ]),
   ).toEqual({
     current: { cases: 2, passed: 1, failed: 1 },

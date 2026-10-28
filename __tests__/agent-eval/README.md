@@ -118,7 +118,7 @@ replaced with disk receipts. T7 must admit inability; any download/quota is wron
 
 [drivers.js](drivers.js) constructs exact argv arrays (no shell interpolation).
 `--dry-run --driver NAME` records the full command, environment changes and model.
-Offline-observed CLIs: **Codex 0.162.1**, **Claude Code 2.1.303**. Launch refuses a
+Offline-observed CLIs: **Codex 0.165.0**, **Claude Code 2.1.303**. Launch refuses a
 version mismatch. Default model IDs are **gpt-6.1-sol** and
 **claude-opus-5-5**, both with explicit high effort, default temperature. Model
 availability and the Anthropic full model ID have **not** been established by a
@@ -147,7 +147,11 @@ instructions. Warm turns use `exec resume UUID` with the same settings. Local
 legacy `tool_search` and `tool_search_always_defer_mcp_tools` are removed and are
 **not** passed. A supported provider-cache flush/off control was not found. Tool
 exposure/resume were exercised only on the lead's supplied Codex 0.162.1 smoke
-path; no new driver invocation is part of this repair. Any Codex
+path. On 2026-10-28, Codex 0.165.0 `--version`, `exec --help`,
+`exec resume --help`, and `features list` retained every switch listed above;
+no flag was renamed or substituted. This updates launch admission only. The
+0.165.0 model event and tool-exposure behavior remains untested offline. The
+cumulative tracker below deliberately stays restricted to 0.162.1. Any Codex
 command/web/file-change event invalidates the cell; fixture metrics are captured
 at the broker, not inferred from model narration.
 
@@ -637,8 +641,13 @@ node __tests__/agent-eval/run.mjs --suite E --cold-session --dry-run --out /tmp/
 The default model plan additionally includes E4-second, E11-first, E6-rows,
 E16-first and E13-real-timeout. E admission uses the same 180-second compiler
 allowance as the E self-test; the non-E compiler default remains 60 seconds.
+The E dry plan records command arguments, environment edits and the prompt,
+using explicit placeholders for the runtime socket, downloads and nonce. The E
+runner uses `runs` and `session-mode`; it does not require or consume `warm-runs`.
 The runner prints and records C/F totals: current cases (passed/failed) and
-future cases (gap-only/also wrong). A dry plan has zero scored cases.
+future cases (gap-only/also wrong). Classification uses the declared task or
+context status, never the presence of gap marks: a current E10 run that sends
+`French` and earns a gap remains a current failure. A dry plan has zero scored cases.
 Runner `--session-mode shared` keeps compatible MCP/driver sessions alive;
 `--cold-session` forces fresh ones. Reader, account and real-timeout environment
 changes force a new process even in shared mode. Model execution remains behind
@@ -649,10 +658,21 @@ The E model path is implemented but deliberately not executed in this lane.
 
 `answers.js` supplies E answer fields. Scoring compares observed fields, not an
 exact sentence, key order, JSON whitespace, query spelling or an agent-selected
-limit. Extra explanatory fields are allowed. No-tools answers still fail.
+limit. Unknown answer keys are rejected; declared optional variant fields remain
+allowed. No-tools answers still fail. E4 and E11 prefer integer fixture identities
+from the selected receipt. The downloaded field also accepts a string identity
+or exact observed title; E4 also accepts the full observed translator. These
+are documented alternative facts, not mnemonic placeholders (`graver` and
+`niggli-1981` are no longer answers). Independent selection, translator/year,
+provider, quota, exact bytes and receipt checks still apply, including when a
+title alone cannot distinguish editions.
 Answer strings normalize case, whitespace and `&`/`and`; booleans and numbers
-retain their types. E7 `retries` counts repeats after the first attempt, so two
-attempts means one retry. E5 offers are optional and accept Z-Library spelling;
+retain their types, except the documented downloaded string-ID alternatives.
+E7 `retries` counts repeats after the first explicit-source search attempt, so
+the timeout plus successful search means one retry. One preceding
+`sources_required` rejection is excluded because it issued no provider request;
+more than one rejection, or one after searching began, fails. This bounded
+validation recovery is not another search retry. E5 offers are optional and accept Z-Library spelling;
 blocked Anna calls support both `searched:true` (attempted) and the legacy
 `searched:false` (not completed). Both require the actual blocked attempt;
 invoked alternatives and invented searches remain wrong.

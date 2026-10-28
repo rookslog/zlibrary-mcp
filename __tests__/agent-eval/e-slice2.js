@@ -154,7 +154,12 @@ export async function exerciseSlice2(id, consume, options = {}) {
       context.expectsFutureContract = kind !== 'person';
       answer =
         kind === 'person'
-          ? { annas: 'blocked', searched: false, offer: 'libgen', invoked: false }
+          ? {
+              annas: 'blocked',
+              ...(base === 'E5' ? { searched: false } : {}),
+              offer: 'libgen',
+              invoked: false,
+            }
           : kind === 'pacing'
             ? { annas: 'paced', action: 'wait', retry_after_s: 2 }
             : kind === 'runtime'

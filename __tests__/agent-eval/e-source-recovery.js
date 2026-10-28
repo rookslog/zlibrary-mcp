@@ -9,6 +9,10 @@ export function recoveredSourcesRequired(task, call, trace) {
     (error.detail?.request_issued ?? false) !== false
   )
     return false;
+  // E7 permits one discovery correction before provider attempts begin. Counting
+  // it as a retry would confuse validation rejection with an issued search.
+  if (task.id === 'E7' && trace.slice(0, trace.indexOf(call)).some((c) => c.name === 'search'))
+    return false;
   return trace
     .slice(trace.indexOf(call) + 1)
     .some(

@@ -48,6 +48,31 @@ export async function runEModelTasks(opts) {
     return writeFile(opts.out, JSON.stringify(receipt, null, 2) + '\n');
   };
   if (!opts.paid) {
+    // Planning uses explicit placeholders for state created only by a live
+    // server/session. commandFor is shared with execution; no server is started.
+    receipt.commands = selected.map((task) => {
+      const directory = path.resolve(opts.out + '.artifacts', `0-${task.caseId}-DRY-RUN`),
+        socketPath = path.join(directory, 'broker.sock'),
+        downloads = path.join(directory, 'downloads'),
+        command = commandFor({
+          driver: opts.driver ?? 'codex',
+          directory,
+          socketPath,
+          toolSearch: opts['tool-search'],
+          nonce: 'DRY-RUN-NONCE',
+          model: opts.model,
+        }),
+        prompt = `${task.prompt}\nUse ${downloads} for downloads.${answerInstruction(task)}`;
+      return {
+        run: 0,
+        task: task.caseId,
+        ...command,
+        prompt,
+        argv: [...command.args, prompt],
+        placeholders:
+          'DRY-RUN directory, broker socket, downloads and nonce are replaced at execution; no server or driver started',
+      };
+    });
     receipt.status = 'dry-run; no server or model started';
     await persist();
     process.stdout.write(`C/F totals: ${JSON.stringify(receipt.totals)}\n`);
@@ -242,10 +267,16 @@ export async function runEModelTasks(opts) {
 export function eRunTotals(results) {
   const current = { cases: 0, passed: 0, failed: 0 },
     future = { cases: 0, gapOnly: 0, wrong: 0 };
-  for (const { score } of results) {
-    if (score.contractGaps?.length) {
+  for (const { task, expectsFutureContract, context, score } of results) {
+    if (task?.futureOnly || expectsFutureContract || context?.expectsFutureContract) {
       future.cases++;
-      future[score.wrongDecisions === score.contractGaps.length ? 'gapOnly' : 'wrong']++;
+      future[
+        !score.success &&
+        score.contractGaps?.length &&
+        score.wrongDecisions === score.contractGaps.length
+          ? 'gapOnly'
+          : 'wrong'
+      ]++;
     } else {
       current.cases++;
       current[score.success ? 'passed' : 'failed']++;

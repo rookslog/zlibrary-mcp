@@ -209,6 +209,13 @@ export function eTaskForCase(id) {
   if (!task) throw new Error('unknown E task ' + id);
   const suffix = id.slice(base.length + 1) || 'default';
   const selected = { ...task, caseId: id, variant: base === 'E13' ? suffix : suffix.split('-')[0] };
+  if (base === 'E9')
+    selected.futureOnly =
+      'This checkout discloses ignored LibGen language filters but does not enforce them.';
+  if (base === 'E17' && !['default', 'person'].includes(selected.variant))
+    selected.futureOnly = 'This checkout does not expose the requested browser route outcome.';
+  if (base === 'E18' && selected.variant === 'malformed')
+    selected.futureOnly = 'This checkout normalizes a malformed successful page to empty.';
   if (base === 'E10' && ['fr', 'unknown'].includes(selected.variant)) {
     selected.prompt =
       selected.variant === 'unknown'

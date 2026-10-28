@@ -105,7 +105,6 @@ export async function runESelfTest(out, { cases = eCases, executedBad = true } =
           ...positive,
           final: JSON.stringify(
             {
-              note: 'Tool observations retained',
               ...Object.fromEntries(Object.entries(JSON.parse(positive.final)).reverse()),
             },
             null,

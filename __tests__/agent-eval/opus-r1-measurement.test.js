@@ -234,9 +234,9 @@ test('I5/probe e A-bar applies only to B; variants compare to B and inability is
     for (const x of codex.results) x.driverEnvironment = structuredClone(codex.driverEnvironment);
     codex.driver = 'codex';
     codex.driverVersion = 'codex-cli 0.162.1';
-    Object.assign(codex.settings, driverPins.codex);
+    Object.assign(codex.settings, driverPins.codex, { version: '0.162.1' });
     for (let run = 0; run < 5; run++) {
-      const tracker = createUsageTracker('codex', { version: driverPins.codex.version });
+      const tracker = createUsageTracker('codex', { version: '0.162.1' });
       let n = 0;
       for (const x of codex.results.filter((x) => x.run === run)) {
         n++;

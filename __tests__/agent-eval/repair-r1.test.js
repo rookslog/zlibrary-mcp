@@ -456,7 +456,7 @@ test('EVAL-R1-06 normalized complete Codex receipts are admitted but never stric
     r.driverEnvironment = driverEnvironmentRecord('codex', {});
     for (const x of r.results) x.driverEnvironment = structuredClone(r.driverEnvironment);
     r.driverVersion = 'codex-cli 0.162.1';
-    Object.assign(r.settings, drivers.driverPins.codex);
+    Object.assign(r.settings, drivers.driverPins.codex, { version: '0.162.1' });
     for (let run = 0; run < 5; run++) {
       const tracker = drivers.createUsageTracker('codex', { version: '0.162.1' });
       let input = 0,

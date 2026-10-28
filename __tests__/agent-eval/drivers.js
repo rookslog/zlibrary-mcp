@@ -8,7 +8,7 @@ import { here } from './server.js';
 
 export const driverPins = {
   claude: { binary: 'claude', version: '2.1.303', model: 'claude-opus-5-5', effort: 'high' },
-  codex: { binary: 'codex', version: '0.162.1', model: 'gpt-6.1-sol', effort: 'high' },
+  codex: { binary: 'codex', version: '0.165.0', model: 'gpt-6.1-sol', effort: 'high' },
 };
 export function parseEvents(text) {
   return text

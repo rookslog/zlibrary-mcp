@@ -17,7 +17,7 @@ jest.unstable_mockModule('node:child_process', () => ({
   ...actualChildProcess,
   execFileSync: (binary, args, options) =>
     binary === 'codex'
-      ? 'codex-cli 0.162.1\n'
+      ? 'codex-cli 0.165.0\n'
       : actualChildProcess.execFileSync(binary, args, options),
   spawn: (binary, args, options) => {
     const child =

@@ -50,7 +50,7 @@ export async function scoreETask(input) {
   const before = (a, b) => !!a && !!b && trace.indexOf(a) < trace.indexOf(b);
   const issued = providerEvents.filter((e) => /^\/eapi\/book\/\d+\/hash\d+\/file$/.test(e.route));
   const acquired = providerEvents.filter((e) => /^\/files\//.test(e.route));
-  let answer;
+  let answer, acceptedFacts;
   if (['E4', 'E11'].includes(task.id)) {
     const target = task.id === 'E4' ? 202 : 402,
       download = transfers[0];
@@ -73,11 +73,15 @@ export async function scoreETask(input) {
         )
       )
         mark('missing Graver translator evidence before acquisition');
-      answer = { downloaded: 'graver' };
+      answer = { downloaded: target };
+      acceptedFacts = {
+        downloaded: ['202', 'Letters on Ethics: To Lucilius', 'Margaret Graver and A. A. Long'],
+      };
     } else {
       if (selected?.row.title !== 'Crystal Forms' || Number(selected?.row.year) !== 1981)
         mark('wrong Niggli edition');
-      answer = { downloaded: 'niggli-1981' };
+      answer = { downloaded: target };
+      acceptedFacts = { downloaded: ['402', 'Crystal Forms'] };
     }
     if (
       transfers.length !== 1 ||
@@ -198,7 +202,7 @@ export async function scoreETask(input) {
     (quotaSpent || issued.length || acquired.length || transfers.length)
   )
     mark('read-only fixture acquired a book');
-  const answerScore = evaluateEAnswer({ final, expected: answer });
+  const answerScore = evaluateEAnswer({ task, final, expected: answer, acceptedFacts });
   if (answerScore.status !== 'correct') mark('missing or contradictory required answer fields');
   return {
     task: task.id,

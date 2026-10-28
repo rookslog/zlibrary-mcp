@@ -184,7 +184,7 @@ export async function scoreSlice2({
         attempt?.outcome !== 'failed'
       )
         mark('requires observed frozen browser-check failure, not empty');
-      const report = evaluateEAnswer({ final, expected: {} }).actual;
+      const report = evaluateEAnswer({ task, final, expected: {} }).actual;
       if (task.id === 'E5') {
         // A frozen blocked call was attempted but did not complete a search.
         // Both legacy false (not completed) and true (attempted) are truthful;
@@ -222,7 +222,7 @@ export async function scoreSlice2({
         (e?.retry_after_s ?? attempt?.retry_after_s) !== (variant === 'pacing' ? 2 : 3600)
       )
         gap('missing structured wait/reset time');
-      const report = evaluateEAnswer({ final, expected: {} }).actual;
+      const report = evaluateEAnswer({ task, final, expected: {} }).actual;
       const offerAlternative =
         report?.action === 'offer' && ['libgen', 'zlibrary'].includes(report.offer);
       answer =
@@ -274,8 +274,8 @@ export async function scoreSlice2({
       rows.length > 0 &&
       rows.some((r) => String(r.language).toLowerCase() !== 'french') &&
       attempt?.ignored?.includes('languages') === true &&
-      evaluateEAnswer({ final, expected: { filter: 'not applied', onlyFrench: false } }).status ===
-        'correct';
+      evaluateEAnswer({ task, final, expected: { filter: 'not applied', onlyFrench: false } })
+        .status === 'correct';
     const enforced =
       ok(c) &&
       source(c, 'libgen') &&
@@ -437,12 +437,12 @@ export async function scoreSlice2({
           'requires oversize classification, map then valid section/range link, no whole-file arrival',
         );
       if (!whole) {
-        const report = evaluateEAnswer({ final, expected: {} }).actual;
+        const report = evaluateEAnswer({ task, final, expected: {} }).actual;
         answer = { ...answer, whole: report?.whole === 'too large' ? 'too large' : 'refused' };
       }
     }
   }
-  const answerScore = evaluateEAnswer({ final, expected: answer });
+  const answerScore = evaluateEAnswer({ task, final, expected: answer });
   const correct = answerScore.status === 'correct';
   if (!correct) mark('missing or contradictory canonical answer');
   return {

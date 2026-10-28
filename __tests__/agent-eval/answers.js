@@ -60,7 +60,10 @@ const eAnswerContracts = {
   E1: { downloaded: 'INTEGER selected fixture identity from details/receipt' },
   E2: { downloaded: 'INTEGER selected fixture identity from details/receipt' },
   E3: { downloaded: 'INTEGER selected fixture identity from details/receipt' },
-  E4: { downloaded: 'graver' },
+  E4: {
+    downloaded:
+      'INTEGER selected fixture identity; also accepts STRING observed id, title, or full translator',
+  },
   E5: {
     annas: 'blocked|empty|rows',
     searched:
@@ -73,14 +76,17 @@ const eAnswerContracts = {
   E7: {
     annas: 'rows',
     title: 'STRING observed title',
-    retries: 'INTEGER repeats after the first search attempt; 2 attempts means 1 retry',
+    retries:
+      'INTEGER repeats after the first search attempt; 2 attempts means 1 retry. Exclude at most one sources_required rejection before the first explicit-source search: it issued no request. No later sources_required rejection is permitted.',
   },
   E9: { filter: 'applied|not applied', onlyFrench: 'BOOLEAN' },
   E10: {
     wire: 'STRING normalized provider language',
     unknown: ['STRING unrecognized language input'],
   },
-  E11: { downloaded: 'niggli-1981' },
+  E11: {
+    downloaded: 'INTEGER selected fixture identity; also accepts STRING observed id or title',
+  },
   E12: { downloaded: 'INTEGER recovered fixture identity' },
   E13: {
     outcome: 'unknown',
@@ -117,8 +123,8 @@ const eAnswerContracts = {
 };
 
 // Compare fields, not JSON serialization, query phrasing, key order or prose.
-// Extra explanatory fields are allowed; contradictory required facts are not.
-export function evaluateEAnswer({ final, expected }) {
+// Only declared contract keys are allowed, including optional variant fields.
+export function evaluateEAnswer({ task, final, expected, acceptedFacts = {} }) {
   let actual;
   const text =
     typeof final === 'string' ? final.trim().replace(/^```(?:json)?\s*|\s*```$/g, '') : '';
@@ -128,6 +134,14 @@ export function evaluateEAnswer({ final, expected }) {
   } catch {
     return { status: 'incorrect', reason: 'answer must supply the documented JSON fields' };
   }
+  const contract = task && answerContract(task);
+  if (
+    !actual ||
+    typeof actual !== 'object' ||
+    Array.isArray(actual) ||
+    Object.keys(actual).some((key) => !Object.hasOwn(contract ?? expected ?? {}, key))
+  )
+    return { status: 'incorrect', actual, expected, reason: 'undeclared answer properties' };
   const contains = (a, e) => {
     if (Array.isArray(e))
       return (
@@ -146,7 +160,15 @@ export function evaluateEAnswer({ final, expected }) {
       : a === e;
   };
   return {
-    status: expected && contains(actual, expected) ? 'correct' : 'incorrect',
+    status:
+      expected &&
+      Object.entries(expected).every(
+        ([key, value]) =>
+          contains(actual[key], value) ||
+          (acceptedFacts[key] ?? []).some((fact) => contains(actual[key], fact)),
+      )
+        ? 'correct'
+        : 'incorrect',
     actual,
     expected,
     reason: 'required observed answer fields',

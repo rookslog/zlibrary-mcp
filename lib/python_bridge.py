@@ -2037,7 +2037,14 @@ async def get_recent_books(count: int = 10) -> dict:
     """Get recently added books via EAPI."""
     eapi = await get_eapi_client()
     response = await eapi.get_recently()
-    books = response.get("books", [])
+    if not isinstance(response, dict) or not isinstance(response.get("books"), list):
+        raise ProviderResponseError(
+            "zlibrary",
+            eapi.domain,
+            "Recent-books provider contract error: expected a books list",
+            reason="protocol_error",
+        )
+    books = response["books"]
     return {
         "books": [normalize_eapi_book(b) for b in books[:count]],
     }
@@ -2265,6 +2272,15 @@ async def main():
                 ),
             )
             error_info["error"] = f"EAPI request failed ({diagnostics['failure_kind']})"
+            if (
+                function_name == "get_recent_books"
+                and isinstance(e, ProviderResponseError)
+                and e.reason == "protocol_error"
+            ):
+                # Fixed local text; never expose the provider's payload/prose.
+                error_info["error"] = (
+                    "Recent-books provider contract error: expected a books list"
+                )
             error_info["diagnostics"] = diagnostics
             error_info["type"] = failure_type(e)
             # Acquisition wrappers carry useful issuance/reason evidence, not prose.
@@ -2290,6 +2306,7 @@ async def main():
                             "invalid_argument",
                             "breaker_open",
                             "integrity_mismatch",
+                            "protocol_error",
                             "internal",
                         )
                     )

@@ -1,4 +1,4 @@
-"""Offline PDF planning/excerpts/rendering. JSON stdin/stdout; writes only private cache.
+"""Offline PDF planning/excerpts/rendering and EPUB navigation. JSON stdin/stdout.
 
 The caller lends a checked, open source descriptor as fd 3. Standalone tests use
 PdfBuilder directly. No extracted page text leaves this process.
@@ -11,11 +11,307 @@ import json
 import math
 import os
 from pathlib import Path
+import posixpath
 import re
+import struct
 import sys
+from urllib.parse import unquote, urlsplit
 import uuid
+import xml.etree.ElementTree as ET
+from xml.parsers import expat
+import zipfile
+import zlib
 
 VERSION = 1
+
+# Bound metadata before ZipFile allocates the central directory, then bound each
+# decompression and XML tree. Chapter bodies, images and external DTDs are unread.
+EPUB_MAX_ARCHIVE = 128 * 1024 * 1024
+EPUB_MAX_MEMBERS = 4096
+EPUB_MAX_XML = 1024 * 1024
+EPUB_MAX_DEPTH = 64
+EPUB_MAX_SECTIONS = 4096
+OPF = "{http://www.idpf.org/2007/opf}"
+XHTML = "{http://www.w3.org/1999/xhtml}"
+NCX = "{http://www.daisy.org/z3986/2005/ncx/}"
+
+
+EPUB_PARSE_ERRORS = (
+    OSError,
+    ValueError,
+    LookupError,
+    RuntimeError,
+    EOFError,
+    expat.ExpatError,
+    zipfile.BadZipFile,
+    zlib.error,
+    NotImplementedError,
+)
+
+
+def epub_path(base, href):
+    """Resolve a local archive URI, never a host path or external URL."""
+    uri = urlsplit(href)
+    name = unquote(uri.path, errors="strict")
+    if (
+        uri.scheme
+        or uri.netloc
+        or uri.query
+        or not name
+        or name.startswith("/")
+        or "\\" in name
+        or ":" in name
+        or "\0" in name
+    ):
+        raise ValueError("invalid EPUB path")
+    name = posixpath.normpath(posixpath.join(posixpath.dirname(base), name))
+    if name in (".", "..") or name.startswith("../"):
+        raise ValueError("EPUB path escapes archive")
+    return name
+
+
+def epub_xml(data):
+    # Expat handles UTF-8/16 declarations, so entity rejection cannot be bypassed
+    # by a different XML encoding. External DTD declarations are allowed (common
+    # in NCX); parameter entities are disabled and no resolver fetches them.
+    parser = expat.ParserCreate(namespace_separator="}")
+    builder = ET.TreeBuilder()
+    depth, count = 0, 0
+
+    def qualified(name):
+        return "{" + name if "}" in name else name
+
+    def start(name, attrs):
+        nonlocal depth, count
+        depth += 1
+        count += 1
+        if depth > EPUB_MAX_DEPTH or count > 20000:
+            raise ValueError("EPUB XML exceeds limits")
+        builder.start(qualified(name), {qualified(k): v for k, v in attrs.items()})
+
+    def end(name):
+        nonlocal depth
+        builder.end(qualified(name))
+        depth -= 1
+
+    def reject(*_args):
+        raise ValueError("EPUB entities are unsupported")
+
+    parser.StartElementHandler = start
+    parser.EndElementHandler = end
+    parser.CharacterDataHandler = builder.data
+    parser.EntityDeclHandler = reject
+    parser.ExternalEntityRefHandler = reject
+    parser.SetParamEntityParsing(expat.XML_PARAM_ENTITY_PARSING_NEVER)
+    parser.Parse(data, True)
+    return builder.close()
+
+
+def epub_outline(parent, ncx=False, document_name="", targets=None):
+    total = 0
+
+    def collect(parent, depth=1):
+        nonlocal total
+        if depth > 32:
+            raise ValueError("EPUB outline exceeds depth limit")
+        result = []
+        tag = NCX + "navPoint" if ncx else XHTML + "li"
+        for item in parent.findall(tag):
+            label = (
+                item.find(NCX + "navLabel/" + NCX + "text")
+                if ncx
+                else next(
+                    (n for n in item if n.tag in (XHTML + "a", XHTML + "span")), None
+                )
+            )
+            title = (
+                " ".join("".join(label.itertext()).split()) if label is not None else ""
+            )
+            total += 1
+            if len(title) > 2000 or total > EPUB_MAX_SECTIONS:
+                raise ValueError("invalid or excessive EPUB outline")
+            child = item if ncx else item.find(XHTML + "ol")
+            children = (
+                collect(child, depth + 1) if child is not None and len(child) else []
+            )
+            link = item.find(NCX + "content") if ncx else label
+            href = link.get("src" if ncx else "href") if link is not None else None
+            valid = True
+            if targets is not None and href is not None:
+                try:
+                    # A fragment-only URI names the navigation document itself.
+                    target = (
+                        epub_path(
+                            document_name,
+                            href.split("#", 1)[0] or posixpath.basename(document_name),
+                        )
+                        if href
+                        else None
+                    )
+                    valid = target in targets
+                except (ValueError, UnicodeError):
+                    valid = False
+            if (
+                not title
+                or not valid
+                or (targets is not None and href is None and not children)
+            ):
+                result.extend(children)
+            else:
+                result.append({"title": title, "children": children})
+        return result
+
+    def number(nodes, prefix="", level=1):
+        for index, node in enumerate(nodes, 1):
+            identifier = prefix + str(index)
+            node.update(id=identifier, level=level)
+            number(node["children"], identifier + ".", level + 1)
+        return nodes
+
+    return number(collect(parent))
+
+
+def epub_sections(stream):
+    """Read file-provided navigation only; bad or over-limit input yields no tree."""
+    try:
+        stream.seek(0, 2)
+        size = stream.tell()
+        if not 22 <= size <= EPUB_MAX_ARCHIVE:
+            return []
+        stream.seek(max(0, size - 65557))
+        tail = stream.read(65557)
+        offset = tail.rfind(b"PK\x05\x06")
+        if offset < 0 or len(tail) - offset < 22:
+            return []
+        _, disk, directory_disk, disk_count, count, directory_size, _, comment = (
+            struct.unpack_from("<4s4H2LH", tail, offset)
+        )
+        if (
+            disk
+            or directory_disk
+            or disk_count != count
+            or count > EPUB_MAX_MEMBERS
+            or directory_size > 2 * 1024 * 1024
+            or len(tail) - offset != 22 + comment
+            or tail[max(0, offset - 20) : offset - 16] == b"PK\x06\x07"
+        ):
+            return []  # Also rejects ZIP64 and multi-volume archives.
+        stream.seek(0)
+        with zipfile.ZipFile(stream) as archive:
+            members = archive.infolist()
+            names = {item.filename for item in members}
+            if len(members) != count or len(names) != count:
+                return []
+            # Some older ZIP writers stored UTF-8 bytes without setting bit 11.
+            # Retain ZipInfo for the read, so local-header validation still uses
+            # the original decoded ZIP name. Refuse ambiguous aliases on lookup.
+            lookup = {}
+            for item in members:
+                aliases = {item.filename}
+                if not item.flag_bits & 0x800:
+                    try:
+                        aliases.add(item.filename.encode("cp437").decode("utf-8"))
+                    except UnicodeError:
+                        pass
+                for alias in aliases:
+                    lookup.setdefault(alias, []).append(item)
+
+            def read_xml(name):
+                matches = lookup.get(name, [])
+                if len(matches) != 1:
+                    raise ValueError("missing or ambiguous EPUB member")
+                info = matches[0]
+                member = info.filename
+                if (
+                    not member
+                    or member.startswith("/")
+                    or "\\" in member
+                    or ":" in member
+                    or "\0" in info.orig_filename
+                    or ".." in member.split("/")
+                    or (info.external_attr >> 16) & 0o170000 == 0o120000
+                ):
+                    raise ValueError("unsafe EPUB member")
+                if (
+                    info.file_size > EPUB_MAX_XML
+                    or info.flag_bits & 1
+                    or info.compress_type
+                    not in (zipfile.ZIP_STORED, zipfile.ZIP_DEFLATED)
+                ):
+                    raise ValueError(
+                        "EPUB XML exceeds limit or has unsupported compression/encryption"
+                    )
+                with archive.open(info) as source:
+                    data = source.read(EPUB_MAX_XML + 1)
+                if len(data) > EPUB_MAX_XML:
+                    raise ValueError("EPUB XML exceeds limit")
+                return epub_xml(data)
+
+            container = read_xml("META-INF/container.xml")
+            root = container.find(
+                "{urn:oasis:names:tc:opendocument:xmlns:container}rootfiles/{urn:oasis:names:tc:opendocument:xmlns:container}rootfile"
+            )
+            if root is None:
+                return []
+            package_name = epub_path("", root.attrib["full-path"])
+            package = read_xml(package_name)
+            items = package.findall(OPF + "manifest/" + OPF + "item")
+            targets = set()
+            for item in items:
+                try:
+                    targets.add(epub_path(package_name, item.attrib["href"]))
+                except (ValueError, LookupError):
+                    continue
+            navigation = next(
+                (n for n in items if "nav" in n.get("properties", "").split()), None
+            )
+            if navigation is not None:
+                try:
+                    document_name = epub_path(package_name, navigation.attrib["href"])
+                    document = read_xml(document_name)
+                    toc = next(
+                        (
+                            n
+                            for n in document.iter(XHTML + "nav")
+                            if "toc"
+                            in n.get("{http://www.idpf.org/2007/ops}type", "").split()
+                        ),
+                        None,
+                    )
+                    ordered = toc.find(XHTML + "ol") if toc is not None else None
+                    if ordered is not None:
+                        sections = epub_outline(
+                            ordered, document_name=document_name, targets=targets
+                        )
+                        if sections:
+                            return sections
+                except EPUB_PARSE_ERRORS:
+                    pass  # A broken nav must not suppress an independent NCX.
+            spine = package.find(OPF + "spine")
+            toc_id = spine.get("toc") if spine is not None else None
+            navigation = next(
+                (n for n in items if toc_id and n.get("id") == toc_id), None
+            )
+            if navigation is None:
+                navigation = next(
+                    (
+                        n
+                        for n in items
+                        if n.get("media-type") == "application/x-dtbncx+xml"
+                    ),
+                    None,
+                )
+            if navigation is not None:
+                document_name = epub_path(package_name, navigation.attrib["href"])
+                document = read_xml(document_name)
+                toc = document.find(NCX + "navMap")
+                if toc is not None:
+                    return epub_outline(
+                        toc, ncx=True, document_name=document_name, targets=targets
+                    )
+    except EPUB_PARSE_ERRORS:
+        pass
+    return []
 
 
 def parse_pages(value, count):
@@ -524,6 +820,10 @@ def mupdf_messages():
 
 
 def main(command, args):
+    if command == "epub-map":
+        with os.fdopen(os.dup(3), "rb") as source:
+            return {"sections": epub_sections(source)}
+
     import fitz
 
     cache = Path(args["cache"])

@@ -4,6 +4,8 @@ import * as path from 'node:path';
 import type { CallToolResult, Tool } from '@modelcontextprotocol/sdk/types.js';
 import { z } from 'zod';
 import { getPythonScriptPath } from './paths.js';
+import { logger } from './logger.js';
+import { getManagedPythonPath } from './venv-manager.js';
 import { PdfQueue, pageRenderQueue } from './pdf-queue.js';
 import {
   ChatResources,
@@ -90,6 +92,7 @@ const imageInput = z.strictObject({
   dpi: z.number().int().optional(),
 });
 const pdfQueue = new PdfQueue();
+const epubQueue = new PdfQueue();
 /** Deadlines from enqueue, per helper command. Exported for tests. */
 export const PDF_DEADLINES_MS = { map: 90000, excerpt: 60000, render: 25000 };
 const OUTPUT_LIMIT = 5 * 1024 * 1024;
@@ -101,17 +104,35 @@ const text = (value: unknown): CallToolResult => ({
 const helperFailure = (message: string) =>
   new Error(`The request was valid; the PDF helper failed: ${message}`);
 
-async function pdf(
-  command: 'map' | 'excerpt' | 'render',
+async function documentHelper(
+  command: 'map' | 'excerpt' | 'render' | 'epub-map',
   source: Source,
   cache: string,
   args: Facts,
   signal?: AbortSignal,
 ): Promise<Facts> {
-  const python = process.env.ZLIBRARY_PDF_PYTHON;
+  const epub = command === 'epub-map';
+  const kind = epub ? 'EPUB' : 'PDF';
+  const failed = epub
+    ? (message: string) => new Error(`The request was valid; the EPUB helper failed: ${message}`)
+    : helperFailure;
+  let python: string | undefined;
+  if (epub) {
+    try {
+      python = await getManagedPythonPath();
+    } catch {
+      throw failed('managed Python environment is unavailable; run setup-uv.sh');
+    }
+  } else python = process.env.ZLIBRARY_PDF_PYTHON;
   if (!python || !path.isAbsolute(python))
-    throw helperFailure('ZLIBRARY_PDF_PYTHON must be an absolute interpreter path with PyMuPDF');
-  const queue = command === 'render' ? pageRenderQueue : pdfQueue;
+    throw failed(
+      epub
+        ? 'managed Python must be an absolute interpreter path; run setup-uv.sh'
+        : 'ZLIBRARY_PDF_PYTHON must be an absolute interpreter path with PyMuPDF',
+    );
+  const queue =
+    command === 'epub-map' ? epubQueue : command === 'render' ? pageRenderQueue : pdfQueue;
+  const deadline = command === 'epub-map' ? 10000 : PDF_DEADLINES_MS[command];
   return queue.run(
     (childSignal) =>
       new Promise((resolve, reject) => {
@@ -131,27 +152,27 @@ async function pdf(
         // starting, and the helper dying. Only the second is a setting problem.
         const stopped = () =>
           childSignal.reason === 'timeout'
-            ? helperFailure(
-                `PDF ${command} did not finish within ${PDF_DEADLINES_MS[command] / 1000} s and was stopped; the machine may be busy, retry shortly`,
+            ? failed(
+                `${kind} ${command} did not finish within ${deadline / 1000} s and was stopped; the machine may be busy, retry shortly`,
               )
-            : new Error('PDF request was cancelled');
+            : new Error(`${kind} request was cancelled`);
         child.on('error', (error: NodeJS.ErrnoException) => {
           if (childSignal.aborted) reject(stopped());
           else
             reject(
-              helperFailure(
-                `PDF helper could not start (${error.code ?? 'spawn error'}); check ZLIBRARY_PDF_PYTHON`,
+              failed(
+                `${kind} helper could not start (${error.code ?? 'spawn error'}); ${epub ? 'check the managed Python environment' : 'check ZLIBRARY_PDF_PYTHON'}`,
               ),
             );
         });
         child.on('close', (code, killSignal) => {
           if (childSignal.aborted) return reject(stopped());
           if (length > OUTPUT_LIMIT)
-            return reject(helperFailure('PDF helper output exceeded its 5 MiB limit'));
+            return reject(failed(`${kind} helper output exceeded its 5 MiB limit`));
           if (code !== 0)
             return reject(
-              helperFailure(
-                `PDF helper exited abnormally (${code === null ? `signal ${killSignal}` : `status ${code}`})`,
+              failed(
+                `${kind} helper exited abnormally (${code === null ? `signal ${killSignal}` : `status ${code}`})`,
               ),
             );
           try {
@@ -161,7 +182,7 @@ async function pdf(
             if (value.error) reject(new Error(value.error));
             else resolve(value);
           } catch {
-            reject(helperFailure('PDF helper returned an invalid result'));
+            reject(failed(`${kind} helper returned an invalid result`));
           }
         });
         child.stdin!.on('error', () => {});
@@ -169,7 +190,7 @@ async function pdf(
           JSON.stringify({ cache, key: source.key, max_bytes: maxBytes(), ...args }),
         );
       }),
-    PDF_DEADLINES_MS[command],
+    deadline,
     signal,
   );
 }
@@ -196,18 +217,35 @@ export class ChatFiles {
       fits_whole: source.info.size <= maxBytes(),
       repair_messages: 0,
     };
-    if (format !== 'pdf')
+    if (format !== 'pdf') {
+      // EPUB navigation is inexpensive and deliberately uncached: no cache
+      // version change or PyMuPDF interpreter is needed. Keep bad files' reply.
+      const sections =
+        format === 'epub'
+          ? await documentHelper('epub-map', source, cache, {}, signal)
+              .then((r) => r.sections ?? [])
+              .catch((error: unknown) => {
+                // Keep the existing map reply, but make operational failures
+                // visible through the stderr logger (never the protocol stream).
+                const message = error instanceof Error ? error.message : 'helper failed';
+                logger.warn('EPUB navigation unavailable:', message.replaceAll('PDF', 'EPUB'));
+                return [];
+              })
+          : [];
       return {
         ...base,
         pages: null,
-        sections: [],
+        sections,
         suggested_parts: [],
         safe_window_pages: null,
         guidance:
           format === 'epub'
-            ? 'Send whole if it fits; EPUB splitting is not supported yet.'
+            ? sections.length
+              ? "Sections come from the file's own navigation and are not verified against the text. Section ids describe the outline only; EPUB splitting is not supported yet. Send whole if it fits."
+              : 'Send whole if it fits; EPUB splitting is not supported yet.'
             : 'Send whole if it fits.',
       };
+    }
     const cached = await readMap(cache, source.key);
     if (cached)
       return { ...cached, repair_messages: cached.repair_messages ?? 0, guidance: mapGuidance };
@@ -216,7 +254,7 @@ export class ChatFiles {
       pending = (async () => {
         const result = {
           ...base,
-          ...(await pdf('map', source, cache, {}, signal)),
+          ...(await documentHelper('map', source, cache, {}, signal)),
           guidance: mapGuidance,
         };
         await atomicWrite(path.join(cache, `map-${source.key}.json`), JSON.stringify(result));
@@ -249,7 +287,7 @@ export class ChatFiles {
       if (name === 'get_book_map') return text(await this.map(source, cache, signal));
       if (name === 'get_page_image') {
         if (format !== '.pdf') throw new Error('get_page_image requires a PDF');
-        const r = await pdf(
+        const r = await documentHelper(
           'render',
           source,
           cache,
@@ -290,7 +328,7 @@ export class ChatFiles {
       let filename = source.name;
       if (pages) {
         if (format !== '.pdf') throw new Error('pages requires a PDF');
-        const result = await pdf('excerpt', source, cache, { pages }, signal);
+        const result = await documentHelper('excerpt', source, cache, { pages }, signal);
         if (result.too_large_page) return text(result);
         piece = result.piece;
         filename = `${path.parse(source.name).name}__pp${result.pdf_pages}.pdf`;

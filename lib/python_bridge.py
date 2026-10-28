@@ -1160,7 +1160,10 @@ async def _check_browser_download_request(request):
     import ipaddress
     import socket
 
-    host = request.url.host
+    # Match the ASCII name HTTPX passes to its connection transport. Decoding
+    # an IDN and re-encoding it through socket's older IDNA codec can check a
+    # different DNS name (for example, straße -> strasse).
+    host = request.url.raw_host.decode("ascii")
     try:
         if request.url.scheme not in {"http", "https"} or not host:
             raise ValueError("invalid download URL")

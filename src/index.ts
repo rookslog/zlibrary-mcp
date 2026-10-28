@@ -18,6 +18,7 @@ import { invokeAcquisitionBridge } from './lib/zlibrary-api.js';
 import { logger } from './lib/logger.js';
 import { HandoffProbes, PROBE_TOOL_DEFINITIONS } from './lib/handoff-probes.js';
 import { ChatFiles, CHAT_FILE_TOOL_DEFINITIONS } from './lib/chat-files.js';
+import { getRuntimeDigest } from './lib/build-info.js';
 
 const descriptions: Record<ToolName, string> = {
   search:
@@ -185,6 +186,12 @@ export function getServerVersion(
   try {
     const info = JSON.parse(fs.readFileSync(buildInfoUrl, 'utf8'));
     if (typeof info.commit !== 'string' || !/^[0-9a-f]{7,40}$/.test(info.commit)) return version;
+    if (
+      typeof info.runtime_sha256 !== 'string' ||
+      !/^[0-9a-f]{64}$/.test(info.runtime_sha256) ||
+      info.runtime_sha256 !== getRuntimeDigest(fileURLToPath(new URL('./', import.meta.url)))
+    )
+      return version;
     return `${version}+${info.commit}${info.dirty === true ? '.dirty' : ''}`;
   } catch {
     return version;

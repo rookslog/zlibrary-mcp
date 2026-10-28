@@ -348,6 +348,7 @@ export function commandFor({
     ['mcp_servers.books.command', process.execPath],
     ['mcp_servers.books.args', [path.join(here, 'proxy.mjs'), socketPath]],
     ['mcp_servers.books.required', true],
+    ['mcp_servers.books.default_tools_approval_mode', 'approve'],
     [
       'developer_instructions',
       `Evaluation ${nonce}. Use only the books MCP tools. Do not run commands, read files, use web, or delegate.`,

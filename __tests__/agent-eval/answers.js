@@ -57,7 +57,7 @@ export function answerContract(task) {
   }
 }
 const eAnswerContracts = {
-  E1: { downloaded: 'INTEGER selected fixture identity from details/receipt' },
+  E1: { downloaded: 'INTEGER or numeric STRING selected fixture identity from details/receipt' },
   E2: { downloaded: 'INTEGER selected fixture identity from details/receipt' },
   E3: { downloaded: 'INTEGER selected fixture identity from details/receipt' },
   E4: {
@@ -122,26 +122,76 @@ const eAnswerContracts = {
   },
 };
 
-// Compare fields, not JSON serialization, query phrasing, key order or prose.
-// Only declared contract keys are allowed, including optional variant fields.
-export function evaluateEAnswer({ task, final, expected, acceptedFacts = {} }) {
-  let actual;
-  const text =
-    typeof final === 'string' ? final.trim().replace(/^```(?:json)?\s*|\s*```$/g, '') : '';
-  try {
-    if (duplicateKeys(text)) throw new Error('duplicate claims');
-    actual = JSON.parse(text);
-  } catch {
-    return { status: 'incorrect', reason: 'answer must supply the documented JSON fields' };
+// Recover one unambiguous object for diagnostics only. Prose/fences never pass.
+function diagnosticObject(text) {
+  const candidates = [];
+  for (let start = 0; start < text.length; start++) {
+    if (text[start] !== '{') continue;
+    let depth = 0,
+      quoted = false,
+      escaped = false,
+      end = start;
+    for (; end < text.length; end++) {
+      const char = text[end];
+      if (quoted) {
+        if (escaped) escaped = false;
+        else if (char === '\\') escaped = true;
+        else if (char === '"') quoted = false;
+      } else if (char === '"') quoted = true;
+      else if (char === '{') depth++;
+      else if (char === '}' && --depth === 0) break;
+    }
+    const candidate = text.slice(start, end + 1);
+    try {
+      if (duplicateKeys(candidate)) return undefined;
+      candidates.push(JSON.parse(candidate));
+    } catch {
+      return undefined;
+    }
+    start = end;
   }
-  const contract = task && answerContract(task);
+  return candidates.length === 1 ? candidates[0] : undefined;
+}
+function diagnosticNumbers(actual, expected, acceptedFacts = {}) {
   if (
-    !actual ||
-    typeof actual !== 'object' ||
-    Array.isArray(actual) ||
-    Object.keys(actual).some((key) => !Object.hasOwn(contract ?? expected ?? {}, key))
+    typeof expected === 'number' &&
+    typeof actual === 'string' &&
+    /^-?\d+$/.test(actual) &&
+    Number.isSafeInteger(Number(actual))
   )
-    return { status: 'incorrect', actual, expected, reason: 'undeclared answer properties' };
+    return Number(actual);
+  if (Array.isArray(actual) && Array.isArray(expected))
+    return actual.map((value, index) => diagnosticNumbers(value, expected[index]));
+  if (
+    actual &&
+    typeof actual === 'object' &&
+    !Array.isArray(actual) &&
+    expected &&
+    typeof expected === 'object'
+  )
+    return Object.fromEntries(
+      Object.entries(actual).map(([key, value]) => [
+        key,
+        (acceptedFacts[key] ?? []).some((fact) => typeof fact === 'string')
+          ? value
+          : diagnosticNumbers(value, expected[key]),
+      ]),
+    );
+  return actual;
+}
+export function evaluateEAnswer({ task, final, expected, acceptedFacts = {} }) {
+  const text = typeof final === 'string' ? final.trim() : '';
+  let actual,
+    jsonOnly = false;
+  try {
+    actual = JSON.parse(text);
+    if (duplicateKeys(text)) actual = undefined;
+    else jsonOnly = true;
+  } catch {
+    actual = diagnosticObject(text);
+  }
+  const object = actual && typeof actual === 'object' && !Array.isArray(actual);
+  const contract = task && answerContract(task);
   const contains = (a, e) => {
     if (Array.isArray(e))
       return (
@@ -159,19 +209,53 @@ export function evaluateEAnswer({ task, final, expected, acceptedFacts = {} }) {
           normalized(a.replace(/&/g, ' and ')) === normalized(e.replace(/&/g, ' and '))
       : a === e;
   };
+  const typed = (a, e) => {
+    if (Array.isArray(e)) return Array.isArray(a) && a.every((v, i) => typed(v, e[i] ?? e[0]));
+    if (e && typeof e === 'object')
+      return (
+        a &&
+        typeof a === 'object' &&
+        !Array.isArray(a) &&
+        Object.entries(e).every(([k, v]) => typed(a[k], v))
+      );
+    return a === null ? e === null : typeof a === typeof e;
+  };
+  const matches = (value) =>
+    object &&
+    expected &&
+    Object.entries(expected).every(
+      ([key, fact]) =>
+        contains(value[key], fact) ||
+        (acceptedFacts[key] ?? []).some((alternative) => contains(value[key], alternative)),
+    );
+  const normalizedActual = diagnosticNumbers(actual, expected, acceptedFacts);
+  const facts = {
+    status: !object ? 'unavailable' : matches(normalizedActual) ? 'correct' : 'incorrect',
+    actual,
+    normalizedActual,
+    expected,
+    scope: 'required fields only; numeric strings normalized for diagnostics; no acquisition claim',
+  };
+  const formatCorrect = !!(
+    jsonOnly &&
+    object &&
+    Object.keys(actual).every((key) => Object.hasOwn(contract ?? expected ?? {}, key)) &&
+    Object.entries(expected ?? {}).every(
+      ([key, value]) =>
+        typed(actual[key], value) ||
+        (acceptedFacts[key] ?? []).some((fact) => typed(actual[key], fact)),
+    )
+  );
   return {
-    status:
-      expected &&
-      Object.entries(expected).every(
-        ([key, value]) =>
-          contains(actual[key], value) ||
-          (acceptedFacts[key] ?? []).some((fact) => contains(actual[key], fact)),
-      )
-        ? 'correct'
-        : 'incorrect',
+    status: formatCorrect && matches(actual) ? 'correct' : 'incorrect',
     actual,
     expected,
-    reason: 'required observed answer fields',
+    facts,
+    format: {
+      status: formatCorrect ? 'correct' : 'incorrect',
+      reason: 'JSON object only, declared properties and typed required fields',
+    },
+    reason: 'required observed answer fields; facts and format measured separately',
   };
 }
 export function answerInstruction(task, arm) {

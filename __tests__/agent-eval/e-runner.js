@@ -273,6 +273,7 @@ export function eRunTotals(results) {
       future[
         !score.success &&
         score.contractGaps?.length &&
+        !score.formatFailures &&
         score.wrongDecisions === score.contractGaps.length
           ? 'gapOnly'
           : 'wrong'

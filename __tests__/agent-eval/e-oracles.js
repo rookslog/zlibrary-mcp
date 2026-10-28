@@ -203,10 +203,13 @@ export async function scoreETask(input) {
   )
     mark('read-only fixture acquired a book');
   const answerScore = evaluateEAnswer({ task, final, expected: answer, acceptedFacts });
-  if (answerScore.status !== 'correct') mark('missing or contradictory required answer fields');
+  const formatFailures = answerScore.format.status === 'correct' ? 0 : 1;
+  if (answerScore.facts.status !== 'correct')
+    mark('missing or contradictory required answer facts');
   return {
     task: task.id,
-    success: wrong.length === 0,
+    success: wrong.length === 0 && answerScore.status === 'correct',
+    formatFailures,
     pathCorrect: wrong.length === 0,
     outsideBar: true,
     answer: answerScore,

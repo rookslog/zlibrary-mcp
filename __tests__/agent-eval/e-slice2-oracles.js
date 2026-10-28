@@ -442,12 +442,19 @@ export async function scoreSlice2({
       }
     }
   }
-  const answerScore = evaluateEAnswer({ task, final, expected: answer });
-  const correct = answerScore.status === 'correct';
-  if (!correct) mark('missing or contradictory canonical answer');
+  const answerScore = evaluateEAnswer({
+    task,
+    final,
+    expected: answer,
+    acceptedFacts: task.id === 'E1' ? { downloaded: ['502'] } : {},
+  });
+  const formatFailures = answerScore.format.status === 'correct' ? 0 : 1;
+  if (answerScore.facts.status !== 'correct')
+    mark('missing or contradictory required answer facts');
   return {
     task: task.id,
-    success: wrong.length === 0,
+    success: wrong.length === 0 && answerScore.status === 'correct',
+    formatFailures,
     pathCorrect: wrong.length === 0,
     outsideBar: true,
     answer: answerScore,

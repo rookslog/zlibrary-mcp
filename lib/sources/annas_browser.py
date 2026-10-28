@@ -21,7 +21,7 @@ from datetime import datetime, timezone
 from typing import AsyncIterator, Optional
 from urllib.parse import quote, unquote, urlsplit
 
-from bs4 import BeautifulSoup, Comment
+from bs4 import BeautifulSoup, Comment, NavigableString
 
 from ..filename_utils import SAFE_DOCUMENT_EXTENSIONS
 from .annas_usage import (
@@ -279,20 +279,73 @@ def _direct_file_url(page_html, base_host: str) -> Optional[str]:
     )
 
 
+def _partner_section_text(soup) -> str:
+    """Whole partner section, including later siblings, with book cards omitted.
+
+    A semantic section is authoritative. Otherwise walk forward from the
+    partner heading (even out of its wrapper), stopping at a peer/higher
+    heading. While the heading has not appeared, use main without its cards.
+    """
+    main = soup.select_one("main")
+    if main is None:
+        return ""
+    headings = ("h1", "h2", "h3", "h4", "h5", "h6")
+    marker = next(
+        (
+            node
+            for node in main.find_all(("p", *headings))
+            if re.fullmatch(r"Slow Partner Server #\d+", node.get_text(" ", strip=True))
+        ),
+        None,
+    )
+    section = marker.find_parent("section") if marker is not None else None
+    if section is not None and main not in section.parents:
+        section = None
+    root = section if section is not None else main
+    cards = list(root.select("article"))
+    for anchor in root.select("a.custom-a[href^='/md5/']"):
+        card = anchor.parent
+        # An unwrapped card link must not turn all of main into a book card.
+        if card is root or (marker is not None and marker in card.descendants):
+            card = anchor
+        cards.append(card)
+    excluded = {id(node) for card in cards for node in (card, *card.descendants)}
+    nodes = (
+        marker.next_elements
+        if marker is not None and section is None
+        else root.descendants
+    )
+    level = int(marker.name[1]) if marker is not None and marker.name in headings else 6
+    text = []
+    for node in nodes:
+        if root not in node.parents:
+            break
+        if id(node) in excluded:
+            continue
+        if (
+            marker is not None
+            and section is None
+            and getattr(node, "name", None) in headings
+        ):
+            if int(node.name[1]) <= level:
+                break
+        if (
+            isinstance(node, NavigableString)
+            and not isinstance(node, Comment)
+            and node.parent.name not in ("script", "style")
+            and not _hidden_link(node.parent)
+        ):
+            text.append(str(node))
+    return " ".join(text)
+
+
 def _partner_countdown(soup) -> bool:
     """Wait evidence after ready-link selection, with refusal taking precedence.
 
     Explicit markers remain usable while JavaScript fills in a number. Free
-    text belongs only to the partner block, never the book card or description.
+    text belongs only to the partner section, never the book card.
     """
-    block = _partner_block(soup)
-    text = " ".join(
-        str(s)
-        for s in (() if block is None else block.find_all(string=True))
-        if not isinstance(s, Comment)
-        and s.parent.name not in ("script", "style")
-        and not _hidden_link(s.parent)
-    )
+    text = _partner_section_text(soup)
     if re.search(
         r"\b(?:too\s+many\s+requests|rate[\s-]*limit(?:ed|ing)?|"
         r"downloads?\s+refused|access\s+denied|try\s+again\s+later)\b",

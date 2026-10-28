@@ -634,6 +634,11 @@ node __tests__/agent-eval/run.mjs --suite E --cold-session --dry-run --out /tmp/
 ```
 
 `--e-cases E4-query,E11-filter` restricts diagnostics or runner selection.
+The default model plan additionally includes E4-second, E11-first, E6-rows,
+E16-first and E13-real-timeout. E admission uses the same 180-second compiler
+allowance as the E self-test; the non-E compiler default remains 60 seconds.
+The runner prints and records C/F totals: current cases (passed/failed) and
+future cases (gap-only/also wrong). A dry plan has zero scored cases.
 Runner `--session-mode shared` keeps compatible MCP/driver sessions alive;
 `--cold-session` forces fresh ones. Reader, account and real-timeout environment
 changes force a new process even in shared mode. Model execution remains behind
@@ -645,6 +650,16 @@ The E model path is implemented but deliberately not executed in this lane.
 `answers.js` supplies E answer fields. Scoring compares observed fields, not an
 exact sentence, key order, JSON whitespace, query spelling or an agent-selected
 limit. Extra explanatory fields are allowed. No-tools answers still fail.
+Answer strings normalize case, whitespace and `&`/`and`; booleans and numbers
+retain their types. E7 `retries` counts repeats after the first attempt, so two
+attempts means one retry. E5 offers are optional and accept Z-Library spelling;
+blocked Anna calls support both `searched:true` (attempted) and the legacy
+`searched:false` (not completed). Both require the actual blocked attempt;
+invoked alternatives and invented searches remain wrong.
+E-only scoring permits a structured `sources_required` error when a later
+explicit-source search succeeds or yields a declared task outcome. Transport
+errors, abandoned calls and missing task evidence still fail. E18 keeps its
+no-default-order error exercise; E1-recover and E4-recover execute it as well.
 Every declared expected error specifies `requestIssued`; contradictory issuance
 and transport failures cannot be hidden by that declaration.
 
@@ -683,7 +698,11 @@ future-contract gap. No browser/runtime absence or visit accounting is measured.
 E9 has 20 LibGen rows, two French; honesty about ignored filters is distinct from
 filter enforcement. E10 `fr` normalization/unknown disclosure and E18 malformed
 success-without-books classification also retain absent future contracts.
-E10 canonical `french` and E18 no-account discovery have current good paths.
+E10's default prompt requests French editions without dictating an input code;
+its current scripted path and E10-canonical use `french`. E10-fr and E10-unknown
+have explicit saved-input prompts and future-only reasons (normalization and
+unknown-value disclosure are absent). E18 no-account discovery is current.
+Every wrong mark in a future-only good trace must match a declared contract gap.
 Hypothetical edited replies test oracle reachability only; they are never counted
 as current-interface successes or model evidence.
 
@@ -696,3 +715,10 @@ the resulting PDF fits. A success-shaped oversize
 refusal is classified honestly; a link does not establish client delivery.
 An existing PyMuPDF interpreter is required (`EVAL_PDF_PYTHON` overrides discovery);
 no install occurs. Temporary artifacts are scored before cleanup.
+
+E3 deployment-parity boundary: no E default source order was invented. The
+active tunnel uses profile zlibrary-local; its profile lives below ~/.config,
+which this lane is forbidden to read. The checked repository launcher sources
+a forbidden secrets/env file and has no literal default-source assignment.
+This does not establish the deployed effective source order. Lead must supply
+an allowed non-secret launcher/config copy before claiming deployment parity.

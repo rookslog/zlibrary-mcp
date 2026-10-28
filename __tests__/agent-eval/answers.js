@@ -57,39 +57,100 @@ export function answerContract(task) {
   }
 }
 const eAnswerContracts = {
-  E1:{downloaded:'INTEGER selected fixture identity from details/receipt'},
-  E2:{downloaded:'INTEGER selected fixture identity from details/receipt'},
-  E3:{downloaded:'INTEGER selected fixture identity from details/receipt'},
-  E4:{downloaded:'graver'},
-  E5:{annas:'blocked|empty|rows',searched:'BOOLEAN completed search',offer:'optional source name',invoked:'BOOLEAN alternate source actually invoked'},
-  E6:{annas:'empty|rows'}, E8:{annas:'untried|empty|rows|blocked'},
-  E7:{annas:'rows',title:'STRING observed title',retries:'INTEGER'},
-  E9:{filter:'applied|not applied',onlyFrench:'BOOLEAN'},
-  E10:{wire:'STRING normalized provider language',unknown:['STRING unrecognized language input']},
-  E11:{downloaded:'niggli-1981'}, E12:{downloaded:'INTEGER recovered fixture identity'},
-  E13:{outcome:'unknown',check_destination:'BOOLEAN recovery recommends checking destination',check_receipt:'BOOLEAN recovery recommends checking receipt',fresh_intent_required:'BOOLEAN',automatic_retry:'BOOLEAN'},
-  E14:{chapter:'INTEGER',pdf_index:'INTEGER 1-based',printed_page:'STRING'},
-  E15:{whole:'refused',classification:'oversize',section:'link offered',delivery:'not confirmed'},
-  E16:{downloaded:'BOOLEAN',translator:'STRING observed translator'},
-  E17:{annas:'blocked|paced|unavailable|visit-ceiling',action:'wait|offer for pacing; optional on blocks',offer:'source name when offering an alternative',invoked:'BOOLEAN when offering an alternative',retry_after_s:'NUMBER when supplied',configure_runtime:'BOOLEAN when runtime unavailable',server_limit:'BOOLEAN for visit ceiling',download_quota:'BOOLEAN for visit ceiling'},
-  E18:{found:'STRING observed title',source:'STRING',account:'BOOLEAN for no-account case',malformed:'provider_error for malformed case',empty:'BOOLEAN for malformed case'},
+  E1: { downloaded: 'INTEGER selected fixture identity from details/receipt' },
+  E2: { downloaded: 'INTEGER selected fixture identity from details/receipt' },
+  E3: { downloaded: 'INTEGER selected fixture identity from details/receipt' },
+  E4: { downloaded: 'graver' },
+  E5: {
+    annas: 'blocked|empty|rows',
+    searched:
+      'BOOLEAN: true for an observed search attempt; false if no search completed (a blocked attempt permits either)',
+    offer: 'optional source name',
+    invoked: 'BOOLEAN alternate source actually invoked',
+  },
+  E6: { annas: 'empty|rows' },
+  E8: { annas: 'untried|empty|rows|blocked' },
+  E7: {
+    annas: 'rows',
+    title: 'STRING observed title',
+    retries: 'INTEGER repeats after the first search attempt; 2 attempts means 1 retry',
+  },
+  E9: { filter: 'applied|not applied', onlyFrench: 'BOOLEAN' },
+  E10: {
+    wire: 'STRING normalized provider language',
+    unknown: ['STRING unrecognized language input'],
+  },
+  E11: { downloaded: 'niggli-1981' },
+  E12: { downloaded: 'INTEGER recovered fixture identity' },
+  E13: {
+    outcome: 'unknown',
+    check_destination: 'BOOLEAN recovery recommends checking destination',
+    check_receipt: 'BOOLEAN recovery recommends checking receipt',
+    fresh_intent_required: 'BOOLEAN',
+    automatic_retry: 'BOOLEAN',
+  },
+  E14: { chapter: 'INTEGER', pdf_index: 'INTEGER 1-based', printed_page: 'STRING' },
+  E15: {
+    whole: 'refused',
+    classification: 'oversize',
+    section: 'link offered',
+    delivery: 'not confirmed',
+  },
+  E16: { downloaded: 'BOOLEAN', translator: 'STRING observed translator' },
+  E17: {
+    annas: 'blocked|paced|unavailable|visit-ceiling',
+    action: 'wait|offer for pacing; optional on blocks',
+    offer: 'source name when offering an alternative',
+    invoked: 'BOOLEAN when offering an alternative',
+    retry_after_s: 'NUMBER when supplied',
+    configure_runtime: 'BOOLEAN when runtime unavailable',
+    server_limit: 'BOOLEAN for visit ceiling',
+    download_quota: 'BOOLEAN for visit ceiling',
+  },
+  E18: {
+    found: 'STRING observed title',
+    source: 'STRING',
+    account: 'BOOLEAN for no-account case',
+    malformed: 'provider_error for malformed case',
+    empty: 'BOOLEAN for malformed case',
+  },
 };
 
 // Compare fields, not JSON serialization, query phrasing, key order or prose.
 // Extra explanatory fields are allowed; contradictory required facts are not.
-export function evaluateEAnswer({final,expected}) {
+export function evaluateEAnswer({ final, expected }) {
   let actual;
-  const text=typeof final === 'string'?final.trim().replace(/^```(?:json)?\s*|\s*```$/g,''):'';
+  const text =
+    typeof final === 'string' ? final.trim().replace(/^```(?:json)?\s*|\s*```$/g, '') : '';
   try {
-    if(duplicateKeys(text)) throw new Error('duplicate claims');
-    actual=JSON.parse(text);
-  } catch {return {status:'incorrect',reason:'answer must supply the documented JSON fields'};}
-  const contains=(a,e)=> {
-    if(Array.isArray(e)) return Array.isArray(a) && a.length === e.length && e.every(v=>a.some(x=>contains(x,v)));
-    if(e && typeof e === 'object') return a && typeof a === 'object' && !Array.isArray(a) && Object.entries(e).every(([k,v])=>contains(a[k],v));
-    return typeof e === 'string' ? typeof a === 'string' && normalized(a) === normalized(e) : a === e;
+    if (duplicateKeys(text)) throw new Error('duplicate claims');
+    actual = JSON.parse(text);
+  } catch {
+    return { status: 'incorrect', reason: 'answer must supply the documented JSON fields' };
+  }
+  const contains = (a, e) => {
+    if (Array.isArray(e))
+      return (
+        Array.isArray(a) && a.length === e.length && e.every((v) => a.some((x) => contains(x, v)))
+      );
+    if (e && typeof e === 'object')
+      return (
+        a &&
+        typeof a === 'object' &&
+        !Array.isArray(a) &&
+        Object.entries(e).every(([k, v]) => contains(a[k], v))
+      );
+    return typeof e === 'string'
+      ? typeof a === 'string' &&
+          normalized(a.replace(/&/g, ' and ')) === normalized(e.replace(/&/g, ' and '))
+      : a === e;
   };
-  return {status:expected && contains(actual,expected)?'correct':'incorrect',actual,expected,reason:'required observed answer fields'};
+  return {
+    status: expected && contains(actual, expected) ? 'correct' : 'incorrect',
+    actual,
+    expected,
+    reason: 'required observed answer fields',
+  };
 }
 export function answerInstruction(task, arm) {
   const contract = answerContract(task, arm);

@@ -16,7 +16,7 @@ const serverRoot = path.resolve(process.env.REHEARSAL_SERVER_ROOT || root);
 const fakeEmail = 'rehearsal-account@example.invalid';
 const fakePassword = 'rehearsal-password-canary';
 export class Rehearsal {
-  static async start(suite = 'base', { python } = {}) {
+  static async start(suite = 'base', { python, startupTimeoutMs = 5000 } = {}) {
     const h = new Rehearsal();
     h.temp = await mkdtemp(
       path.join(process.env.REHEARSAL_TEMP_ROOT || tmpdir(), 'zlib-rehearsal-'),
@@ -65,10 +65,10 @@ export class Rehearsal {
       h.fake.stderr.on('data', (d) => {
         h.fakeStderr += d;
       });
-      const port = await waitForFakeReady(h.fake, { stderr: () => h.fakeStderr });
+      const port = await waitForFakeReady(h.fake, { timeoutMs: startupTimeoutMs, stderr: () => h.fakeStderr });
       h.fakeStartup = {
         elapsedMs: Date.now() - fakeStarted,
-        deadlineMs: 5000,
+        deadlineMs: startupTimeoutMs,
         phases: h.fakeStderr,
       };
       if (!Number.isInteger(port) || port < 1) throw new Error('invalid fake port');

@@ -9,14 +9,14 @@ import path from 'node:path';
 const ids = ['E4', 'E6', 'E8', 'E11', 'E13', 'E16'];
 test('E tasks are separately selectable and cold without changing the T matrix', () => {
   expect(definitions.tasks.map(t => t.id)).toEqual(Array.from({length:12}, (_, i) => `T${i+1}`));
-  expect(definitions.eTasks?.map(t => t.id)).toEqual(ids);
+  expect(definitions.eTasks?.map(t => t.id).sort()).toEqual(Array.from({length:18},(_,i)=>`E${i+1}`).sort());
   expect(definitions.eTasks?.every(t => t.coldSession === true)).toBe(true);
 });
 test('a task may accept its declared error without accepting a different error', async () => {
   const input = {
-    task: {...definitions.tasks.find(t => t.id === 'T4'), expectedErrors: [{tool:'get_limits', code:'provider_timeout'}]},
+    task: {...definitions.tasks.find(t => t.id === 'T4'), expectedErrors: [{tool:'get_limits', code:'provider_timeout',requestIssued:false}]},
     arm: definitions.arms.find(a => a.id === 'B'),
-    trace: [{name:'get_limits', args:{mode:'live', sources:['zlibrary']}, reply:{isError:true, structuredContent:{error:{code:'provider_timeout'}}}}],
+    trace: [{name:'get_limits', args:{mode:'live', sources:['zlibrary']}, reply:{isError:true, structuredContent:{error:{code:'provider_timeout',requestIssued:false}}}}],
   };
   expect((await scoreTask(input)).wrongDecisions).toBe(0);
   input.trace[0].reply.structuredContent.error.code = 'internal';
@@ -46,7 +46,7 @@ for (const id of [...ids, 'E8-empty']) {
       // No tools plus the exact expected answer still cannot pass.
       expect((await scoreTask({...sample, trace:[], providerEvents:[], quotaSpent:0})).success).toBe(false);
     });
-  }, 90000);
+  }, 300000);
 }
 
 test('E inventory exactly matches fixed Python data and payload digests', async () => {

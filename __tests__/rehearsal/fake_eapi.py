@@ -1,7 +1,18 @@
 """Loopback-only EAPI contract double. Never forwards a request upstream."""
 
 from collections import Counter
-from fake_catalogue import ALL, HISTORY, E_HISTORY, LIBGEN, select, payload, libgen_html
+from fake_catalogue import (
+    ALL,
+    HISTORY,
+    E_HISTORY,
+    E_HISTORY_PAGING,
+    E_MODES,
+    LIBGEN,
+    E2_LIBGEN,
+    select,
+    payload,
+    libgen_html,
+)
 from fake_annas import EMPTY_SEARCH
 from http.cookies import SimpleCookie
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -35,6 +46,12 @@ def startup_stage(phase):
 USER_ID = "rehearsal-cookie-id"
 USER_KEY = "rehearsal-cookie-key"
 MODES = {
+    "e_person",
+    "e_transient",
+    "e_pacing",
+    "e_runtime",
+    "e_ceiling",
+    "e_malformed",
     "healthy",
     "e_history",
     "e_outcome_unknown",
@@ -52,6 +69,7 @@ MODES = {
     "slow",
     "ambiguous400",
 }
+MODES |= E_MODES
 
 
 class Fake(ThreadingHTTPServer):
@@ -172,6 +190,38 @@ class Handler(BaseHTTPRequestHandler):
             if route != "/eapi/user/login":
                 self.server.events.append({"route": route, "arguments": fields})
         if route == "/annas/search":
+            if mode == "e_annas_rows":
+                return self.reply(
+                    b'<html><title>Offline Anna search</title><div><a href="/md5/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa">Persuasion</a></div></html>',
+                    content_type="text/html",
+                )
+            if mode == "e_person":
+                return self.reply(
+                    b"<html><title>DDoS-Guard</title><h1>Checking your browser</h1></html>",
+                    403,
+                    "text/html",
+                    {"Server": "ddos-guard"},
+                )
+            if mode in {"e_pacing", "e_runtime", "e_ceiling"}:
+                return self.reply(
+                    {
+                        "reason": mode,
+                        "retry_after_s": 2 if mode == "e_pacing" else 3600,
+                    },
+                    503 if mode == "e_runtime" else 429,
+                    headers={"Retry-After": "2" if mode == "e_pacing" else "3600"},
+                )
+            if mode == "e_transient":
+                if self.server.calls[route] == 1:
+                    return self.reply(
+                        b"",
+                        content_type="text/html",
+                        headers={"X-Eval-Outcome": "read-timeout"},
+                    )
+                return self.reply(
+                    b'<html><title>Offline Anna search</title><div><a href="/md5/eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee">E Transient Recovery</a></div></html>',
+                    content_type="text/html",
+                )
             return self.reply(EMPTY_SEARCH, content_type="text/html")
         if route == "/libgen/index.php":
             query = params.get("req", params.get("q", [""]))[0]
@@ -181,7 +231,7 @@ class Handler(BaseHTTPRequestHandler):
             )
         if route in {"/libgen/ads.php", "/libgen/get.php"}:
             md5 = params.get("md5", [""])[0]
-            row = next((b for b in LIBGEN if b["md5"] == md5), None)
+            row = next((b for b in LIBGEN + E2_LIBGEN if b["md5"] == md5), None)
             if not row:
                 return self.reply({"error": "unknown md5"}, 404)
             if route.endswith("ads.php"):
@@ -266,6 +316,8 @@ class Handler(BaseHTTPRequestHandler):
         if route == "/eapi/info/domains":
             return self.reply({"success": 1, "domains": []})
         if route == "/eapi/book/search":
+            if mode == "e_malformed":
+                return self.reply({"success": 1, "unexpected": "missing books list"})
             query = fields.get("message", [""])[0]
             if query.startswith("slow-"):
                 time.sleep(0.6)
@@ -278,9 +330,13 @@ class Handler(BaseHTTPRequestHandler):
             return self.reply(
                 {
                     "success": 1,
-                    "books": (E_HISTORY if mode == "e_history" else HISTORY)[
-                        (page - 1) * limit : page * limit
-                    ],
+                    "books": (
+                        ([E_HISTORY[0]] + E_HISTORY_PAGING + [E_HISTORY[1]])
+                        if mode == "e_history"
+                        else ([E_HISTORY[1], E_HISTORY[0]] + E_HISTORY_PAGING)
+                        if mode == "e_history_first"
+                        else HISTORY
+                    )[(page - 1) * limit : page * limit],
                 }
             )
         match = re.fullmatch(r"/eapi/book/(\d+)/(hash\d+)(/file)?", route)

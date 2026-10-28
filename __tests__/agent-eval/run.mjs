@@ -23,6 +23,10 @@ const { values: opts } = parseArgs({
   options: {
     'self-test': { type: 'boolean' },
     'e-self-test': { type: 'boolean' },
+    'e-cases': {type:'string'},
+    suite:{type:'string',default:'T'},
+    'cold-session':{type:'boolean'},
+    'session-mode':{type:'string',default:'cold'},
     'dry-run': { type: 'boolean' },
     paid: { type: 'boolean' },
     'server-root': { type: 'string', default: root },
@@ -42,10 +46,16 @@ if (opts['e-self-test']) {
   if (opts.paid || opts['self-test'] || opts['dry-run'])
     throw new Error('E diagnostics cannot be combined with paid or other runner modes');
   const { runESelfTest } = await import('./e-self-test.js');
-  const receipt = await runESelfTest(opts.out);
+  const receipt = await runESelfTest(opts.out,{...(opts['e-cases']?{cases:opts['e-cases'].split(',')}:{})});
   process.stdout.write(`${receipt.status}; ${receipt.results.length} cold cases; ${opts.out}\n`);
   process.exit(0);
 }
+if(opts.suite.toUpperCase() === 'E') {
+  const {runEModelTasks}=await import('./e-runner.js');
+  await runEModelTasks(opts);
+  process.exit(0);
+}
+if(opts.suite.toUpperCase() !== 'T') throw new Error('suite must be T or E');
 const arm = arms.find((a) => a.id === opts.arm);
 if (!arm) throw new Error('unknown arm');
 if (!driverPins[opts.driver]) throw new Error('unknown driver');

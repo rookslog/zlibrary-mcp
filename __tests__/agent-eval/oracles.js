@@ -371,5 +371,6 @@ export function expectedError(task, call) {
   const error = dataOf(call.reply ?? {}).error;
   return !call.error && !!error && (task.expectedErrors ?? []).some(rule =>
     rule.tool === call.name && rule.code === error.code &&
-    (rule.requestIssued === undefined || error.detail?.request_issued === rule.requestIssued));
+    typeof rule.requestIssued === 'boolean' &&
+    (error.detail?.request_issued ?? false) === rule.requestIssued);
 }

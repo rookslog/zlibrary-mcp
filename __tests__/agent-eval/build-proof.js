@@ -151,6 +151,7 @@ export async function verifyBuildArtifacts({
   buildRoot,
   distRoot = path.join(buildRoot, 'dist'),
   pin,
+  compileTimeoutMs = 60000,
 }) {
   const before = await pinnedInputs(buildRoot, pin),
     compiler = await compilerIdentity(buildRoot),
@@ -183,7 +184,7 @@ export async function verifyBuildArtifacts({
         cwd: scratch,
         encoding: 'utf8',
         stdio: 'pipe',
-        timeout: 60000,
+        timeout: compileTimeoutMs,
         maxBuffer: 8 * 1024 * 1024,
       });
     } catch (error) {

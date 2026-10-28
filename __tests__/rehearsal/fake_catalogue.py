@@ -6,6 +6,7 @@ No title is derived from request text. Payloads are synthetic, not real books.
 import hashlib
 import html
 import re
+from e_pdf_fixture import pdf_fixture
 
 
 def book(id, title, author="Offline Author", year=2026, extension="pdf", **extra):
@@ -137,9 +138,87 @@ E_HISTORY = [
     book(902, "Being and Time", "Martin Heidegger", 1996, translator="Joan Stambaugh"),
     HISTORY[1],
 ]
+E2_CATALOGUE = [
+    {
+        **book(501, "Glas-Piece [A Review of Glas]", "Offline Reviewer", 1986),
+        "pages": 23,
+    },
+    book(
+        502,
+        "Glas",
+        "Jacques Derrida",
+        1986,
+        translator="John P. Leavey and Richard Rand",
+        edition="Complete Leavey-Rand",
+    ),
+    book(
+        503,
+        "Regulation of political campaigns: Of Grammatology 1976",
+        "Spivak, Lawrence E.",
+        1976,
+    ),
+    book(
+        504,
+        "Of Grammatology",
+        "Jacques Derrida; Gayatri Chakravorty Spivak",
+        1976,
+        translator="Gayatri Chakravorty Spivak",
+    ),
+    {**book(505, "E Language Study", "Offline French Author"), "language": "french"},
+    book(506, "E Language Study", "Offline English Author"),
+    book(507, "Reader Labels", "Offline E Reader"),
+    book(508, "Reader Oversize", "Offline E Reader"),
+]
+E2_LIBGEN = [
+    {
+        **book(520 + i, "E Mixed Language Study", "Offline E Author"),
+        "language": "french" if i in (3, 17) else "english",
+    }
+    for i in range(20)
+]
+for row in E2_LIBGEN:
+    row["md5"] = hashlib.md5(
+        (b"%PDF-1.4\n" + (f"Synthetic fixture {row['id']}\n".encode() * 60))
+    ).hexdigest()
+E_PAGING = [
+    book(410 + i, "Crystal Forms", "Niggli", 1979, edition="Other edition")
+    for i in range(9)
+]
+E_HISTORY_PAGING = [
+    book(
+        910 + i, "Being and Time", "Martin Heidegger", 1996, translator="Joan Stambaugh"
+    )
+    for i in range(9)
+]
+E_MODES = {
+    "e_catalogue",
+    "e_graver_second",
+    "e_target_first",
+    "e_annas_rows",
+    "e_history",
+    "e_history_first",
+    "e_outcome_unknown",
+    "e_real_timeout",
+    "e_person",
+    "e_transient",
+    "e_pacing",
+    "e_runtime",
+    "e_ceiling",
+    "e_malformed",
+}
 ALL = {
     str(b["id"]): b
-    for b in REHEARSAL + CATALOGUE + PAGING + HISTORY + LIBGEN + E_CATALOGUE + E_HISTORY
+    for b in REHEARSAL
+    + CATALOGUE
+    + PAGING
+    + HISTORY
+    + LIBGEN
+    + E_CATALOGUE
+    + E_HISTORY
+    + E2_CATALOGUE
+    + E2_LIBGEN
+    + E_PAGING
+    + E_HISTORY_PAGING
 }
 
 
@@ -157,7 +236,14 @@ def select(query, source="zlibrary", fields=None, mode="healthy"):
     elif source == "libgen" and q == "fixture":
         rows = [LIBGEN[-1]]
     else:
-        rows = LIBGEN if source == "libgen" else CATALOGUE + PAGING + E_CATALOGUE
+        epool = [E_CATALOGUE[0]] + E_PAGING + E_CATALOGUE[1:] + E2_CATALOGUE
+        if mode == "e_target_first":
+            epool = [E_CATALOGUE[1]] + [b for b in epool if b["id"] != 402]
+        rows = (
+            (LIBGEN + (E2_LIBGEN if mode in E_MODES else []))
+            if source == "libgen"
+            else CATALOGUE + PAGING + (epool if mode in E_MODES else [])
+        )
         words = q.split()
         rows = [
             b
@@ -176,6 +262,8 @@ def select(query, source="zlibrary", fields=None, mode="healthy"):
         ]
         if source == "zlibrary" and q in {"seneca letters", "letters seneca"}:
             rows = [b for b in CATALOGUE if b["author"] == "Seneca"]
+        if mode == "e_graver_second":
+            rows = sorted(rows, key=lambda b: b["id"] == 202)
 
     def first(key, default=None):
         v = fields.get(key, [default])
@@ -205,6 +293,8 @@ def select(query, source="zlibrary", fields=None, mode="healthy"):
 
 
 def payload(row):
+    if row["id"] in (507, 508):
+        return pdf_fixture(row["id"] == 508)
     if row["id"] == 101:
         return b"Offline rehearsal book 101.\n"
     header = b"%PDF-1.4\n" if row["extension"] == "pdf" else b"PK\x03\x04"
@@ -225,7 +315,7 @@ def libgen_html(rows):
         cells.append(
             f'<tr><td><a href="/edition.php?id={b["id"]}">{esc(b["title"])}</a></td>'
             f"<td>{esc(b['author'])}</td><td>Fixture Press</td><td>{b['year']}</td>"
-            f"<td>English</td><td>100</td><td>1 MB</td><td>{b['extension']}</td>"
+            f"<td>{esc(b['language'].title())}</td><td>100</td><td>1 MB</td><td>{b['extension']}</td>"
             f'<td><a href="/ads.php?md5={b["md5"]}">Mirror</a></td></tr>'
         )
     return (

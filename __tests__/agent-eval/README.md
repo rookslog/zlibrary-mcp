@@ -620,50 +620,79 @@ history; the revised READY identifies final bytes and new red/green/full checks.
 The same guarded-read, unsupported shared-no-hidden-lock, no OS/hermetic/memory/
 supply-chain claim and lead-owned committed startup/CI boundaries still apply.
 
-## E fixtures: current-interface offline diagnostics
+## E fixtures: offline diagnostics and runner selection
 
-`eTasks` in `tasks.js` is opt-in, separate from the unchanged T1–T12 episode and
-matrix. E4, E6, E8 (rows and empty variants), E11, E13 and E16 run with a fresh
-MCP server, refs, fake provider, output directory and scripted context per case.
-No context from T tasks is inherited. No model or driver is started.
+E1–E18 are separate from the unchanged T1–T12 matrix. Each diagnostic case
+starts a fresh MCP process, fake provider, refs and artifact root. The self-test
+runs pairs of independent isolated cases, preserving every check; receipts
+separate actual current-interface success, hypothetical future-contract
+witnesses, replay controls, alternative good paths and executed wrong moves.
 
 ```sh
 node __tests__/agent-eval/run.mjs --e-self-test --out /tmp/e-self-test.json
-node --experimental-vm-modules node_modules/jest/bin/jest.js __tests__/agent-eval/e-fixtures.test.js --runInBand --coverage=false
+node __tests__/agent-eval/run.mjs --suite E --cold-session --dry-run --out /tmp/e-plan.json
 ```
 
-This path checks pinned production/config bytes and a fresh reproducible build,
-records hashes of the working evaluator bytes, and checks identity again at the
-end. It is explicitly **diagnostic**, outside the comparison bar; it does not
-satisfy clean committed evaluator admission or select this five-tool checkout
-as settled A. The original `--self-test` still requires the settled 12-tool A
-baseline. On 973ccd6 it rejects source equivalence before launch. No pin,
-comparison admission rule, T scoring contract or matrix command is changed.
-The uncommitted evaluator is intentional for a lead-owned commit workflow.
+`--e-cases E4-query,E11-filter` restricts diagnostics or runner selection.
+Runner `--session-mode shared` keeps compatible MCP/driver sessions alive;
+`--cold-session` forces fresh ones. Reader, account and real-timeout environment
+changes force a new process even in shared mode. Model execution remains behind
+explicit paid admission, committed evaluator identity, exact build reproduction,
+runtime identity checks and network fences. No diagnostic invokes a driver or
+qualifies a settled-A comparison. The original A baseline remains unchanged.
+The E model path is implemented but deliberately not executed in this lane.
 
-Each E oracle requires positive observed evidence and a whole canonical JSON
-answer (see `e-scripted.js`); arbitrary prose is not semantically judged. Every
-case checks abstention, the expected answer without tools, and targeted wrong
-moves. Download cases check exact synthetic bytes inside the isolated root.
-`expectedErrors` accepts only the declared tool/code and optional issuance
-flag; transport exceptions and unrelated errors still count as wrong. An
-accepted E13 error is retained in `invalidCalls` and `expectedErrors` diagnostics
-but contributes no wrong decision. E13 requires exactly one issuance and
-transfer request, explicit uncertainty and receipt-first/fresh-intent recovery.
+`answers.js` supplies E answer fields. Scoring compares observed fields, not an
+exact sentence, key order, JSON whitespace, query spelling or an agent-selected
+limit. Extra explanatory fields are allowed. No-tools answers still fail.
+Every declared expected error specifies `requestIssued`; contradictory issuance
+and transport failures cannot be hidden by that declaration.
 
-E-only catalogue IDs 401–403 and history ID 902 are fixed in the authoritative
-Python catalogue and `inventory.json`. `e_history` selects [902, 901], leaving
-legacy HISTORY untouched. E11 and E16 force `limit:1` and cursor-only page two.
-E13's `e_outcome_unknown` mode marks a file response **after** link issuance;
-the evaluation-only Python seam injects an issued acquisition deadline error.
-This exercises production error classification without waiting for a timeout;
-it does not establish real network timeout or completion-after-timeout behavior.
-Temporary artifacts are scored before cleanup; receipt paths are not retained
-files. No real credentials, downloads, providers, browser routes or model calls
-are exercised.
+E4 accepts a translator-targeted query and Graver-second order. E6 includes
+Anna-empty and Anna-rows controls. E8 accepts honest untried status or the
+observed result of an explicit later Anna search. E11/E16 fixed pools put the
+target beyond the default ten rows, with target-first and alternate-limit
+controls. Correct year-filter/direct-target solutions also pass. Prompts do not
+instruct a solver to turn a page. All E-only catalogue/history/LibGen records
+are mode-gated; healthy T search pools remain the pre-E pools.
 
-Slice 2: E1–E3 need decoy/review data; E5 a browser-check reply; E7 transient
-failure then rows; E9–E10 French and unknown-language fixtures; E12 restart/ref
-eviction; E14 a valid PDF/reader and page-label evidence; E15 reader/oversize
-errors with image/link preservation; E17 browser pacing/person-check/runtime/
-visit-ceiling modes; E18 no-account setup and malformed-success injection.
+E1/E2 separate complete-book/translator records from review/author decoys;
+E3 explicitly requests the review. Acquisitions check exact bytes, a matching
+completed receipt and provider/quota evidence. E12 really restarts the process,
+recovers the same edition through a fresh search. The expired-ref failure is
+tested but need not be attempted when the restart is already known. Targeted searches
+that identify the right record can acquire it without an extra detail call;
+both paths have executed good controls. At least one bad
+trace per E fixture executes a wrong call with its own provider events/quota/
+files; replay/tamper controls add narrower checks.
+
+E13's header seam is a fallback. `E13-real-timeout` uses the production acquire
+coroutine with a controlled external transfer callback: it issues a real fake
+link, GETs its bytes and remains pending. A short test budget drives the actual
+asyncio timeout, commit inspection and cancellation branch. A source-bound
+line receipt records issued=true/published=false/task pending and cancellation.
+This qualifies that production branch under the controlled callback; it does
+not establish production transfer timing or a real provider timeout. Recovery
+is scored through boolean destination/receipt/fresh-intent/no-auto-retry fields.
+
+E5/E17-person replay a frozen HTTP 403 check. E7 injects one read timeout after
+an actual loopback request, waits the declared 50 ms and repeats once for rows.
+E17 pacing/runtime/ceiling are frozen HTTP outcome replays. This checkout has
+no browser route: missing structured reason/wait/reset scope remains an explicit
+future-contract gap. No browser/runtime absence or visit accounting is measured.
+E9 has 20 LibGen rows, two French; honesty about ignored filters is distinct from
+filter enforcement. E10 `fr` normalization/unknown disclosure and E18 malformed
+success-without-books classification also retain absent future contracts.
+E10 canonical `french` and E18 no-account discovery have current good paths.
+Hypothetical edited replies test oracle reachability only; they are never counted
+as current-interface successes or model evidence.
+
+E14/E15 alone expose reader tools, using valid deterministic PDFs with labels
+i, 40, 41 and Chapter 8 at PDF index 3. E14 has no outline; E15 has one section
+and exceeds a 1,000,000-byte limit. Returned image and resource-link blocks remain
+intact; E14 requires the chapter image, while E15 may use the map without images.
+E15 accepts section IDs or any valid page range, including all three pages when
+the resulting PDF fits. A success-shaped oversize
+refusal is classified honestly; a link does not establish client delivery.
+An existing PyMuPDF interpreter is required (`EVAL_PDF_PYTHON` overrides discovery);
+no install occurs. Temporary artifacts are scored before cleanup.

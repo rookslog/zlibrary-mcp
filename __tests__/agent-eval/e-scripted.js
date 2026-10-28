@@ -1,114 +1,96 @@
-import { EDiagnosticServer } from './e-server.js';
-import { eTasks } from './tasks.js';
-import { dataOf, rowsOf } from './oracles.js';
-
-export async function exerciseEFixture(id, consume) {
-  const task = eTasks.find(t => t.id === id.replace('-empty',''));
-  if (!task) throw new Error('unknown E fixture: '+id);
-  if (!task.coldSession) throw new Error('E fixture must start cold');
-  const s = await EDiagnosticServer.start(task);
-  const context = {variant:id.endsWith('-empty')?'empty':'rows'};
-  const call = async (name,args={}) => dataOf(await s.call(name,args));
-  const search = async (query, extra={}) => call('search',{query,sources:['zlibrary'],...extra});
-  const download = row => call('download',{ref:row.ref,output_dir:s.downloads});
+import {EDiagnosticServer} from './e-server.js';
+import {eTasks} from './tasks.js';
+import {dataOf,rowsOf} from './oracles.js';
+import {exerciseSlice2,wrongSlice2,slice2Ids} from './e-slice2.js';
+import {readFile} from 'node:fs/promises';
+import path from 'node:path';
+export async function exerciseEFixture(id,consume,options={}) {
+  const base=id.split('-')[0],variant=id.slice(base.length+1) || 'default';
+  if(slice2Ids.includes(base)) return exerciseSlice2(id,consume,options);
+  const task=eTasks.find(t=>t.id === base);
+  if(!task?.coldSession) throw new Error('unknown or non-cold E task: '+id);
+  const s=await EDiagnosticServer.start({...task,variant});
+  const context={variant,caseId:id,executedWrong:!!options.wrongMove};
+  const call=async(name,args={})=>dataOf(await s.call(name,args));
+  const search=(query,extra={})=>call('search',{query,sources:['zlibrary'],...extra});
+  const download=row=>call('download',{ref:row.ref,output_dir:s.downloads});
   let answer;
   try {
-    switch(task.id) {
-      case 'E4': {
-        const found = await search('Seneca Letters');
-        const rows = rowsOf(found);
-        for (const row of rows) {
-          const detail = await call('get_book',{ref:row.ref});
-          if (detail.translator === 'Margaret Graver and A. A. Long') {
-            await download(row);
-            break;
-          }
-        }
-        answer = {downloaded:'graver'};
-        break;
+    if(base === 'E4') {
+      const rows=rowsOf(await search(variant === 'query'?'Graver Seneca':'Seneca Letters'));
+      for(const row of rows) {
+        const detail=await call('get_book',{ref:row.ref});
+        if(detail.identifiers?.id === (options.wrongMove?'203':'202')) {await download(row);break;}
       }
-      case 'E6':
-        await search('Persuasion',{sources:['annas']});
-        answer = {annas:'empty'};
-        break;
-      case 'E8':
-        await search(context.variant === 'empty'?'definitely absent zqxv':'Persuasion',{sources:['libgen','annas']});
-        answer = {annas:context.variant === 'empty'?'empty':'untried'};
-        break;
-      case 'E11': {
-        const first = await search('Niggli Crystal Forms',{limit:task.limit});
-        const second = await call('search',{cursor:first.next_cursor});
-        await download(rowsOf(second)[0]);
-        answer = {downloaded:'niggli-1981'};
-        break;
+      answer={downloaded:'graver'};
+    } else if(base === 'E6') {
+      const result=await search(variant === 'query'?'Persuasion Jane Austen':'Persuasion',{sources:['annas']});
+      answer={annas:rowsOf(result).length?'rows':'empty'};
+    } else if(base === 'E8') {
+      const result=await search(variant === 'empty'?'definitely absent zqxv':variant === 'query'?'Persuasion Jane Austen':'Persuasion',{sources:['libgen','annas']});
+      let attempt=result.routing?.attempts?.find(a=>a.source === 'annas');
+      if(['complete','rows','blocked'].includes(variant)) {
+        const second=await search('Persuasion Jane Austen',{sources:['annas']});
+        attempt=(second.routing?.attempts ?? second.error?.attempts)?.find(a=>a.source === 'annas');
       }
-      case 'E13': {
-        await download(rowsOf(await search('Uncertain Transfer'))[0]);
-        answer = {outcome:'unknown',recovery:'check destination and receipt; retry only with fresh intent'};
-        break;
-      }
-      case 'E16': {
-        const first = await call('get_history',{source:'zlibrary',limit:task.limit});
-        await call('get_book',{ref:rowsOf(first)[0].ref});
-        const second = await call('get_history',{cursor:first.next_cursor});
-        await call('get_book',{ref:rowsOf(second)[0].ref});
-        answer = {downloaded:true,translator:'John Macquarrie and Edward Robinson'};
-        break;
-      }
+      answer={annas:attempt?.outcome === 'failed' && attempt.reason === 'browser_check'?'blocked':attempt?.outcome ?? 'untried'};
+    } else if(base === 'E11') {
+      let page=await search('Niggli Crystal Forms',variant === 'filter'?{year_from:1981,year_to:1981}:variant === 'limit'?{limit:5}:{});
+      let selected;
+      do {
+        selected=rowsOf(page).find(r=>Number(r.year) === (options.wrongMove?1979:1981));
+        if(selected || !page.next_cursor) break;
+        page=await call('search',{cursor:page.next_cursor});
+      } while(true);
+      if(!selected) throw new Error('fixed Niggli target missing');
+      await download(selected);
+      answer={downloaded:'niggli-1981'};
+    } else if(base === 'E13') {
+      const row=rowsOf(await search('Uncertain Transfer'))[0];
+      await download(row);
+      if(options.wrongMove) await download(row);
+      if(variant === 'real-timeout') context.timeoutReceipt=JSON.parse(await readFile(path.join(s.home,'timeout-branch.json'),'utf8'));
+      answer={outcome:'unknown',check_destination:true,check_receipt:true,fresh_intent_required:true,automatic_retry:false};
+    } else if(base === 'E16') {
+      let page=await call('get_history',{source:'zlibrary',...(variant === 'limit'?{limit:3}:{})});
+      do {
+        const row=rowsOf(page).find(r=>Number(r.year) === 1962);
+        if(row) {await call('get_book',{ref:row.ref});break;}
+        if(!page.next_cursor) throw new Error('fixed history target missing');
+        page=await call('get_history',{cursor:page.next_cursor});
+      } while(true);
+      answer={downloaded:true,translator:'John Macquarrie and Edward Robinson'};
     }
-    const sample = {task,arm:s.arm,...await s.finishTask(),final:JSON.stringify(answer),downloads:s.downloads,context};
+    if(options.wrongMove && !['E4','E11','E13'].includes(base)) {
+      // A genuinely executed forbidden acquisition, with this run's own state.
+      const result=await search('Persuasion',{sources:['zlibrary']});
+      await download(rowsOf(result)[0]);
+    }
+    const sample={task,arm:s.arm,...await s.finishTask(),final:JSON.stringify(answer),downloads:s.downloads,context,fakeStartup:s.fake.fakeStartup};
     await s.assertFence();
     return await consume(sample);
-  } finally { await s.close(); }
+  } finally {await s.close();}
 }
 
-// Mutate actual replies/arguments rather than inventing a second protocol fake.
 export function wrongVariants(sample) {
-  const copy = () => structuredClone(sample.trace);
-  const bad = [];
-  const answer = (label, value) => bad.push({label,final:JSON.stringify(value)});
-  switch(sample.task.id) {
-    case 'E4': {
-      const trace = copy(), c = trace.find(c => c.name === 'download');
-      const campbell = rowsOf(dataOf(trace.find(c => c.name === 'search').reply)).find(r => r.year === 1969);
-      c.args.ref = campbell.ref; c.selected = campbell;
-      bad.push({label:'wrong Campbell edition',trace});
-      bad.push({label:'translator evidence omitted',trace:copy().filter(c => c.name !== 'get_book')});
-      break;
-    }
-    case 'E6':
-      answer('empty mislabeled blocked',{annas:'blocked'});
-      bad.push({label:'none without completed attempt',trace:[],providerEvents:[]});
-      break;
-    case 'E8':
-      answer('blanket unknown',{annas:'unknown'});
-      answer('wrong attempted status',{annas:sample.context.variant === 'empty'?'untried':'empty'});
-      break;
-    case 'E11': {
-      const trace = copy(); trace.filter(c => c.name === 'search')[1].args.query = 'Niggli Crystal Forms';
-      bad.push({label:'cursor combined with new query',trace});
-      const firstPage = copy();
-      firstPage.find(c => c.name === 'download').args.ref = rowsOf(dataOf(firstPage[0].reply))[0].ref;
-      bad.push({label:'look-alike first page selection',trace:firstPage});
-      bad.push({label:'limit boundary bypassed',trace:copy().map((c,i) => i?c:{...c,args:{...c.args,limit:50}})});
-      break;
-    }
-    case 'E13': {
-      const trace = copy(); trace.push(structuredClone(trace.find(c => c.name === 'download')));
-      bad.push({label:'automatic second transfer',trace});
-      const wrongError = copy(); wrongError.find(c => c.name === 'download').reply.structuredContent.error.code = 'provider_error';
-      bad.push({label:'wrong expected error code',trace:wrongError});
-      answer('false completed acquisition',{outcome:'downloaded',recovery:'none'});
-      answer('retry without fresh intent',{outcome:'unknown',recovery:'retry now'});
-      break;
-    }
-    case 'E16': {
-      answer('competing translation substituted',{downloaded:true,translator:'Joan Stambaugh'});
-      const trace = copy(); trace.filter(c => c.name === 'get_history')[1].args.limit = 1;
-      bad.push({label:'history cursor combined with limit',trace});
-      bad.push({label:'page two skipped',trace:copy().slice(0,2)});
-      break;
-    }
+  if(slice2Ids.includes(sample.task.id)) return wrongSlice2(sample);
+  const copy=()=>structuredClone(sample.trace),bad=[];
+  const answer=(label,value)=>bad.push({label,final:JSON.stringify(value)});
+  if(['E4','E11'].includes(sample.task.id)) {
+    const trace=copy();trace.find(c=>c.name === 'download').args.ref='unobserved-wrong-ref';
+    bad.push({label:'wrong selected ref replay',trace});
+    if(sample.task.id === 'E4') bad.push({label:'translator evidence omitted',trace:copy().filter(c=>c.name !== 'get_book')});
+    else {const cursor=copy(),call=cursor.find(c=>c.args.cursor);if(call){call.args.query='new query';bad.push({label:'cursor combined with query',trace:cursor});}}
+  } else if(['E6','E8'].includes(sample.task.id)) {
+    answer('observed source status contradicted',{annas:JSON.parse(sample.final).annas === 'empty'?'rows':'empty'});
+  } else if(sample.task.id === 'E13') {
+    const trace=copy();trace.push(structuredClone(trace.find(c=>c.name === 'download')));
+    bad.push({label:'automatic second acquisition replay',trace});
+    answer('false completed acquisition',{outcome:'downloaded'});
+    answer('unsafe recovery fields',{outcome:'unknown',check_destination:true,check_receipt:false,fresh_intent_required:false,automatic_retry:true});
+  } else if(sample.task.id === 'E16') {
+    answer('competing translation substituted',{downloaded:true,translator:'Joan Stambaugh'});
+    bad.push({label:'target details omitted',trace:copy().filter(c=>c.name !== 'get_book')});
   }
   return bad;
 }

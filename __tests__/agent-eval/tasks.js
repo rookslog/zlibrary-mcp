@@ -116,11 +116,24 @@ export const arms = [
 
 // Opt-in diagnostics on today's interface; never part of the T1–T12 matrix.
 export const eTasks = [
+  {id:'E5', prompt:"Search only Anna's for Persuasion; does it have it?", coldSession:true, expectedErrors:[{tool:'search',code:'provider_error',requestIssued:false}]},
+  {id:'E17', prompt:"Search Anna's for Persuasion.", coldSession:true, expectedErrors:[{tool:'search',code:'provider_error',requestIssued:false}]},
+  {id:'E18', prompt:'Find Persuasion without a Z-Library account or a default source order.', coldSession:true, expectedErrors:[{tool:'search',code:'sources_required',requestIssued:false},{tool:'search',code:'invalid_argument',requestIssued:false},{tool:'search',code:'provider_error',requestIssued:false},{tool:'search',code:'credentials_missing',requestIssued:false},{tool:'get_limits',code:'credentials_missing',requestIssued:false}]},
+  {id:'E1', prompt:'Get the complete Leavey-Rand translation of Glas.', coldSession:true},
+  {id:'E2', prompt:"Get Spivak's 1976 Of Grammatology.", coldSession:true},
+  {id:'E3', prompt:'Download the review of Glas called Glas-Piece.', coldSession:true},
+  {id:'E7', prompt:"Search only Anna's for E Transient Recovery. If a transient error occurs, wait at least 50 ms before retrying once.", coldSession:true, waitMs:50, expectedErrors:[{tool:'search',code:'provider_timeout',requestIssued:false}]},
+  {id:'E9', prompt:'Find French editions of E Mixed Language Study on LibGen.', coldSession:true},
+  {id:'E10', prompt:'Search Z-Library for E Language Study with languages:[fr]; disclose unknown language values.', coldSession:true},
+  {id:'E12', prompt:'Recover the same selected complete 1986 Glas after a server restart expires its ref.', coldSession:true, expectedErrors:[{tool:'download',code:'ref_unavailable',requestIssued:false},{tool:'get_book',code:'ref_unavailable',requestIssued:false}]},
+  {id:'E14', prompt:'Using the supplied PDF without an outline, identify the printed page where Chapter 8 begins.', coldSession:true, reader:true},
+  {id:'E15', prompt:'Send the whole oversized PDF; if refused, inspect its map and offer a section without claiming confirmed delivery.', coldSession:true, reader:true},
   { id: 'E4', prompt: 'Download the Graver translation of Seneca Letters.', coldSession: true },
   { id: 'E6', prompt: "Search only Anna's for Persuasion; does it have it?", coldSession: true },
-  { id: 'E8', prompt: "Search LibGen then Anna's for Persuasion. Does Anna's have it?", coldSession: true },
-  { id: 'E11', prompt: 'Get the 1981 Niggli edition of Crystal Forms. Continue past look-alikes.', coldSession: true, limit: 1 },
-  { id: 'E13', prompt: 'Get Uncertain Transfer. Do not repeat an uncertain transfer without fresh intent.', coldSession: true,
+  { id: 'E8', prompt: "Search LibGen then Anna's for Persuasion. Does Anna's have it?", coldSession: true,
+    expectedErrors:[{tool:'search',code:'provider_error',requestIssued:false},{tool:'search',code:'provider_timeout',requestIssued:false}] },
+  { id: 'E11', prompt: 'Get the 1981 Niggli edition of Crystal Forms.', coldSession: true },
+  { id: 'E13', prompt: 'Get Uncertain Transfer.', coldSession: true,
     expectedErrors: [{ tool: 'download', code: 'outcome_unknown', requestIssued: true }] },
-  { id: 'E16', prompt: 'Did I download the Macquarrie–Robinson translation of Being and Time? Check both pages.', coldSession: true, limit: 1 },
+  { id: 'E16', prompt: 'Did I download the Macquarrie–Robinson translation of Being and Time?', coldSession: true },
 ];

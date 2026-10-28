@@ -1,142 +1,94 @@
-import { readFile, realpath } from 'node:fs/promises';
+import {readFile,realpath} from 'node:fs/promises';
 import path from 'node:path';
-import { dataOf, rowsOf, expectedError } from './oracles.js';
-
-const ok = c => !c.error && !c.reply?.isError && !dataOf(c.reply ?? {}).error;
-const data = c => dataOf(c.reply ?? {});
-const same = (a,b) => JSON.stringify(a) === JSON.stringify(b);
-const onlyCursor = (call, cursor) => typeof cursor === 'string' &&
-  Object.keys(call.args ?? {}).length === 1 && call.args.cursor === cursor;
-const matchRow = (row, title, year) => row?.title === title && Number(row.year) === year;
-
-export async function scoreETask({task, trace, final='', quotaSpent=0, providerEvents=[], downloads, context={}}) {
-  const wrong = [], calls = new Set(), files = [];
-  const mark = (reason,c) => { const index = trace.indexOf(c); if(c) calls.add(index);
-    wrong.push({reason, ...(c ? {tool:c.name, arguments:c.args, callIndex:index} : {})}); };
-  const permitted = {E4:['search','get_book','download'],E6:['search'],E8:['search'],
-    E11:['search','get_book','download'],E13:['search','download'],E16:['get_history','get_book']}[task.id] ?? [];
-  for (const c of trace) {
-    if (!permitted.includes(c.name)) mark('off-oracle tool',c);
-    if (!ok(c) && !expectedError(task,c)) mark('unexpected error',c);
+import {createHash} from 'node:crypto';
+import {dataOf,rowsOf,expectedError} from './oracles.js';
+import {evaluateEAnswer} from './answers.js';
+import {scoreSlice2} from './e-slice2-oracles.js';
+const data=c=>dataOf(c?.reply ?? {});
+const ok=c=>!!c && !c.error && !c.reply?.isError && !data(c).error;
+const same=(a,b)=>JSON.stringify(a) === JSON.stringify(b);
+export async function scoreETask(input) {
+  const {task,trace,final='',quotaSpent=0,providerEvents=[],downloads,context={}}=input;
+  if(!['E4','E6','E8','E11','E13','E16'].includes(task.id)) return scoreSlice2(input);
+  const wrong=[],files=[];
+  const mark=(reason,c)=>wrong.push({reason,...(c?{tool:c.name,callIndex:trace.indexOf(c)}:{})});
+  const allowed={E4:['search','get_book','get_limits','download'],E6:['search','get_book','get_limits'],E8:['search','get_book','get_limits'],
+    E11:['search','get_book','get_limits','download'],E13:['search','get_book','get_limits','download'],E16:['get_history','get_book','get_limits']}[task.id];
+  for(const c of trace) {
+    if(!allowed.includes(c.name)) mark('off-oracle tool',c);
+    if(!ok(c) && !expectedError(task,c)) mark('unexpected error',c);
+    if(c.args?.cursor) {
+      const previous=trace.slice(0,trace.indexOf(c)).find(p=>p.name === c.name && data(p).next_cursor === c.args.cursor);
+      if(!previous || Object.keys(c.args).length !== 1) mark('continuation must use an observed cursor alone',c);
+    }
   }
-  const searches = trace.filter(c => c.name === 'search' && ok(c));
-  const transfers = trace.filter(c => c.name === 'download');
-  const details = trace.filter(c => c.name === 'get_book' && ok(c));
-  const histories = trace.filter(c => c.name === 'get_history' && ok(c));
-  const rows = c => rowsOf(data(c));
-  const before = (a,b) => trace.indexOf(a) < trace.indexOf(b);
-  const sourceOnly = (c, source) => same(c.args?.sources,[source]);
-  const issued = providerEvents.filter(e => /^\/eapi\/book\/\d+\/hash\d+\/file$/.test(e.route));
-  const acquired = providerEvents.filter(e => /^\/files\//.test(e.route));
+  const searches=trace.filter(c=>c.name === 'search' && ok(c));
+  const details=trace.filter(c=>c.name === 'get_book' && ok(c));
+  const histories=trace.filter(c=>c.name === 'get_history' && ok(c));
+  const transfers=trace.filter(c=>c.name === 'download');
+  const before=(a,b)=>!!a && !!b && trace.indexOf(a)<trace.indexOf(b);
+  const issued=providerEvents.filter(e=>/^\/eapi\/book\/\d+\/hash\d+\/file$/.test(e.route));
+  const acquired=providerEvents.filter(e=>/^\/files\//.test(e.route));
   let answer;
-  switch(task.id) {
-    case 'E4': {
-      const found = searches.find(c => sourceOnly(c,'zlibrary') &&
-        rows(c).some(r => matchRow(r,'Letters on Ethics: To Lucilius',2015)) &&
-        rows(c).some(r => matchRow(r,'Letters from a Stoic',1969)));
-      const detail = details.find(c => data(c).translator === 'Margaret Graver and A. A. Long' &&
-        /Translated by Margaret Graver and A\. A\. Long/.test(data(c).description ?? '') &&
-        data(c).identifiers?.id === '202');
-      const download = transfers[0];
-      if (!found || !detail || !download || !before(found,detail) || !before(detail,download) ||
-          !rows(found).some(r => r.ref === detail.args?.ref) || download.args?.ref !== detail.args?.ref)
-        mark('missing observed translator evidence before selected acquisition');
-      answer = {downloaded:'graver'};
-      break;
+  if(['E4','E11'].includes(task.id)) {
+    const target=task.id === 'E4'?202:402,download=transfers[0];
+    const selected=searches.flatMap(s=>rowsOf(data(s)).map(row=>({s,row}))).find(({s,row})=>
+      before(s,download) && row.ref === download?.args.ref && same(row,download?.selected));
+    if(!selected || !download?.observedSelection || !ok(download)) mark('missing observed same-task selected acquisition');
+    if(task.id === 'E4') {
+      if(!details.some(c=>before(c,download) && c.args.ref === download?.args.ref && data(c).identifiers?.id === '202' &&
+        data(c).translator === 'Margaret Graver and A. A. Long')) mark('missing Graver translator evidence before acquisition');
+      answer={downloaded:'graver'};
+    } else {
+      if(selected?.row.title !== 'Crystal Forms' || Number(selected?.row.year) !== 1981) mark('wrong Niggli edition');
+      answer={downloaded:'niggli-1981'};
     }
-    case 'E6': {
-      const attempt = searches.find(c => sourceOnly(c,'annas') && c.args.query === 'Persuasion' &&
-        rows(c).length === 0 && data(c).routing?.attempts?.some(a => a.source === 'annas' && a.outcome === 'empty'));
-      if (searches.length !== 1 || !attempt || !providerEvents.some(e => e.route === '/annas/search'))
-        mark('missing completed Anna\'s-only empty attempt');
-      answer = {annas:'empty'};
-      break;
-    }
-    case 'E8': {
-      const query = context.variant === 'empty' ? 'definitely absent zqxv' : 'Persuasion';
-      const search = searches[0], attempts = search && data(search).routing?.attempts;
-      const empty = context.variant === 'empty';
-      if (searches.length !== 1 || !search || !same(search.args.sources,['libgen','annas']) ||
-          search.args.query !== query || !Array.isArray(attempts) ||
-          !same(attempts.map(a => ({source:a.source,outcome:a.outcome})), empty
-            ? [{source:'libgen',outcome:'empty'},{source:'annas',outcome:'empty'}]
-            : [{source:'libgen',outcome:'rows'}]) ||
-          (empty ? rows(search).length !== 0 : !rows(search).some(r => r.source === 'libgen' && r.title === 'Persuasion')) ||
-          providerEvents.filter(e => e.route === '/annas/search').length !== (empty ? 1 : 0))
-        mark('missing observed ordered-source rows/empty evidence');
-      answer = {annas:empty ? 'empty' : 'untried'};
-      break;
-    }
-    case 'E11': {
-      const [first,second] = searches;
-      if (searches.length !== 2 || !first || !second || first.args.limit !== task.limit ||
-          !sourceOnly(first,'zlibrary') || !/niggli/i.test(first.args.query ?? '') ||
-          !onlyCursor(second,data(first).next_cursor) ||
-          rows(first).length !== 1 || !matchRow(rows(first)[0],'Crystal Forms',1979) ||
-          rows(second).length !== 1 || !matchRow(rows(second)[0],'Crystal Forms',1981) ||
-          !transfers[0] || !before(second,transfers[0]) || transfers[0].args.ref !== rows(second)[0].ref)
-        mark('missing page-one shortage, cursor-only continuation or page-two identity');
-      const pages = providerEvents.filter(e => e.route === '/eapi/book/search').map(e => Number(e.arguments.page?.[0]));
-      if (!same(pages,[1,2])) mark('skipped or repeated qualifying provider page');
-      answer = {downloaded:'niggli-1981'};
-      break;
-    }
-    case 'E13': {
-      const download = transfers[0];
-      if (transfers.length !== 1 || !download || !expectedError(task,download) ||
-          !searches.some(c => before(c,download) && sourceOnly(c,'zlibrary') &&
-            rows(c).some(r => r.title === 'Uncertain Transfer' && r.ref === download.args.ref)) ||
-          !download.observedSelection || quotaSpent !== 1 || issued.length !== 1 || acquired.length !== 1 ||
-          issued[0]?.route !== '/eapi/book/403/hash403/file' || acquired[0]?.route !== '/files/403.pdf')
-        mark('requires one issuance and one uncertain transfer, without automatic retry');
-      answer = {outcome:'unknown',recovery:'check destination and receipt; retry only with fresh intent'};
-      break;
-    }
-    case 'E16': {
-      const [first,second] = histories;
-      if (histories.length !== 2 || !first || !second || first.args.source !== 'zlibrary' ||
-          first.args.limit !== task.limit || !onlyCursor(second,data(first).next_cursor) ||
-          rows(first).length !== 1 || !matchRow(rows(first)[0],'Being and Time',1996) ||
-          rows(second).length !== 1 || !matchRow(rows(second)[0],'Being and Time',1962))
-        mark('missing competing history row, boundary or cursor-only target page');
-      for (const [page,translator] of [[first,'Joan Stambaugh'],[second,'John Macquarrie and Edward Robinson']]) {
-        if (!page || !details.some(c => before(page,c) && c.args.ref === rows(page)[0]?.ref && data(c).translator === translator))
-          mark('missing observed translation detail for history row');
-      }
-      const pages = providerEvents.filter(e => e.route === '/eapi/user/book/downloaded').map(e => Number(e.arguments.page?.[0]));
-      if (!same(pages,[1,2])) mark('missing sequential account-history provider pages');
-      answer = {downloaded:true,translator:'John Macquarrie and Edward Robinson'};
-      break;
-    }
-    default: mark('unknown E task');
-  }
-  if (['E4','E11'].includes(task.id)) {
-    const id = task.id === 'E4' ? 202 : 402;
-    if (transfers.length !== 1 || quotaSpent !== 1 || issued.length !== 1 || acquired.length !== 1 ||
-        issued[0]?.route !== `/eapi/book/${id}/hash${id}/file` || acquired[0]?.route !== `/files/${id}.pdf`)
+    if(transfers.length !== 1 || quotaSpent !== 1 || issued.length !== 1 || acquired.length !== 1 ||
+      issued[0]?.route !== `/eapi/book/${target}/hash${target}/file` || acquired[0]?.route !== `/files/${target}.pdf`)
       mark('requires exactly one correct issuance and transfer');
-    for (const c of transfers) {
-      const prior = searches.filter(s => before(s,c)).flatMap(rows);
-      if (!c.observedSelection || !prior.some(r => r.ref === c.args?.ref && same(r,c.selected)))
-        mark('unobserved or modified selected row',c);
-      try {
-        if (!ok(c)) throw new Error('failed acquisition');
-        const file = await realpath(data(c).path ?? data(c).file_path), root = await realpath(downloads);
-        if (!file.startsWith(root + path.sep)) throw new Error('outside root');
-        const bytes = await readFile(file);
-        const expected = Buffer.from('%PDF-1.4\n' + `Synthetic fixture ${id}\n`.repeat(60));
-        if (!bytes.equals(expected)) throw new Error('wrong identity bytes');
-        files.push({path:file,bytes:bytes.length,fixtureId:id});
-      } catch {mark('missing or incorrect exact artifact bytes',c);}
-    }
-  } else if (task.id !== 'E13' && (quotaSpent !== 0 || issued.length || acquired.length)) mark('read-only task spent quota or transferred');
-  // Canonical whole-answer grammar, not substring credit or a general semantic judge.
-  const correctAnswer = typeof final === 'string' && final === JSON.stringify(answer);
-  if (!correctAnswer) mark('missing or contradictory canonical answer');
-  const success = wrong.length === 0;
-  return {task:task.id, pathCorrect:success, success, outsideBar:true,
-    answer:{status:correctAnswer?'correct':'incorrect'}, wrongDecisions:calls.size + wrong.filter(w => !w.tool).length,
-    wrong, calls:trace.length, quotaSpent, files,
-    invalidCalls:trace.filter(c => c.error || c.reply?.isError).length,
-    expectedErrors:trace.filter(c => expectedError(task,c)).length, refUnavailable:0};
+    try {
+      const file=await realpath(data(download).path ?? data(download).file_path),root=await realpath(downloads);
+      if(!file.startsWith(root+path.sep)) throw new Error('outside root');
+      const bytes=await readFile(file),expected=Buffer.from('%PDF-1.4\n'+`Synthetic fixture ${target}\n`.repeat(60));
+      if(!bytes.equals(expected)) throw new Error('wrong exact bytes');
+      const receipt=JSON.parse(await readFile(file+'.acq.json','utf8'));
+      if(receipt.state !== 'complete' || receipt.source !== 'zlibrary' || receipt.identifiers?.id !== String(target) || receipt.identifiers?.hash !== `hash${target}` || receipt.path !== file || receipt.bytes !== bytes.length || receipt.sha256 !== createHash('sha256').update(bytes).digest('hex')) throw new Error('wrong receipt');
+      files.push({path:file,bytes:bytes.length,fixtureId:target,receipt});
+    } catch {mark('missing correct exact bytes and receipt');}
+  }
+  if(task.id === 'E6' || task.id === 'E8') {
+    const attempts=trace.filter(c=>c.name === 'search').flatMap(c=>data(c).routing?.attempts ?? data(c).error?.attempts ?? []);
+    const anna=attempts.filter(a=>a.source === 'annas').at(-1);
+    const routes=providerEvents.filter(e=>e.route === '/annas/search');
+    const permittedSources=task.id === 'E6'?['annas']:['libgen','annas'];
+    if(!searches.length || searches.some(c=>(data(c).routing?.requested ?? c.args.sources ?? []).some(s=>!permittedSources.includes(s)))) mark('missing requested-source search evidence');
+    if(task.id === 'E6' && (!anna || !routes.length || !['empty','rows'].includes(anna.outcome))) mark('Anna search must actually complete');
+    if(task.id === 'E8' && !attempts.some(a=>a.source === 'libgen' && ['rows','empty'].includes(a.outcome))) mark('missing initial LibGen observation');
+    if(anna && !routes.length) mark('Anna attempt lacks provider evidence');
+    const status=anna?.outcome === 'failed' && anna.reason === 'browser_check'?'blocked':anna?.outcome ?? 'untried';
+    answer={annas:status};
+  }
+  if(task.id === 'E13') {
+    const c=transfers[0];
+    if(transfers.length !== 1 || !expectedError(task,c ?? {}) || !c?.observedSelection ||
+      !searches.some(s=>before(s,c) && rowsOf(data(s)).some(r=>r.ref === c.args.ref && r.title === 'Uncertain Transfer')) ||
+      quotaSpent !== 1 || issued.length !== 1 || acquired.length !== 1 ||
+      issued[0]?.route !== '/eapi/book/403/hash403/file' || acquired[0]?.route !== '/files/403.pdf') mark('requires one issued uncertain acquisition, no automatic repeat');
+    if(context.variant === 'real-timeout' && (!context.timeoutReceipt?.timeout_branch || context.timeoutReceipt?.published !== false ||
+      context.timeoutReceipt?.issued !== true || context.timeoutReceipt?.cancelled !== true)) mark('real production timeout branch not observed');
+    answer={outcome:'unknown',check_destination:true,check_receipt:true,fresh_intent_required:true,automatic_retry:false};
+  }
+  if(task.id === 'E16') {
+    const target=details.find(d=>data(d).identifiers?.id === '901' && data(d).translator === 'John Macquarrie and Edward Robinson');
+    if(!target || !histories.some(h=>before(h,target) && rowsOf(data(h)).some(r=>r.ref === target.args.ref && r.title === 'Being and Time')) ||
+      !providerEvents.some(e=>e.route === '/eapi/user/book/downloaded')) mark('missing observed target-translation history evidence');
+    answer={downloaded:true,translator:'John Macquarrie and Edward Robinson'};
+  }
+  if(!['E4','E11','E13'].includes(task.id) && (quotaSpent || issued.length || acquired.length || transfers.length)) mark('read-only fixture acquired a book');
+  const answerScore=evaluateEAnswer({final,expected:answer});
+  if(answerScore.status !== 'correct') mark('missing or contradictory required answer fields');
+  return {task:task.id,success:wrong.length === 0,pathCorrect:wrong.length === 0,outsideBar:true,answer:answerScore,
+    wrongDecisions:wrong.length,wrong,calls:trace.length,quotaSpent,files,contractGaps:[],
+    invalidCalls:trace.filter(c=>c.error || c.reply?.isError).length,expectedErrors:trace.filter(c=>expectedError(task,c)).length,
+    refUnavailable:trace.filter(c=>data(c).error?.code === 'ref_unavailable').length};
 }

@@ -57,11 +57,11 @@ const dependencyBreakers = Object.fromEntries(
         logger.info(`${scope} circuit breaker: ${oldState} -> ${newState}`),
       isFailure: (error: any) => {
         const details = error?.context?.details;
-        // Issuance metadata is not a provider failure verdict. Keep it in the
+        // Issuance and route metadata are not provider failure verdicts. Keep them in the
         // reply, but let master classify the original typed/status evidence.
         // Empty details are likewise no verdict and intentionally stripped.
         const evidence =
-          details && Object.keys(details).every((key) => key === 'request_issued')
+          details && Object.keys(details).every((key) => ['request_issued', 'via'].includes(key))
             ? Object.assign(Object.create(error), {
                 context: { ...error.context, details: undefined },
               })
@@ -153,6 +153,21 @@ async function callPythonFunction(
   args: Record<string, any> = {},
   callOptions: CallOptions = {},
 ): Promise<any> {
+  // A counter snapshot is local I/O. Do not enter auth/session/retry or
+  // provider admission policy, even when those providers are unavailable.
+  if (functionName === 'get_annas_browser_limits') {
+    const lines = await runPythonBridge(
+      BRIDGE_SCRIPT_NAME,
+      {
+        mode: 'text',
+        pythonPath: await getManagedPythonPath(),
+        scriptPath: BRIDGE_SCRIPT_PATH,
+        args: [functionName, JSON.stringify(args)],
+      },
+      { ...callOptions, label: 'annas.local_limits' },
+    );
+    return JSON.parse(JSON.parse(lines.join('\n')).content[0].text);
+  }
   const configuredEnv = { ...process.env };
   const identity = configuredEnv.ZLIBRARY_EMAIL || '';
   const memory = getSessionMode() === 'memory';
@@ -642,7 +657,7 @@ async function callPythonFunction(
     // Account the logical call's final verdict, after its retry budget. A lazy
     // child is admitted once at its session request above, including owner
     // control children; receipt-only and intentional auth retries stay outside.
-    return lazyAcquisition || receiptOnly || transport?.authRetry || functionName === 'get_annas_browser_limits'
+    return lazyAcquisition || receiptOnly || transport?.authRetry
       ? invokeWithRetry(transport, signal)
       : breaker.execute((admission) => {
           boundProbe(admission);

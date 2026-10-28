@@ -558,4 +558,11 @@ async def test_operation_http_status_crosses_error_boundary_without_message_gues
     envelope = json.loads(capsys.readouterr().err.strip().splitlines()[-1])
     assert envelope["type"] == "HTTPStatusError"
     assert envelope["status_code"] == status
-    assert "details" not in envelope  # EAPI has not done the multi-source walk.
+    # Design point 1 adds route facts, not a multi-source failure verdict.
+    via = envelope["details"]["via"]
+    assert set(envelope["details"]) == {"via"}
+    assert len(via) == 1
+    assert set(via[0]) == {"source", "route", "ms"}
+    assert via[0]["source"] == "zlibrary"
+    assert via[0]["route"] == "api"
+    assert via[0]["ms"] >= 0

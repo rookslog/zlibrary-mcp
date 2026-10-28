@@ -418,7 +418,11 @@ test.each([
       const failure = await api.searchBooks({ query: 'offline' }).catch((e) => e);
       expect(failure.context.pythonErrorType).toBe(type);
       expect(failure.context.diagnostics).toMatchObject({ failure_kind: 'transport', attempt: 1 });
-      expect(failure.context.details).toEqual({});
+      // Design point 1 adds closed route facts, without changing retry/health policy.
+      expect(failure.context.details).toEqual({
+        via: [{ source: 'zlibrary', route: 'api', ms: expect.any(Number) }],
+      });
+      expect(failure.context.details.via[0].ms).toBeGreaterThanOrEqual(0);
       expect(isRetryableError(failure)).toBe(false);
       // Breaker health alone strips empty/issuance-only details for typed evidence.
       expect(isTransientDependencyError({ context: { pythonErrorType: type } })).toBe(true);

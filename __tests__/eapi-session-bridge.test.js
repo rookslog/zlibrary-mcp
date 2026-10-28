@@ -84,11 +84,16 @@ runpy.run_path(${JSON.stringify(path.join(root, 'lib/python_bridge.py'))},run_na
   await expect(
     Promise.all(Array.from({ length: 6 }, () => api.searchBooks({ query: 'offline' }))),
   ).resolves.toEqual(
-    Array.from({ length: 6 }, () => ({ books: [], retrieved_from_url: 'EAPI search: offline' })),
+    Array.from({ length: 6 }, () => ({
+      books: [],
+      retrieved_from_url: 'EAPI search: offline',
+      via: [{ source: 'zlibrary', route: 'api', ms: expect.any(Number) }],
+    })),
   );
   await expect(api.searchBooks({ query: 'offline' })).resolves.toEqual({
     books: [],
     retrieved_from_url: 'EAPI search: offline',
+    via: [{ source: 'zlibrary', route: 'api', ms: expect.any(Number) }],
   });
   expect(fs.readFileSync(countFile, 'utf8')).toBe('login\n');
   fs.writeFileSync(modeFile, 'failure');

@@ -172,7 +172,8 @@ async def _run_core_smoke(repo_root: Path) -> None:
                 "search_multi_source",
                 {"query": "offline boundary probe", "source": "libgen"},
             )
-            assert result == {"books": [], "sources_used": []}
+            # Design point 1 adds a route array; this fake router issues no request.
+            assert result == {"books": [], "sources_used": [], "via": []}
             assert (await dispatch("search", {"query": "offline"}))["books"] == []
             metadata = await dispatch(
                 "get_book_metadata_complete", {"book_id": "1", "book_hash": "offline"}

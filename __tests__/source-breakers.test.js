@@ -136,9 +136,7 @@ test('an Anna outage leaves a LibGen download on its ordinary child', async () =
   const reply = await tools.call('download', { ref: found.rows[0].ref });
   expect(reply).toMatchObject({ path: '/out/book.pdf', transfer_skipped: false });
   const acquisitions = runner.mock.calls.filter((call) => call[1].args[0] === 'acquire_book');
-  expect(acquisitions.map((call) => JSON.parse(call[1].args[1]).receipt_only)).toEqual([
-    undefined,
-  ]);
+  expect(acquisitions.map((call) => JSON.parse(call[1].args[1]).receipt_only)).toEqual([undefined]);
 });
 
 test('the annas_archive spelling shares the Anna scope', async () => {
@@ -150,8 +148,9 @@ test('the annas_archive spelling shares the Anna scope', async () => {
       output_dir: '/out',
     }),
   ).rejects.toMatchObject({ code: 'CIRCUIT_BREAKER_OPEN' });
-  expect(callsTo('annas_archive').filter((call) => !JSON.parse(call[1].args[1]).receipt_only))
-    .toHaveLength(0);
+  expect(
+    callsTo('annas_archive').filter((call) => !JSON.parse(call[1].args[1]).receipt_only),
+  ).toHaveLength(0);
 });
 
 test('an internal auto walk has its own scope, apart from both named sources', async () => {
@@ -202,11 +201,26 @@ test('raw null search failures open LibGen and leave the auto scope admitted', a
   });
 });
 
-test('local browser budget remains readable while the auto provider breaker is open', async () => {
-  await load();
-  down.add('auto');
-  for (let i = 0; i < 5; i++) await api.invokeAcquisitionBridge('search_multi_source', { query: 'x', source: 'auto' }).catch(() => {});
-  down.delete('auto');
-  runner.mockImplementationOnce(async () => envelope({ enabled: true, used_today: 12, daily_cap: 50 }));
-  expect(await api.invokeAcquisitionBridge('get_annas_browser_limits')).toMatchObject({ used_today: 12, daily_cap: 50 });
-});
+test.each(['per-call', 'memory', 'unused-invalid-mode'])(
+  'local browser budget ignores auth mode %s while the auto provider breaker is open',
+  async (mode) => {
+    await load({ ZLIBRARY_SESSION_MODE: 'per-call' });
+    down.add('auto');
+    for (let i = 0; i < 5; i++)
+      await api
+        .invokeAcquisitionBridge('search_multi_source', { query: 'x', source: 'auto' })
+        .catch(() => {});
+    await expect(
+      api.invokeAcquisitionBridge('search_multi_source', { query: 'x', source: 'auto' }),
+    ).rejects.toMatchObject({ code: 'CIRCUIT_BREAKER_OPEN' });
+    down.delete('auto');
+    process.env.ZLIBRARY_SESSION_MODE = mode;
+    runner.mockImplementationOnce(async () =>
+      envelope({ enabled: true, used_today: 12, daily_cap: 50 }),
+    );
+    expect(await api.invokeAcquisitionBridge('get_annas_browser_limits')).toMatchObject({
+      used_today: 12,
+      daily_cap: 50,
+    });
+  },
+);

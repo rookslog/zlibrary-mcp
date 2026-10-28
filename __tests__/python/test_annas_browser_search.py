@@ -1,4 +1,7 @@
-"""Offline contracts using unmodified Anna HTML captured on 2026-10-23.
+"""Offline contracts using Anna HTML captured on 2026-10-23.
+
+The reader adds marked synthetic completion metadata to older trimmed fakes;
+the original capture files remain unchanged.
 
 Breaks caught: header rows leaking into results, raw-script wall matches,
 opt-out launches, manual-check interaction, timeout/lock leaks, lost pacing.
@@ -13,6 +16,8 @@ from unittest.mock import AsyncMock
 import httpx
 import pytest
 
+from annas_browser_test_fixtures import read_browser_fixture
+
 from lib.sources.annas import AnnasArchiveAdapter
 from lib.sources.config import SourceConfig, get_source_config
 from lib.sources.errors import (
@@ -26,7 +31,7 @@ PAGES = Path(__file__).parent / "fixtures" / "annas-browser"
 
 
 def saved(name):
-    return (PAGES / name).read_text()
+    return read_browser_fixture(PAGES / name)
 
 
 def config(tmp_path, **kwargs):

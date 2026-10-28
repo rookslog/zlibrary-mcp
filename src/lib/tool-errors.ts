@@ -64,8 +64,13 @@ const recoveries: Partial<Record<ErrorCode, string>> = {
   outcome_unknown:
     'Call download again with the same ref if still wanted; disk receipts are checked first, but a new transfer may spend quota.',
 };
-export function errorEnvelope(error: unknown, operation: string, source?: string) {
-  const e = error instanceof ToolFailure ? error : classifyFailure(error, operation, source);
+export function errorEnvelope(
+  error: unknown,
+  operation: string,
+  source?: string,
+  env: Record<string, string | undefined> = process.env,
+) {
+  const e = error instanceof ToolFailure ? error : classifyFailure(error, operation, source, env);
   const info = e.info;
   const detail = { ...info.detail };
   if ('diagnostics' in detail) {
@@ -95,7 +100,12 @@ export function errorEnvelope(error: unknown, operation: string, source?: string
     },
   });
 }
-export function classifyFailure(error: any, operation: string, source?: string): ToolFailure {
+export function classifyFailure(
+  error: any,
+  operation: string,
+  source?: string,
+  env: Record<string, string | undefined> = process.env,
+): ToolFailure {
   if (error instanceof ToolFailure) return error;
   const context = error?.context ?? {};
   const breakerError =
@@ -134,6 +144,32 @@ export function classifyFailure(error: any, operation: string, source?: string):
     'partial_transfer',
     'not_found',
   ];
+  const browserEnabled = ['1', 'true', 'yes'].includes(
+    (env.ANNAS_BROWSER_ENABLED ?? '').trim().toLowerCase(),
+  );
+  // An enabled browser route can refuse for an unresolved check or pacing.
+  // Keep this separate from the HTTP-only flag-off classification/recovery.
+  if (browserEnabled && candidate === 'browser_check') {
+    return new ToolFailure('provider_error', `${operation} did not complete (browser_check).`, {
+      source,
+      retry:
+        operation === 'download' && detail.request_issued !== false && source !== 'libgen'
+          ? 'may_spend_quota'
+          : 'safe',
+      recovery:
+        "Anna's Archive's visible browser could not clear the check, or its pacing/backoff is still active. A person may need to clear the check on the host; wait for any backoff before retrying.",
+      ...(Number.isFinite(context.retryAfterMs)
+        ? { retry_after_s: Math.ceil(context.retryAfterMs / 1000) }
+        : {}),
+      detail: {
+        reason: 'browser_check',
+        ...(Number.isInteger(detail.status_code) ? { http_status: detail.status_code } : {}),
+        ...(typeof detail.request_issued === 'boolean'
+          ? { request_issued: detail.request_issued }
+          : {}),
+      },
+    });
+  }
   let reason = allowedReasons.includes(candidate) ? candidate : 'unknown';
   // The bridge emits this exact allowlisted token for certificate/SSL failures.
   // Never infer a public TLS cause from arbitrary upstream exception prose.
@@ -219,7 +255,7 @@ export function classifyFailure(error: any, operation: string, source?: string):
   else if (['ValueError', 'TypeError'].includes(context.pythonErrorType)) code = 'invalid_argument';
   else if (detail.failures?.length) {
     const children = detail.failures.map((f: any) =>
-      classifyFailure({ context: { details: f } }, operation, source),
+      classifyFailure({ context: { details: f } }, operation, source, env),
     );
     const child =
       children.find((f: ToolFailure) => f.code === 'integrity_mismatch') ??

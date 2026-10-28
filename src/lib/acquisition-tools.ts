@@ -332,7 +332,7 @@ export class AcquisitionTools {
         }
         return { ...result, ...(estimate ? { quota_estimate: { ...estimate } } : {}) };
       } catch (e) {
-        const failure = classifyFailure(e, 'download', selection.source);
+        const failure = classifyFailure(e, 'download', selection.source, this.env);
         if (
           failure.info.retry === 'may_spend_quota' ||
           failure.code === 'internal' ||
@@ -342,7 +342,7 @@ export class AcquisitionTools {
         throw failure;
       }
     } catch (error) {
-      return errorEnvelope(error, name);
+      return errorEnvelope(error, name, undefined, this.env);
     }
   }
   private async limits(args: any, options: CallOptions) {
@@ -373,7 +373,7 @@ export class AcquisitionTools {
             this.estimates.set(source, { source, remaining, as_of: asOf, basis: 'observed' });
           else this.estimates.delete(source);
         } catch (e) {
-          (capability as any).error = errorEnvelope(e, 'get_limits', source).error;
+          (capability as any).error = errorEnvelope(e, 'get_limits', source, this.env).error;
         }
       }
     }
@@ -391,7 +391,7 @@ export class AcquisitionTools {
           options,
         );
       } catch (error) {
-        return errorEnvelope(error, 'get_book', selection.source);
+        return errorEnvelope(error, 'get_book', selection.source, this.env);
       }
     }
     const merged = { ...b, ...nonempty(detail) };
@@ -529,7 +529,7 @@ export class AcquisitionTools {
         }
         if (books.length || cursor) break;
       } catch (e) {
-        const failure = classifyFailure(e, operation, source);
+        const failure = classifyFailure(e, operation, source, this.env);
         failures.push(failure);
         attempts.push({
           source,

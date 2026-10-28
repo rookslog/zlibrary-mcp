@@ -1,4 +1,7 @@
-"""B5: real saved DOM/counters/router/transfer; fake only browser and HTTP I/O."""
+"""B5: saved DOM, real counters/router/transfer, fake browser and HTTP I/O.
+
+The reader adds marked synthetic completion metadata to trimmed search fakes.
+"""
 
 import asyncio
 import hashlib
@@ -11,6 +14,8 @@ from urllib.parse import urlsplit
 
 import httpx
 import pytest
+
+from annas_browser_test_fixtures import read_browser_fixture
 from bs4 import BeautifulSoup
 
 from lib.sources.annas_browser import AnnasBrowserSession
@@ -32,7 +37,7 @@ PARTNERS = [f"/slow_download/{MD5}/0/{n}" for n in range(16)]
 
 
 def saved(name):
-    return (PAGES / name).read_text()
+    return read_browser_fixture(PAGES / name)
 
 
 def payload_variant(url, *, hidden=False):

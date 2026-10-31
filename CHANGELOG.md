@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- Documented the [receipt v1 contract](docs/receipt-format.md) and its JSON Schema, validated against real offline intent and complete receipts.
+
 ### Breaking: five-tool acquisition interface
 
 - Replaced the old tool names with `search`, `get_book`, `download`, `get_limits`,

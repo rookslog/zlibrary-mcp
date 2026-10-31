@@ -67,7 +67,8 @@ a matching verified receipt, or a modified receipt artifact, is refused with
 `output_refused` before intent, authentication or transfer; the file and prior
 receipt stay unchanged. Move or rename that file or choose another `output_dir`.
 A different filename/directory creates a new destination. `record` points to
-`<path>.acq.json`. One exception: while the source's breaker is open, a receipt
+`<path>.acq.json`; see the [receipt v1 contract](https://github.com/rookslog/zlibrary-mcp/blob/master/docs/receipt-format.md)
+and its schema for downstream readers. One exception: while the source's breaker is open, a receipt
 hit is served without writing any file. If that receipt still needs repair (for
 example, it still says `intent`, or only the alias at the requested name exists),
 `record` points to the receipt file that exists, and the next ordinary call

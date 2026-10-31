@@ -66,6 +66,8 @@
     "docs/text-processing-migration.md",
     "docs/interface-migration.md",
     "docs/api.md",
+    "docs/receipt-format.md",
+    "docs/schemas/",
     "scripts/README.md",
     "VISION.md",
     "CONTRIBUTING.md",

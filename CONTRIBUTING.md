@@ -49,12 +49,16 @@ These run the retained acquisition suites. CI also checks packaging, lint, and t
 Security audit tooling requires **Python 3.11+** because the fixed Filelock release
 used by `pip-audit` no longer supports 3.10. Acquisition and tests still support
 Python 3.10+; the 3.10 dev environment does not install `pip-audit` or its Filelock
-chain. CI runs the blocking audit on Python 3.13 without advisory ignores:
+chain. CI selects Python 3.13 for the blocking audit and uses the project-environment
+`uv run pip-audit` command. To prepare the same audit environment locally:
 
 ```bash
-uv run --python 3.13 --group dev pip-audit
+uv sync --frozen --python 3.13 --group dev
+uv run pip-audit
 npm audit --omit=dev --audit-level=critical
 ```
+
+See [SECURITY.md](SECURITY.md) for the existing advisory-exception policy.
 
 ## Project Architecture
 

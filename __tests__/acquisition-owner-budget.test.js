@@ -29,8 +29,8 @@ afterEach(() => {
 
 // Catches forwarding the environment's 2400s budget instead of CallOptions.timeoutMs.
 test.each([
-  [1500, 1.3115, 1.1475625],
-  [4000, 3.499, 3.061625],
+  [1500, 1.3115, 1.1680546875],
+  [4000, 3.499, 3.116296875],
 ])(
   'effective %sms call owner bounds the child and finalization reserve',
   async (timeoutMs, budget, slice) => {

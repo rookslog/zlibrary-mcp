@@ -70,6 +70,7 @@ from lib.sources.errors import (
     ProviderResponseError,
     ProviderTimeoutError,
     ProviderUnreachableError,
+    SourceConfigurationError,
     SourceError,
 )
 from lib.sources.net import (
@@ -1121,8 +1122,8 @@ def _publish_or_reuse(source: Path, destination: Path, expected_md5: str = "") -
     directory resolves to the same deterministic name, and finding our own
     prior artifact there is success, not a collision. A destination that does
     not match is still never replaced. Stage cleanup is attempted on every
-    path; cleanup after a successful final link is best effort so a cleanup
-    failure cannot replace a committed success.
+    path; cleanup after successful publication or adoption is best effort so a
+    cleanup failure cannot replace a committed success.
     """
     from lib.acquisition import _check_deadline, _mark_published
 
@@ -1140,13 +1141,17 @@ def _publish_or_reuse(source: Path, destination: Path, expected_md5: str = "") -
     try:
         if _artifacts_match(source, destination, expected_md5):
             _mark_published()
+            with suppress(OSError):
+                source.unlink(missing_ok=True)
             return True
-        raise FileExistsError(
-            f"Refusing to replace {destination}: the existing file differs from the "
-            f"freshly downloaded artifact staged at {source}"
-        )
-    finally:
+    except BaseException:
         source.unlink(missing_ok=True)
+        raise
+    source.unlink(missing_ok=True)
+    raise FileExistsError(
+        f"Refusing to replace {destination}: the existing file differs from the "
+        f"freshly downloaded artifact staged at {source}"
+    )
 
 
 async def _download_url_to_file(
@@ -2219,7 +2224,15 @@ async def main():
         # MCP caller can act on it instead of pattern-matching prose.
         from lib.acquisition import AcquisitionError
 
-        if isinstance(e, (SourceError, AllSourcesFailedError, AcquisitionError)):
+        if isinstance(
+            e,
+            (
+                SourceError,
+                AllSourcesFailedError,
+                AcquisitionError,
+                SourceConfigurationError,
+            ),
+        ):
             error_info["details"] = e.to_dict()
             operation = (
                 "download"

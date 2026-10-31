@@ -22,6 +22,7 @@ from lib.sources.config import (
     DEFAULT_NODE_LONG_TIMEOUT_SECONDS,
     WALK_OVERHEAD_ALLOWANCE,
     WALK_BUDGET_SAFETY_MARGIN,
+    _node_bridge_timeout_seconds,
     _node_timeout_seconds,
 )
 from lib.sources.net import WalkDeadline
@@ -491,18 +492,31 @@ def _long_bridge_budget():
     """Effective spawn owner (or long env timer), parsed as Node's positiveIntEnv.
 
     Anything but a plain positive integer of at most 2**31 - 1 ms falls back to
-    the default, as the bridge deadline does, instead of refusing every download.
+    the resolved ordinary owner for a per-call override, or the long default
+    for the long environment timer, matching the Node runner.
     """
     name = (
         "PYTHON_BRIDGE_CALL_TIMEOUT_MS"
         if "PYTHON_BRIDGE_CALL_TIMEOUT_MS" in os.environ
         else "PYTHON_BRIDGE_LONG_TIMEOUT"
     )
-    return _node_timeout_seconds(name, DEFAULT_NODE_LONG_TIMEOUT_SECONDS)
+    fallback = (
+        _node_bridge_timeout_seconds()
+        if name == "PYTHON_BRIDGE_CALL_TIMEOUT_MS"
+        else DEFAULT_NODE_LONG_TIMEOUT_SECONDS
+    )
+    return _node_timeout_seconds(name, fallback)
 
 
 def _finalization_reserve(scope):
     return min(135.0, scope["deadline"].budget / 8)
+
+
+def _cancellation_grace(scope):
+    # Let the inner chain close streams and retain mirror attribution before
+    # the outer watchdog fires. This spends part of the existing reserve;
+    # it grants neither a fresh transfer budget nor post-owner execution.
+    return min(0.1, _finalization_reserve(scope) / 8)
 
 
 def _remaining_transfer_budget(configured):
@@ -734,7 +748,8 @@ async def _acquire(
                     # A timeout must inspect the commit point before cancelling:
                     # a committed transfer owns its finalization through reply.
                     result = await asyncio.wait_for(
-                        asyncio.shield(task), left - finalize_reserve
+                        asyncio.shield(task),
+                        left - finalize_reserve + _cancellation_grace(scope),
                     )
                 except asyncio.TimeoutError:
                     if task.done():

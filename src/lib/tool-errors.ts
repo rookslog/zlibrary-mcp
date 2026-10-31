@@ -183,6 +183,15 @@ export function classifyFailure(error: any, operation: string, source?: string):
     operation === 'download' &&
     reason === 'walk_budget_exhausted' &&
     detail.request_issued === true;
+  const sourceConfiguration =
+    reason === 'configuration_error' && context.pythonErrorType === 'SourceConfigurationError';
+  const deadlineVariable = ['PYTHON_BRIDGE_TIMEOUT', 'PYTHON_BRIDGE_LONG_TIMEOUT'].includes(
+    detail.variable,
+  )
+    ? detail.variable
+    : operation === 'download'
+      ? 'PYTHON_BRIDGE_LONG_TIMEOUT'
+      : 'PYTHON_BRIDGE_TIMEOUT';
   let code: ErrorCode = 'internal';
   if (reason === 'aborted') code = 'cancelled';
   else if (reason === 'auth_backoff') code = 'breaker_open';
@@ -198,7 +207,8 @@ export function classifyFailure(error: any, operation: string, source?: string):
     code = 'auth_failed';
   else if (['invalid_argument', 'output_refused', 'internal', 'breaker_open'].includes(reason))
     code = reason as ErrorCode;
-  else if (reason === 'configuration_error') code = 'credentials_missing';
+  else if (reason === 'configuration_error')
+    code = sourceConfiguration ? 'invalid_argument' : 'credentials_missing';
   else if (reason === 'quota_exhausted') code = 'quota_exhausted';
   else if (
     [
@@ -214,7 +224,8 @@ export function classifyFailure(error: any, operation: string, source?: string):
   else if (['read_timeout', 'search_timeout', 'walk_budget_exhausted'].includes(reason))
     code = 'provider_timeout';
   else if (reason === 'integrity_mismatch') code = 'integrity_mismatch';
-  else if (['http_error', 'protocol_error', 'partial_transfer'].includes(reason)) code = 'provider_error';
+  else if (['http_error', 'protocol_error', 'partial_transfer'].includes(reason))
+    code = 'provider_error';
   else if (error?.code === 'CIRCUIT_BREAKER_OPEN') code = 'breaker_open';
   else if (['ValueError', 'TypeError'].includes(context.pythonErrorType)) code = 'invalid_argument';
   else if (detail.failures?.length) {
@@ -254,12 +265,19 @@ export function classifyFailure(error: any, operation: string, source?: string):
   const occupied = code === 'output_refused' && detail.destination_occupied === true;
   return new ToolFailure(
     code,
-    occupied
-      ? 'Destination already holds a file with no matching receipt.'
-      : `${operation} did not complete (${reason === 'unknown' ? code : reason}).`,
+    sourceConfiguration
+      ? 'Source deadline configuration error; see docs/RETRY_CONFIGURATION.md.'
+      : occupied
+        ? 'Destination already holds a file with no matching receipt.'
+        : `${operation} did not complete (${reason === 'unknown' ? code : reason}).`,
     {
       source,
       retry,
+      ...(sourceConfiguration
+        ? {
+            recovery: `Configure ${deadlineVariable} to at least 10000 ms; see docs/RETRY_CONFIGURATION.md.`,
+          }
+        : {}),
       ...(issuedBudget
         ? {
             recovery:

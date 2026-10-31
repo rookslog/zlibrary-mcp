@@ -108,7 +108,7 @@ async def test_early_lease_transfer_gets_remainder_not_fresh_budget(
                 ),
                 5.0,
             )
-        assert allocations == [pytest.approx(10.624125)]
+        assert allocations == [pytest.approx(10.724125)]
         assert error.value.reason == "walk_budget_exhausted"
         assert error.value.issued is True
         assert cancelled == [True]

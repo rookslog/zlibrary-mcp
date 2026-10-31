@@ -11,6 +11,7 @@ beforeEach(() => {
   saved = { ...process.env };
   directory = mkdtempSync(join(tmpdir(), 'i280-owner-'));
   Object.assign(process.env, {
+    ZLIBRARY_OUTPUT_ROOT: directory,
     ZLIBRARY_SESSION_MODE: 'per-call',
     PYTHON_BRIDGE_LONG_TIMEOUT: '2400000',
     // A caller/environment cannot make the child ignore the effective owner.
@@ -45,7 +46,11 @@ test.each([
       runPythonBridge: (_script, options, runOptions) =>
         runner.runPythonBridge(
           'acquisition_owner_budget_worker.py',
-          { ...options, scriptPath: join(process.cwd(), '__tests__/python') },
+          {
+            ...options,
+            scriptPath: join(process.cwd(), '__tests__/python'),
+            env: { ...options.env, ZLIBRARY_OUTPUT_ROOT: directory },
+          },
           runOptions,
         ),
     }));

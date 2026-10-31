@@ -427,7 +427,10 @@ describe('Z-Library API', () => {
 
       const mockBookDetails = { id: 'failDownload', url: 'http://example.com/book/failDownload/slug' };
       await expect(zlibApi.downloadBookToFile({ bookDetails: mockBookDetails })).rejects.toThrow(`Python bridge execution failed for download_book: ${apiError.message}`);
-      expect(mockRunPythonBridge).toHaveBeenCalledWith('python_bridge.py', expect.objectContaining({ scriptPath: EXPECTED_SCRIPT_PATH, args: ['download_book', JSON.stringify({ book_details: mockBookDetails, output_dir: './downloads' })] }), expect.objectContaining({ label: expect.any(String) }));
+      // Assert only arguments: a mismatch must not dump the inherited child environment.
+      expect(mockRunPythonBridge.mock.calls[0][1].args).toEqual([
+        'download_book', JSON.stringify({ book_details: mockBookDetails }),
+      ]);
     });
 
   });

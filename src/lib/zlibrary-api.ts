@@ -851,7 +851,7 @@ export async function downloadBookToFile(
   options: CallOptions = {},
 ): Promise<DownloadBookResult> {
   admitDownloadArgs(args as unknown as Record<string, unknown>);
-  const { bookDetails, outputDir = './downloads' } = args;
+  const { bookDetails, outputDir } = args;
   try {
     // Call the Python function, passing the bookDetails object
     const result = await callPythonFunction(

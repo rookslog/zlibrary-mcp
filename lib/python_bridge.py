@@ -1725,7 +1725,7 @@ def _admit_download_args(arguments: dict) -> None:
 
 async def download_book(
     book_details: dict,
-    output_dir: str,
+    output_dir: str = None,
     *,
     filename=None,
     publication_hook=None,
@@ -1733,6 +1733,11 @@ async def download_book(
 ):
     """Download the original book and return its local file_path."""
     _admit_download_args(legacy_arguments)
+    from lib.acquisition import output_directory, _prepare_directory
+
+    directory = output_directory(output_dir)
+    _prepare_directory(directory)
+    output_dir = str(directory)
 
     # Route by source. A result from search_multi_source carries md5 + source
     # and has no Z-Library id/hash, so it takes the source path — which also
@@ -1780,7 +1785,6 @@ async def download_book(
             # Raw server names can equal a previously published identity name.
             # Keep EAPI's replacing write in a private per-call namespace until
             # the final no-replace publication checks have run.
-            Path(output_dir).mkdir(parents=True, exist_ok=True)
             eapi_staging = tempfile.TemporaryDirectory(prefix=".eapi-", dir=output_dir)
             receipt_options = {}
             if publication_hook is not None:
@@ -1853,7 +1857,6 @@ async def download_book(
         # Step 3: Rename the downloaded file to the enhanced filename, or adopt
         # an identical artifact a previous acquisition of this book already
         # published under the same deterministic name.
-        Path(output_dir).mkdir(parents=True, exist_ok=True)
         catalog_md5 = str(book_details.get("md5") or "").strip().lower()
         if publication_hook is not None:
             publication_hook(Path(original_download_path_str), final_file_path)
@@ -1868,6 +1871,7 @@ async def download_book(
                 f"discarded redundant download {original_download_path_str}"
             )
         else:
+            final_file_path.chmod(0o600)
             logger.info(
                 f"Published downloaded file from {original_download_path_str} to {final_file_path_str}"
             )
@@ -2161,6 +2165,13 @@ async def main():
     try:
         if function_name == "download_book":
             _admit_download_args(args_dict)
+            # Legacy CLI calls authenticate before dispatch. Admit their output
+            # first, just as acquire_book does before its deferred login.
+            from lib.acquisition import output_directory, _prepare_directory
+
+            directory = output_directory(args_dict.get("output_dir"))
+            _prepare_directory(directory)
+            args_dict["output_dir"] = str(directory)
         elif function_name == "process_document":
             raise ValueError("Text processing was removed in 2.0.")
         # Decide before dispatch whether this call needs Z-Library

@@ -148,8 +148,25 @@ if its bytes match. There is no zero-quota adoption path for old files; see
 [existing-download migration](https://github.com/rookslog/zlibrary-mcp/blob/master/docs/interface-migration.md#existing-140-downloads).
 Different existing bytes and verified foreign identities are never silently overwritten.
 
-The default directory is `ZLIBRARY_OUTPUT_ROOT`, otherwise `./downloads`.
-`output_dir` must resolve inside the root when configured (including symlinks).
+Downloads default to `${XDG_DATA_HOME:-~/.local/share}/zlibrary-mcp/downloads`
+on Linux/macOS and `%LOCALAPPDATA%\zlibrary-mcp\downloads` on Windows. Set
+`ZLIBRARY_OUTPUT_ROOT` to an absolute path (home expansion allowed) to choose
+another root; a relative configured root fails startup. Relative `output_dir`
+values always resolve under the root. Absolute paths inside it are accepted;
+outside paths (including symlinks), any `..` component and a leading `~` are
+refused before provider contact (`output_refused`, `request_issued: false`).
+Trusted operators can set `ZLIBRARY_UNRESTRICTED_OUTPUT=1` to allow outside
+absolute paths; relative paths still resolve under the root, and traversal/home
+shorthand, NUL bytes and (on Windows) drive-relative (`C:foo`) or root-relative
+(`\foo`) output paths stay refused in both modes. The flag accepts only `1`, `0`
+or unset and logs a startup warning when enabled. If the root is unset and
+`./downloads` exists,
+startup reports the new location on stderr. See [download-location migration](docs/interface-migration.md#download-location).
+On POSIX, new directory levels are 0700 without changing existing directories;
+new artifacts and receipts are 0600. Artifacts already present keep their mode
+on reuse; a receipt the server repairs is rewritten as 0600.
+On Windows, chmod only toggles the read-only attribute; these modes do not set
+access-control permissions.
 `filename` is a sanitized basename; its extension is forced to the acquired
 format. The root guard admits arguments; it is not a sandbox against a local
 operator swapping directories during a call. On local filesystems, POSIX leases
@@ -209,7 +226,8 @@ file-reading tool in this five-tool interface.
 | `ZLIBRARY_EMAIL`, `ZLIBRARY_PASSWORD` | Z-Library account; not required for other sources |
 | `ANNAS_SECRET_KEY` | Anna's Archive membership key, required for its downloads only |
 | `BOOK_SOURCE_DEFAULT_ORDER` | Optional comma-separated order, e.g. `libgen,zlibrary`; no repeats |
-| `ZLIBRARY_OUTPUT_ROOT` | Optional allowed output root and default download directory |
+| `ZLIBRARY_OUTPUT_ROOT` | Absolute output root; defaults to the platform data directory described above |
+| `ZLIBRARY_UNRESTRICTED_OUTPUT` | `1` allows outside absolute paths; `0` or unset keeps containment; other values fail startup |
 | `ZLIBRARY_EAPI_DOMAIN` | Optional pinned EAPI domain |
 | `LOG_LEVEL` | `silent`, `error`, `warn`, `info` (default), `debug`; diagnostics use stderr |
 | `PYTHON_BRIDGE_TIMEOUT` | Ordinary bridge deadline in milliseconds |

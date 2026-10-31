@@ -17,8 +17,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Added optional `BOOK_SOURCE_DEFAULT_ORDER` (a comma-separated, distinct source
   order). Without it, `search` requires explicit `sources` and otherwise returns
   `sources_required`; there is no implicit preferred source.
-- Added `ZLIBRARY_OUTPUT_ROOT` as an optional allowed output root and default
-  download directory. Without it, downloads default to `./downloads`.
+- **Breaking: download location.** Downloads are contained by default in the
+  platform data directory's `zlibrary-mcp/downloads`, configurable with absolute
+  `ZLIBRARY_OUTPUT_ROOT`. Relative `output_dir` values resolve under that root.
+  To retain the old location, set an absolute path, for example
+  `"ZLIBRARY_OUTPUT_ROOT": "/home/alice/zlibrary-mcp/downloads"` in a JSON client
+  environment config. JSON does not expand `$PWD`; a literal `$PWD/downloads`
+  is relative and fails startup. Opt into outside absolute paths with
+  `ZLIBRARY_UNRESTRICTED_OUTPUT=1`. Traversal
+  components and caller home shorthand are refused before provider contact.
+  On POSIX, new directories are 0700; new artifacts and receipts are 0600, while
+  artifacts already present keep their mode on reuse; a receipt the server repairs
+  is rewritten as 0600. On Windows,
+  chmod only toggles read-only, not access-control permissions. Docker continues
+  using its mounted `/app/downloads`. See [migration](docs/interface-migration.md#download-location).
+- `downloadBookToFile` in `./lib/*` now resolves downloads under the output root.
 - Added intent/completion acquisition sidecars, SHA-256 re-hashing before reuse,
   cross-process destination locks and crash recovery before receipt finalization.
 - Retained the initial lease while leasing corrected-format canonical targets

@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 import * as fs from 'node:fs';
 import * as path from 'node:path';
+import { homedir } from 'node:os';
 import { fileURLToPath } from 'node:url';
 import { Server } from '@modelcontextprotocol/sdk/server/index.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
@@ -136,6 +137,9 @@ class AcquisitionServer extends Server {
 }
 export function createServer(): AcquisitionServer {
   getSessionMode();
+  outputRoot();
+  if (![undefined, '0', '1'].includes(process.env.ZLIBRARY_UNRESTRICTED_OUTPUT))
+    throw new Error('ZLIBRARY_UNRESTRICTED_OUTPUT must be 1, 0 or unset');
   const server = new AcquisitionServer();
   server.registerTool('search');
   server.registerTool('get_book');
@@ -143,6 +147,30 @@ export function createServer(): AcquisitionServer {
   server.registerTool('get_limits');
   server.registerTool('get_history');
   return server;
+}
+function outputRoot(): string {
+  const outputPath = process.platform === 'win32' ? path.win32 : path.posix;
+  // win32.isAbsolute also accepts root-relative paths; require a drive or UNC share.
+  const fullyAbsolute = (value: string): boolean =>
+    outputPath.isAbsolute(value) &&
+    (process.platform !== 'win32' || outputPath.parse(value).root.length > 1);
+  const configured = process.env.ZLIBRARY_OUTPUT_ROOT;
+  if (configured !== undefined) {
+    const expanded =
+      configured === '~'
+        ? homedir()
+        : configured.startsWith('~/') || configured.startsWith('~\\')
+          ? outputPath.join(homedir(), configured.slice(2))
+          : configured;
+    if (!fullyAbsolute(expanded)) throw new Error('ZLIBRARY_OUTPUT_ROOT must be an absolute path');
+    return outputPath.resolve(expanded);
+  }
+  const data =
+    process.platform === 'win32'
+      ? process.env.LOCALAPPDATA || outputPath.join(homedir(), 'AppData', 'Local')
+      : process.env.XDG_DATA_HOME || outputPath.join(homedir(), '.local', 'share');
+  if (!fullyAbsolute(data)) throw new Error('Output data directory must be absolute');
+  return outputPath.join(data, 'zlibrary-mcp', 'downloads');
 }
 function getPackageVersion(): string {
   try {
@@ -158,6 +186,12 @@ export async function start(opts: { testing?: boolean } = {}) {
         'Z-Library account is not configured; LibGen remains available without an account. See get_limits.',
       );
     const server = createServer();
+    if (process.env.ZLIBRARY_UNRESTRICTED_OUTPUT === '1')
+      logger.warn('ZLIBRARY_UNRESTRICTED_OUTPUT=1 allows downloads outside ZLIBRARY_OUTPUT_ROOT.');
+    if (process.env.ZLIBRARY_OUTPUT_ROOT === undefined && fs.existsSync(path.resolve('downloads')))
+      logger.warn(
+        `Downloads now go to ${outputRoot()}; set ZLIBRARY_OUTPUT_ROOT to keep ./downloads.`,
+      );
     const transport = new StdioServerTransport();
     await server.connect(transport);
     logger.info('Book acquisition MCP server is running via Stdio.');

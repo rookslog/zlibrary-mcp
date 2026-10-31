@@ -6,6 +6,7 @@ from __future__ import annotations
 import argparse
 import asyncio
 import ast
+import os
 from dataclasses import dataclass
 from pathlib import Path
 import sys
@@ -179,18 +180,28 @@ async def _run_core_smoke(repo_root: Path) -> None:
             )
             assert metadata["description"] == "Offline description"
             with tempfile.TemporaryDirectory(prefix="zlibrary-core-smoke-") as temp_dir:
-                result = await dispatch(
-                    "download_book",
-                    {
-                        "book_details": {
-                            "id": "1",
-                            "hash": "offline",
-                            "title": "Offline",
-                            "extension": "txt",
+                # Downloads are contained to ZLIBRARY_OUTPUT_ROOT (#204); give the
+                # smoke its own root instead of loosening the policy.
+                previous_root = os.environ.get("ZLIBRARY_OUTPUT_ROOT")
+                os.environ["ZLIBRARY_OUTPUT_ROOT"] = temp_dir
+                try:
+                    result = await dispatch(
+                        "download_book",
+                        {
+                            "book_details": {
+                                "id": "1",
+                                "hash": "offline",
+                                "title": "Offline",
+                                "extension": "txt",
+                            },
+                            "output_dir": temp_dir,
                         },
-                        "output_dir": temp_dir,
-                    },
-                )
+                    )
+                finally:
+                    if previous_root is None:
+                        os.environ.pop("ZLIBRARY_OUTPUT_ROOT", None)
+                    else:
+                        os.environ["ZLIBRARY_OUTPUT_ROOT"] = previous_root
                 assert set(result) == {"file_path"}
                 assert (
                     Path(result["file_path"]).read_text() == "offline acquisition bytes"

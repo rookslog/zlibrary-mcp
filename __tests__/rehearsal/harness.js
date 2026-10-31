@@ -57,7 +57,12 @@ export class Rehearsal {
         python?.executable ?? path.join(serverRoot, '.venv/bin/python'),
         [path.join(here, 'fake_eapi.py'), h.cert, h.key],
         {
-          env: { PATH: process.env.PATH, PYTHONDONTWRITEBYTECODE: '1', ...python?.env },
+          env: {
+            PATH: process.env.PATH,
+            PYTHONDONTWRITEBYTECODE: '1',
+            ...python?.env,
+            ZLIBRARY_OUTPUT_ROOT: h.temp,
+          },
           stdio: ['pipe', 'pipe', 'pipe'],
         },
       );
@@ -209,6 +214,7 @@ export class Rehearsal {
           XDG_CONFIG_HOME: home,
           REHEARSAL_LOG_DIR: path.join(home, 'logs'),
           MCP_READABLE_ROOTS: this.downloads,
+          ZLIBRARY_OUTPUT_ROOT: this.downloads,
           RETRY_MAX_RETRIES: '0',
           CIRCUIT_BREAKER_THRESHOLD: '5',
           CIRCUIT_BREAKER_TIMEOUT: '60000',

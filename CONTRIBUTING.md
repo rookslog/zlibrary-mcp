@@ -46,6 +46,16 @@ uv run pytest -m "not slow and not integration and not performance"
 
 These run the retained acquisition suites. CI also checks packaging, lint, and tool documentation.
 
+Security audit tooling requires **Python 3.11+** because the fixed Filelock release
+used by `pip-audit` no longer supports 3.10. Acquisition and tests still support
+Python 3.10+; the 3.10 dev environment does not install `pip-audit` or its Filelock
+chain. CI runs the blocking audit on Python 3.13 without advisory ignores:
+
+```bash
+uv run --python 3.13 --group dev pip-audit
+npm audit --omit=dev --audit-level=critical
+```
+
 ## Project Architecture
 
 This is a dual-language project:

@@ -55,7 +55,7 @@ dev = [
     "ruff>=0.14.14",
     "jsonschema>=4.26.0",
     "pytest-cov>=7.0.0",
-    "pip-audit>=2.7.0",
+    "pip-audit>=2.7.0; python_version >= '3.11'",  # Fixed filelock requires Python 3.11+
     "pip>=26.2.1",  # PYSEC-2026-196, PYSEC-2026-2875, PYSEC-2026-2876, PYSEC-2026-3721 (pulled in by pip-audit)
     "tomli>=2.0.0; python_version < '3.11'",  # tomllib is stdlib only from 3.11
 ]
@@ -101,12 +101,13 @@ required-version = ">=0.4.27"
 constraint-dependencies = [
     "aiohttp>=3.14.4",       # PYSEC-2026-2094..2113 (22 advisories); CVE-2026-111063/111064, GHSA-2g87-pp6c-29x5
     "anyio>=4.14.2",         # PYSEC-2026-4024, PYSEC-2026-4025
-    "brotli>=1.2.0",         # CVE-2025-6176
+    "brotli>=1.2.1",         # CVE-2025-6176; PYSEC-2026-4322, GHSA-9v8h-qqgm-4m35
     "click>=8.3.3",          # PYSEC-2026-2132
     "cryptography>=50.0.0",  # PYSEC-2026-36, GHSA-537c-gmf6-5ccf, PYSEC-2026-3552
+    "filelock>=4.2.1; python_version >= '3.11'",       # CVE-2026-112940, CVE-2026-112913, CVE-2026-112907
     "idna>=3.15",            # PYSEC-2026-215
     "lxml>=6.1.0",           # PYSEC-2026 lxml advisories
-    "msgpack>=1.2.1",        # PYSEC-2026 msgpack advisory
+    "msgpack>=1.2.3",        # CVE-2026-114613 / GHSA-j586-36cw-2gc2
     "multidict>=6.9.1",      # CVE-2026-104874
     "pygments>=2.20.0",      # PYSEC-2026-2987, CVE-2026-4539 (transitive via pytest/rich)
     "python-dotenv>=1.2.2",  # PYSEC-2026-2270

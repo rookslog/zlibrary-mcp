@@ -58,7 +58,7 @@ uv run pip-audit
 npm audit --omit=dev --audit-level=critical
 ```
 
-See [SECURITY.md](SECURITY.md) for the existing advisory-exception policy.
+See [SECURITY.md](https://github.com/rookslog/zlibrary-mcp/blob/master/SECURITY.md) for the existing advisory-exception policy.
 
 ## Project Architecture
 

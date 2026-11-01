@@ -59,7 +59,7 @@ RUN tar -xzf release.tgz --strip-components=1 && rm release.tgz && \
 FROM ${BUILD_INPUT} AS builder
 
 # --- Stage 2: Runtime ---
-FROM ghcr.io/supercorp-ai/supergateway:3.4.3 AS runtime
+FROM ghcr.io/supercorp-ai/supergateway:4.2.1 AS runtime
 
 WORKDIR /app
 

@@ -1,4 +1,7 @@
 import { describe, test, expect } from '@jest/globals';
+import { mkdtempSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { classifyFailure, ERROR_CODES } from '../dist/lib/tool-errors.js';
 import { isTransientDependencyError, isRetryableError } from '../dist/lib/retry-manager.js';
 
@@ -38,21 +41,33 @@ test.each([
 ])(
   'real Node owner receives attributed %s contention result before killing Python',
   async (scenario, issued, transfers) => {
-    const lines = await runPythonBridge(
-      'acquisition_deadline_worker.py',
-      {
-        pythonPath: `${process.cwd()}/.venv/bin/python`,
-        scriptPath: `${process.cwd()}/__tests__/python`,
-        args: [scenario],
-        env: { ...process.env, PYTHON_BRIDGE_LONG_TIMEOUT: '40000' },
-      },
-      { timeoutMs: 40000, label: 'i280 synthetic contention' },
-    );
-    expect(JSON.parse(lines.at(-1))).toEqual({
-      reason: 'walk_budget_exhausted',
-      request_issued: issued,
-      transfers,
-    });
+    const directory = mkdtempSync(join(tmpdir(), 'i280-deadline-'));
+    try {
+      const lines = await runPythonBridge(
+        'acquisition_deadline_worker.py',
+        {
+          pythonPath: `${process.cwd()}/.venv/bin/python`,
+          scriptPath: `${process.cwd()}/__tests__/python`,
+          args: [scenario],
+          env: {
+            ...process.env,
+            ZLIBRARY_OUTPUT_ROOT: directory,
+            // The worker creates its own TemporaryDirectory beneath this root.
+            TMPDIR: directory,
+            TEMP: directory,
+            PYTHON_BRIDGE_LONG_TIMEOUT: '40000',
+          },
+        },
+        { timeoutMs: 40000, label: 'i280 synthetic contention' },
+      );
+      expect(JSON.parse(lines.at(-1))).toEqual({
+        reason: 'walk_budget_exhausted',
+        request_issued: issued,
+        transfers,
+      });
+    } finally {
+      rmSync(directory, { recursive: true, force: true });
+    }
   },
   45000,
 );

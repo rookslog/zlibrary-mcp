@@ -39,6 +39,8 @@ docker run -d \
 |----------|----------|-------------|
 | `ZLIBRARY_EMAIL` | Yes | Z-Library account email |
 | `ZLIBRARY_PASSWORD` | Yes | Z-Library account password |
+| `ZLIBRARY_OUTPUT_ROOT` | No | Image/Compose default: `/app/downloads`, inside the mounted volume |
+| `ZLIBRARY_UNRESTRICTED_OUTPUT` | No | `1` allows outside absolute paths; `0` or unset keeps containment |
 | `ZLIBRARY_MIRROR` | No | Custom Z-Library mirror URL |
 | `RETRY_MAX_RETRIES` | No | Max retry attempts (default: 3) |
 | `CIRCUIT_BREAKER_THRESHOLD` | No | Failures before circuit opens (default: 5) |
@@ -48,6 +50,16 @@ docker run -d \
 | Container Path | Description |
 |----------------|-------------|
 | `/app/downloads` | Downloaded books directory |
+
+The image and Compose pin `ZLIBRARY_OUTPUT_ROOT=/app/downloads`, so the new
+platform data-directory default does not move books outside this mount.
+Keep the volume mounted to retain books and receipts across container restarts.
+Relative `output_dir` values resolve under `/app/downloads`; outside absolute
+paths are refused unless the operator explicitly enables unrestricted output.
+On Linux bind mounts, new directories (0700) and files (0600) belong to the
+container user; use Docker `--user` or Compose `user:` to match the host UID/GID,
+or use chmod as the owner to grant host readers access; artifacts already present
+keep their mode on reuse, while a receipt the server repairs is rewritten as 0600.
 
 ## Health Check
 

@@ -6,6 +6,11 @@ account-history entry. The [JSON Schema](schemas/acq-record-v1.schema.json) uses
 JSON Schema draft 2020-12. A valid receipt is evidence to check against the file,
 not an authorization token or a guarantee that its bytes still exist unchanged.
 
+On POSIX filesystems that support chmod, new sidecars use mode 0600 and new
+directory levels use 0700 (existing directory modes are unchanged), so readers
+under another UID need owner-granted access as described in the
+[download-location migration](interface-migration.md#download-location).
+
 ## States and publication
 
 1. **Initial intent:** before authentication or provider contact, the server

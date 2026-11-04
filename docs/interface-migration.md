@@ -6,21 +6,21 @@ package/executable/repository names and MCP client keys do not change.
 an `invalid_argument` envelope with a helpful replacement and no provider call.
 See [API reference](api.md) and [ADR-012](https://github.com/rookslog/zlibrary-mcp/blob/master/docs/adr/ADR-012-Acquisition-Tool-Interface.md).
 
-| Old tool | Replacement and arguments |
-|---|---|
-| `search_books` | `search`: retain `query`, `exact`, `languages`; `fromYear`/`toYear` → `year_from`/`year_to`; `extensions` → `formats`; `count` → `limit`; add `sources:["zlibrary"]`; `content_types` removed |
-| `full_text_search` | Removed without a text-search equivalent. It searched metadata with a quoted-query fallback, not book contents. Use `search` for metadata; `phrase` and `words` removed |
-| `get_download_history` | `get_history`: `count` → `limit`; use `cursor` alone to continue |
-| `get_download_limits` | `get_limits`: default local; `mode:"live"` for account numbers |
-| `get_recent_books` | Removed; choose a metadata query with `search` |
-| `download_book_to_file` | `download`: search again, choose a row, pass its `ref`; `outputDir` → `output_dir`; `bookDetails` is not accepted |
-| `get_book_metadata` | `get_book` with `ref`; `bookId`, `bookHash`, `include` removed |
-| `search_by_term` | Removed; put the term in `search.query` and name sources |
-| `search_by_author` | `search.author` without query; retain `exact`, `languages`; `yearFrom`/`yearTo` → `year_from`/`year_to`; `extensions` → `formats`; `count` → `limit`; old default 25 becomes 10 |
-| `fetch_booklist` | Removed; use catalogue metadata search |
-| `search_advanced` | Removed; make `search` calls with `exact:true`, then `exact:false` if needed |
-| `search_multi_source` | `search`: `count` → `limit`; `source:annas/libgen` → `sources:[...]`; `auto` requires explicit order or operator `BOOK_SOURCE_DEFAULT_ORDER` |
-| `process_document_for_rag` | Removed; use an isolated 1.4.x installation for text processing |
+| Old tool                   | Replacement and arguments                                                                                                                                                                     |
+| -------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `search_books`             | `search`: retain `query`, `exact`, `languages`; `fromYear`/`toYear` → `year_from`/`year_to`; `extensions` → `formats`; `count` → `limit`; add `sources:["zlibrary"]`; `content_types` removed |
+| `full_text_search`         | Removed without a text-search equivalent. It searched metadata with a quoted-query fallback, not book contents. Use `search` for metadata; `phrase` and `words` removed                       |
+| `get_download_history`     | `get_history`: `count` → `limit`; use `cursor` alone to continue                                                                                                                              |
+| `get_download_limits`      | `get_limits`: default local; `mode:"live"` for account numbers                                                                                                                                |
+| `get_recent_books`         | Removed; choose a metadata query with `search`                                                                                                                                                |
+| `download_book_to_file`    | `download`: search again, choose a row, pass its `ref`; `outputDir` → `output_dir`; `bookDetails` is not accepted                                                                             |
+| `get_book_metadata`        | `get_book` with `ref`; `bookId`, `bookHash`, `include` removed                                                                                                                                |
+| `search_by_term`           | Removed; put the term in `search.query` and name sources                                                                                                                                      |
+| `search_by_author`         | `search.author` without query; retain `exact`, `languages`; `yearFrom`/`yearTo` → `year_from`/`year_to`; `extensions` → `formats`; `count` → `limit`; old default 25 becomes 10               |
+| `fetch_booklist`           | Removed; use catalogue metadata search                                                                                                                                                        |
+| `search_advanced`          | Removed; make `search` calls with `exact:true`, then `exact:false` if needed                                                                                                                  |
+| `search_multi_source`      | `search`: `count` → `limit`; `source:annas/libgen` → `sources:[...]`; `auto` requires explicit order or operator `BOOK_SOURCE_DEFAULT_ORDER`                                                  |
+| `process_document_for_rag` | Removed; use an isolated 1.4.x installation for text processing                                                                                                                               |
 
 All new tools reject unknown argument names before provider contact. Both
 `process_for_rag` (including `false`) and `processed_output_format` are invalid
@@ -34,14 +34,14 @@ No author post-filter is promised. Unsupported source filters are reported in
 
 ## Result shapes
 
-| Before | 2.0 |
-|---|---|
-| `books[]` | `rows[]` with process-local `ref`, not full upstream records |
-| `file_path` | `path` plus `bytes`, `reused`, `transfer_skipped`, `verified`, `record` |
-| `daily_limit`, `daily_remaining` | `sources.zlibrary.limit.per_day`, `remaining` |
-| `sources_used` | `routing.served_by` plus ordered attempts |
-| full-text `search_type` | Removed with the misleading text-search tool |
-| unstructured tool errors | Closed `{error}` envelope and three-way `retry` |
+| Before                           | 2.0                                                                     |
+| -------------------------------- | ----------------------------------------------------------------------- |
+| `books[]`                        | `rows[]` with process-local `ref`, not full upstream records            |
+| `file_path`                      | `path` plus `bytes`, `reused`, `transfer_skipped`, `verified`, `record` |
+| `daily_limit`, `daily_remaining` | `sources.zlibrary.limit.per_day`, `remaining`                           |
+| `sources_used`                   | `routing.served_by` plus ordered attempts                               |
+| full-text `search_type`          | Removed with the misleading text-search tool                            |
+| unstructured tool errors         | Closed `{error}` envelope and three-way `retry`                         |
 
 `routing.served_by` is absent when a search returns no rows; `fell_back` is
 false on that empty page. `get_limits.operations` describes supported operations
@@ -124,6 +124,6 @@ fresh result's checksum claim refers to bytes hashed in that call.
 Lock creation failures are refused, not silently downgraded to per-process
 idempotence. Active local locks are not stolen due only to elapsed time; dead
 holders are reclaimed. This preserves the advertised cross-process boundary.
-Local macOS tests and a disposable DIONYSUS Linux/ext4 run exercise two real
+Local macOS tests and a disposable Linux/ext4 run exercise two real
 processes, one transfer, and intent recovery after process death. Network mounts
 and other filesystem configurations remain outside those checks.

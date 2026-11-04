@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Security
+
+- Updated locked dependencies body-parser, fast-uri, qs, Brotli and msgpack for
+  published advisories, and raised the audit-tool Filelock floor.
+- Security audit tooling now requires Python 3.11+ (CI uses 3.13); acquisition
+  and the Python 3.10 test lane remain supported. The audit command and its
+  failure policy are unchanged.
+
 ### Added
 
 - Documented the [receipt v1 contract](docs/receipt-format.md) and its JSON Schema, validated against real offline intent and complete receipts.

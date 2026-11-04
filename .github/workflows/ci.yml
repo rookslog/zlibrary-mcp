@@ -108,6 +108,9 @@ jobs:
         with:
           node-version: '22'
       - uses: astral-sh/setup-uv@v7
+        with:
+          # Fixed audit-tool dependencies require Python >=3.11.
+          python-version: '3.13'
       - run: npm ci
       - run: uv sync --frozen --group dev
       - run: npm audit --omit=dev --audit-level=critical

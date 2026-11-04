@@ -1,5 +1,8 @@
 # RAG Document Processing Pipeline: Implementation Specification
 
+> Historical processing design: text processing is [parked separately](text-processing-migration.md).
+> Current acquisition uses the configured output root; see [download-location migration](interface-migration.md#download-location).
+
 **Version:** 2.1 (Download Workflow Clarification)
 **Date:** 2025-04-24
 
@@ -26,7 +29,7 @@ Refer to the [RAG Pipeline Architecture (v2)](./architecture/rag-pipeline.md), [
       // Changed from 'id' to 'bookDetails' to align with ADR-002
       bookDetails: z.object({}).passthrough().describe("The full book details object obtained from a search_books result, containing the necessary book page URL under the 'url' key."),
       // 'format' removed as it's determined internally during scraping/download
-      outputDir: z.string().optional().default("./downloads").describe("Directory to save the original file (default: './downloads')"),
+      outputDir: z.string().optional().describe("Directory to save the original file (defaults to configured output root)"),
       process_for_rag: z.boolean().optional().default(false).describe("If true, process content for RAG and save to processed output file"),
       processed_output_format: z.string().optional().default("txt").describe("Desired format for the processed output file (default: 'txt')")
     });
@@ -702,7 +705,7 @@ async def main(func_name: str, args_json: str):
         if func_name == 'download_book':
             result = await download_book(
                 args.get('book_details'),
-                args.get('output_dir', './downloads'),
+                args.get('output_dir'),  # Omit override to use the configured output root.
                 args.get('process_for_rag', False),
                 args.get('processed_output_format', 'txt')
             )

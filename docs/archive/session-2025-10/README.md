@@ -18,12 +18,12 @@ This directory contains historical documentation from the comprehensive developm
   - Grade transformation analysis
   - Recommended for understanding the full scope
 
-- **README_SESSION_COMPLETE.md** - Detailed session report (480 lines)
+- **[README_SESSION_COMPLETE.md](README_SESSION_COMPLETE.md)** - Detailed session report (480 lines)
   - Phase-by-phase breakdown
   - Validation results
   - Production readiness assessment
 
-- **FINAL_SESSION_SUMMARY.md** - Commit-focused summary (359 lines)
+- **[FINAL_SESSION_SUMMARY.md](FINAL_SESSION_SUMMARY.md)** - Commit-focused summary (359 lines)
   - Organized by git commit
   - Technical changes detailed
   - File-by-file breakdown
@@ -37,7 +37,7 @@ This directory contains historical documentation from the comprehensive developm
   - Bug fixes documented
 
 - **ALL_TOOLS_VALIDATION_MATRIX.md** - Moved to docs/deployment/
-  - (Now in deployment docs for active reference)
+  - (Retained as historical evidence, not current qualification)
 
 ### Planning Documents
 
@@ -67,7 +67,7 @@ This session delivered:
 
 ## Current Status
 
-All work from this session is now merged to master and production-ready.
+These are historical session assertions. They do not qualify the current five-tool acquisition interface.
 
 For current deployment information, see `docs/deployment/` directory.
 

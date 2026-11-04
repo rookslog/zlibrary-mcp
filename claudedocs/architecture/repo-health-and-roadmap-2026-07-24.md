@@ -353,7 +353,7 @@ CHANGELOG.
 4. **Four overlapping documentation trees** — `docs/` (40+ files), `claudedocs/`,
    `.claude/`, `.planning/` — with real duplication (three roadmaps: `.claude/`,
    `.planning/`, and milestone archives) and stale one-off analyses
-   (`docs/rag-output-qa-report-rerun-20250429.md`). For a public repo this reads
+   ([`docs/rag-output-qa-report-rerun-20250429.md`](https://github.com/rookslog/zlibrary-mcp/blob/c8798addc98d83e50bb743b98b48d2490476dcb0/docs/rag-output-qa-report-rerun-20250429.md)). For a public repo this reads
    as sprawl and buries the ~6 documents a user actually needs.
 5. **No SECURITY.md, no issue templates** before this pass — for a project that
    handles user credentials.

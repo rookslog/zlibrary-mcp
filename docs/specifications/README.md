@@ -55,12 +55,12 @@
 **Related**:
 - Data Model: `lib/rag_data_models.py::NoteInfo`
 - ADR: (pending - ADR-009 candidate)
-- See also: [docs/CITATION_INFERENCE_ARCHITECTURE.md](../CITATION_INFERENCE_ARCHITECTURE.md)
+- See also: [docs/CITATION_INFERENCE_ARCHITECTURE.md](https://github.com/rookslog/zlibrary-mcp/blob/c8798addc98d83e50bb743b98b48d2490476dcb0/docs/CITATION_INFERENCE_ARCHITECTURE.md)
 
 ---
 
 ### Fast Prefilter Architecture
-**File**: [FAST_PREFILTER_ARCHITECTURE_FINAL.md](FAST_PREFILTER_ARCHITECTURE_FINAL.md)
+**File**: [FAST_PREFILTER_ARCHITECTURE_FINAL.md](https://github.com/rookslog/zlibrary-mcp/blob/c8798addc98d83e50bb743b98b48d2490476dcb0/docs/specifications/FAST_PREFILTER_ARCHITECTURE_FINAL.md)
 **Size**: 16KB
 **Status**: 📋 Design Complete, Implementation Pending
 **Created**: 2025-10-18
@@ -93,7 +93,7 @@
 ---
 
 ### Performance Optimization Clever Engineering
-**File**: [PERFORMANCE_OPTIMIZATION_CLEVER_ENGINEERING.md](PERFORMANCE_OPTIMIZATION_CLEVER_ENGINEERING.md)
+**File**: [PERFORMANCE_OPTIMIZATION_CLEVER_ENGINEERING.md](https://github.com/rookslog/zlibrary-mcp/blob/c8798addc98d83e50bb743b98b48d2490476dcb0/docs/specifications/PERFORMANCE_OPTIMIZATION_CLEVER_ENGINEERING.md)
 **Size**: 20KB
 **Status**: 📋 Design Phase
 **Created**: 2025-10-18
@@ -126,7 +126,7 @@
 ---
 
 ### Phase 2 Integration Specification
-**File**: [PHASE_2_INTEGRATION_SPECIFICATION.md](PHASE_2_INTEGRATION_SPECIFICATION.md)
+**File**: [PHASE_2_INTEGRATION_SPECIFICATION.md](https://github.com/rookslog/zlibrary-mcp/blob/c8798addc98d83e50bb743b98b48d2490476dcb0/docs/specifications/PHASE_2_INTEGRATION_SPECIFICATION.md)
 **Size**: 19KB
 **Status**: ✅ Implemented (Oct 2025)
 **Created**: 2025-10-17
@@ -189,13 +189,13 @@
 **Related**:
 - [.claude/TDD_WORKFLOW.md](../../.claude/TDD_WORKFLOW.md) - Workflow guide
 - [.claude/RAG_QUALITY_FRAMEWORK.md](../../.claude/RAG_QUALITY_FRAMEWORK.md) - Quality framework
-- [docs/TESTING_LESSONS_LEARNED.md](../TESTING_LESSONS_LEARNED.md) - Testing insights
+- [docs/TESTING_LESSONS_LEARNED.md](https://github.com/rookslog/zlibrary-mcp/blob/c8798addc98d83e50bb743b98b48d2490476dcb0/docs/TESTING_LESSONS_LEARNED.md) - Testing insights
 - Test Infrastructure: `__tests__/python/`, `test_files/`
 
 ---
 
 ### Selective OCR Strategy
-**File**: [SELECTIVE_OCR_STRATEGY.md](SELECTIVE_OCR_STRATEGY.md)
+**File**: [SELECTIVE_OCR_STRATEGY.md](https://github.com/rookslog/zlibrary-mcp/blob/c8798addc98d83e50bb743b98b48d2490476dcb0/docs/specifications/SELECTIVE_OCR_STRATEGY.md)
 **Size**: 21KB
 **Status**: 🔄 Core Implemented, Refinements Pending
 **Created**: 2025-10-17
@@ -236,7 +236,7 @@ IF garbled detected AND no visual markers (X-marks)
 ---
 
 ### Sous-Rature Recovery Strategy
-**File**: [SOUS_RATURE_RECOVERY_STRATEGY.md](SOUS_RATURE_RECOVERY_STRATEGY.md)
+**File**: [SOUS_RATURE_RECOVERY_STRATEGY.md](https://github.com/rookslog/zlibrary-mcp/blob/c8798addc98d83e50bb743b98b48d2490476dcb0/docs/specifications/SOUS_RATURE_RECOVERY_STRATEGY.md)
 **Size**: 17KB
 **Status**: 🔄 Core Implemented, Enhancements Pending
 **Created**: 2025-10-14

@@ -179,6 +179,7 @@ export function safeEapiFailureEnvelope(value: any): Record<string, any> | undef
       'breaker_open',
       'integrity_mismatch',
       'partial_transfer',
+      'protocol_error',
       'internal',
       'timeout',
       'aborted',

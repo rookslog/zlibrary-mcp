@@ -1,0 +1,293 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://raw.githubusercontent.com/rookslog/zlibrary-mcp/master/docs/schemas/acq-record-v1.schema.json",
+  "title": "Acquisition receipt v1",
+  "description": "Persisted acquisition records, including initial/hashed intents and complete records. Validate files separately before use.",
+  "type": "object",
+  "required": [
+    "record_version",
+    "state",
+    "path",
+    "bytes",
+    "sha256",
+    "md5",
+    "reused",
+    "transfer_skipped",
+    "downloaded_at",
+    "source",
+    "provenance",
+    "title",
+    "author",
+    "year",
+    "language",
+    "publisher",
+    "pages",
+    "isbn",
+    "series",
+    "edition",
+    "translator",
+    "format",
+    "identifiers",
+    "request"
+  ],
+  "properties": {
+    "record_version": {
+      "type": "integer",
+      "const": 1
+    },
+    "state": {
+      "enum": [
+        "intent",
+        "complete"
+      ]
+    },
+    "path": {
+      "type": "string",
+      "minLength": 1,
+      "description": "Absolute server-side canonical artifact path, even in an alias receipt.",
+      "pattern": "^(?:/|[A-Za-z]:[\\\\/]|\\\\\\\\[^\\\\/]+[\\\\/][^\\\\/]+(?:[\\\\/]|$))"
+    },
+    "bytes": {
+      "type": [
+        "integer",
+        "null"
+      ],
+      "minimum": 0
+    },
+    "sha256": {
+      "type": [
+        "string",
+        "null"
+      ],
+      "pattern": "^[0-9a-f]{64}$",
+      "minLength": 64,
+      "maxLength": 64
+    },
+    "md5": {
+      "$ref": "#/$defs/jsonValue",
+      "description": "Catalogue value as supplied, or null; not a receipt verification assertion."
+    },
+    "reused": {
+      "type": "boolean"
+    },
+    "transfer_skipped": {
+      "type": "boolean"
+    },
+    "downloaded_at": {
+      "type": "string",
+      "format": "date-time",
+      "description": "UTC time the original intent was created; retained during completion/recovery/reuse.",
+      "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(?:\\.[0-9]+)?Z(?![\\s\\S])"
+    },
+    "source": {
+      "type": "string",
+      "minLength": 1
+    },
+    "provenance": {
+      "type": "object",
+      "properties": {
+        "route": {
+          "type": "string"
+        },
+        "mirror": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "host": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "additionalProperties": true,
+      "description": "Initial source route with null host/mirror; replaced by supplied transfer provenance at completion."
+    },
+    "title": {
+      "$ref": "#/$defs/jsonValue",
+      "description": "Uncoerced catalogue JSON value; missing or falsy metadata is stored as null."
+    },
+    "author": {
+      "$ref": "#/$defs/jsonValue",
+      "description": "Uncoerced catalogue JSON value; missing or falsy metadata is stored as null."
+    },
+    "year": {
+      "$ref": "#/$defs/jsonValue",
+      "description": "Uncoerced catalogue JSON value; missing or falsy metadata is stored as null."
+    },
+    "language": {
+      "$ref": "#/$defs/jsonValue",
+      "description": "Uncoerced catalogue JSON value; missing or falsy metadata is stored as null."
+    },
+    "publisher": {
+      "$ref": "#/$defs/jsonValue",
+      "description": "Uncoerced catalogue JSON value; missing or falsy metadata is stored as null."
+    },
+    "pages": {
+      "$ref": "#/$defs/jsonValue",
+      "description": "Uncoerced catalogue JSON value; missing or falsy metadata is stored as null."
+    },
+    "isbn": {
+      "$ref": "#/$defs/jsonValue",
+      "description": "Uncoerced catalogue JSON value; missing or falsy metadata is stored as null."
+    },
+    "series": {
+      "$ref": "#/$defs/jsonValue",
+      "description": "Uncoerced catalogue JSON value; missing or falsy metadata is stored as null."
+    },
+    "edition": {
+      "$ref": "#/$defs/jsonValue",
+      "description": "Uncoerced catalogue JSON value; missing or falsy metadata is stored as null."
+    },
+    "translator": {
+      "$ref": "#/$defs/jsonValue",
+      "description": "Uncoerced catalogue JSON value; missing or falsy metadata is stored as null."
+    },
+    "format": {
+      "$ref": "#/$defs/jsonValue",
+      "description": "Catalogue extension initially; normalized canonical suffix or null after the checkpoint."
+    },
+    "identifiers": {
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "hash": {
+          "$ref": "#/$defs/jsonValue"
+        },
+        "md5": {
+          "type": "string",
+          "minLength": 1
+        }
+      },
+      "additionalProperties": true
+    },
+    "request": {
+      "type": "object",
+      "required": [
+        "ref",
+        "query",
+        "item_id",
+        "why_chosen"
+      ],
+      "properties": {
+        "ref": {
+          "$ref": "#/$defs/jsonValue"
+        },
+        "query": {
+          "$ref": "#/$defs/jsonValue"
+        },
+        "item_id": {
+          "$ref": "#/$defs/jsonValue"
+        },
+        "why_chosen": {
+          "$ref": "#/$defs/jsonValue"
+        }
+      },
+      "additionalProperties": true
+    }
+  },
+  "additionalProperties": true,
+  "$defs": {
+    "jsonValue": {
+      "description": "Any JSON value. The v1 writer does not enforce a scalar type for this catalogue or request value."
+    }
+  },
+  "allOf": [
+    {
+      "anyOf": [
+        {
+          "properties": {
+            "bytes": {
+              "type": "null"
+            },
+            "sha256": {
+              "type": "null"
+            }
+          }
+        },
+        {
+          "properties": {
+            "bytes": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "sha256": {
+              "type": "string",
+              "pattern": "^[0-9a-f]{64}$",
+              "minLength": 64,
+              "maxLength": 64
+            },
+            "format": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "if": {
+        "properties": {
+          "state": {
+            "const": "complete"
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "bytes": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "sha256": {
+            "type": "string",
+            "pattern": "^[0-9a-f]{64}$",
+            "minLength": 64,
+            "maxLength": 64
+          },
+          "format": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "source": {
+            "const": "zlibrary"
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "identifiers": {
+            "required": [
+              "id",
+              "hash"
+            ]
+          }
+        }
+      },
+      "else": {
+        "properties": {
+          "identifiers": {
+            "required": [
+              "md5"
+            ]
+          }
+        }
+      }
+    }
+  ]
+}

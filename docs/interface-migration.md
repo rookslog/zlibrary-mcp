@@ -51,8 +51,9 @@ produce a `remaining` count.
 
 Saved full records/IDs must not be replayed as download inputs. Search again and
 choose the edition, then use its current ref. Refs do not survive process
-restart. Durable library integration reads `.acq.json` records, not refs or
-account history. Existing files are not deleted or converted automatically.
+restart. Durable library integration reads `.acq.json` records using the
+[receipt v1 contract](https://github.com/rookslog/zlibrary-mcp/blob/master/docs/receipt-format.md)
+and its schema, rather than refs or account history. Existing files are not deleted or converted automatically.
 
 ## Existing 1.4.0 downloads
 

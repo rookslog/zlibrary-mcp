@@ -15,6 +15,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   and the Python 3.10 test lane remain supported. The audit command and its
   failure policy are unchanged.
 
+### Added
+
+- Documented the [receipt v1 contract](docs/receipt-format.md) and its JSON Schema, validated against real offline intent and complete receipts.
+
 ### Breaking: five-tool acquisition interface
 
 - Replaced the old tool names with `search`, `get_book`, `download`, `get_limits`,

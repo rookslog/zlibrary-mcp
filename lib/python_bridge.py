@@ -2305,7 +2305,7 @@ async def main():
             ):
                 # Fixed local text; never expose the provider's payload/prose.
                 error_info["error"] = (
-                    "Recent-books provider contract error: expected a books list"
+                    "Recent-books provider contract error: expected a books list of objects"
                 )
             error_info["diagnostics"] = diagnostics
             error_info["type"] = failure_type(e)

@@ -179,8 +179,9 @@ async def test_recent_contract_error_survives_bridge_envelope(
     assert streams.out == ""
     error = json.loads(streams.err)
     assert error["details"]["reason"] == "protocol_error"
-    assert "Recent-books provider contract error" in error["error"]
-    assert "books list" in error["error"]
+    assert error["error"] == (
+        "Recent-books provider contract error: expected a books list of objects"
+    )
     assert "untrusted-provider-text" not in streams.err
     assert "offline-cookie-marker" not in streams.err
     assert requests == [("GET", "/eapi/book/recently")]

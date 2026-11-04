@@ -71,8 +71,9 @@ test('published Markdown links resolve within the shipped package, including the
     ),
   ).toEqual([]);
   const missing = [];
-  if (!shipped.has('docs/interface-migration.md'))
-    missing.push('docs/interface-migration.md is not shipped');
+  for (const required of ['docs/interface-migration.md', 'docs/README.md']) {
+    if (!shipped.has(required)) missing.push(`${required} is not shipped`);
+  }
   for (const file of shipped) {
     if (/\.md$/i.test(file)) {
       missing.push(...missingLinks(file, readFileSync(path.join(root, file), 'utf8'), shipped));

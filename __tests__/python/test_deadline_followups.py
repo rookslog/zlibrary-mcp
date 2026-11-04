@@ -75,35 +75,44 @@ async def test_stalled_chain_keeps_mirror_failures_through_cleanup(
     async def transfer(book, directory, **kwargs):
         return await bridge._fetch_from_source(book, directory)
 
-    async def drive_time():
-        await stalled.wait()
+    async def wait_for_loop_turns(predicate, phase):
+        for _ in range(100):
+            if predicate():
+                return
+            await asyncio.sleep(0)
+        # A frozen clock also freezes wait_for's safety guard. Expire it and
+        # fail here even when the expected inner timeout never starts cleanup.
+        loop_time[0] += 9.0
+        pytest.fail(f"{phase} did not occur within 100 event-loop turns")
+
+    monkeypatch.setattr(acq, "destination_lock", delayed_lock)
+    monkeypatch.setattr(bridge, "get_source_router", router)
+    monkeypatch.setattr(bridge, "_download_url_to_file", download)
+    acquiring = asyncio.create_task(
+        asyncio.wait_for(
+            acq.acquire(BOOK, str(tmp_path), filename="chosen.pdf", transfer=transfer),
+            8.0,
+        )
+    )
+    try:
+        await wait_for_loop_turns(stalled.is_set, "transfer admission")
         # Expire the real inner wait_for, then let cancellation enter cleanup.
         # Frozen loop time prevents a paused runner from expiring both timers.
         loop_time[0] += transfer_budget[0] + 0.000001
-        await cleanup_started.wait()
+        await wait_for_loop_turns(cleanup_started.is_set, "inner timeout cleanup")
         loop_time[0] += cleanup_ms / 1000
         # Dispatch timers that became due while cleanup still holds the stream.
         # Without the cancellation grace, the outer watchdog wins here.
         for _ in range(3):
             await asyncio.sleep(0)
         release_cleanup.set()
-
-    monkeypatch.setattr(acq, "destination_lock", delayed_lock)
-    monkeypatch.setattr(bridge, "get_source_router", router)
-    monkeypatch.setattr(bridge, "_download_url_to_file", download)
-    driver = asyncio.create_task(drive_time())
-    try:
+        await wait_for_loop_turns(acquiring.done, "acquisition completion")
         with pytest.raises(AllSourcesFailedError) as error:
-            await asyncio.wait_for(
-                acq.acquire(
-                    BOOK, str(tmp_path), filename="chosen.pdf", transfer=transfer
-                ),
-                8.0,
-            )
-        await driver
+            acquiring.result()
     finally:
-        driver.cancel()
-        await asyncio.gather(driver, return_exceptions=True)
+        release_cleanup.set()
+        acquiring.cancel()
+        await asyncio.gather(acquiring, return_exceptions=True)
     assert [(f.host, f.reason) for f in error.value.failures] == [
         ("libgen.li", "connect_timeout"),
         ("libgen.vg", "read_timeout"),

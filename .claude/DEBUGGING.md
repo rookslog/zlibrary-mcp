@@ -512,7 +512,7 @@ npm run build
 If this fails, inspect the reported error and repair the specific dependency or
 configuration. Do not use a blanket reset that removes downloads, acquisition
 records, logs or the Python environment. Downloads can live outside this checkout
-under the configured output root; see the README's download-location section.
+under the configured output root; see [README, Download output](../README.md#download-output).
 A rebuild does not establish provider availability or repair acquired files.
 
 ### Session Recovery

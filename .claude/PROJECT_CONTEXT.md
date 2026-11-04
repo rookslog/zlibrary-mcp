@@ -199,7 +199,7 @@ CIRCUIT_BREAKER_TIMEOUT=60000
 ```
 
 Jest and pytest are separate suites. Passing unit or offline tests does not
-establish live provider availability; see the README testing section.
+establish live provider availability; see [README, Development](../README.md#development).
 
 ## Quick Commands
 

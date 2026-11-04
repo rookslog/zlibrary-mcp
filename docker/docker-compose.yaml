@@ -18,6 +18,8 @@ services:
       - "8000:8000"
     env_file:
       - .env
+    environment:
+      ZLIBRARY_OUTPUT_ROOT: /app/downloads
     volumes:
       # Mount local directory for downloaded books
       - ./downloads:/app/downloads

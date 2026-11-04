@@ -76,6 +76,9 @@ COPY --from=builder /app/node_modules ./node_modules/
 COPY --from=builder /app/lib ./lib/
 COPY --from=builder /app/package.json ./
 
+# Keep downloads in the mounted volume across container restarts
+ENV ZLIBRARY_OUTPUT_ROOT=/app/downloads
+
 # Create downloads directory
 RUN mkdir -p /app/downloads
 

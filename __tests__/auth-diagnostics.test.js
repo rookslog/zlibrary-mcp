@@ -96,6 +96,8 @@ runpy.run_path(${JSON.stringify(path.join(root, 'lib/python_bridge.py'))},run_na
 `,
   );
   Object.assign(process.env, {
+    // Acquisition diagnostics must reach the provider inside this test's root.
+    ZLIBRARY_OUTPUT_ROOT: temporary,
     ZLIBRARY_EMAIL: 'i251@example.test',
     ZLIBRARY_PASSWORD: 'i251-password',
     ZLIBRARY_EAPI_DOMAIN: 'fake.example.test',

@@ -1,5 +1,8 @@
 # RAG Document Processing Pipeline Architecture (v2 - File Output)
 
+> Historical processing design: text processing is [parked separately](../text-processing-migration.md).
+> Current acquisition uses the configured output root; see [download-location migration](../interface-migration.md#download-location).
+
 **Date:** 2025-04-23 (Updated from 2025-04-14)
 
 ## 1. Overview
@@ -18,7 +21,7 @@ Two primary workflows are supported:
 2.  **Agent:** Calls `download_book_to_file` (updated tool), specifying `book_id`, `outputDir` (optional), and setting `process_for_rag: true`. Can optionally specify `processed_output_format`.
 3.  **Server (`zlibrary-mcp`):** Receives the request.
     *   Node.js layer calls the Python bridge.
-    *   Python bridge downloads the file using `zlibrary` to the specified `outputDir` (or default `./downloads`).
+    *   Python bridge downloads the file using `zlibrary` to the specified `outputDir` (or the configured output root).
     *   Python bridge immediately processes the downloaded file (EPUB/TXT/PDF) to extract text.
     *   Python bridge saves the extracted text to a designated file in `./processed_rag_output/`.
     *   Python bridge returns the original `file_path` and the new `processed_file_path` to Node.js.
@@ -109,7 +112,7 @@ graph TD
 ### `download_book_to_file` (Updated)
 
 *   **Description:** Downloads a specific book file from Z-Library to a local path. Optionally processes the content for RAG simultaneously, saving the result to a separate file.
-*   **Input:** `{ "bookDetails": "object (The full book details object obtained from search_books)", "outputDir": "string (optional, default: './downloads')", "process_for_rag": "boolean (optional, default: false)", "processed_output_format": "string (optional, default: 'txt')" }`
+*   **Input:** `{ "bookDetails": "object (The full book details object obtained from search_books)", "outputDir": "string (optional, defaults to configured output root)", "process_for_rag": "boolean (optional, default: false)", "processed_output_format": "string (optional, default: 'txt')" }`
 *   **Output:**
     *   If `process_for_rag` is `false` or omitted: `{ "file_path": "string" }` (Path to the original downloaded file)
     *   If `process_for_rag` is `true`: `{ "file_path": "string", "processed_file_path": "string" }` (Paths to original download and the processed text file)

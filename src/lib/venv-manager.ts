@@ -80,7 +80,7 @@ export async function getManagedPythonPath(): Promise<string> {
       '  3. Generate uv.lock for reproducibility\n\n' +
       'Contributing to this repo rather than running it? Use\n' +
       '  bash setup-uv.sh\n' +
-      'which adds the development group (pytest, Ruff, pip-audit).\n\n' +
+      'which adds the development group (pytest and Ruff; pip-audit on Python 3.11+).\n\n' +
       'First time setup? Install UV:\n' +
       `  ${uvInstallCommand(process.platform)}\n` +
       '  # Or: pip install uv\n\n' +

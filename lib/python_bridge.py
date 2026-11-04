@@ -2044,11 +2044,15 @@ async def get_recent_books(count: int = 10) -> dict:
     """Get recently added books via EAPI."""
     eapi = await get_eapi_client()
     response = await eapi.get_recently()
-    if not isinstance(response, dict) or not isinstance(response.get("books"), list):
+    if (
+        not isinstance(response, dict)
+        or not isinstance(response.get("books"), list)
+        or any(not isinstance(book, dict) for book in response["books"])
+    ):
         raise ProviderResponseError(
             "zlibrary",
             eapi.domain,
-            "Recent-books provider contract error: expected a books list",
+            "Recent-books provider contract error: expected a books list of objects",
             reason="protocol_error",
         )
     books = response["books"]
@@ -2301,7 +2305,7 @@ async def main():
             ):
                 # Fixed local text; never expose the provider's payload/prose.
                 error_info["error"] = (
-                    "Recent-books provider contract error: expected a books list"
+                    "Recent-books provider contract error: expected a books list of objects"
                 )
             error_info["diagnostics"] = diagnostics
             error_info["type"] = failure_type(e)

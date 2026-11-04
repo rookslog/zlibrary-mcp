@@ -106,6 +106,27 @@ async def test_bridge_rejects_recent_reply_without_a_books_list(monkeypatch, pay
     assert failure.value.provider == "zlibrary"
 
 
+@pytest.mark.parametrize("row", ["x", None, 1, False, []])
+@pytest.mark.parametrize("outside_count", [False, True])
+async def test_bridge_rejects_non_object_recent_rows(monkeypatch, row, outside_count):
+    """Catch malformed rows reaching normalization or hiding beyond the count slice."""
+    books = [{"id": 17, "title": "Offline book"}, row] if outside_count else [row]
+    eapi = EAPIClient("zlibrary.example")
+    monkeypatch.setattr(python_bridge, "_eapi_client", eapi)
+    async with httpx.AsyncClient(
+        transport=httpx.MockTransport(
+            lambda _: httpx.Response(200, json={"success": 1, "books": books})
+        )
+    ) as client:
+        eapi._client = client
+        with pytest.raises(
+            ProviderResponseError, match="Recent-books provider contract error"
+        ) as failure:
+            await python_bridge.get_recent_books(count=1)
+    assert failure.value.reason == "protocol_error"
+    assert failure.value.provider == "zlibrary"
+
+
 @pytest.mark.parametrize("books", [[], [{"id": 17, "title": "Offline book"}]])
 async def test_bridge_accepts_explicit_recent_books_lists(monkeypatch, books):
     """Catches rejecting real empty lists or bypassing normal row normalization."""
@@ -126,14 +147,17 @@ async def test_bridge_accepts_explicit_recent_books_lists(monkeypatch, books):
         assert result == {"books": []}
 
 
-async def test_recent_contract_error_survives_bridge_envelope(monkeypatch, capsys):
+@pytest.mark.parametrize("books_field", [{}, {"books": ["x"]}])
+async def test_recent_contract_error_survives_bridge_envelope(
+    monkeypatch, capsys, books_field
+):
     """Catches the EAPI diagnostic filter dropping the reason or hiding the contract error."""
     requests = []
 
     def respond(request):
         requests.append((request.method, request.url.path))
         return httpx.Response(
-            200, json={"success": 1, "error": "untrusted-provider-text"}
+            200, json={"success": 1, "error": "untrusted-provider-text", **books_field}
         )
 
     eapi = EAPIClient("zlibrary.example", remix_userkey="offline-cookie-marker")

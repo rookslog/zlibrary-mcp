@@ -15,6 +15,8 @@ source repository.
 
 ## Historical work
 
+Other documents in `docs/` not linked above are historical.
+
 Preserved for context; not maintained. Details may no longer match the code.
 
 Old processing plans, experiments and session reports describe earlier designs;

@@ -4,9 +4,9 @@ Quick reference for adding Z-Library MCP server to your projects.
 
 ---
 
-## For This Computer (System-Wide Installation)
+## Shared Checkout (System-Wide Installation)
 
-**Example Installation Location**: `/home/rookslog/mcp-servers/zlibrary-mcp/`.
+**Example Installation Location**: `/home/your-user/mcp-servers/zlibrary-mcp/`.
 Replace it with your checkout's absolute path. The account variables shown below
 are needed only for Z-Library operations; omit the `env` block for LibGen-only use.
 
@@ -19,7 +19,7 @@ are needed only for Z-Library operations; omit the `env` block for LibGen-only u
   "mcpServers": {
     "zlibrary": {
       "command": "node",
-      "args": ["/home/rookslog/mcp-servers/zlibrary-mcp/dist/index.js"],
+      "args": ["/home/your-user/mcp-servers/zlibrary-mcp/dist/index.js"],
       "env": {
         "ZLIBRARY_EMAIL": "your@email.com",
         "ZLIBRARY_PASSWORD": "your_password"
@@ -38,18 +38,21 @@ are needed only for Z-Library operations; omit the `env` block for LibGen-only u
 ### ✅ DO Add to .mcp.json For:
 
 **Research Projects**:
+
 - Academic paper searches
 - Literature reviews
 - Citation analysis
 - Bibliography building
 
 **RAG/AI Projects**:
+
 - Knowledge base creation
 - Training data collection
 - Document corpus building
 - Semantic search preparation
 
 **Learning Projects**:
+
 - Finding study materials
 - Course development
 - Reference libraries
@@ -57,12 +60,14 @@ are needed only for Z-Library operations; omit the `env` block for LibGen-only u
 ### ❌ DON'T Add to .mcp.json For:
 
 **Pure Coding Projects**:
+
 - Web development (React, Node.js, etc.)
 - API development
 - Tool building
 - General software development
 
 **Data Science (Usually)**:
+
 - Working with existing datasets
 - Model training
 - Data analysis
@@ -94,6 +99,7 @@ Expected: Five tools:
 **Project**: `~/projects/philosophy-research/`
 
 **Step 1**: Create `.mcp.json`
+
 ```bash
 cd ~/projects/philosophy-research
 cat > .mcp.json << 'EOF'
@@ -101,7 +107,7 @@ cat > .mcp.json << 'EOF'
   "mcpServers": {
     "zlibrary": {
       "command": "node",
-      "args": ["/home/rookslog/mcp-servers/zlibrary-mcp/dist/index.js"],
+      "args": ["/home/your-user/mcp-servers/zlibrary-mcp/dist/index.js"],
       "env": {
         "ZLIBRARY_EMAIL": "your@email.com",
         "ZLIBRARY_PASSWORD": "your_password"
@@ -115,6 +121,7 @@ EOF
 **Step 2**: Restart Claude Code
 
 **Step 3**: Use it!
+
 ```
 "Search Z-Library for books on phenomenology by Hegel"
 "Inspect the first result with get_book using its ref"
@@ -132,7 +139,7 @@ You can combine multiple MCP servers:
   "mcpServers": {
     "zlibrary": {
       "command": "node",
-      "args": ["/home/rookslog/mcp-servers/zlibrary-mcp/dist/index.js"],
+      "args": ["/home/your-user/mcp-servers/zlibrary-mcp/dist/index.js"],
       "env": {
         "ZLIBRARY_EMAIL": "your@email.com",
         "ZLIBRARY_PASSWORD": "your_password"
@@ -164,7 +171,7 @@ Each server provides its own tools. Use what you need!
 ### "ENOENT: no such file"
 
 - Path in .mcp.json must be absolute
-- Use: `/home/rookslog/mcp-servers/...`
+- Use: `/home/your-user/mcp-servers/...`
 - Not: `~/mcp-servers/...` (~ doesn't expand in JSON)
 
 ### "Rate limit detected"
@@ -177,9 +184,10 @@ Each server provides its own tools. Use what you need!
 
 ## Summary
 
-**Example Location**: `/home/rookslog/mcp-servers/zlibrary-mcp/`
+**Example Location**: `/home/your-user/mcp-servers/zlibrary-mcp/`
 
 **How to Use**:
+
 1. Copy JSON config above
 2. Paste into project's `.mcp.json`
 3. Restart Claude Code

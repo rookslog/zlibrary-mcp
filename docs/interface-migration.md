@@ -60,7 +60,8 @@ account history. Existing files are not deleted or converted automatically.
 `${XDG_DATA_HOME:-~/.local/share}/zlibrary-mcp/downloads` on Linux/macOS or
 `%LOCALAPPDATA%\zlibrary-mcp\downloads` on Windows. Set `ZLIBRARY_OUTPUT_ROOT`
 to an absolute path to choose it (home expansion is allowed); relative values
-fail startup. To keep the old place, start the server with:
+fail startup. An empty `ZLIBRARY_OUTPUT_ROOT=` now also fails startup; it used
+to mean unset. To keep the old place, start the server with:
 
 ```bash
 export ZLIBRARY_OUTPUT_ROOT="$PWD/downloads"
@@ -79,6 +80,7 @@ reports the new location on stderr.
 On POSIX, new directory levels are 0700; existing directory permissions stay unchanged.
 New artifacts and receipts are 0600. Artifacts already present keep their mode
 on reuse; a receipt the server repairs is rewritten as 0600.
+On filesystems that refuse chmod, files keep whatever mode the mount gives them.
 On Windows, chmod only toggles the read-only attribute, not access-control
 permissions. Docker pins the root to `/app/downloads`, preserving the mounted
 download volume without user action.

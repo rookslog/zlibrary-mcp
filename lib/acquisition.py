@@ -155,6 +155,15 @@ def output_directory(output_dir):
     return directory
 
 
+def _chmod_private(path, mode):
+    """Apply private modes where the filesystem supports chmod."""
+    try:
+        path.chmod(mode)
+    except OSError as error:
+        if error.errno not in {errno.EPERM, errno.ENOTSUP, errno.ENOSYS}:
+            raise
+
+
 def _private_directory(directory):
     """Chmod only levels this call creates, including missing root ancestors."""
     if directory.is_dir():
@@ -166,7 +175,7 @@ def _private_directory(directory):
         if not directory.is_dir():
             raise
     else:
-        directory.chmod(0o700)
+        _chmod_private(directory, 0o700)
 
 
 def _prepare_directory(directory):
@@ -728,7 +737,7 @@ async def _acquire(
                         "Checkpoint must precede publication of a staged file",
                         issued=True,
                     )
-                stage.chmod(0o600)
+                _chmod_private(stage, 0o600)
                 canonical_path = Path(str(target) + ".acq.json")
                 existing = _read(canonical_path, issued=True)
                 _refuse_foreign(
@@ -823,7 +832,7 @@ async def _acquire(
                 )
             _mark_published()  # also support transfer callbacks publishing by other means
             if not result.get("publication_reused"):
-                final.chmod(0o600)
+                _chmod_private(final, 0o600)
             if (
                 _hash(final) != record["sha256"]
                 or final.stat().st_size != record["bytes"]

@@ -1733,7 +1733,7 @@ async def download_book(
 ):
     """Download the original book and return its local file_path."""
     _admit_download_args(legacy_arguments)
-    from lib.acquisition import output_directory, _prepare_directory
+    from lib.acquisition import output_directory, _prepare_directory, _chmod_private
 
     directory = output_directory(output_dir)
     _prepare_directory(directory)
@@ -1871,7 +1871,7 @@ async def download_book(
                 f"discarded redundant download {original_download_path_str}"
             )
         else:
-            final_file_path.chmod(0o600)
+            _chmod_private(final_file_path, 0o600)
             logger.info(
                 f"Published downloaded file from {original_download_path_str} to {final_file_path_str}"
             )

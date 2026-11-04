@@ -446,3 +446,88 @@ def test_windows_relative_and_fully_qualified_outputs(monkeypatch):
     )
     monkeypatch.setenv("ZLIBRARY_UNRESTRICTED_OUTPUT", "1")
     assert acquisition.output_directory(r"D:\outside") == PureWindowsPath(r"D:\outside")
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("legacy", [False, True], ids=["callback", "legacy"])
+@pytest.mark.parametrize("site", ["directory", "stage", "final"])
+@pytest.mark.parametrize("refusal", [errno.EPERM, errno.ENOTSUP, errno.ENOSYS])
+async def test_chmod_refusal_publishes_receipt_and_reuses_without_transfer(
+    tmp_path, monkeypatch, legacy, site, refusal
+):
+    directory = tmp_path / "new"
+    artifact = directory / "book.pdf"
+    chmod = Path.chmod
+    refused = []
+
+    def refuse(path, mode, *args, **kwargs):
+        selected = {
+            "directory": path == directory,
+            "stage": path.name in {".test-part", ".source-test.pdf"},
+            "final": path == artifact,
+        }[site]
+        if selected:
+            refused.append(path)
+            raise OSError(refusal, "synthetic chmod refusal", str(path))
+        return chmod(path, mode, *args, **kwargs)
+
+    async def fetch(book, output):
+        stage = Path(output) / ".source-test.pdf"
+        stage.write_bytes(PAYLOAD)
+        return str(stage)
+
+    fetcher = AsyncMock(side_effect=fetch)
+    monkeypatch.setattr(bridge, "_fetch_from_source", fetcher)
+    monkeypatch.setattr(Path, "chmod", refuse)
+    provider = AsyncMock(side_effect=bridge.download_book if legacy else transfer)
+    book = (
+        {**BOOK, "source": "libgen", "md5": hashlib.md5(PAYLOAD).hexdigest()}
+        if legacy
+        else BOOK
+    )
+    first = await acquisition.acquire(
+        book, str(directory), filename="book.pdf", transfer=provider
+    )
+    assert refused
+    assert artifact.read_bytes() == PAYLOAD
+    receipt = Path(first["record"])
+    record = json.loads(receipt.read_text())
+    assert record["state"] == "complete"
+    assert record["path"] == str(artifact)
+    assert record["sha256"] == hashlib.sha256(PAYLOAD).hexdigest()
+    before = receipt.read_bytes()
+    again = await acquisition.acquire(
+        book, str(directory), filename="book.pdf", transfer=provider
+    )
+    assert again["transfer_skipped"] is True
+    assert again["path"] == str(artifact)
+    assert receipt.read_bytes() == before
+    assert provider.await_count == 1
+    assert fetcher.await_count == (1 if legacy else 0)
+
+
+@pytest.mark.parametrize("failure", [errno.EACCES, errno.EIO, None])
+def test_private_chmod_raises_other_errors(tmp_path, monkeypatch, failure):
+    error = OSError(failure, "synthetic unexpected chmod error")
+
+    def refuse(*_args, **_kwargs):
+        raise error
+
+    monkeypatch.setattr(Path, "chmod", refuse)
+    with pytest.raises(OSError) as caught:
+        acquisition._chmod_private(tmp_path, 0o700)
+    assert caught.value is error
+
+
+def test_docker_final_stage_output_root_matches_compose_volume():
+    root = Path(__file__).resolve().parents[2]
+    dockerfile = (root / "docker/Dockerfile").read_text()
+    final_stage = dockerfile.rsplit("\nFROM ", 1)[1]
+    output = next(
+        line.split("=", 1)[1].strip()
+        for line in final_stage.splitlines()
+        if line.startswith("ENV ZLIBRARY_OUTPUT_ROOT=")
+    )
+    compose = (root / "docker/docker-compose.yaml").read_text()
+    volumes = compose.split("    volumes:\n", 1)[1].split("    command:", 1)[0]
+    assert output == "/app/downloads" and f"./downloads:{output}" in volumes

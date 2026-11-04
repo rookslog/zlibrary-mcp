@@ -100,3 +100,40 @@ replaced; it does not promise to preserve that environment. This rollback
 experiment is not a supported text-restoration command and does not replace
 the separate pinned installation recommendation above. See
 [the check's instructions](../scripts/README.md#upgrade-and-rollback-check).
+
+## Rationale retained from historical processing plans
+
+These lessons explain the preserved work; they do not activate a text feature,
+accept a proposed milestone, or qualify the old implementation.
+
+- **Files instead of payloads:** the old PDF integration design saved extracted
+  text on disk and returned a path so downstream readers could consume it without
+  placing an entire document in the protocol response. Acquisition retains the
+  original-file boundary; a future text component must own its output contract.
+- **Visual fidelity is separate from text cleanliness:** ADR-008 records why
+  readable text can still have visual erasure marks. A garbled-text prefilter
+  cannot stand in for visual detection. The removed fast-prefilter proposal's
+  recall and speed estimates were proposals, not a replacement for that decision.
+  Preserve both the underlying words and intentional erasure marks; OCR and
+  handwritten annotations need separate checks.
+- **Continuation is a state transition:** the historical footnote detector
+  tracked new, incomplete, complete and orphaned notes across pages, combined
+  geometry/font/text signals, and distinguished word-break hyphens from normal
+  spacing. Its first design tracked only one incomplete note; missing spatial
+  metadata and simultaneous continuations remain limits to test rather than
+  an accuracy promise.
+- **Quality reports must say what ran:** the old scoring review called for
+  scored/skipped counts and reasons, explicit expected-corpus coverage, separate
+  body/footnote/structure metrics, and intentional baseline regeneration.
+  Empty or unhydrated corpora cannot support a no-regression conclusion.
+  A proposed scheduled trend report was distinct from an adopted merge gate.
+- **Tests and projections are different evidence:** representative document
+  checks can expose errors hidden by mocked extraction. Small unit counts,
+  hypothetical timings and session-level readiness claims do not establish
+  corpus-wide accuracy or performance. Keep negative results and known limits
+  beside positive results when revisiting the preserved work.
+
+Historical detail remains readable in the
+[pre-trim public tree](https://github.com/rookslog/zlibrary-mcp/tree/c8798addc98d83e50bb743b98b48d2490476dcb0/docs/specifications)
+and [scoring review](https://github.com/rookslog/zlibrary-mcp/blob/c8798addc98d83e50bb743b98b48d2490476dcb0/claudedocs/architecture/phase-20-21-review-2026-07-24.md).
+Use current milestones and public decisions for accepted scope.

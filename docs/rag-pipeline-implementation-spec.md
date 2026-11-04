@@ -11,7 +11,7 @@ This document details the implementation specifics for the RAG (Retrieval-Augmen
 
 **Reason for Update (v2.0):** Original design returned raw text, causing agent instability. This version modifies the pipeline to save processed text to `./processed_rag_output/` and return the `processed_file_path`.
 
-Refer to the [RAG Pipeline Architecture (v2)](./architecture/rag-pipeline.md), [PDF Processing Integration Architecture (v2)](./architecture/pdf-processing-integration.md), and [ADR-002: Reaffirm Download Workflow](./adr/ADR-002-Download-Workflow-Redesign.md) documents for the high-level design and data flow.
+Refer to the [RAG Pipeline Architecture (v2)](./architecture/rag-pipeline.md), [PDF Processing Integration Architecture (v2)](https://github.com/rookslog/zlibrary-mcp/blob/c8798addc98d83e50bb743b98b48d2490476dcb0/docs/architecture/pdf-processing-integration.md), and [ADR-002: Reaffirm Download Workflow](./adr/ADR-002-Download-Workflow-Redesign.md) documents for the high-level design and data flow.
 
 ## 2. MCP Tool Definitions
 
@@ -307,7 +307,7 @@ def _html_to_text(html_content):
 def _process_epub(file_path: Path, output_format: str = "txt") -> str:
     """Processes an EPUB file. Includes preprocessing and optional Markdown generation."""
 *   **Preprocessing:** Calls helper functions (`identify_and_remove_front_matter`, `extract_and_format_toc`) to handle front matter and Table of Contents before main processing.
-*   **Markdown Generation:** When `output_format='markdown'`, uses `BeautifulSoup` to parse HTML, mapping tags (`h1-h6`, lists, `epub:type="noteref/footnote"`) to Markdown. See [RAG Markdown Spec](./rag-markdown-generation-spec.md).
+*   **Markdown Generation:** When `output_format='markdown'`, uses `BeautifulSoup` to parse HTML, mapping tags (`h1-h6`, lists, `epub:type="noteref/footnote"`) to Markdown. See [RAG Markdown Spec](https://github.com/rookslog/zlibrary-mcp/blob/c8798addc98d83e50bb743b98b48d2490476dcb0/docs/rag-markdown-generation-spec.md).
     if not EBOOKLIB_AVAILABLE:
         raise ImportError("Required library 'ebooklib' is not installed.")
     logging.info(f"Processing EPUB file: {file_path}, format: {output_format}")
@@ -366,7 +366,7 @@ def _process_pdf(file_path: Path, output_format: str = "txt") -> str:
 
 *   **Quality Detection & OCR:** Calls `detect_pdf_quality`. If quality is low ('IMAGE_ONLY', 'TEXT_LOW'), triggers `run_ocr_on_pdf` (requires `pytesseract`, `Pillow`). Handles OCR failures gracefully. See [RAG Robustness Spec](./rag-robustness-enhancement-spec.md#33-preprocessing--ocr-integration).
 *   **Preprocessing:** Calls helper functions (`identify_and_remove_front_matter`, `extract_and_format_toc`) to handle front matter and Table of Contents before main processing.
-*   **Markdown Generation:** When `output_format='markdown'`, uses `PyMuPDF`'s dictionary output (`page.get_text("dict")`) and heuristics to map structure to Markdown. See [RAG Markdown Spec](./rag-markdown-generation-spec.md).
+*   **Markdown Generation:** When `output_format='markdown'`, uses `PyMuPDF`'s dictionary output (`page.get_text("dict")`) and heuristics to map structure to Markdown. See [RAG Markdown Spec](https://github.com/rookslog/zlibrary-mcp/blob/c8798addc98d83e50bb743b98b48d2490476dcb0/docs/rag-markdown-generation-spec.md).
 *   **Garbled Text Detection:** Incorporates checks (e.g., `detect_garbled_text`) to identify potentially poor extraction results.
 
     doc = None

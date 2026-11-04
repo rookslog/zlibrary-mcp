@@ -83,7 +83,7 @@ Stage 3: OCR Recovery (selective, placeholder)
    - Performance benchmark
 
 **Documentation Created**:
-1. `docs/specifications/PHASE_2_INTEGRATION_SPECIFICATION.md` (16KB)
+1. [`docs/specifications/PHASE_2_INTEGRATION_SPECIFICATION.md`](https://github.com/rookslog/zlibrary-mcp/blob/c8798addc98d83e50bb743b98b48d2490476dcb0/docs/specifications/PHASE_2_INTEGRATION_SPECIFICATION.md) (16KB)
 2. `docs/specifications/ARTICLE_SUPPORT_AND_CITATION_ARCHITECTURE.md` (28KB)
 3. `claudedocs/PHASE_1_2_STATUS_REPORT_2025_10_18.md` (15KB)
 4. `claudedocs/PRIORITIZED_IMPLEMENTATION_ROADMAP_2025_10_18.md` (19KB)
@@ -298,7 +298,7 @@ git revert HEAD~1  # Revert strikethrough module
 ## References
 
 - **ADR-006**: Quality Pipeline Architecture (design)
-- **Integration Spec**: docs/specifications/PHASE_2_INTEGRATION_SPECIFICATION.md
+- **Integration Spec**: [historical specification](https://github.com/rookslog/zlibrary-mcp/blob/c8798addc98d83e50bb743b98b48d2490476dcb0/docs/specifications/PHASE_2_INTEGRATION_SPECIFICATION.md)
 - **Status Report**: claudedocs/PHASE_1_2_STATUS_REPORT_2025_10_18.md
 - **Roadmap**: claudedocs/PRIORITIZED_IMPLEMENTATION_ROADMAP_2025_10_18.md
 

@@ -406,7 +406,7 @@ pytest __tests__/python/test_footnote_continuation.py::TestIsFootnoteIncomplete:
 ## Support
 
 - **Documentation**: See module docstrings in `lib/footnote_continuation.py`
-- **Session Notes**: `claudedocs/session-notes/2025-10-28-footnote-continuation-state-machine.md`
+- **Session Notes**: [`claudedocs/session-notes/2025-10-28-footnote-continuation-state-machine.md`](https://github.com/rookslog/zlibrary-mcp/blob/c8798addc98d83e50bb743b98b48d2490476dcb0/claudedocs/session-notes/2025-10-28-footnote-continuation-state-machine.md)
 - **Tests**: `__tests__/python/test_footnote_continuation.py`
 
 ---

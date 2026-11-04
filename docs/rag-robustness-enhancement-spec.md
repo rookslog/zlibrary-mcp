@@ -10,9 +10,9 @@ This document outlines the functional requirements, constraints, edge cases, and
 
 This specification builds upon existing work documented in:
 *   `docs/rag-pipeline-implementation-spec.md` (v2.1)
-*   `docs/rag-output-quality-spec.md` (v1.0)
-*   `docs/pdf-processing-implementation-spec.md` (v2.0)
-*   `docs/rag-output-qa-report-rerun-20250429.md` (QA Feedback)
+*   [`docs/rag-output-quality-spec.md`](https://github.com/rookslog/zlibrary-mcp/blob/c8798addc98d83e50bb743b98b48d2490476dcb0/docs/rag-output-quality-spec.md) (v1.0)
+*   [`docs/pdf-processing-implementation-spec.md`](https://github.com/rookslog/zlibrary-mcp/blob/c8798addc98d83e50bb743b98b48d2490476dcb0/docs/pdf-processing-implementation-spec.md) (v2.0)
+*   [`docs/rag-output-qa-report-rerun-20250429.md`](https://github.com/rookslog/zlibrary-mcp/blob/c8798addc98d83e50bb743b98b48d2490476dcb0/docs/rag-output-qa-report-rerun-20250429.md) (QA Feedback)
 
 ## 2. Real-World Testing Strategy
 
@@ -39,7 +39,7 @@ This specification builds upon existing work documented in:
     *   **Accuracy:** Character/Word Error Rate (CER/WER) on selected samples compared to ground truth (if available). Target: <5% CER for text-based.
     *   **Noise Level (Text Output):** Qualitative score (1-5, 1=Low, 5=High) assessing presence of headers/footers, artifacts. Target: <= 2.
     *   **Readability (Text Output):** Qualitative score (1-5, 1=Poor, 5=Excellent) assessing paragraph breaks and text flow. Target: >= 4.
-*   **FR-TEST-10:** **Markdown Structure Quality Metrics (Referencing `rag-output-quality-spec.md`):**
+*   **FR-TEST-10:** **Markdown Structure Quality Metrics (Referencing [`rag-output-quality-spec.md`](https://github.com/rookslog/zlibrary-mcp/blob/c8798addc98d83e50bb743b98b48d2490476dcb0/docs/rag-output-quality-spec.md)):**
     *   **Heading Accuracy:** % correct level mapping. Target: >80%.
     *   **List Accuracy:** % lists correctly identified and formatted (ordered/unordered). Target: >85%.
     *   **Footnote Accuracy:** % footnotes captured and correctly formatted (ref + def). Target: >90%.

@@ -59,7 +59,7 @@ Implement hybrid extraction pipeline:
 - `tesseract_comparison_data.json` - Raw test data (42KB)
 - `tesseract_findings_summary.md` - Executive summary (6KB)
 - `TESSERACT_INTEGRATION_GUIDE.md` - Implementation guide (10KB)
-- `test_tesseract_comparison.py` - Test script (9KB)
+- [historical test script](https://github.com/rookslog/zlibrary-mcp/blob/c8798addc98d83e50bb743b98b48d2490476dcb0/scripts/archive/test_tesseract_comparison.py) - Test script (9KB)
 
 ## Next Steps
 
@@ -72,7 +72,8 @@ Implement hybrid extraction pipeline:
 ## Test Command
 
 ```bash
-venv/bin/python test_files/test_tesseract_comparison.py
+# Historical script: https://github.com/rookslog/zlibrary-mcp/blob/c8798addc98d83e50bb743b98b48d2490476dcb0/scripts/archive/test_tesseract_comparison.py
+# Run only with the separately preserved processing installation.
 ```
 
 ## Dependencies

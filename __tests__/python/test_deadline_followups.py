@@ -28,12 +28,19 @@ async def test_stalled_chain_keeps_mirror_failures_through_cleanup(
     monkeypatch.setattr(
         acq, "WalkDeadline", lambda budget: WalkDeadline(budget, clock=lambda: now[0])
     )
+    loop = asyncio.get_running_loop()
+    loop_time = [loop.time()]
+    monkeypatch.setattr(loop, "time", lambda: loop_time[0])
+    stalled = asyncio.Event()
+    cleanup_started = asyncio.Event()
+    release_cleanup = asyncio.Event()
+    transfer_budget = []
     lock = acq.destination_lock
 
     @asynccontextmanager
     async def delayed_lock(*args):
         async with lock(*args):
-            now[0] = 29.0  # Leave a useful but small real transfer allocation.
+            now[0] = 29.0  # Leave a useful but small transfer allocation.
             yield
 
     cleaned = []
@@ -55,22 +62,48 @@ async def test_stalled_chain_keeps_mirror_failures_through_cleanup(
                 "libgen", "libgen.li", reason="connect_timeout"
             )
         try:
+            transfer_budget.append(
+                acq._remaining_transfer_budget(SourceConfig().download_timeout)
+            )
+            stalled.set()
             await asyncio.Event().wait()
         finally:
-            await asyncio.sleep(cleanup_ms / 1000)
+            cleanup_started.set()
+            await release_cleanup.wait()
             cleaned.append(True)
 
     async def transfer(book, directory, **kwargs):
         return await bridge._fetch_from_source(book, directory)
 
+    async def drive_time():
+        await stalled.wait()
+        # Expire the real inner wait_for, then let cancellation enter cleanup.
+        # Frozen loop time prevents a paused runner from expiring both timers.
+        loop_time[0] += transfer_budget[0] + 0.000001
+        await cleanup_started.wait()
+        loop_time[0] += cleanup_ms / 1000
+        # Dispatch timers that became due while cleanup still holds the stream.
+        # Without the cancellation grace, the outer watchdog wins here.
+        for _ in range(3):
+            await asyncio.sleep(0)
+        release_cleanup.set()
+
     monkeypatch.setattr(acq, "destination_lock", delayed_lock)
     monkeypatch.setattr(bridge, "get_source_router", router)
     monkeypatch.setattr(bridge, "_download_url_to_file", download)
-    with pytest.raises(AllSourcesFailedError) as error:
-        await asyncio.wait_for(
-            acq.acquire(BOOK, str(tmp_path), filename="chosen.pdf", transfer=transfer),
-            8.0,
-        )
+    driver = asyncio.create_task(drive_time())
+    try:
+        with pytest.raises(AllSourcesFailedError) as error:
+            await asyncio.wait_for(
+                acq.acquire(
+                    BOOK, str(tmp_path), filename="chosen.pdf", transfer=transfer
+                ),
+                8.0,
+            )
+        await driver
+    finally:
+        driver.cancel()
+        await asyncio.gather(driver, return_exceptions=True)
     assert [(f.host, f.reason) for f in error.value.failures] == [
         ("libgen.li", "connect_timeout"),
         ("libgen.vg", "read_timeout"),

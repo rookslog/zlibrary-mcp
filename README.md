@@ -246,6 +246,9 @@ and circuit-breaker settings. The acquisition call never automatically retries.
 
 ## Development
 
+Use the [documentation index](docs/README.md) for installation, troubleshooting,
+tool reference, contributing, architecture and releases.
+
 ```bash
 npm run build
 npm test

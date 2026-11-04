@@ -182,7 +182,7 @@ assert result["pages_spanned"] == [0, 1]
 ## Related Documentation
 
 - **Session Notes**: `claudedocs/session-notes/2025-10-28-kant-pages-64-65-extraction.md`
-- **Feature Spec**: `docs/specifications/FOOTNOTE_ADVANCED_FEATURES_SPEC.md`
+- **Feature Spec**: [`docs/specifications/FOOTNOTE_ADVANCED_FEATURES_SPEC.md`](https://github.com/rookslog/zlibrary-mcp/blob/c8798addc98d83e50bb743b98b48d2490476dcb0/docs/specifications/FOOTNOTE_ADVANCED_FEATURES_SPEC.md)
 - **Schema**: `test_files/ground_truth/schema_v3.json`
 
 ## Quality Metrics

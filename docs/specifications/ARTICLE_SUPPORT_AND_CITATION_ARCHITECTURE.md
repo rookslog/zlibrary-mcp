@@ -3,7 +3,7 @@
 **Version**: 1.0
 **Date**: 2025-10-18
 **Status**: Design Specification
-**Related**: PHASE_2_INTEGRATION_SPECIFICATION.md, ADR-006
+**Related**: [historical integration specification](https://github.com/rookslog/zlibrary-mcp/blob/c8798addc98d83e50bb743b98b48d2490476dcb0/docs/specifications/PHASE_2_INTEGRATION_SPECIFICATION.md), ADR-006
 
 ---
 

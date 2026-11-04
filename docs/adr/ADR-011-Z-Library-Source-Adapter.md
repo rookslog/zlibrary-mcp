@@ -402,19 +402,22 @@ for the owning ordinary/long timers and strict margins.
 
 **Whole-acquisition amendment (#280, 2026-10-20):** the deferral in the preceding
 PR153 scope correction is superseded by the acquisition deadline shipped in
-this change. One outer `WalkDeadline`, derived from the Node long bridge timer
-minus `min(30s, owning timer / 8)` and a 1ms margin, spans destination lease
-waiting, receipt verification, transfer and finalization. Provider-chain
+this change. One outer `WalkDeadline`, derived from the Node effective call timer
+(normally the long bridge timer) minus `min(30s, owning timer / 8)` and a 1ms
+margin, spans destination lease waiting, receipt verification, transfer and
+finalization. Provider-chain
 timeouts remain inner bounds. Transfer reserves
 `min(135s, initial acquisition budget / 8)` for finalization rather than spending
-the entire remaining outer budget.
+the entire remaining outer budget. The outer transfer watchdog spends at most
+`min(100ms, reserve / 8)` of that reserve on cancellation cleanup, allowing the
+inner source chain to retain mirror attribution.
 
 The commit point is final publication, or adoption of an existing destination
 after verifying identical bytes; private staging is not publication. Reuse
 comparison hashing is still pre-commit and checks the outer deadline. After
 commit there is no cooperative deadline refusal: digest, receipt and reply
-completion remain subject to the Node long timer's hard stop. On download,
-`walk_budget_exhausted` maps to `outcome_unknown` if a request was issued and to
+completion remain subject to the Node effective call timer's hard stop. On
+download, `walk_budget_exhausted` maps to `outcome_unknown` if a request was issued and to
 `provider_timeout` before issuance, without charging local exhaustion as a
 provider circuit-breaker failure. The earlier provider-walk decision below is
 retained as history; see the linked retry configuration for the current model.

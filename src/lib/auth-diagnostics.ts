@@ -86,6 +86,20 @@ export function authDiagnosticsFor(
 export function safeEapiFailureEnvelope(value: any): Record<string, any> | undefined {
   const diagnostics = readAuthDiagnostics(value?.diagnostics);
   if (!diagnostics) {
+    if (value?.type === 'SourceConfigurationError' && !('diagnostics' in value))
+      return {
+        error: 'Source deadline configuration error; see docs/RETRY_CONFIGURATION.md',
+        type: value.type,
+        details: {
+          reason: 'configuration_error',
+          request_issued: false,
+          ...(['PYTHON_BRIDGE_TIMEOUT', 'PYTHON_BRIDGE_LONG_TIMEOUT'].includes(
+            value.details?.variable,
+          )
+            ? { variable: value.details.variable }
+            : {}),
+        },
+      };
     // main validates arguments before authentication. Preserve the typed local
     // verdict only when diagnostics are absent, never when a record was rejected.
     // Do not retain its argument-bearing exception message.

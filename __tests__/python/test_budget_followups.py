@@ -106,7 +106,7 @@ def test_both_python_timeout_owners_match_compiled_node(monkeypatch):
         # Effective per-call owner takes precedence without changing source envs.
         monkeypatch.setenv("PYTHON_BRIDGE_LONG_TIMEOUT", "120000")
         monkeypatch.setenv("PYTHON_BRIDGE_CALL_TIMEOUT_MS", raw or "")
-        assert acq._long_bridge_budget() == (2400.0 if raw is None else long)
+        assert acq._long_bridge_budget() == short
         monkeypatch.delenv("PYTHON_BRIDGE_CALL_TIMEOUT_MS")
 
 

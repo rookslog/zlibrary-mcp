@@ -111,9 +111,13 @@ accept a proposed milestone, or qualify the old implementation.
   placing an entire document in the protocol response. Acquisition retains the
   original-file boundary; a future text component must own its output contract.
 - **Visual fidelity is separate from text cleanliness:** ADR-008 records why
-  readable text can still have visual erasure marks. A garbled-text prefilter
-  cannot stand in for visual detection. The removed fast-prefilter proposal's
-  recall and speed estimates were proposals, not a replacement for that decision.
+  readable text can still have visual erasure marks. The preserved code at
+  `parked-text-processing-2026-10` does use a 2% symbol-density prefilter:
+  when detection is enabled and no page is flagged, it disables strikethrough
+  detection for the whole document. When any page is flagged, unflagged pages
+  can still receive on-demand visual detection. Detection defaults off. This
+  document-level gate remains unresolved against ADR-008 and must be addressed
+  before porting; the prefilter's speed and recall estimates do not resolve it.
   Preserve both the underlying words and intentional erasure marks; OCR and
   handwritten annotations need separate checks.
 - **Continuation is a state transition:** the historical footnote detector
@@ -135,5 +139,5 @@ accept a proposed milestone, or qualify the old implementation.
 
 Historical detail remains readable in the
 [pre-trim public tree](https://github.com/rookslog/zlibrary-mcp/tree/c8798addc98d83e50bb743b98b48d2490476dcb0/docs/specifications)
-and [scoring review](https://github.com/rookslog/zlibrary-mcp/blob/c8798addc98d83e50bb743b98b48d2490476dcb0/claudedocs/architecture/phase-20-21-review-2026-07-24.md).
+and [scoring review](https://github.com/rookslog/zlibrary-mcp/blob/master/claudedocs/architecture/phase-20-21-review-2026-07-24.md).
 Use current milestones and public decisions for accepted scope.

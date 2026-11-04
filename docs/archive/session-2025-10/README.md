@@ -18,12 +18,12 @@ This directory contains historical documentation from the comprehensive developm
   - Grade transformation analysis
   - Recommended for understanding the full scope
 
-- **[README_SESSION_COMPLETE.md](https://github.com/rookslog/zlibrary-mcp/blob/c8798addc98d83e50bb743b98b48d2490476dcb0/docs/archive/session-2025-10/README_SESSION_COMPLETE.md)** - Detailed session report (480 lines)
+- **[README_SESSION_COMPLETE.md](README_SESSION_COMPLETE.md)** - Detailed session report (480 lines)
   - Phase-by-phase breakdown
   - Validation results
   - Production readiness assessment
 
-- **[FINAL_SESSION_SUMMARY.md](https://github.com/rookslog/zlibrary-mcp/blob/c8798addc98d83e50bb743b98b48d2490476dcb0/docs/archive/session-2025-10/FINAL_SESSION_SUMMARY.md)** - Commit-focused summary (359 lines)
+- **[FINAL_SESSION_SUMMARY.md](FINAL_SESSION_SUMMARY.md)** - Commit-focused summary (359 lines)
   - Organized by git commit
   - Technical changes detailed
   - File-by-file breakdown

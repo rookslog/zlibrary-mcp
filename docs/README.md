@@ -6,7 +6,7 @@ source repository.
 
 | Need | Start here | More detail |
 |---|---|---|
-| Install and configure | [Quick start](../README.md#quick-start), [installation](../README.md#installation) and [configuration](../README.md#configuration) | [Optional dependencies](optional-dependencies.md); [deployment guide](https://github.com/rookslog/zlibrary-mcp/blob/master/docs/DEPLOYMENT.md) |
+| Install and configure | [Quick start](../README.md#quick-start), [installation](../README.md#installation) and [configuration](../README.md#configuration) | [MCP config template](https://github.com/rookslog/zlibrary-mcp/blob/master/docs/examples/mcp-config-template.md), [system-wide setup](https://github.com/rookslog/zlibrary-mcp/blob/master/docs/installation/system-wide-setup.md); [optional dependencies](optional-dependencies.md); [deployment guide](https://github.com/rookslog/zlibrary-mcp/blob/master/docs/DEPLOYMENT.md) |
 | Troubleshoot | [Troubleshooting](TROUBLESHOOTING.md) | [Retry and circuit-breaker configuration](RETRY_CONFIGURATION.md) |
 | Use the tools | [Tool reference](api.md) | [Interface migration](interface-migration.md), [receipt format](receipt-format.md) and [receipt schema](schemas/acq-record-v1.schema.json) |
 | Contribute | [Contributing](../CONTRIBUTING.md) | [Working agreements](https://github.com/rookslog/zlibrary-mcp/blob/master/AGENTS.md) and [scripts](../scripts/README.md) |
@@ -15,17 +15,18 @@ source repository.
 
 ## Historical work
 
+Preserved for context; not maintained. Details may no longer match the code.
+
 Old processing plans, experiments and session reports describe earlier designs;
 they are not current setup instructions, accepted priorities or release evidence.
-Contributor lessons from moved plans remain in the
+Contributor lessons from removed plans remain in the
 [processing migration guide](text-processing-migration.md#rationale-retained-from-historical-processing-plans).
 
 The [pre-trim documentation tree](https://github.com/rookslog/zlibrary-mcp/tree/c8798addc98d83e50bb743b98b48d2490476dcb0/docs)
 and [session records](https://github.com/rookslog/zlibrary-mcp/tree/c8798addc98d83e50bb743b98b48d2490476dcb0/claudedocs)
 preserve the removed documents publicly at their original paths. See the
 [preserved processing implementation](text-processing-migration.md#preserved-implementation-and-unresolved-work)
-for separately parked code and unresolved findings. These pointers do not need
-private planning access.
+for separately parked code and unresolved findings.
 
 ### Removed reference entries
 

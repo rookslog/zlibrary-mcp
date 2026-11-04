@@ -9,7 +9,7 @@ is a point-in-time record (see the documentation-guidelines paragraph in
 
 - [architecture/repo-health-and-roadmap-2026-07-24.md](architecture/repo-health-and-roadmap-2026-07-24.md)
   — a historical health assessment and roadmap; not current priorities
-- [architecture/phase-20-21-review-2026-07-24.md](https://github.com/rookslog/zlibrary-mcp/blob/c8798addc98d83e50bb743b98b48d2490476dcb0/claudedocs/architecture/phase-20-21-review-2026-07-24.md)
+- [architecture/phase-20-21-review-2026-07-24.md](architecture/phase-20-21-review-2026-07-24.md)
   — historical proposed acceptance criteria for parked quality-scoring work
   (referenced by issue [#39](https://github.com/rookslog/zlibrary-mcp/issues/39))
 - [milestone-history.md](milestone-history.md) — condensed record of all

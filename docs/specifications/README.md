@@ -159,7 +159,7 @@
 ---
 
 ### Rigorous Real-World TDD Strategy
-**File**: [RIGOROUS_REAL_WORLD_TDD_STRATEGY.md](https://github.com/rookslog/zlibrary-mcp/blob/c8798addc98d83e50bb743b98b48d2490476dcb0/docs/specifications/RIGOROUS_REAL_WORLD_TDD_STRATEGY.md)
+**File**: [RIGOROUS_REAL_WORLD_TDD_STRATEGY.md](RIGOROUS_REAL_WORLD_TDD_STRATEGY.md)
 **Size**: 26KB
 **Status**: ✅ Implemented and Active
 **Created**: 2025-10-18
@@ -329,7 +329,7 @@ PHASE_2_INTEGRATION_SPECIFICATION (quality pipeline)
 1. Read specification thoroughly
 2. Review related ADRs for decision rationale
 3. Check implementation status in this catalog
-4. Follow TDD workflow ([RIGOROUS_REAL_WORLD_TDD_STRATEGY.md](https://github.com/rookslog/zlibrary-mcp/blob/c8798addc98d83e50bb743b98b48d2490476dcb0/docs/specifications/RIGOROUS_REAL_WORLD_TDD_STRATEGY.md))
+4. Follow TDD workflow ([RIGOROUS_REAL_WORLD_TDD_STRATEGY.md](RIGOROUS_REAL_WORLD_TDD_STRATEGY.md))
 5. Validate against performance budgets
 
 ### For Architecture Review

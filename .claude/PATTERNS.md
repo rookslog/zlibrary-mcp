@@ -1,8 +1,14 @@
 # Z-Library MCP - Code Patterns & Best Practices
 
+Diagnostics in TypeScript server modules use the shared `logger` from
+`src/lib/logger.ts` (adjust the relative import for the calling module). It writes
+to stderr; stdout is reserved for MCP JSON-RPC. These recipes are illustrative,
+not additional runtime services or public tools. See `AGENTS.md` for the contract.
+
 ## Error Handling Patterns
 
 ### Pattern: Retry with Exponential Backoff
+
 ```typescript
 async function withRetry<T>(
   operation: () => Promise<T>,
@@ -35,7 +41,7 @@ async function withRetry<T>(
         throw error;
       }
 
-      console.log(`Attempt ${attempt + 1} failed, retrying in ${delay}ms...`);
+      logger.debug(`Attempt ${attempt + 1} failed, retrying in ${delay}ms...`);
       await new Promise(resolve => setTimeout(resolve, delay));
       delay = Math.min(delay * factor, maxDelay);
     }
@@ -54,6 +60,7 @@ const result = await withRetry(
 ```
 
 ### Pattern: Circuit Breaker
+
 ```typescript
 class CircuitBreaker {
   private failureCount = 0;
@@ -95,13 +102,14 @@ class CircuitBreaker {
 
     if (this.failureCount >= this.threshold) {
       this.state = 'OPEN';
-      console.error('Circuit breaker opened due to repeated failures');
+      logger.warn('Circuit breaker opened due to repeated failures');
     }
   }
 }
 ```
 
 ### Pattern: Error Context Enrichment
+
 ```typescript
 class ZLibraryError extends Error {
   constructor(
@@ -146,48 +154,22 @@ try {
 ## Logging Patterns
 
 ### Pattern: Structured Logging
+
 ```typescript
-import winston from 'winston';
+// Example for a module directly under src/.
+import { logger } from './lib/logger.js';
 
-const logger = winston.createLogger({
-  level: process.env.LOG_LEVEL || 'info',
-  format: winston.format.combine(
-    winston.format.timestamp(),
-    winston.format.errors({ stack: true }),
-    winston.format.json()
-  ),
-  defaultMeta: { service: 'zlibrary-mcp' },
-  transports: [
-    new winston.transports.File({
-      filename: 'logs/error.log',
-      level: 'error'
-    }),
-    new winston.transports.File({
-      filename: 'logs/combined.log'
-    }),
-    new winston.transports.Console({
-      format: winston.format.combine(
-        winston.format.colorize(),
-        winston.format.simple()
-      )
-    })
-  ]
-});
-
-// Create child loggers for modules
-const searchLogger = logger.child({ module: 'search' });
-const downloadLogger = logger.child({ module: 'download' });
-
-// Usage with context
-searchLogger.info('Search started', {
-  query: params.query,
-  filters: params.filters,
-  userId: context.userId,
-  requestId: context.requestId
-});
+// The shared logger exposes error, warn, info, debug and isEnabled.
+// LOG_LEVEL controls verbosity; no file or stdout transport is configured.
+logger.info('Search started', { requestId: context.requestId });
+logger.debug('Search arguments', { query: params.query, filters: params.filters });
 ```
 
+At debug level, search arguments can appear in client-captured stderr. Follow
+`SECURITY.md`: avoid debug logs for sensitive queries and scrub logs before sharing.
+
 ### Pattern: Performance Logging
+
 ```typescript
 function logPerformance(target: any, propertyKey: string, descriptor: PropertyDescriptor) {
   const originalMethod = descriptor.value;
@@ -198,7 +180,7 @@ function logPerformance(target: any, propertyKey: string, descriptor: PropertyDe
 
     logger.info(`${propertyKey} started`, {
       requestId,
-      args: args.length > 0 ? args : undefined
+      argumentCount: args.length
     });
 
     try {
@@ -241,6 +223,7 @@ class BookService {
 ## Python Bridge Patterns
 
 ### Pattern: Type-Safe Bridge Communication
+
 ```typescript
 interface PythonRequest<T = any> {
   function: string;
@@ -292,6 +275,7 @@ const result = await callPython<SearchArgs, SearchResult>({
 ```
 
 ### Pattern: Python Exception Mapping
+
 ```python
 # Python side
 class ZLibraryException(Exception):
@@ -339,6 +323,7 @@ def search_books(query, limit=50):
 ## Caching Patterns
 
 ### Pattern: Multi-Level Cache
+
 ```typescript
 interface CacheOptions {
   ttl?: number;
@@ -416,6 +401,7 @@ function cached(options: CacheOptions = {}) {
 ## Domain Handling Patterns
 
 ### Pattern: Dynamic Domain Discovery
+
 ```typescript
 class DomainManager {
   private domains: string[] = [];
@@ -491,6 +477,7 @@ class DomainManager {
 ## Testing Patterns
 
 ### Pattern: Test Data Builders
+
 ```typescript
 class BookBuilder {
   private book: Partial<Book> = {
@@ -553,6 +540,7 @@ describe('BookService', () => {
 ```
 
 ### Pattern: Integration Test Helpers
+
 ```typescript
 class TestHelper {
   private static instance: TestHelper;
@@ -622,6 +610,7 @@ describe('Integration Tests', () => {
 ## Performance Patterns
 
 ### Pattern: Request Batching
+
 ```typescript
 class BatchProcessor<T, R> {
   private queue: Array<{
@@ -683,6 +672,7 @@ const results = await searchBatcher.process('python programming');
 ## Security Patterns
 
 ### Pattern: Input Sanitization
+
 ```typescript
 class InputSanitizer {
   static sanitizeSearchQuery(query: string): string {
@@ -714,4 +704,4 @@ class InputSanitizer {
 
 ---
 
-*These patterns should be followed consistently throughout the codebase. Update this document when introducing new patterns.*
+_These patterns should be followed consistently throughout the codebase. Update this document when introducing new patterns._

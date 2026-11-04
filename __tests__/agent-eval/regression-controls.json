@@ -1,6 +1,6 @@
 {
   "provenance": {
-    "source": "/Users/rookslog/Development/personal-work-ecosystem/local/2026-10-15-codex-campaign/ZLIB-OPUS-LEAD/lead-verification/eval-fixtures/self-test.json",
+    "source": "scripted-readonly-traces/A",
     "sha": "e2517b3e347584333f9c127a0217a3c574f6a22e",
     "kind": "real A scripted read-only traces; synthetic book data; no model calls"
   },

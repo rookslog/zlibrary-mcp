@@ -219,7 +219,7 @@ When working with multiple versions of programming languages or runtimes, you ma
 
 [mise](https://mise.jdx.dev/) is a fast, modern runtime version manager that can be used to specify which version of Node.js, Python, or other runtimes to use for your MCP server:
 
-    {  "mcpServers": {    "mcp-batchit": {      "command": "mise",      "args": [        "x",        "--",        "node",        "/Users/myself/workspace/mcp-batchit/build/index.js"      ],      "disabled": false,      "alwaysAllow": [        "search",        "batch_execute"      ]    }  }}
+    {  "mcpServers": {    "mcp-batchit": {      "command": "mise",      "args": [        "x",        "--",        "node",        "/Users/user/workspace/mcp-batchit/build/index.js"      ],      "disabled": false,      "alwaysAllow": [        "search",        "batch_execute"      ]    }  }}
 
 This configuration:
 
@@ -234,7 +234,7 @@ This configuration:
 
 [asdf](https://asdf-vm.com/) is a popular tool for managing multiple runtime versions. Here's how to configure an MCP server to use a specific Node.js version managed by asdf:
 
-    {  "mcpServers": {    "appsignal": {      "command": "/Users/myself/.asdf/installs/nodejs/22.2.0/bin/node",      "args": [        "/Users/myself/Code/Personal/my-mcp/build/index.js"      ],      "env": {        "ASDF_NODE_VERSION": "22.2.0"      },      "disabled": false,      "alwaysAllow": []    }  }}
+    {  "mcpServers": {    "appsignal": {      "command": "/Users/user/.asdf/installs/nodejs/22.2.0/bin/node",      "args": [        "/Users/user/Code/Personal/my-mcp/build/index.js"      ],      "env": {        "ASDF_NODE_VERSION": "22.2.0"      },      "disabled": false,      "alwaysAllow": []    }  }}
 
 This configuration:
 

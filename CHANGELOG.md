@@ -33,7 +33,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   platform data directory's `zlibrary-mcp/downloads`, configurable with absolute
   `ZLIBRARY_OUTPUT_ROOT`. Relative `output_dir` values resolve under that root.
   To retain the old location, set an absolute path, for example
-  `"ZLIBRARY_OUTPUT_ROOT": "/home/alice/zlibrary-mcp/downloads"` in a JSON client
+  `"ZLIBRARY_OUTPUT_ROOT": "/home/user/zlibrary-mcp/downloads"` in a JSON client
   environment config. JSON does not expand `$PWD`; a literal `$PWD/downloads`
   is relative and fails startup. Opt into outside absolute paths with
   `ZLIBRARY_UNRESTRICTED_OUTPUT=1`. Traversal

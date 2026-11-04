@@ -13,7 +13,7 @@ jest.setTimeout(30000);
  * These spawn a real Python child rather than mocking PythonShell: the whole
  * point of the module is what happens to an operating-system process when its
  * caller gives up, and a mock cannot show that. The bug being guarded against
- * left three python_bridge.py processes alive on dionysus 2026-08-11, the
+ * left three python_bridge.py processes alive on a development machine on 2026-08-11, the
  * oldest 9h10m old, after the sessions that started them had exited.
  */
 

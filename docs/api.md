@@ -54,7 +54,7 @@ promising additional detail-page metadata. No direct ID input is accepted.
 | Argument | Contract |
 |---|---|
 | `ref` | Required current row ref |
-| `output_dir` | Optional directory; relative paths resolve from the server working directory, not the output root. When `ZLIBRARY_OUTPUT_ROOT` is configured, the resolved path must be inside it. Default: configured root, otherwise `./downloads`. |
+| `output_dir` | Optional directory, defaulting to the output root. Relative paths resolve under that root in every mode. Absolute paths must remain inside it unless the operator sets `ZLIBRARY_UNRESTRICTED_OUTPUT=1`. Any `..` component, leading `~`, NUL byte or (on Windows) drive-relative (`C:foo`) or root-relative (`\foo`) path is refused before provider contact in both modes. |
 | `filename` | Optional basename; sanitized and extension forced to acquired format |
 
 Returns `path`, `bytes`, `reused`, `transfer_skipped`, `verified: "sha256"`,
@@ -67,7 +67,8 @@ a matching verified receipt, or a modified receipt artifact, is refused with
 `output_refused` before intent, authentication or transfer; the file and prior
 receipt stay unchanged. Move or rename that file or choose another `output_dir`.
 A different filename/directory creates a new destination. `record` points to
-`<path>.acq.json`. One exception: while the source's breaker is open, a receipt
+`<path>.acq.json`; see the [receipt v1 contract](https://github.com/rookslog/zlibrary-mcp/blob/master/docs/receipt-format.md)
+and its schema for downstream readers. One exception: while the source's breaker is open, a receipt
 hit is served without writing any file. If that receipt still needs repair (for
 example, it still says `intent`, or only the alias at the requested name exists),
 `record` points to the receipt file that exists, and the next ordinary call
@@ -103,8 +104,18 @@ persistent files, released on close or process death without stale-PID checks or
 unlink; a remaining file is not a held lease. Unsupported locking returns
 `output_refused`; there is no silent uncoalesced fallback. Network-filesystem lock
 semantics are not established here.
-Output-root checks include existing symlinks but do not defend against a local
-operator racing to replace directories.
+The output root is `ZLIBRARY_OUTPUT_ROOT` (absolute, with home expansion), or
+`${XDG_DATA_HOME:-~/.local/share}/zlibrary-mcp/downloads` on Linux/macOS and
+`%LOCALAPPDATA%\zlibrary-mcp\downloads` on Windows. A relative configured root
+fails startup. `ZLIBRARY_UNRESTRICTED_OUTPUT` accepts only `1`, `0` or unset;
+`1` lifts containment only and logs a startup warning on stderr. Refusals return
+`output_refused` with `request_issued: false` before provider contact. Checks
+include existing symlinks but do not defend against a local operator racing to
+replace directories. On POSIX, newly created directory levels are 0700; existing
+directory permissions are preserved. New artifacts and receipts are 0600;
+artifacts already present keep their mode on reuse; a receipt the server repairs
+is rewritten as 0600.
+On Windows, chmod only toggles the read-only attribute, not access-control permissions.
 
 Quota estimates exist only after an observed daily limit. Each issued fresh
 transfer decrements the process estimate; skipped transfers do not. Estimates

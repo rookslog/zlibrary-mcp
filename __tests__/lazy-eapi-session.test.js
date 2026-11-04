@@ -155,7 +155,10 @@ describe('SDK lazy acquisition with real bridge and query-sensitive loopback fak
         ].join('\n'),
         target,
       ],
-      { stdio: ['pipe', 'pipe', 'pipe'] },
+      {
+        stdio: ['pipe', 'pipe', 'pipe'],
+        env: { ...process.env, ZLIBRARY_OUTPUT_ROOT: path.join(home, 'downloads') },
+      },
     );
     const closed = once(holder, 'close');
     try {
@@ -326,7 +329,7 @@ describe('native protocol real Node/Python pipes', () => {
     pythonPath,
     scriptPath: path.resolve('__tests__/fixtures'),
     args: [mode, directory, String(startupDelayMs)],
-    env: { ...process.env, PYTHONDONTWRITEBYTECODE: '1' },
+    env: { ...process.env, PYTHONDONTWRITEBYTECODE: '1', ZLIBRARY_OUTPUT_ROOT: directory },
   });
   const run = (mode, { startupDelayMs = 0, ...extra } = {}) =>
     runner.runPythonBridge('lazy-session-worker.py', options(mode, startupDelayMs), {
@@ -665,7 +668,10 @@ describe('native protocol real Node/Python pipes', () => {
       const child = spawn(
         pythonPath,
         [path.resolve('__tests__/fixtures/lazy-session-worker.py'), 'reply', directory],
-        { stdio: ['overlapped', 'pipe', 'pipe', 'pipe', 'pipe'] },
+        {
+          stdio: ['overlapped', 'pipe', 'pipe', 'pipe', 'pipe'],
+          env: { ...process.env, ZLIBRARY_OUTPUT_ROOT: directory },
+        },
       );
       observe(child);
       let stdout = '',
@@ -737,7 +743,7 @@ describe('native protocol real Node/Python pipes', () => {
       [path.resolve('__tests__/fixtures/lazy-session-worker.py'), 'probe-reply', directory],
       {
         stdio: ['overlapped', 'pipe', 'pipe', 'pipe', 'pipe'],
-        env: { ...process.env, LAZY_PROTOCOL_DIAGNOSTICS: '1' },
+        env: { ...process.env, LAZY_PROTOCOL_DIAGNOSTICS: '1', ZLIBRARY_OUTPUT_ROOT: directory },
       },
     );
     observe(child);
@@ -899,6 +905,13 @@ describe('native protocol real Node/Python pipes', () => {
 
 // Diagnostic only: never changes the product interpreter or v1 EOF contract.
 describe('native protocol launcher EOF discriminator', () => {
+  let directory;
+  beforeEach(async () => {
+    directory = await fs.mkdtemp(path.join(os.tmpdir(), 'launcher-eof-'));
+  });
+  afterEach(async () => {
+    await fs.rm(directory, { recursive: true, force: true });
+  });
   test('compares selected venv with its identified base while each worker responds before explicit finish', async () => {
     const { spawn, execFile } = await import('node:child_process');
     const selected =
@@ -921,7 +934,11 @@ describe('native protocol launcher EOF discriminator', () => {
         execFile(
           selected,
           [fixture, 'identify'],
-          { timeout: 2000, maxBuffer: 2048 },
+          {
+            timeout: 2000,
+            maxBuffer: 2048,
+            env: { ...process.env, ZLIBRARY_OUTPUT_ROOT: directory },
+          },
           (error, stdout) => {
             if (error) return resolve(undefined);
             try {
@@ -996,6 +1013,7 @@ describe('native protocol launcher EOF discriminator', () => {
         stdio: ['pipe', 'pipe', 'pipe', 'ignore', 'pipe'],
         detached: process.platform !== 'win32',
         windowsHide: true,
+        env: { ...process.env, ZLIBRARY_OUTPUT_ROOT: directory },
       });
       child.on('error', () => error('spawn', 'io'));
       child.on('close', (code) => {

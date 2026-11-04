@@ -2,6 +2,14 @@ import sys
 import os
 import pytest
 
+
+@pytest.fixture(autouse=True)
+def _isolated_output_root(tmp_path, monkeypatch):
+    """Each offline test owns its output root; subprocesses inherit the policy."""
+    monkeypatch.setenv("ZLIBRARY_OUTPUT_ROOT", str(tmp_path))
+    monkeypatch.delenv("ZLIBRARY_UNRESTRICTED_OUTPUT", raising=False)
+
+
 # Add project root to the Python path
 project_root = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
 if project_root not in sys.path:

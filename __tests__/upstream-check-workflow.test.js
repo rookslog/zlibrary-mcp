@@ -417,3 +417,24 @@ test('doctor reports probe startup errors while retaining the audit', () => {
   expect(result.stderr).toContain('ENOENT');
   expect(result.stderr).toContain('uv');
 });
+
+test.each([
+  ['cancelled', 'success'],
+  ['success', 'cancelled'],
+])('cancelled jobs do not record recovery: %s %s', async (reachability, live) => {
+  Object.assign(process.env, {
+    REACHABILITY_RESULT: reachability,
+    LIVE_RESULT: live,
+    LIVE_STATUS: 'passed',
+    PROBE_FAILED: 'false',
+    PROBE_REPORT: '<!-- upstream-source-status: {} -->',
+  });
+  const issue = { number: 250, title: rollingTitle, state: 'open', body: 'previous failure' };
+  const github = api([issue]);
+  await run(script('report', 'issue'), github);
+  expect(github.rest.issues.update).not.toHaveBeenCalled();
+  expect(github.rest.issues.createComment).not.toHaveBeenCalled();
+  expect(github.rest.issues.create).not.toHaveBeenCalled();
+  expect(issue.state).toBe('open');
+  expect(issue.body).toBe('previous failure');
+});

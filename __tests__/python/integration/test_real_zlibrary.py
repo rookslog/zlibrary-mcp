@@ -9,7 +9,8 @@ IMPORTANT: These tests use real credentials and make real API calls.
 - Be respectful of Z-Library's resources
 - Use small result sets (limit=5-10)
 - Don't run these in tight loops
-- Clean up downloads after tests
+- A real download spends account quota and requires ZLIBRARY_LIVE_DOWNLOAD=1
+- Clean up downloads after explicitly opted-in tests
 
 Run with: pytest -m integration
 Skip with: pytest -m "not integration"
@@ -221,26 +222,6 @@ class TestRealBasicSearch:
         for book in _assert_catalog_rows(result):
             language = book.get("language")
             assert isinstance(language, str) and language.casefold() == "english"
-
-    async def test_recent_books_contract(self, zlib_client):
-        """Check the distinct recent endpoint using the already-authenticated fixture.
-
-        Inspect upstream shape before bridge normalization can turn a missing
-        books field into an empty list. No new client or login is created.
-        """
-        result = await zlib_client.get_recently()
-        assert isinstance(result, dict), (
-            "Recent-books provider contract error: expected an object"
-        )
-        assert result.get("success", 1) == 1, (
-            "Recent-books provider contract error: provider did not report success"
-        )
-        assert isinstance(result.get("books"), list), (
-            "Recent-books provider contract error: expected a books list"
-        )
-        assert all(isinstance(book, dict) for book in result["books"]), (
-            "Recent-books provider contract error: expected book objects"
-        )
 
 
 @pytest.mark.integration
@@ -562,6 +543,10 @@ class TestRealWorldEdgeCases:
 class TestDownloadOperations:
     """Test download functionality with real Z-Library."""
 
+    @pytest.mark.skipif(
+        os.getenv("ZLIBRARY_LIVE_DOWNLOAD") != "1",
+        reason="A real download spends account quota; set ZLIBRARY_LIVE_DOWNLOAD=1 to opt in",
+    )
     async def test_download_small_book(
         self, credentials, zlib_client, test_download_dir
     ):

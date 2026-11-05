@@ -595,7 +595,7 @@ export class AcquisitionTools {
         attempts.push({
           source,
           outcome: books.length ? 'rows' : 'empty',
-          ignored,
+          ...(active ? { ignored } : {}),
           ...(filtering ? { filtering } : {}),
         });
         const base = {
@@ -709,6 +709,9 @@ export class AcquisitionTools {
         });
       note = [
         ...windows,
+        ...(languages.unrecognized.length
+          ? ['Unrecognized language values were matched literally; see filtering.unrecognized.']
+          : []),
         ...(attempts.some((a) => a.filtering?.native_only?.includes('exact'))
           ? ['exact was sent to Z-Library, not checked by this server.']
           : []),

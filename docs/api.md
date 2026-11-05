@@ -68,8 +68,9 @@ and Portuguese; examples: `2014 Juin`, `2001 Gennaio 29`, `1968 Dezembro`,
 circa/unlisted suffixes and values below 1000 remain unknown. Titles are never
 used to infer years. Public rows show the same parsed year used for filtering.
 
-Each answered attempt has `ignored: []` and, with active filters, a `filtering`
-record. Each set predicate appears exactly once in `applied`, `native_only` or
+With active filters, each answered attempt has `ignored: []` and a `filtering`
+record. Unfiltered attempts retain their previous shape without these keys.
+Each set predicate appears exactly once in `applied`, `native_only` or
 `ignored`. Metadata predicates are `applied`; only Z-Library `exact` is
 `native_only`. `native_sent` records the values transmitted to Z-Library,
 independently of whether they are locally checked. Counts describe the examined

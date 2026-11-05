@@ -79,6 +79,7 @@ test('unrecognized language is echoed literally and mismatches lose rows visibly
   const reply = await call({ query: 'book', sources: ['libgen'], languages: [' français '] });
   expect(reply.filtering).toEqual({ requested: { languages: [' français '] }, unrecognized: { languages: [' français '] } });
   expect(reply.rows.map(r => r.title)).toEqual(['Literal']);
+  expect(reply.note).toMatch(/Unrecognized language values.*filtering.unrecognized/);
   expect(reply.routing.attempts[0].filtering).toMatchObject({ examined: 3, matched: 1, rejected: 1, unknown: 1 });
 });
 
@@ -209,7 +210,7 @@ test('false exact, empty arrays and blank lists add no filtering contract', asyn
   expect(reply.rows).toHaveLength(1);
   expect(reply.filtering).toBeUndefined();
   expect(reply.routing.attempts[0].filtering).toBeUndefined();
-  expect(reply.routing.attempts[0].ignored).toEqual([]);
+  expect(reply.routing.attempts[0].ignored).toBeUndefined();
 });
 
 test('local get_limits reports filter capabilities without bridge contact', async () => {

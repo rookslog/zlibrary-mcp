@@ -464,12 +464,19 @@ def search_books(query, **kwargs):
 
 ## Logging Analysis
 
-The vendored logger writes plain-text lines to `logs/zlibrary_debug.log` using
+The vendored logger writes lines to `logs/zlibrary_debug.log` using
 `timestamp - logger - level - message` (`zlibrary/src/zlibrary/logger.py`).
+The path is relative to the working directory where the server was started.
+Under the bridge, `DiagnosticLogFilter` (`lib/auth_diagnostics.py`) drops ordinary
+`zlibrary` and `zlibrary.*` records. The file holds only allowlisted diagnostic
+records whose message is compact JSON, including records from `zlibrary.sources`.
+A quiet tail does not mean nothing happened: ordinary records are suppressed.
+
 The TypeScript logger writes plain text to stderr (`src/lib/logger.ts`), and
-the Python bridge's logging configuration also uses plain text
-(`lib/python_bridge.py`). These are not JSON logs and do not emit structured
-`module` or `duration` fields for operation filtering or timing analysis.
+the Python bridge's logging configuration also uses a text prefix
+(`lib/python_bridge.py`). These are not whole-line JSON logs, even when the
+message is JSON. They do not emit structured `module` or `duration` fields for
+operation filtering or timing analysis.
 
 ### Log Aggregation Script
 
@@ -496,8 +503,8 @@ grep "memory" logs/*.log | tail -5
 # Watch errors in real-time
 tail -f logs/*.log | grep --line-buffered -i error
 
-# Monitor messages from the vendored zlibrary logger
-tail -f logs/zlibrary_debug.log | grep --line-buffered ' - zlibrary - '
+# Watch bridge diagnostic records
+tail -f logs/zlibrary_debug.log | grep --line-buffered -E ' - zlibrary(\.[^ ]+)? - '
 ```
 
 ## Emergency Recovery

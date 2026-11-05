@@ -23,8 +23,10 @@ import html
 import json
 import os
 import re
+import secrets
 import sys
 from dataclasses import dataclass, field
+from datetime import date, datetime, timezone
 from pathlib import Path
 from typing import Any, Optional
 from urllib.parse import parse_qs, urljoin, urlsplit
@@ -42,9 +44,29 @@ from lib.sources.libgen import LibgenAdapter  # noqa: E402
 from lib.sources.libgen import FALLBACK_MIRRORS as LIBGEN_FALLBACK_MIRRORS  # noqa: E402
 from lib.sources.libgen import _nginx_stub as _libgen_nginx_stub  # noqa: E402
 from lib.sources.libgen import get_user_agent as libgen_user_agent  # noqa: E402
-from zlibrary.eapi import DEFAULT_EAPI_DOMAINS, WALLED_STATUS_CODES  # noqa: E402
+from zlibrary.eapi import DEFAULT_EAPI_DOMAINS, WALLED_STATUS_CODES, _auth_rejected  # noqa: E402
 
 TIMEOUT = httpx.Timeout(20.0, connect=10.0)
+PROBE_DEADLINE_SECONDS = 600
+SOURCES = frozenset({"zlibrary", "annas-archive", "libgen"})
+DEFAULT_RELIED_SOURCES = frozenset({"zlibrary", "libgen"})
+
+
+def relied_sources() -> set[str]:
+    """Alert policy only; never changes the connector's routing configuration."""
+    value = os.environ.get(
+        "UPSTREAM_RELIED_SOURCES", ",".join(sorted(DEFAULT_RELIED_SOURCES))
+    )
+    sources = {part.strip() for part in value.split(",") if part.strip()} or set(
+        DEFAULT_RELIED_SOURCES
+    )
+    unknown = sources - SOURCES
+    if unknown:
+        raise ValueError(
+            f"Unknown UPSTREAM_RELIED_SOURCES: {', '.join(sorted(unknown))}"
+        )
+    return sources
+
 
 _source_config = get_source_config()
 
@@ -73,6 +95,7 @@ LIBGEN_BASE_URL = f"https://libgen.{_source_config.libgen_mirror}"
 # is a fact about one busy walk, not about the mirror's health — and reporting
 # it as untested would hide the reachability-vs-capability gap this script
 # exists to close (Codex on #153).
+# The overall probe deadline still applies.
 LIBGEN_MIRROR_CANDIDATES: tuple[str, ...] = tuple(
     LibgenAdapter(_source_config)._mirror_candidates()
 )
@@ -108,25 +131,40 @@ PARKING_MARKERS = (
 )
 
 
+def _single_line(value: str) -> str:
+    """Keep upstream values within one report row or workflow annotation."""
+    value = re.sub(r"[\r\n]+", " ", value).replace("##[", "## [")
+    return re.sub(r"^(\s*)::", r"\1: :", value)
+
+
 @dataclass
 class ProbeResult:
     name: str
     ok: bool
     detail: str
     required: bool = True
-    # A network-level refusal (anti-bot wall, datacenter-IP block). Not drift:
-    # the upstream contract may be perfectly intact for clients the wall lets
-    # through, so a blocked probe must not trigger the drift issue.
+    # A network-level refusal is distinct from a changed response contract,
+    # but still alerts when the operator relies on this source.
     blocked: bool = False
     extra: dict[str, Any] = field(default_factory=dict)
+
+    def __post_init__(self) -> None:
+        self.name = _single_line(self.name)
+        self.detail = _single_line(self.detail)
 
     @property
     def symbol(self) -> str:
         if self.ok:
             return "OK"
+        if self.source not in relied_sources():
+            return "WARN"
         if self.blocked:
             return "BLOCK"
-        return "FAIL" if self.required else "WARN"
+        return "FAIL"
+
+    @property
+    def source(self) -> str:
+        return self.name.split(":", 1)[0]
 
 
 def _block_detail(resp: httpx.Response) -> Optional[str]:
@@ -154,6 +192,21 @@ def _block_detail(resp: httpx.Response) -> Optional[str]:
     )
 
 
+def _accepted_eapi_reply(payload: Any) -> bool:
+    return isinstance(payload, dict) and (
+        _auth_rejected(payload)
+        or (
+            ("success" not in payload or payload["success"] == 1)
+            and not payload.get("error")
+        )
+    )
+
+
+def _valid_domain_entry(value: Any) -> bool:
+    domain = value.get("domain") if isinstance(value, dict) else value
+    return isinstance(domain, str) and bool(domain.strip())
+
+
 async def probe_zlibrary_eapi(client: httpx.AsyncClient) -> list[ProbeResult]:
     """Check the EAPI domain-discovery endpoint and the search endpoint's shape."""
     results: list[ProbeResult] = []
@@ -161,6 +214,8 @@ async def probe_zlibrary_eapi(client: httpx.AsyncClient) -> list[ProbeResult]:
 
     try:
         resp = await client.get(f"{base}/eapi/info/domains")
+        if resp.url.host != ZLIB_DOMAIN:
+            raise ValueError("response host does not match the configured domain")
         walled = _block_detail(resp)
         if walled:
             results.append(
@@ -174,18 +229,23 @@ async def probe_zlibrary_eapi(client: httpx.AsyncClient) -> list[ProbeResult]:
         else:
             resp.raise_for_status()
             payload = resp.json()
-            domains = payload.get("domains") or []
+            domains = payload.get("domains") if isinstance(payload, dict) else None
+            has_shape = (
+                isinstance(domains, list)
+                and bool(domains)
+                and all(_valid_domain_entry(value) for value in domains)
+                and _accepted_eapi_reply(payload)
+            )
             results.append(
                 ProbeResult(
                     name="zlibrary:eapi/info/domains",
-                    ok=bool(domains),
+                    ok=has_shape,
                     detail=(
                         f"{len(domains)} domain(s) advertised: {', '.join(map(str, domains[:3]))}"
-                        if domains
-                        else "endpoint reachable but advertised no domains "
-                        "(contract change — domain discovery drives every later call)"
+                        if has_shape
+                        else f"unexpected domain response shape: {str(payload)[:200]}"
                     ),
-                    extra={"domains": domains[:5]},
+                    extra={"domains": domains[:5] if isinstance(domains, list) else []},
                 )
             )
     except Exception as exc:  # noqa: BLE001 - any failure is a reportable signal
@@ -204,6 +264,8 @@ async def probe_zlibrary_eapi(client: httpx.AsyncClient) -> list[ProbeResult]:
             f"{base}/eapi/book/search",
             data={"message": "philosophy", "limit": "1", "page": "1"},
         )
+        if resp.url.host != ZLIB_DOMAIN:
+            raise ValueError("response host does not match the configured domain")
         walled = _block_detail(resp)
         if walled:
             results.append(
@@ -217,8 +279,11 @@ async def probe_zlibrary_eapi(client: httpx.AsyncClient) -> list[ProbeResult]:
             return results
         resp.raise_for_status()
         payload = resp.json()
-        has_shape = isinstance(payload, dict) and (
-            "books" in payload or "success" in payload
+        has_shape = (
+            isinstance(payload, dict)
+            and ("books" in payload or "success" in payload)
+            and ("books" not in payload or isinstance(payload["books"], list))
+            and _accepted_eapi_reply(payload)
         )
         results.append(
             ProbeResult(
@@ -247,16 +312,30 @@ async def probe_annas(client: httpx.AsyncClient) -> ProbeResult:
     """Check that Anna's HTML adapter can extract a search-result title."""
     try:
         resp = await client.get(f"{ANNAS_BASE_URL}/search", params={"q": "philosophy"})
-        resp.raise_for_status()
         body = resp.text
         soup = BeautifulSoup(body, "html.parser")
-        # The runtime adapter skips the empty cover anchor and uses the text-bearing
-        # /md5/ anchor as the result title. Probe that extracted field directly.
+        # Match the runtime's text-bearing title, not an empty cover anchor.
         titles = [
             link.get_text(strip=True)
             for link in soup.select("a[href^='/md5/']")
             if link.get_text(strip=True)
         ]
+        if (
+            resp.status_code in (403, 429)
+            or not titles
+            and (
+                "ddos-guard" in resp.headers.get("server", "").lower()
+                or "/.well-known/ddos-guard/" in body.lower()
+            )
+        ):
+            return ProbeResult(
+                name="annas-archive:search",
+                ok=False,
+                detail=f"network-level block (HTTP {resp.status_code}) — Anna's Archive refuses this network's clients",
+                required=False,
+                blocked=True,
+            )
+        resp.raise_for_status()
         if titles:
             detail = f"search extracted title: {titles[0]!r}"
         else:
@@ -626,58 +705,59 @@ async def _probe_libgen_download_mirror(
                 "User-Agent": libgen_user_agent(),
             },
         )
+
+        blocked = _libgen_block_detail(mirror, resp)
+        if blocked:
+            return False, blocked, True
+
+        final_url = str(resp.url)
+        hops = [str(r.headers.get("location", "")) for r in resp.history]
+        if "/ads.php" in urlsplit(final_url).path or any("/ads.php" in h for h in hops):
+            return (
+                False,
+                f"{mirror}: key {key} bounced back to /ads.php — expired or "
+                "rejected key (this returns HTTP 200 HTML, not an error, so it "
+                "must be detected by the redirect target)",
+                False,
+            )
+
+        cdn_host = urlsplit(final_url).netloc or f"libgen.{mirror}"
+        if resp.status_code not in (200, 206):
+            return (
+                False,
+                f"{mirror}: get.php -> {cdn_host} returned HTTP {resp.status_code}",
+                False,
+            )
+
+        content_type = (resp.headers.get("content-type") or "").lower()
+        if "html" in content_type:
+            return (
+                False,
+                f"{mirror}: get.php -> {cdn_host} served a page, not a file "
+                f"(HTTP {resp.status_code}, content-type {content_type or 'unset'})",
+                False,
+            )
+
+        body = resp.content
+        if not body.startswith(b"%PDF"):
+            return (
+                False,
+                f"{mirror}: get.php -> {cdn_host} returned HTTP {resp.status_code} "
+                f"but the bytes are not a PDF (first 8: {body[:8]!r})",
+                False,
+            )
+
+        return (
+            True,
+            f"{mirror}: ads.php key -> {cdn_host} HTTP {resp.status_code}, "
+            f"{len(body)} bytes of PDF (content-type {content_type or 'unset'})",
+            False,
+        )
+
     except Exception as exc:  # noqa: BLE001
         # A dead CDN node lands here (cdn4.booksdl.lc failed TLS on
         # 2026-08-10). That is a real capability failure, not a block.
         return False, f"{mirror}: get.php {type(exc).__name__}: {exc}", False
-
-    blocked = _libgen_block_detail(mirror, resp)
-    if blocked:
-        return False, blocked, True
-
-    final_url = str(resp.url)
-    hops = [str(r.headers.get("location", "")) for r in resp.history]
-    if "/ads.php" in urlsplit(final_url).path or any("/ads.php" in h for h in hops):
-        return (
-            False,
-            f"{mirror}: key {key} bounced back to /ads.php — expired or "
-            "rejected key (this returns HTTP 200 HTML, not an error, so it "
-            "must be detected by the redirect target)",
-            False,
-        )
-
-    cdn_host = urlsplit(final_url).netloc or f"libgen.{mirror}"
-    if resp.status_code not in (200, 206):
-        return (
-            False,
-            f"{mirror}: get.php -> {cdn_host} returned HTTP {resp.status_code}",
-            False,
-        )
-
-    content_type = (resp.headers.get("content-type") or "").lower()
-    if "html" in content_type:
-        return (
-            False,
-            f"{mirror}: get.php -> {cdn_host} served a page, not a file "
-            f"(HTTP {resp.status_code}, content-type {content_type or 'unset'})",
-            False,
-        )
-
-    body = resp.content
-    if not body.startswith(b"%PDF"):
-        return (
-            False,
-            f"{mirror}: get.php -> {cdn_host} returned HTTP {resp.status_code} "
-            f"but the bytes are not a PDF (first 8: {body[:8]!r})",
-            False,
-        )
-
-    return (
-        True,
-        f"{mirror}: ads.php key -> {cdn_host} HTTP {resp.status_code}, "
-        f"{len(body)} bytes of PDF (content-type {content_type or 'unset'})",
-        False,
-    )
 
 
 async def probe_libgen_download(client: httpx.AsyncClient) -> ProbeResult:
@@ -725,71 +805,230 @@ async def run_probes() -> list[ProbeResult]:
         follow_redirects=True,
         headers={"User-Agent": "zlibrary-mcp-upstream-check"},
     ) as client:
-        zlib_results, annas, libgen_canaries, libgen_download = await asyncio.gather(
-            probe_zlibrary_eapi(client),
-            probe_annas(client),
-            probe_libgen_canaries(client),
-            probe_libgen_download(client),
-        )
-    return [*zlib_results, annas, *libgen_canaries, libgen_download]
+        probes = [
+            ("zlibrary:probe", probe_zlibrary_eapi(client)),
+            ("annas-archive:search", probe_annas(client)),
+            ("libgen:canaries", probe_libgen_canaries(client)),
+            ("libgen:download", probe_libgen_download(client)),
+        ]
+        tasks = [asyncio.create_task(probe) for _, probe in probes]
+        try:
+            collected = await asyncio.wait_for(
+                asyncio.gather(*tasks, return_exceptions=True),
+                timeout=PROBE_DEADLINE_SECONDS,
+            )
+        except asyncio.TimeoutError:
+            deadline_rows = {
+                "zlibrary:probe": (
+                    "zlibrary:eapi/info/domains",
+                    "zlibrary:eapi/book/search",
+                ),
+                "libgen:canaries": ("libgen:search", "libgen:article-search"),
+            }
+            collected = []
+            for (name, _), task in zip(probes, tasks):
+                if task.cancelled():
+                    collected.append(
+                        [
+                            ProbeResult(
+                                row, False, "TimeoutError: probe deadline exceeded"
+                            )
+                            for row in deadline_rows.get(name, (name,))
+                        ]
+                    )
+                else:
+                    error = task.exception()
+                    collected.append(error if error is not None else task.result())
+    results = []
+    for (name, _), value in zip(probes, collected):
+        if isinstance(value, Exception):
+            results.append(ProbeResult(name, False, f"{type(value).__name__}: {value}"))
+        elif isinstance(value, BaseException):
+            raise value
+        elif isinstance(value, ProbeResult):
+            results.append(value)
+        elif isinstance(value, (list, tuple)) and all(
+            isinstance(row, ProbeResult) for row in value
+        ):
+            results.extend(value)
+        else:
+            results.append(ProbeResult(name, False, "probe returned an invalid result"))
+    return results
 
 
 def actionable_failures(results: list[ProbeResult]) -> list[ProbeResult]:
-    """Failures that indicate drift a maintainer can act on.
-
-    Blocked probes are excluded: an IP-level refusal says nothing about the
-    upstream contract, and counting it would keep the drift issue permanently
-    open from CI's datacenter address.
-    """
-    return [r for r in results if r.required and not r.ok and not r.blocked]
+    """Any failed capability of a relied-on source, including network blocks."""
+    relied = relied_sources()
+    return [r for r in results if r.source in relied and not r.ok]
 
 
-def render(results: list[ProbeResult]) -> str:
-    width = max(len(r.name) for r in results)
-    lines = [f"{r.symbol:<5} {r.name:<{width}}  {r.detail}" for r in results]
-    required_failures = actionable_failures(results)
-    optional_failures = [
-        r for r in results if not r.required and not r.ok and not r.blocked
-    ]
-    blocked = [r for r in results if r.blocked]
-    lines.append("")
-    summary = (
-        f"{sum(1 for r in results if r.ok)} passing, "
-        f"{len(required_failures)} required failing, "
-        f"{len(optional_failures)} optional failing"
+def summarize(
+    results: list[ProbeResult], *, previous_body: str = "", today: Optional[str] = None
+) -> dict[str, Any]:
+    """Carry dates forward only from dated probe records in the prior issue."""
+    today = today or datetime.now(timezone.utc).date().isoformat()
+    previous = {}
+    matches = re.findall(r"<!-- upstream-source-status: (.*?) -->", previous_body)
+    if matches:
+        try:
+            candidate = json.loads(matches[-1])
+            if isinstance(candidate, dict):
+                previous = candidate
+        except (ValueError, RecursionError):
+            pass
+    relied = relied_sources()
+    rows = []
+    for result in results:
+        first_seen = None
+        if not result.ok:
+            first_seen = previous.get(result.name)
+            try:
+                if (
+                    not isinstance(first_seen, str)
+                    or date.fromisoformat(first_seen).isoformat() != first_seen
+                    or first_seen > today
+                ):
+                    first_seen = today
+            except ValueError:
+                first_seen = today
+        rows.append(
+            {
+                **result.extra,
+                "name": result.name,
+                "source": result.source,
+                "status": "passed"
+                if result.ok
+                else "blocked"
+                if result.blocked
+                else "changed",
+                "reason": result.detail,
+                "first_seen": first_seen,
+                "relied_on": result.source in relied,
+                "ok": result.ok,
+                "required": result.required,
+                "blocked": result.blocked,
+                "detail": result.detail,
+            }
+        )
+    return {
+        "checked_at": today,
+        "failed": bool(actionable_failures(results)),
+        "zlib_blocked": zlibrary_probe_state(results),
+        "relied_sources": sorted(relied),
+        "results": rows,
+    }
+
+
+def _fenced_upstream(text: str) -> str:
+    """Keep upstream Markdown/HTML inert, even if it contains closing fences."""
+    text = text.replace("<!--", "&lt;!--").replace("-->", "--&gt;")
+    fence = "`" * max(
+        3, max((len(run) + 1 for run in re.findall(r"`+", text)), default=0)
     )
-    if blocked:
-        summary += f", {len(blocked)} blocked (network-level, not drift)"
-    lines.append(summary)
+    return f"{fence}text\n{text}\n{fence}"
+
+
+def render(
+    results: list[ProbeResult], *, previous_body: str = "", today: Optional[str] = None
+) -> str:
+    summary = summarize(results, previous_body=previous_body, today=today)
+    width = max((len(r.name) for r in results), default=0)
+    lines = [f"{r.symbol:<5} {r.name:<{width}}  {r.detail}" for r in results]
+    failures = actionable_failures(results)
+    lines.extend(
+        [
+            "",
+            f"{sum(r.ok for r in results)} passing, {len(failures)} relied-on failing, "
+            f"{sum(not r.ok for r in results) - len(failures)} warnings",
+        ]
+    )
+    lines = [_fenced_upstream("\n".join(lines))]
+    for status in ("blocked", "changed"):
+        rows = [
+            r for r in summary["results"] if r["status"] == status and r["relied_on"]
+        ]
+        if rows:
+            lines.extend(["", f"### Source {status}"])
+            for row in rows:
+                lines.extend(
+                    [
+                        "",
+                        f"#### {row['name']}",
+                        f"First seen: {row['first_seen']} (UTC; first observed by this tracker)",
+                        _fenced_upstream(row["reason"]),
+                    ]
+                )
+    warnings = [r for r in summary["results"] if not r["ok"] and not r["relied_on"]]
+    if warnings:
+        lines.extend(["", "### Source warnings"])
+        for row in warnings:
+            lines.extend(
+                [
+                    "",
+                    f"#### {row['name']}",
+                    f"First seen: {row['first_seen']} (UTC; first observed by this tracker)",
+                    _fenced_upstream(row["reason"]),
+                ]
+            )
+    state = {r["name"]: r["first_seen"] for r in summary["results"] if not r["ok"]}
+    encoded = (
+        json.dumps(state, sort_keys=True)
+        .replace("<", "\\u003c")
+        .replace(">", "\\u003e")
+    )
+    lines.extend(["", f"<!-- upstream-source-status: {encoded} -->"])
     return "\n".join(lines)
 
 
 def zlibrary_blocked(results: list[ProbeResult]) -> bool:
     """True when a **Z-Library** probe was walled, ignoring other sources.
 
-    Scoped by the `zlibrary:` name prefix. This value feeds
-    upstream-check.yml's decision to skip filing the Z-Library drift issue, so
-    folding another source's block into it suppresses a genuine Z-Library
-    report for an unrelated reason — and #141 made that reachable, since a
-    LibGen UA block is now classified as `blocked` too (Codex on #146).
+    Scoped by the `zlibrary:` name prefix for source classification. Workflow
+    permission is determined by zlibrary_probe_state(); alerting is controlled
+    separately by relied_sources().
     """
     return any(r.blocked for r in results if r.name.startswith("zlibrary:"))
 
 
-def emit_github_output(report: str, failed: bool, zlib_blocked: bool = False) -> None:
+def zlibrary_probe_state(results: list[ProbeResult]) -> str:
+    """Only a complete, healthy configured-domain probe authorizes the live suite."""
+    if ZLIB_DOMAIN not in DEFAULT_EAPI_DOMAINS:
+        return "unknown"
+    if zlibrary_blocked(results):
+        return "true"
+    probes = [r for r in results if r.source == "zlibrary"]
+    expected = {"zlibrary:eapi/info/domains", "zlibrary:eapi/book/search"}
+    if {r.name for r in probes} == expected and all(r.ok for r in probes):
+        return "false"
+    return "unknown"
+
+
+def emit_github_output(
+    report: str, failed: bool, zlib_blocked: str = "unknown"
+) -> None:
+    if not isinstance(zlib_blocked, str):
+        raise TypeError("zlib_blocked must be a state string")
+    if zlib_blocked not in {"true", "false", "unknown"}:
+        raise ValueError("zlib_blocked must be a canonical state")
     path: Optional[str] = os.environ.get("GITHUB_OUTPUT")
     if not path:
         return
+    state = zlib_blocked
+    domain = ZLIB_DOMAIN if ZLIB_DOMAIN in DEFAULT_EAPI_DOMAINS else None
+    if domain is None:
+        state = "unknown"
+    delimiter = "PROBE_" + secrets.token_hex(16)
+    while delimiter in report.splitlines():
+        delimiter = "PROBE_" + secrets.token_hex(16)
     with open(path, "a", encoding="utf-8") as handle:
         handle.write(f"failed={'true' if failed else 'false'}\n")
         # The live-suite job gates on this: logging in through a wall would
         # both fail spuriously and burn the ~10/hour login rate limit.
-        handle.write(f"zlib_blocked={'true' if zlib_blocked else 'false'}\n")
-        handle.write(f"zlib_domain={ZLIB_DOMAIN}\n")
+        handle.write(f"zlib_blocked={state}\n")
+        if domain is not None:
+            handle.write(f"zlib_domain={domain}\n")
         # Heredoc form so multi-line reports survive intact.
-        handle.write("report<<PROBE_EOF\n")
-        handle.write(report + "\n")
-        handle.write("PROBE_EOF\n")
+        handle.write(f"report<<{delimiter}\n{report}\n{delimiter}\n")
 
 
 def main() -> int:
@@ -800,43 +1039,59 @@ def main() -> int:
     parser.add_argument(
         "--github-output",
         action="store_true",
-        help="also write failed/report to $GITHUB_OUTPUT",
+        help="write failed/report to $GITHUB_OUTPUT instead of stdout",
+    )
+    parser.add_argument(
+        "--report-file",
+        type=Path,
+        help="also write text here and JSON alongside it; no files are written by default",
+    )
+    parser.add_argument(
+        "--previous-issue",
+        type=Path,
+        help="previous rolling issue body, used only to retain first-seen dates",
     )
     args = parser.parse_args()
 
-    results = asyncio.run(run_probes())
-    required_failed = bool(actionable_failures(results))
-    zlib_blocked = zlibrary_blocked(results)
+    if args.github_output and (output := os.environ.get("GITHUB_OUTPUT")):
+        with open(output, "a", encoding="utf-8") as handle:
+            handle.write("zlib_blocked=unknown\nzlib_domain=\n")
 
-    if args.json:
-        print(
-            json.dumps(
-                {
-                    "failed": required_failed,
-                    "zlib_blocked": zlib_blocked,
-                    "results": [
-                        {
-                            "name": r.name,
-                            "ok": r.ok,
-                            "required": r.required,
-                            "blocked": r.blocked,
-                            "detail": r.detail,
-                            **r.extra,
-                        }
-                        for r in results
-                    ],
-                },
-                indent=2,
-            )
+    try:
+        relied_sources()
+    except ValueError as exc:
+        parser.error(str(exc))
+    previous_body = (
+        args.previous_issue.read_text(encoding="utf-8") if args.previous_issue else ""
+    )
+    results = asyncio.run(run_probes())
+    summary = summarize(results, previous_body=previous_body)
+    report = render(results, previous_body=previous_body, today=summary["checked_at"])
+    json_report = json.dumps(summary, indent=2)
+    if args.report_file is not None:
+        args.report_file.write_text(report + "\n", encoding="utf-8")
+        args.report_file.with_suffix(".json").write_text(
+            json_report + "\n", encoding="utf-8"
         )
-    else:
-        print(render(results))
+
+    if not args.github_output:
+        print(json_report.replace("##[", "## [") if args.json else report)
 
     if args.github_output:
-        emit_github_output(render(results), required_failed, zlib_blocked)
+        emit_github_output(report, summary["failed"], summary["zlib_blocked"])
+        for row in summary["results"]:
+            if (
+                row["source"] == "annas-archive"
+                and not row["ok"]
+                and not row["relied_on"]
+            ):
+                print(
+                    "::warning::Anna's Archive probe is "
+                    f"{row['status']}; first seen {row['first_seen']} (UTC); "
+                    "warning-only alert policy."
+                )
 
-    # Required-source failure is an actionable signal; optional-source failure is not.
-    return 1 if required_failed else 0
+    return 1 if summary["failed"] else 0
 
 
 if __name__ == "__main__":

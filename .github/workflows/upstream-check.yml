@@ -26,10 +26,15 @@ permissions:
   contents: read
   issues: write
 
+concurrency:
+  group: upstream-contract-check
+  cancel-in-progress: false
+
 jobs:
   reachability:
     name: Source reachability
     runs-on: ubuntu-latest
+    timeout-minutes: 20
     outputs:
       report: ${{ steps.probe.outputs.report }}
       failed: ${{ steps.probe.outputs.failed }}
@@ -42,9 +47,101 @@ jobs:
       - uses: ./.github/actions/setup
         with:
           build: 'false'
+      - name: Read previous rolling issue
+        id: previous
+        uses: actions/github-script@v9
+        env:
+          PREVIOUS_ISSUE_PATH: previous-upstream-issue.md
+        with:
+          script: |
+            const issues = await github.paginate(github.rest.issues.listForRepo, {
+              ...context.repo, state: 'all', labels: 'upstream-drift', per_page: 100, sort: 'created', direction: 'desc',
+            });
+            const matching = issues.filter(issue => issue.title === 'Upstream contract check failing' && !issue.pull_request &&
+              issue.labels?.some(label => (label.name || label) === 'upstream-drift'));
+            const existing = matching.find(issue => issue.state === 'open') ||
+              matching.sort((a, b) => Date.parse(b.created_at) - Date.parse(a.created_at))[0];
+            const today = new Date().toISOString().slice(0, 10);
+            const validDate = value => {
+              if (typeof value !== 'string' || !/^\d{4}-\d{2}-\d{2}$/.test(value) || value < '0001-01-01') return false;
+              const stamp = Date.parse(value + 'T00:00:00Z');
+              return Number.isFinite(stamp) && new Date(stamp).toISOString().slice(0, 10) === value && value <= today;
+            };
+            const statusMarker = body => {
+              const marker = [...body.matchAll(/<!-- upstream-source-status: (.*?) -->/g)].at(-1);
+              if (!marker) return null;
+              try {
+                const state = JSON.parse(marker[1]);
+                return state && typeof state === 'object' && !Array.isArray(state) && Object.values(state).every(validDate) ? marker[0] : null;
+              } catch { return null; }
+            };
+            const recoveryDate = body => {
+              const value = [...body.matchAll(/<!-- upstream-recovered-at: (.*?) -->/g)].at(-1)?.[1];
+              return validDate(value) ? value : null;
+            };
+            const trustedSnapshot = comment => {
+              const body = comment.body || '';
+              return comment.user?.login === 'github-actions[bot]' && body.startsWith('<!-- upstream-report-snapshot -->\n') &&
+                statusMarker(body) !== null && (!body.includes('<!-- upstream-recovered-at:') || recoveryDate(body) !== null);
+            };
+            let previous = existing?.body || '';
+            if (existing) {
+              const comments = await github.paginate(github.rest.issues.listComments, {
+                ...context.repo, issue_number: existing.number, per_page: 100,
+              });
+              const snapshot = comments.filter(trustedSnapshot).at(-1);
+              previous = snapshot?.body || previous;
+            }
+            require('node:fs').writeFileSync(process.env.PREVIOUS_ISSUE_PATH, previous);
       - name: Probe configured sources
         id: probe
-        run: uv run python scripts/check_upstream.py --github-output
+        continue-on-error: true
+        env:
+          # Empty repository variable means the default. Set to zlibrary to
+          # retain warning-only behaviour for Anna's Archive and LibGen.
+          UPSTREAM_RELIED_SOURCES: ${{ vars.UPSTREAM_RELIED_SOURCES || 'zlibrary,libgen' }}
+        run: |
+          command_token="$(python3 -c 'import secrets; print(secrets.token_hex(32))')"
+          printf '::stop-commands::%s\n' "$command_token"
+          uv run python scripts/check_upstream.py --github-output --previous-issue previous-upstream-issue.md --report-file upstream-report.txt 2>&1
+      - name: Report source warning
+        id: source_warning
+        if: always()
+        run: |
+          python3 - <<'PY'
+          import json
+          from datetime import date, datetime, timezone
+          from pathlib import Path
+          try:
+              data = json.loads(Path("upstream-report.json").read_text(encoding="utf-8"))
+          except (OSError, ValueError):
+              raise SystemExit(0)
+          rows = data.get("results", []) if isinstance(data, dict) else []
+          for row in rows if isinstance(rows, list) else []:
+              if not isinstance(row, dict) or row.get("source") != "annas-archive" or row.get("ok") is not False or row.get("relied_on") is not False:
+                  continue
+              value = row.get("first_seen")
+              try:
+                  day = date.fromisoformat(value)
+              except (TypeError, ValueError):
+                  continue
+              if day.isoformat() != value or day > datetime.now(timezone.utc).date():
+                  continue
+              status = row.get("status") if row.get("status") in ("blocked", "changed") else "changed"
+              print(f"::warning::Anna's Archive probe is {status}; first seen {value} (UTC); warning-only alert policy.")
+          PY
+      - uses: actions/upload-artifact@v7
+        if: always()
+        with:
+          name: upstream-source-report
+          path: |
+            upstream-report.txt
+            upstream-report.json
+          if-no-files-found: warn
+          retention-days: 30
+      - name: Fail the job when a relied-on source is blocked or changed
+        if: steps.probe.outcome == 'failure'
+        run: exit 1
 
   live_tests:
     name: Live integration suite
@@ -54,7 +151,7 @@ jobs:
     # reachability probe so a network-level block skips the suite instead of
     # burning login attempts (~10/hour/IP) against a wall.
     needs: reachability
-    if: github.event_name == 'schedule' || inputs.run_live_tests
+    if: always() && (github.event_name == 'schedule' || inputs.run_live_tests)
     outputs:
       status: ${{ steps.live.outputs.status }}
       blocked: ${{ steps.live.outputs.blocked }}
@@ -64,10 +161,6 @@ jobs:
           # Processing corpus is preserved separately; acquisition tests need no LFS PDFs.
           lfs: false
       - uses: ./.github/actions/setup
-      # Coverage is gated by the full acquisition suite, not credentialed live probes.
-      # Acquisition-only tests collect without document-processing packages (#250).
-      - name: Collect retained integration tests
-        run: uv run pytest -m integration --collect-only --no-cov -q
       - name: Run integration-marked tests against live Z-Library
         id: live
         env:
@@ -77,10 +170,36 @@ jobs:
           ZLIB_PROBE_DOMAIN: ${{ needs.reachability.outputs.zlib_domain }}
           ZLIBRARY_EAPI_DOMAIN: ${{ needs.reachability.outputs.zlib_domain }}
         run: |
+          if ! python3 -I - "$ZLIB_PROBE_DOMAIN" <<'PY'
+          import ast
+          import os
+          import sys
+          from pathlib import Path
+          source = Path(os.environ.get("GITHUB_WORKSPACE", ".")) / "zlibrary/src/zlibrary/eapi.py"
+          tree = ast.parse(source.read_text(encoding="utf-8"))
+          assignments = [node for node in tree.body if isinstance(node, ast.Assign) and any(isinstance(target, ast.Name) and target.id == "DEFAULT_EAPI_DOMAINS" for target in node.targets)]
+          stores = [node for node in ast.walk(tree) if isinstance(node, ast.Name) and node.id == "DEFAULT_EAPI_DOMAINS" and isinstance(node.ctx, ast.Store)]
+          if len(assignments) != 1 or len(stores) != 1:
+              raise SystemExit(1)
+          domains = ast.literal_eval(assignments[0].value)
+          if not isinstance(domains, (list, tuple)) or not domains or not all(isinstance(value, str) and value.strip() for value in domains):
+              raise SystemExit(1)
+          raise SystemExit(0 if sys.argv[1] in domains else 1)
+          PY
+          then
+            echo "::warning::Z-Library probe domain is not configured — live suite skipped."
+            echo "status=unknown" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
           if [ "$ZLIB_BLOCKED" = "true" ]; then
             echo "::warning::Z-Library reachability probe reported a block on $ZLIB_PROBE_DOMAIN — live suite skipped. Run npm run doctor from another network to distinguish an IP refusal from a domain-wide wall."
             echo "status=blocked" >> "$GITHUB_OUTPUT"
             echo "blocked=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          if [ "$ZLIB_BLOCKED" != "false" ]; then
+            echo "::warning::Z-Library reachability block state is unknown — live suite skipped without logging in."
+            echo "status=unknown" >> "$GITHUB_OUTPUT"
             exit 0
           fi
           if [ -z "$ZLIBRARY_EMAIL" ] || [ -z "$ZLIBRARY_PASSWORD" ]; then
@@ -88,6 +207,9 @@ jobs:
             echo "status=skipped" >> "$GITHUB_OUTPUT"
             exit 0
           fi
+          # Use the same literal-false gate for collection and execution.
+          # Coverage belongs to the full acquisition suite (#250).
+          uv run pytest -m integration --collect-only --no-cov -q
           set +e
           uv run pytest -m integration --no-cov --benchmark-disable --no-header --junitxml=live.xml -q 2>&1 | tee live.log
           code=${PIPESTATUS[0]}
@@ -112,14 +234,18 @@ jobs:
     name: File drift issue
     runs-on: ubuntu-latest
     needs: [reachability, live_tests]
-    if: always() && github.event_name == 'schedule' && (needs.reachability.result == 'failure' || needs.live_tests.result == 'failure' || needs.reachability.outputs.failed == 'true')
+    # Refresh an existing issue on recovery too, so the next failure gets a
+    # fresh first-seen date. A healthy run never creates a new issue.
+    if: always() && github.event_name == 'schedule'
     steps:
       - uses: actions/github-script@v9
+        id: issue
         # The probe report is multi-line free text built partly from upstream
         # responses. It is passed through env rather than interpolated into the
         # script body, where a backtick or `${` would break out of the literal.
         env:
           PROBE_REPORT: ${{ needs.reachability.outputs.report }}
+          PROBE_FAILED: ${{ needs.reachability.outputs.failed }}
           REACHABILITY_RESULT: ${{ needs.reachability.result }}
           LIVE_RESULT: ${{ needs.live_tests.result }}
           LIVE_STATUS: ${{ needs.live_tests.outputs.status }}
@@ -129,10 +255,79 @@ jobs:
           script: |
             const title = 'Upstream contract check failing';
             const runUrl = `${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}`;
-            const report = process.env.PROBE_REPORT || '(no reachability report)';
+            const failed = process.env.PROBE_FAILED === 'true' ||
+              process.env.REACHABILITY_RESULT === 'failure' || process.env.LIVE_RESULT === 'failure';
+            const recovered = process.env.PROBE_FAILED === 'false' &&
+              process.env.REACHABILITY_RESULT === 'success' && process.env.LIVE_RESULT === 'success' &&
+              process.env.LIVE_STATUS === 'passed';
+
+            // Reuse one rolling issue so a prolonged outage does not create a new
+            // issue every morning.
+            const issues = await github.paginate(github.rest.issues.listForRepo, {
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              state: 'all',
+              sort: 'created',
+              direction: 'desc',
+              labels: 'upstream-drift',
+              per_page: 100,
+            });
+            const matching = issues.filter(issue => issue.title === title && !issue.pull_request &&
+              issue.labels?.some(label => (label.name || label) === 'upstream-drift'));
+            const existing = matching.find(issue => issue.state === 'open') ||
+              matching.sort((a, b) => Date.parse(b.created_at) - Date.parse(a.created_at))[0];
+            const trackingOnly = !failed && existing?.state === 'closed' &&
+              process.env.REACHABILITY_RESULT === 'success' && process.env.PROBE_FAILED === 'false';
+            if (!failed && !recovered && !trackingOnly) return;
+
+            const today = new Date().toISOString().slice(0, 10);
+            const validDate = value => {
+              if (typeof value !== 'string' || !/^\d{4}-\d{2}-\d{2}$/.test(value) || value < '0001-01-01') return false;
+              const stamp = Date.parse(value + 'T00:00:00Z');
+              return Number.isFinite(stamp) && new Date(stamp).toISOString().slice(0, 10) === value && value <= today;
+            };
+            const statusMarker = body => {
+              const marker = [...body.matchAll(/<!-- upstream-source-status: (.*?) -->/g)].at(-1);
+              if (!marker) return null;
+              try {
+                const state = JSON.parse(marker[1]);
+                return state && typeof state === 'object' && !Array.isArray(state) && Object.values(state).every(validDate) ? marker[0] : null;
+              } catch { return null; }
+            };
+            const recoveryDate = body => {
+              const value = [...body.matchAll(/<!-- upstream-recovered-at: (.*?) -->/g)].at(-1)?.[1];
+              return validDate(value) ? value : null;
+            };
+            const trustedSnapshot = comment => {
+              const body = comment.body || '';
+              return comment.user?.login === 'github-actions[bot]' && body.startsWith('<!-- upstream-report-snapshot -->\n') &&
+                statusMarker(body) !== null && (!body.includes('<!-- upstream-recovered-at:') || recoveryDate(body) !== null);
+            };
+            const sourceDates = body => {
+              const marker = statusMarker(body);
+              return marker ? JSON.parse(marker.match(/<!-- upstream-source-status: (.*?) -->/)[1]) : null;
+            };
+            const sameDates = (left, right) => left && right &&
+              Object.keys(left).length === Object.keys(right).length &&
+              Object.entries(left).every(([key, value]) => right[key] === value);
+            const currentDates = trackingOnly ? sourceDates(process.env.PROBE_REPORT || '') : null;
+            if (trackingOnly && !currentDates) return;
+            let previous = existing?.body || '';
+            if (existing) {
+              const comments = await github.paginate(github.rest.issues.listComments, {
+                ...context.repo, issue_number: existing.number, per_page: 100,
+              });
+              const snapshot = comments.filter(trustedSnapshot).at(-1);
+              previous = snapshot?.body || previous;
+            }
+            if (trackingOnly && sameDates(currentDates, sourceDates(previous)) &&
+                sameDates(currentDates, sourceDates(existing.body || ''))) return;
+            const recoveredAt = recoveryDate(previous) || today;
+            const report = process.env.PROBE_REPORT || ['(no reachability report)', statusMarker(previous) || ''].join('\n');
             const body = [
-              'The scheduled upstream contract check did not pass. One of the third-party',
-              'surfaces this server depends on has changed, moved, or gone down.',
+              '<!-- upstream-report-snapshot -->',
+              failed ? 'The scheduled upstream contract check did not pass.' : recovered
+                ? 'The scheduled upstream contract check passed.' : 'The scheduled upstream contract check updated source tracking.',
               '',
               `- reachability job: **${process.env.REACHABILITY_RESULT}**`,
               `- live integration job: **${process.env.LIVE_STATUS || process.env.LIVE_RESULT}**`,
@@ -141,39 +336,26 @@ jobs:
                 : []),
               `- run: ${runUrl}`,
               '',
-              '<details><summary>Reachability report</summary>',
-              '',
-              '```',
               report,
-              '```',
               '',
-              '</details>',
-              '',
-              'Unit tests mock these calls and will stay green, so triage from the run log.',
+              ...(!failed && (recovered || recoveryDate(previous)) ? [`Recovered: ${recoveredAt} (UTC)`, `<!-- upstream-recovered-at: ${recoveredAt} -->`, ''] : []),
+              'Unit tests mock these calls and will stay green, so triage from the report above or the run artifact.',
             ].join('\n');
 
-            // Reuse one rolling issue so a prolonged outage does not create a new
-            // issue every morning.
-            const existing = await github.paginate(github.rest.issues.listForRepo, {
-              owner: context.repo.owner,
-              repo: context.repo.repo,
-              state: 'open',
-              labels: 'upstream-drift',
-              per_page: 100,
-            });
-
-            const rollingIssue = existing.find(
-              issue => issue.title === title && !issue.pull_request
-            );
-
-            if (rollingIssue) {
+            if (existing) {
+              // Persist state before updating/closing so an interrupted update
+              // can be retried without losing recovery or source dates.
               await github.rest.issues.createComment({
+                ...context.repo, issue_number: existing.number, body,
+              });
+              await github.rest.issues.update({
                 owner: context.repo.owner,
                 repo: context.repo.repo,
-                issue_number: rollingIssue.number,
+                issue_number: existing.number,
                 body,
+                state: failed ? 'open' : 'closed',
               });
-            } else {
+            } else if (failed) {
               await github.rest.issues.create({
                 owner: context.repo.owner,
                 repo: context.repo.repo,

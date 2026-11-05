@@ -13,6 +13,13 @@ import pytest
 
 ROOT = Path(__file__).resolve().parents[2]
 SCRIPT = ROOT / "scripts" / "classify_live_tests.py"
+
+
+@pytest.fixture(autouse=True)
+def workflow_workspace(monkeypatch):
+    monkeypatch.setenv("GITHUB_WORKSPACE", str(ROOT))
+
+
 RECORDED = ET.parse(ROOT / "__tests__/python/fixtures/live-junit/pytest-junit.xml")
 
 
@@ -256,6 +263,7 @@ def test_workflow_live_step_classifies_and_retains_evidence(
     fake_uv.write_text(
         f"#!{sys.executable}\nimport os, sys, shutil\nfrom pathlib import Path\n"
         "if sys.argv[1:3] == ['run', 'pytest']:\n"
+        "    if '--collect-only' in sys.argv:\n        sys.exit(0)\n"
         "    shutil.copyfile(os.environ['SYNTHETIC_REPORT'], 'live.xml')\n"
         f"    print('offline pytest log')\n    sys.exit({exit_code})\n"
         "assert sys.argv[1:3] == ['run', 'python']\n"
@@ -346,9 +354,7 @@ const fs = require('fs');
 const data = JSON.parse(fs.readFileSync(0, 'utf8'));
 const enabled = new Function('needs', 'github', 'always', 'return ' + data.condition)(data.needs, {event_name:'schedule'}, () => true);
 let body = '';
-const github = {
-  paginate: async (list, args) => (await list(args)).data,
-  rest: {issues: {
+const github = {paginate: async (list, args) => (await list(args)).data, rest: {issues: {
   listForRepo: async () => ({data: []}),
   create: async value => { body = value.body; },
 }}};
@@ -374,7 +380,10 @@ Object.assign(process.env, data.env);
         check=True,
     )
     result = json.loads(run.stdout)
-    assert result["enabled"] is failed
+    # The report job also runs on recovery to refresh existing issue dates;
+    # a healthy run with no existing issue must still create nothing.
+    assert result["enabled"] is True
+    assert bool(result["body"]) is failed
     if failed:
         line = (
             "Z-Library reachability probe reported an anti-bot wall on "
@@ -383,3 +392,470 @@ Object.assign(process.env, data.env);
         assert (line in result["body"]) is probe_blocked
         assert "corroborated" not in result["body"]
         assert "runner's IP" not in result["body"]
+
+
+@pytest.mark.parametrize(
+    "probe_case,block_value,expected",
+    [
+        ("empty-outputs", None, "unknown"),
+        ("failed-probe", None, "unknown"),
+        ("reported", "", "unknown"),
+        ("reported", "maybe", "unknown"),
+        ("reported", "False", "unknown"),
+        ("reported", "true", "blocked"),
+        ("reported", "false", "ran"),
+    ],
+)
+def test_live_job_never_invokes_integration_without_explicit_unblocked(
+    workflow, tmp_path, probe_case, block_value, expected
+):
+    """Run the job's actual shell/conditions; only uv's child calls are fake."""
+    outputs = {}
+    probe_result = "failure" if probe_case == "failed-probe" else "success"
+    if probe_case == "failed-probe":
+        # A missing prior issue must leave the initial CI state intact.
+        probe_output = tmp_path / "probe-output"
+        probe = subprocess.run(
+            [
+                sys.executable,
+                str(ROOT / "scripts/check_upstream.py"),
+                "--github-output",
+                "--previous-issue",
+                str(tmp_path / "missing.md"),
+            ],
+            cwd=tmp_path,
+            capture_output=True,
+            text=True,
+            env={**os.environ, "GITHUB_OUTPUT": str(probe_output)},
+        )
+        assert probe.returncode != 0
+        assert "FileNotFoundError" in probe.stderr
+        outputs = dict(
+            line.split("=", 1) for line in probe_output.read_text().splitlines()
+        )
+        assert outputs == {"zlib_blocked": "unknown", "zlib_domain": ""}
+    elif probe_case == "reported":
+        outputs = {"zlib_blocked": block_value, "zlib_domain": "z-library.ec"}
+
+    needs = {"reachability": {"result": probe_result, "outputs": outputs}}
+    steps = {"live": {"outputs": {}}}
+    calls = tmp_path / "uv-calls"
+    fake_uv = tmp_path / "uv"
+    fake_uv.write_text(
+        f"#!{sys.executable}\nimport json, sys\nfrom pathlib import Path\n"
+        f"with Path({str(calls)!r}).open('a') as output:\n"
+        "    output.write(json.dumps(sys.argv[1:]) + '\\n')\n"
+    )
+    fake_uv.chmod(0o755)
+    live_output = tmp_path / "live-output"
+
+    def enabled(condition):
+        result = subprocess.run(
+            [
+                "node",
+                "-e",
+                "const fs=require('fs');const d=JSON.parse(fs.readFileSync(0,'utf8'));"
+                # GitHub compares expression strings without case sensitivity.
+                "const lower=v=>typeof v==='string'?v.toLowerCase():"
+                "v&&typeof v==='object'?Object.fromEntries(Object.entries(v).map(([k,x])=>[k,lower(x)])):v;"
+                "console.log(new Function('needs','steps','return '+d.condition)(lower(d.needs),lower(d.steps)));",
+            ],
+            input=json.dumps({"condition": condition, "needs": needs, "steps": steps}),
+            capture_output=True,
+            text=True,
+            check=True,
+        )
+        return result.stdout.strip() == "true"
+
+    for step in workflow["jobs"]["live_tests"]["steps"]:
+        if "run" not in step or not enabled(step.get("if", "true")):
+            continue
+        step_env = {}
+        contexts = {
+            "needs": needs,
+            "secrets": {
+                "ZLIBRARY_EMAIL": "dummy@example.test",
+                "ZLIBRARY_PASSWORD": "dummy",
+            },
+        }
+        for key, expression in step.get("env", {}).items():
+            value = contexts
+            for part in expression.removeprefix("${{ ").removesuffix(" }}").split("."):
+                value = value.get(part, "") if isinstance(value, dict) else ""
+            step_env[key] = value
+        run = subprocess.run(
+            ["bash", "-e", "-o", "pipefail", "-c", step["run"]],
+            cwd=tmp_path,
+            capture_output=True,
+            text=True,
+            env={
+                **os.environ,
+                **step_env,
+                "PATH": f"{tmp_path}:{os.environ['PATH']}",
+                "GITHUB_OUTPUT": str(live_output),
+            },
+        )
+        assert run.returncode == 0, run.stdout + run.stderr
+        if step.get("id") == "live" and live_output.exists():
+            steps["live"]["outputs"] = dict(
+                line.split("=", 1) for line in live_output.read_text().splitlines()
+            )
+    invocations = (
+        [json.loads(line) for line in calls.read_text().splitlines()]
+        if calls.exists()
+        else []
+    )
+    integration = [
+        args
+        for args in invocations
+        if args[:4] == ["run", "pytest", "-m", "integration"]
+    ]
+    if expected == "ran":
+        assert len(integration) == 2  # collection plus execution, both stubbed
+    else:
+        assert integration == [], invocations
+        assert steps["live"]["outputs"]["status"] == expected
+        if expected == "blocked":
+            assert steps["live"]["outputs"]["blocked"] == "true"
+        else:
+            assert steps["live"]["outputs"].get("blocked") != "true"
+
+
+def console_events(data):
+    import re
+
+    paused = None
+    events = []
+    for line in re.split(r"\r\n|\r|\n", data.decode("utf-8", errors="replace")):
+        if paused is not None:
+            if line == f"::{paused}::":
+                paused = None
+            continue
+        if line.startswith("::stop-commands::"):
+            paused = line.removeprefix("::stop-commands::")
+        elif line.startswith("::") or "##[" in line:
+            events.append(line)
+    return events
+
+
+def test_workflow_protects_probe_diagnostics_on_failure(workflow, tmp_path):
+    import re
+
+    step = next(
+        s for s in workflow["jobs"]["reachability"]["steps"] if s.get("id") == "probe"
+    )
+    fixture = tmp_path / "fixture.py"
+    fixture.write_text(
+        "import asyncio,importlib.util,logging,sys,warnings\n"
+        f"spec=importlib.util.spec_from_file_location('fixture_upstream',{str(ROOT / 'scripts/check_upstream.py')!r})\n"
+        "module=importlib.util.module_from_spec(spec);sys.modules[spec.name]=module;spec.loader.exec_module(module)\n"
+        "async def unfinished():\n"
+        "    logger=logging.getLogger('fixture');logger.propagate=False;logger.addHandler(logging.StreamHandler())\n"
+        "    logger.warning('fixture ##[warning]fixture')\n"
+        "    warnings.warn('fixture ##[warning]fixture')\n"
+        "    sys.stderr.write('::warning::fixture\\r##[warning]fixture\\n')\n"
+        "    raise RuntimeError('fixture ##[warning]fixture')\n"
+        "module.run_probes=unfinished\n"
+        "sys.exit(module.main())\n"
+    )
+    fake_uv = tmp_path / "uv"
+    fake_uv.write_text(
+        f"#!{sys.executable}\nimport os,sys\n"
+        "assert sys.argv[1:4]==['run','python','scripts/check_upstream.py']\n"
+        f"os.execv(sys.executable,[sys.executable,{str(fixture)!r},*sys.argv[4:]])\n"
+    )
+    fake_uv.chmod(0o755)
+    (tmp_path / "previous-upstream-issue.md").write_text("")
+    output = tmp_path / "output"
+    markers = []
+    for _ in range(2):
+        result = subprocess.run(
+            ["bash", "-e", "-o", "pipefail", "-c", step["run"]],
+            cwd=tmp_path,
+            env={
+                **os.environ,
+                "PATH": f"{tmp_path}:{os.environ['PATH']}",
+                "GITHUB_OUTPUT": str(output),
+            },
+            capture_output=True,
+        )
+        assert result.returncode != 0
+        assert console_events(result.stdout) == []
+        assert console_events(result.stderr) == []
+        assert result.stderr == b""
+        assert b"Traceback" in result.stdout
+        assert console_events(result.stdout + b"\n::notice::complete\n") == []
+        found = re.findall(rb"(?m)^::stop-commands::([^\r\n]+)$", result.stdout)
+        assert len(found) == 1
+        markers.append(found[0])
+        values = dict(line.split("=", 1) for line in output.read_text().splitlines())
+        assert values == {"zlib_blocked": "unknown", "zlib_domain": ""}
+    assert markers[0] != markers[1]
+
+
+@pytest.mark.parametrize(
+    "domain", ["unlisted.invalid", "z-library.ec\nextra", "", "z-library.ec "]
+)
+def test_live_job_requires_configured_domain(workflow, tmp_path, domain):
+    step = next(
+        s for s in workflow["jobs"]["live_tests"]["steps"] if s.get("id") == "live"
+    )
+    output = tmp_path / "output"
+    fake_uv = tmp_path / "uv"
+    fake_uv.write_text("#!/bin/sh\nexit 91\n")
+    fake_uv.chmod(0o755)
+    env = {k: v for k, v in os.environ.items() if not k.startswith("ZLIBRARY_")}
+    env.update(
+        PATH=f"{tmp_path}:{env['PATH']}",
+        GITHUB_OUTPUT=str(output),
+        ZLIB_BLOCKED="false",
+        ZLIB_PROBE_DOMAIN=domain,
+    )
+    result = subprocess.run(
+        ["bash", "-e", "-o", "pipefail", "-c", step["run"]],
+        cwd=tmp_path,
+        env=env,
+        capture_output=True,
+        text=True,
+    )
+    assert result.returncode == 0
+    assert (
+        dict(line.split("=", 1) for line in output.read_text().splitlines())["status"]
+        == "unknown"
+    )
+    assert domain not in result.stdout if domain else True
+
+
+@pytest.mark.parametrize(
+    "value,expected",
+    [("2026-10-20", True), ("::warning::fixture", False), ("9999-99-99", False)],
+)
+def test_workflow_warning_uses_validated_summary(workflow, tmp_path, value, expected):
+    step = next(
+        s
+        for s in workflow["jobs"]["reachability"]["steps"]
+        if s.get("id") == "source_warning"
+    )
+    (tmp_path / "upstream-report.json").write_text(
+        json.dumps(
+            {
+                "results": [
+                    {
+                        "source": "annas-archive",
+                        "ok": False,
+                        "relied_on": False,
+                        "first_seen": value,
+                    }
+                ]
+            }
+        )
+    )
+    result = subprocess.run(
+        ["bash", "-e", "-o", "pipefail", "-c", step["run"]],
+        cwd=tmp_path,
+        env=os.environ.copy(),
+        capture_output=True,
+        text=True,
+    )
+    assert result.returncode == 0
+    assert bool(result.stdout) is expected
+    if expected:
+        assert result.stdout.startswith("::warning::Anna's Archive")
+        assert value in result.stdout
+    assert not result.stderr
+
+
+@pytest.mark.parametrize("state", ["true", "unknown", "false"])
+def test_live_job_validates_policy_before_diagnostics(workflow, tmp_path, state):
+    step = next(
+        s for s in workflow["jobs"]["live_tests"]["steps"] if s.get("id") == "live"
+    )
+    output = tmp_path / "output"
+    env = {k: v for k, v in os.environ.items() if not k.startswith("ZLIBRARY_")}
+    env.update(
+        GITHUB_OUTPUT=str(output),
+        ZLIB_BLOCKED=state,
+        ZLIB_PROBE_DOMAIN="unlisted.invalid",
+    )
+    result = subprocess.run(
+        ["bash", "-e", "-o", "pipefail", "-c", step["run"]],
+        cwd=tmp_path,
+        env=env,
+        capture_output=True,
+        text=True,
+    )
+    assert result.returncode == 0
+    assert (
+        dict(line.split("=", 1) for line in output.read_text().splitlines())["status"]
+        == "unknown"
+    )
+    assert "unlisted.invalid" not in result.stdout + result.stderr
+
+
+@pytest.mark.parametrize(
+    "assignment,domain,expected",
+    [
+        (
+            'DEFAULT_EAPI_DOMAINS = "listed.invalid,other.invalid"',
+            "listed.invalid",
+            "unknown",
+        ),
+        ('DEFAULT_EAPI_DOMAINS = {"listed.invalid": 0}', "listed.invalid", "unknown"),
+        ("DEFAULT_EAPI_DOMAINS = []", "", "unknown"),
+        ("DEFAULT_EAPI_DOMAINS = ()", "", "unknown"),
+        ('DEFAULT_EAPI_DOMAINS = ["listed.invalid", ""]', "listed.invalid", "unknown"),
+        ('DEFAULT_EAPI_DOMAINS = ["listed.invalid", " "]', "listed.invalid", "unknown"),
+        ('DEFAULT_EAPI_DOMAINS = ["listed.invalid", 1]', "listed.invalid", "unknown"),
+        (
+            'DEFAULT_EAPI_DOMAINS = ["listed.invalid"]\nDEFAULT_EAPI_DOMAINS = ["other.invalid"]',
+            "listed.invalid",
+            "unknown",
+        ),
+        (
+            'DEFAULT_EAPI_DOMAINS = ["listed.invalid"]\nDEFAULT_EAPI_DOMAINS += ["other.invalid"]',
+            "listed.invalid",
+            "unknown",
+        ),
+        (
+            'DEFAULT_EAPI_DOMAINS = ["listed.invalid"]\nDEFAULT_EAPI_DOMAINS: list[str] = ["other.invalid"]',
+            "listed.invalid",
+            "unknown",
+        ),
+        (
+            'DEFAULT_EAPI_DOMAINS = ["listed.invalid"]\nif True:\n    DEFAULT_EAPI_DOMAINS = ["other.invalid"]',
+            "listed.invalid",
+            "unknown",
+        ),
+        ('DEFAULT_EAPI_DOMAINS = ["listed.invalid"]', "listed.invalid", "skipped"),
+        ('DEFAULT_EAPI_DOMAINS = ("listed.invalid",)', "listed.invalid", "skipped"),
+    ],
+)
+def test_live_policy_accepts_only_one_valid_literal(
+    workflow, tmp_path, assignment, domain, expected
+):
+    step = next(
+        s for s in workflow["jobs"]["live_tests"]["steps"] if s.get("id") == "live"
+    )
+    source = tmp_path / "zlibrary/src/zlibrary/eapi.py"
+    source.parent.mkdir(parents=True)
+    source.write_text(assignment + "\n")
+    output = tmp_path / "output"
+    env = {k: v for k, v in os.environ.items() if not k.startswith("ZLIBRARY_")}
+    env.update(
+        GITHUB_WORKSPACE=str(tmp_path),
+        GITHUB_OUTPUT=str(output),
+        ZLIB_BLOCKED="false",
+        ZLIB_PROBE_DOMAIN=domain,
+    )
+    run = subprocess.run(
+        ["bash", "-e", "-o", "pipefail", "-c", step["run"]],
+        cwd=tmp_path,
+        env=env,
+        capture_output=True,
+        text=True,
+        timeout=10,
+    )
+    assert run.returncode == 0
+    assert (
+        dict(line.split("=", 1) for line in output.read_text().splitlines())["status"]
+        == expected
+    )
+
+
+@pytest.mark.parametrize(
+    "module_name",
+    ["ast", "pathlib", "re", "enum", "contextlib", "os", "sys", "functools"],
+)
+def test_live_policy_uses_isolated_interpreter(workflow, tmp_path, module_name):
+    step = next(
+        s for s in workflow["jobs"]["live_tests"]["steps"] if s.get("id") == "live"
+    )
+    marker = tmp_path / "imported"
+    (tmp_path / (module_name + ".py")).write_text(
+        f"open({str(marker)!r}, 'w').write('fixture')\nraise RuntimeError('fixture import')\n"
+    )
+    env = {k: v for k, v in os.environ.items() if not k.startswith("ZLIBRARY_")}
+    output = tmp_path / "output"
+    env.update(
+        GITHUB_OUTPUT=str(output),
+        ZLIB_BLOCKED="false",
+        ZLIB_PROBE_DOMAIN="z-library.ec",
+    )
+    run = subprocess.run(
+        ["bash", "-e", "-o", "pipefail", "-c", step["run"]],
+        cwd=tmp_path,
+        env=env,
+        capture_output=True,
+        text=True,
+        timeout=10,
+    )
+    assert run.returncode == 0
+    assert not marker.exists()
+    assert (
+        dict(line.split("=", 1) for line in output.read_text().splitlines())["status"]
+        == "skipped"
+    )
+
+
+def test_workflow_retains_console_policy_on_interruption(workflow, tmp_path):
+    import signal
+    import time
+
+    step = next(
+        s for s in workflow["jobs"]["reachability"]["steps"] if s.get("id") == "probe"
+    )
+    ready = tmp_path / "child-ready"
+    release = tmp_path / "child-release"
+    output = tmp_path / "output"
+    fake = tmp_path / "uv"
+    fake.write_text(
+        f"#!{sys.executable}\nimport time,sys\nfrom pathlib import Path\n"
+        f"Path({str(output)!r}).write_text('zlib_blocked=unknown\\nzlib_domain=\\n')\n"
+        f"Path({str(ready)!r}).touch()\n"
+        f"while not Path({str(release)!r}).exists(): time.sleep(0.01)\n"
+        "sys.stderr.write('::warning::fixture\\r##[warning]fixture\\n')\n"
+        "sys.exit(3)\n"
+    )
+    fake.chmod(0o755)
+    process = subprocess.Popen(
+        ["bash", "-e", "-o", "pipefail", "-c", step["run"]],
+        cwd=tmp_path,
+        env={
+            **os.environ,
+            "PATH": f"{tmp_path}:{os.environ['PATH']}",
+            "GITHUB_OUTPUT": str(output),
+        },
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        start_new_session=True,
+    )
+    try:
+        deadline = time.monotonic() + 5
+        while not ready.exists() and time.monotonic() < deadline:
+            time.sleep(0.01)
+        assert ready.exists()
+        process.send_signal(signal.SIGINT)
+        time.sleep(0.05)
+        process.send_signal(signal.SIGTERM)
+        deadline = time.monotonic() + 2
+        while process.poll() is None and time.monotonic() < deadline:
+            time.sleep(0.01)
+        assert process.poll() is not None
+        release.touch()
+        stdout, stderr = process.communicate(timeout=5)
+        assert b"fixture" in stdout
+        assert console_events(stdout) == []
+        assert console_events(stderr) == []
+        assert not stderr
+        assert output.read_text() == "zlib_blocked=unknown\nzlib_domain=\n"
+    finally:
+        release.touch()
+        try:
+            os.killpg(process.pid, signal.SIGKILL)
+        except ProcessLookupError:
+            pass
+        process.communicate(timeout=5)
+
+
+def test_reachability_job_has_bounded_duration(workflow):
+    assert workflow["jobs"]["reachability"]["timeout-minutes"] == 20

@@ -51,7 +51,7 @@ def _raise_keyed_error(error: SourceError) -> NoReturn:
 
 def _valid_download_url(url: str) -> bool:
     """Validate components without rewriting a provider's signed URL text."""
-    if any(c.isspace() or ord(c) < 32 or 127 <= ord(c) <= 159 for c in url):
+    if url != url.strip() or any(ord(c) < 32 or 127 <= ord(c) <= 159 for c in url):
         return False
     try:
         parts = urlsplit(url)
@@ -479,12 +479,15 @@ class AnnasArchiveAdapter(SourceAdapter):
             final_url = exc.response.request.url
             configured_url = httpx.URL(url)
             is_configured_fast_download_endpoint = (
-                final_url.scheme == configured_url.scheme
+                (
+                    (final_url.scheme, final_url.port)
+                    == (configured_url.scheme, configured_url.port)
+                    or (configured_url.scheme == "http" and final_url.scheme == "https")
+                )
                 and final_url.host == configured_url.host
-                and final_url.port == configured_url.port
                 and final_url.raw_path.partition(b"?")[0]
                 == configured_url.raw_path.partition(b"?")[0]
-                and not final_url.userinfo
+                and final_url.userinfo == configured_url.userinfo
                 and final_url.params.get_list("key") == [self.secret_key]
                 and final_url.params.get_list("md5") == [md5]
             )
@@ -565,7 +568,7 @@ class AnnasArchiveAdapter(SourceAdapter):
                     PROVIDER,
                     self.host,
                     "download_url must be an absolute HTTP(S) URL with a host, valid port, "
-                    "no credentials, whitespace or control characters",
+                    "no credentials, surrounding whitespace or control characters",
                     reason="protocol_error",
                 )
             )
@@ -588,7 +591,7 @@ class AnnasArchiveAdapter(SourceAdapter):
                 "downloads_per_day",
                 "downloads_done_today",
             ):
-                if field in account_info and (
+                if account_info.get(field) is not None and (
                     type(account_info[field]) is not int or account_info[field] < 0
                 ):
                     _raise_keyed_error(
@@ -599,7 +602,7 @@ class AnnasArchiveAdapter(SourceAdapter):
                             reason="protocol_error",
                         )
                     )
-            if "downloads_left" in account_info:
+            if account_info.get("downloads_left") is not None:
                 quota_info = QuotaInfo(
                     downloads_left=account_info["downloads_left"],
                     downloads_per_day=account_info.get("downloads_per_day"),

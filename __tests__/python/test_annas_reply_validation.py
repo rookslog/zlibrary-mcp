@@ -67,10 +67,18 @@ def assert_protocol_error(error):
     assert error.host == "annas-archive.gl"
 
 
-@pytest.mark.parametrize("body", [b"not json", b"\xff", b'{"error":"\xff"}'])
+@pytest.mark.parametrize(
+    "body", [b"not json", b"\xff", b'{"error":"\xff"}', b'{"error":"\xed\xa0\x80"}']
+)
 async def test_invalid_reply_bytes_are_protocol_errors(body):
     _, error, _, seen = await resolve(lambda request: httpx.Response(200, content=body))
     assert len(seen) == 1
+    assert_protocol_error(error)
+
+
+async def test_utf16_bom_json_is_a_protocol_error():
+    body = ('{"download_url":"' + GOOD_URL + '"}').encode("utf-16")
+    _, error, _, _ = await resolve(lambda request: httpx.Response(200, content=body))
     assert_protocol_error(error)
 
 
@@ -86,12 +94,13 @@ async def test_invalid_reply_bytes_are_protocol_errors(body):
         "ftp://partner.example/book.pdf",
         "https:///book.pdf",
         " https://partner.example/book.pdf",
-        "https://partner.example/book file.pdf",
+        "https://partner.example/book.pdf ",
         "https://partner.example/book\nfile.pdf",
         "https://partner.example/book\x00.pdf",
         "https://partner.example/book\x7f.pdf",
         "https://partner.example/book\x85.pdf",
-        "https://partner.example/book\u00a0file.pdf",
+        "https://partner.example/book.pdf\u00a0",
+        "\u3000https://partner.example/book.pdf",
         "https://[::1/book.pdf",
         "https://partner.example:invalid/book.pdf",
         "https://partner.example:65536/b",
@@ -112,12 +121,13 @@ async def test_invalid_reply_bytes_are_protocol_errors(body):
         "ftp",
         "missing-host",
         "leading-space",
-        "embedded-space",
+        "trailing-space",
         "newline",
         "nul",
         "del",
         "c1-control",
-        "unicode-space",
+        "trailing-nbsp",
+        "leading-ideographic-space",
         "ipv6-bracket",
         "text-port",
         "large-port",
@@ -146,6 +156,9 @@ async def test_download_url_requires_absolute_http_url(url):
         "https://[2001:db8::1]:8443/b",
         "https://partner.example/book%20file.pdf?x=a%2Fb&sig=A%2BB#part",
         "https://partner.example/世界.pdf",
+        "https://partner.example/book file.pdf",
+        "https://partner.example/世界\u3000の.pdf",
+        "https://partner.example/book\u00a0file.pdf",
         "https://partner.example/b?address=a@b",
         "https://partner.example",
         "http://127.0.0.1:8000/b",
@@ -161,7 +174,7 @@ async def test_valid_download_url_text_is_preserved(url):
 
 
 @pytest.mark.parametrize("field", COUNTERS)
-@pytest.mark.parametrize("value", ["1", [], -1, True, False, 1.0, {}, None])
+@pytest.mark.parametrize("value", ["1", [], -1, True, False, 1.0, {}])
 async def test_present_quota_counters_are_nonnegative_integers(field, value):
     _, error, _, _ = await resolve(
         lambda request: httpx.Response(
@@ -173,6 +186,22 @@ async def test_present_quota_counters_are_nonnegative_integers(field, value):
         )
     )
     assert_protocol_error(error)
+
+
+@pytest.mark.parametrize("field", COUNTERS)
+async def test_null_quota_counters_are_unknown(field):
+    info = dict.fromkeys(COUNTERS, 5)
+    info[field] = None
+    result, error, _, _ = await resolve(
+        lambda request: httpx.Response(
+            200, json={"download_url": GOOD_URL, "account_fast_download_info": info}
+        )
+    )
+    assert error is None
+    if field == "downloads_left":
+        assert result.quota_info is None
+    else:
+        assert vars(result.quota_info) == info
 
 
 @pytest.mark.parametrize(
@@ -231,6 +260,7 @@ async def test_valid_quota_counters_remain_integers(value):
         "port",
         "host",
         "path",
+        "userinfo",
         "duplicate-key",
         "duplicate-md5",
     ],
@@ -256,6 +286,8 @@ async def test_auth_status_requires_complete_final_request_identity(status, muta
             url = url.copy_with(host="edge.example")
         elif mutation == "path":
             url = url.copy_with(path="/other")
+        elif mutation == "userinfo":
+            url = url.copy_with(username="synthetic", password="changed")
         else:
             field = mutation.removeprefix("duplicate-")
             url = url.copy_add_param(field, "different")
@@ -269,7 +301,9 @@ async def test_auth_status_requires_complete_final_request_identity(status, muta
 
 @pytest.mark.parametrize("status", [401, 403])
 @pytest.mark.parametrize("redirect", [False, True])
-@pytest.mark.parametrize("base", [BASE, BASE + ":444/prefix"])
+@pytest.mark.parametrize(
+    "base", [BASE, BASE + ":444/prefix", "https://synthetic:pass@annas-archive.gl"]
+)
 async def test_matching_request_auth_status_rejects_key(status, redirect, base):
     def handler(request):
         if redirect and "changed" not in request.url.params:
@@ -283,6 +317,49 @@ async def test_matching_request_auth_status_rejects_key(status, redirect, base):
     assert len(seen) == (2 if redirect else 1)
     assert isinstance(error, ProviderConfigurationError)
     assert error.reason == "configuration_error"
+
+
+@pytest.mark.parametrize("status", [401, 403])
+@pytest.mark.parametrize("port", [None, 8443])
+async def test_same_host_https_upgrade_rejects_key(status, port):
+    def handler(request):
+        if request.url.scheme == "http":
+            url = request.url.copy_with(scheme="https", port=port)
+            return httpx.Response(302, headers={"location": str(url)})
+        return httpx.Response(status)
+
+    _, error, _, seen = await resolve(
+        handler,
+        base="http://synthetic:pass@annas-archive.gl:8080/prefix",
+        secret="synthetic /+ key",
+    )
+    assert len(seen) == 2
+    assert isinstance(error, ProviderConfigurationError)
+    assert error.reason == "configuration_error"
+
+
+@pytest.mark.parametrize(
+    "echo",
+    ["Ab/c+d e", "Ab%2fc%2bd%20e", "Ab%2fc%2bd+e", "KeY=unrelated"],
+    ids=["raw", "percent", "plus", "key-marker"],
+)
+async def test_api_error_echo_redaction_clauses(echo):
+    secret = "Ab/c+d e"
+    _, error, formatted, seen = await resolve(
+        lambda request: httpx.Response(200, json={"error": {"message": echo}}),
+        secret=secret,
+    )
+    assert isinstance(error, ProviderResponseError)
+    assert error.reason == "http_error"
+    assert error.detail == "Anna's Archive API error: details omitted"
+    assert_no_keyed_surfaces(error, formatted, seen[-1], secret)
+
+
+async def test_benign_api_error_detail_is_preserved():
+    _, error, _, _ = await resolve(
+        lambda request: httpx.Response(200, json={"error": "synthetic failure"})
+    )
+    assert error.detail == "Anna's Archive API error: synthetic failure"
 
 
 def assert_no_keyed_surfaces(error, formatted, request, secret):

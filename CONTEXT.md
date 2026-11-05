@@ -17,7 +17,7 @@ _Avoid_: Provider, backend, mirror (a mirror is a host *within* a source)
 The per-source implementation satisfying the common source interface, living in
 `lib/sources/`. Note that **not every source has one**: Anna's Archive and LibGen are
 adapters, while Z-Library predates the interface and keeps a separate path. Migrating it
-is tracked in #40.
+is tracked in #174.
 _Avoid_: Driver, connector, plugin
 
 **Mirror**:
@@ -40,10 +40,11 @@ _Avoid_: Method, channel, path
 **Provenance**:
 The record of which source, route, mirror, and host served a given result.
 
-Note that provenance is currently **written to the logs, not returned to the caller**.
-`DownloadResult` carries `url`, `source`, and quota only. Making it part of the returned
-result is an open design decision (#96), so treat this entry as naming the concept rather
-than describing a guarantee the server presently offers.
+The public `download` result returns a `record` path to an acquisition sidecar;
+provenance is in that file on the server's disk, rather than inline in the tool response.
+The [API reference](docs/api.md#download) and [receipt v1 contract](docs/receipt-format.md#provenance)
+describe the sidecar's `source` and `provenance` fields. Route, mirror and host evidence
+can be unknown or absent; a recovered intent can retain default provenance.
 
 ### Anna's Archive routes
 

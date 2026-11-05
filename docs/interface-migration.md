@@ -29,8 +29,45 @@ already-parked false no-op for non-MCP callers; it is not registered as a tool.
 
 Author-only exact queries retain quoted-author behavior. With both `query` and
 `author`, `exact` covers the **whole combined query**, not the title alone.
-No author post-filter is promised. Unsupported source filters are reported in
-`routing.attempts[].ignored` rather than silently claimed as applied.
+No author post-filter is promised. Metadata filters are checked locally on every
+source; `exact` is delegated only to Z-Library as described below.
+
+## Filters: partial milestone for 2.0
+
+Year, language and format are checked locally on every source. Missing checked
+metadata is excluded and counted; `exact` remains a gap. Sources without
+`exact` are skipped before contact. Z-Library keeps receiving it, reported as
+`native_only`: sent, not checked by this server. The additive `filtering`
+request/attempt records report the checked window, not completeness. Existing
+clients must accept `filtering` and, on filtered searches with a cursor,
+`routing.continuation_source`. Unfiltered replies do not add that routing key. A later
+winning source owns the continuation; an all-empty walk can retain a full
+Z-Library page's onward pointer. The 50-row Z-Library candidate page and
+held-tail drain are deferred; no new input fields or overfetch are introduced.
+See [the detailed contract](api.md#filters-partial-milestone-for-20).
+
+Compatibility details: existing numeric public years, including `0` and values
+below 1000, retain their old conversion on unfiltered/non-year paths, get_book
+and history. Readable date strings such as `2014 Juin` now add a parsed year.
+Explicit `exact:false` and empty/blank lists no longer appear in `ignored`: they
+add no constraint. Dot-only formats are blank. These two intentional changes
+(parsed dates and inactive-key reporting) remain distinct from local year checks.
+
+Before/after examples (operator O4):
+
+- LibGen, French EPUBs: before, top rows from an unfiltered page; after,
+  only French EPUBs, often none, with examined-window counts and a note.
+- Z-Library with `fr`: before, the value was forwarded without local language
+  checks; after, `fr` is normalized to `french` and every returned row is
+  checked locally. This does not assume that the native source ignored `fr`.
+- Year filter: before, unreadable/absent years could survive; after, those
+  rows are excluded and counted as unknown unless another field mismatches.
+- `exact` on LibGen alone: before, rows with ignored `exact`; after, an
+  `unsupported_operation` error pointing to Z-Library or dropping `exact`.
+
+Reinstalling the older 1.4.0 behavior restores its filtering problems; it cannot
+undo downloads or answers already based on newer replies, or retract published
+release notes. This entry describes the pending 2.0 transition, not a release.
 
 ## Result shapes
 

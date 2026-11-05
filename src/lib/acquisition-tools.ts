@@ -1,5 +1,8 @@
 import { z } from 'zod';
 import { RefStore } from './refs.js';
+import { checkRowFilters, FILTER_CAPABILITIES } from './row-filters.js';
+import type { RowFilterRequest } from './row-filters.js';
+import { normalizeLanguages } from './filter-languages.js';
 import { classifyFailure, errorEnvelope, ToolFailure } from './tool-errors.js';
 import type { CallOptions } from './zlibrary-api.js';
 
@@ -18,11 +21,36 @@ export const INPUTS = {
       query: z.string().trim().min(1).max(500).optional(),
       author: z.string().trim().min(1).max(200).optional(),
       sources: sources.optional(),
-      exact: z.boolean().optional(),
-      year_from: z.number().int().optional(),
-      year_to: z.number().int().optional(),
-      languages: z.array(z.string()).optional(),
-      formats: z.array(z.string()).optional(),
+      exact: z
+        .boolean()
+        .optional()
+        .describe('Z-Library only: sent, not checked by this server; other sources are skipped.'),
+      year_from: z
+        .number()
+        .int()
+        .optional()
+        .describe(
+          'Inclusive minimum year; checked on every source. Unknown years are excluded and counted.',
+        ),
+      year_to: z
+        .number()
+        .int()
+        .optional()
+        .describe(
+          'Inclusive maximum year; checked on every source. Unknown years are excluded and counted.',
+        ),
+      languages: z
+        .array(z.string())
+        .optional()
+        .describe(
+          'OR of names/codes; checked on every source. Unknown metadata is excluded. Empty list adds no constraint.',
+        ),
+      formats: z
+        .array(z.string())
+        .optional()
+        .describe(
+          'OR of extensions, case-insensitive, one leading dot ignored; checked on every source. Empty list adds no constraint.',
+        ),
       limit,
       cursor: z.string().optional(),
     })
@@ -78,14 +106,17 @@ interface Cursor {
   served: Source;
   page: number;
   held?: any[];
+  filtering?: Record<string, any>;
   offset?: number;
 }
 interface Attempt {
   source: Source;
   outcome: string;
   ignored?: string[];
+  filtering?: Record<string, any>;
   code?: string;
   reason?: string;
+  unsupported?: string[];
 }
 const allSources: Source[] = ['libgen', 'zlibrary', 'annas'];
 // Match lib/sources/config.py. The cross-language reporting test guards drift.
@@ -107,12 +138,7 @@ function usableAnnasBase(raw = 'https://annas-archive.gl'): boolean {
     // Preserve the literal host rather than URL()'s percent-decoded spelling.
     // Reject userinfo too, including forms Python's hostname would accept.
     const rawHost = raw.split('/')[2]?.replace(/:\d*$/, '').toLowerCase();
-    return (
-      rawHost === url.hostname &&
-      !url.username &&
-      !url.password &&
-      url.port !== '0'
-    );
+    return rawHost === url.hostname && !url.username && !url.password && url.port !== '0';
   } catch {
     return false;
   }
@@ -192,15 +218,10 @@ export class AcquisitionTools {
         : Boolean(this.env.ANNAS_SECRET_KEY) && annasBaseTrusted);
     return {
       configured,
-      search_available:
-        source === 'annas' ? annasBaseUsable : source !== 'zlibrary' || configured,
+      filters: { ...FILTER_CAPABILITIES[source] },
+      search_available: source === 'annas' ? annasBaseUsable : source !== 'zlibrary' || configured,
       download_available: configured,
-      operations: [
-        'search',
-        'details',
-        'download',
-        ...(source === 'zlibrary' ? ['history'] : []),
-      ],
+      operations: ['search', 'details', 'download', ...(source === 'zlibrary' ? ['history'] : [])],
       limit: {
         kind: source === 'libgen' ? 'none' : source === 'zlibrary' ? 'daily' : 'unknown',
       } as Record<string, any>,
@@ -246,7 +267,7 @@ export class AcquisitionTools {
       ...(mint ? { ref: this.refs.mintStable('r', selection) } : {}),
       title: b.title ?? b.name,
       author,
-      year: numberOrUndefined(b.year),
+      year: checkRowFilters(b, {}).year ?? numberOrUndefined(b.year),
       language: b.language,
       format: b.extension ?? b.format,
       size_mb: sizeMB(b),
@@ -434,6 +455,37 @@ export class AcquisitionTools {
       throw new ToolFailure('invalid_argument', 'Give query, author, or both.');
     if (args.year_from != null && args.year_to != null && args.year_from > args.year_to)
       throw new ToolFailure('invalid_argument', 'year_from must not exceed year_to.');
+    const formats = [
+      ...new Set<string>(
+        (args.formats ?? [])
+          .filter((v: string) => v.trim())
+          .map((v: string) => v.normalize('NFC').trim().toLowerCase().replace(/^\./u, ''))
+          .filter(Boolean),
+      ),
+    ];
+    const languages = normalizeLanguages(args.languages ?? []);
+    const filterRequest: RowFilterRequest = nonempty({
+      year_from: args.year_from,
+      year_to: args.year_to,
+      ...(languages.values.length ? { languages: languages.values } : {}),
+      ...(formats.length ? { formats } : {}),
+    });
+    const effectiveRequest = {
+      ...filterRequest,
+      ...(languages.values.length
+        ? {
+            languages: (args.languages as string[])
+              .filter((v) => v.trim())
+              .map((v) =>
+                normalizeLanguages([v]).unrecognized.length
+                  ? v
+                  : v.normalize('NFC').trim().toLowerCase(),
+              ),
+          }
+        : {}),
+      ...(args.exact === true ? { exact: true } : {}),
+    };
+    const active = Object.keys(effectiveRequest).length > 0;
     const count = args.limit ?? 10;
     const attempts: Attempt[] = [];
     const failures: ToolFailure[] = [];
@@ -441,15 +493,24 @@ export class AcquisitionTools {
     let selected: Source | undefined;
     let books: any[] = [];
     let next: Cursor | undefined;
+    let earliestEmpty: Cursor | undefined;
     let note: string | undefined;
     for (const source of cursor ? [cursor.served] : requested) {
-      const ignored =
-        source === 'zlibrary'
-          ? []
-          : ['exact', 'year_from', 'year_to', 'languages', 'formats'].filter(
-              (k) => args[k] !== undefined,
-            );
+      const ignored: string[] = [];
       try {
+        const unsupported = (
+          Object.keys(effectiveRequest) as (keyof (typeof FILTER_CAPABILITIES)[Source])[]
+        ).filter((key) => FILTER_CAPABILITIES[source][key] === 'unsupported');
+        if (operation === 'search' && unsupported.length)
+          throw new ToolFailure(
+            'unsupported_operation',
+            'Requested filters are unsupported on this source.',
+            {
+              source,
+              recovery: 'Use zlibrary for exact, or drop exact with the caller’s agreement.',
+              detail: { reason: 'filter_unsupported', unsupported },
+            },
+          );
         this.configured(source);
         let fetched: any[];
         const page = cursor?.page ?? 1;
@@ -466,8 +527,8 @@ export class AcquisitionTools {
                 exact: args.exact ?? false,
                 from_year: args.year_from,
                 to_year: args.year_to,
-                languages: args.languages ?? [],
-                extensions: args.formats ?? [],
+                languages: languages.values,
+                extensions: formats,
                 count,
                 page,
               },
@@ -495,27 +556,68 @@ export class AcquisitionTools {
         answered = true;
         selected = source;
         note = undefined;
+        let filtering = cursor?.filtering;
+        let matches = fetched;
+        if (operation === 'search' && active && !cursor?.held) {
+          matches = [];
+          let rejected = 0;
+          let unknown = 0;
+          for (const book of fetched) {
+            const result = checkRowFilters(
+              { ...book, extension: book.extension ?? book.format },
+              { ...filterRequest, formats: args.formats },
+            );
+            if (result.status === 'pass') matches.push(book);
+            else if (result.status === 'fail') rejected++;
+            else unknown++;
+          }
+          filtering = {
+            ...(source === 'zlibrary'
+              ? {
+                  native_sent: {
+                    ...filterRequest,
+                    ...(args.exact === true ? { exact: true } : {}),
+                  },
+                  ...(args.exact === true ? { native_only: ['exact'] } : {}),
+                }
+              : {}),
+            applied: Object.keys(filterRequest),
+            examined: fetched.length,
+            matched: matches.length,
+            rejected,
+            unknown,
+            ...(Object.keys(filterRequest).length ? { unknown_metadata: 'excluded' } : {}),
+            scope: source === 'zlibrary' ? 'page' : 'first_upstream_page',
+          };
+        }
         const offset = cursor?.offset ?? 0;
         books =
-          source === 'zlibrary' ? fetched.slice(0, count) : fetched.slice(offset, offset + count);
+          source === 'zlibrary' ? matches.slice(0, count) : matches.slice(offset, offset + count);
         attempts.push({
           source,
           outcome: books.length ? 'rows' : 'empty',
-          ...(ignored.length ? { ignored } : {}),
+          ...(active ? { ignored } : {}),
+          ...(filtering ? { filtering } : {}),
         });
         const base = {
           operation,
           args: { ...args, limit: count, sources: requested },
           requested,
           served: source,
+          ...(filtering ? { filtering } : {}),
         };
-        if (source === 'zlibrary' && books.length === count) next = { ...base, page: page + 1 };
+        let onward: Cursor | undefined;
+        if (source === 'zlibrary' && fetched.length >= count) onward = { ...base, page: page + 1 };
         if (source !== 'zlibrary') {
           if (books.length) note = `This server returns at most 50 ${source} rows per query.`;
-          if (offset + count < fetched.length)
-            next = { ...base, page: 1, held: fetched, offset: offset + count };
+          if (offset + count < matches.length)
+            onward = { ...base, page: 1, held: matches, offset: offset + count };
         }
-        if (books.length || cursor) break;
+        if (books.length || cursor) {
+          next = onward;
+          break;
+        }
+        earliestEmpty ??= onward;
       } catch (e) {
         const failure = classifyFailure(e, operation, source);
         failures.push(failure);
@@ -527,6 +629,9 @@ export class AcquisitionTools {
               : 'failed',
           code: failure.code,
           reason: failure.info.detail?.reason,
+          ...(failure.info.detail?.reason === 'filter_unsupported'
+            ? { unsupported: failure.info.detail.unsupported }
+            : {}),
         });
       }
     }
@@ -566,11 +671,17 @@ export class AcquisitionTools {
         {
           attempts,
           retry: failures.some((f) => f.info.retry === 'safe') ? 'safe' : 'no',
-          ...(configurationRecovery ? { recovery: configurationRecovery } : {}),
+          ...(configurationRecovery
+            ? { recovery: configurationRecovery }
+            : code === 'unsupported_operation' &&
+                failures.every((f) => f.info.detail?.reason === 'filter_unsupported')
+              ? { recovery: 'Use zlibrary for exact, or drop exact with the caller’s agreement.' }
+              : {}),
           ...(diagnostics ? { detail: { diagnostics } } : {}),
         },
       );
     }
+    if (!books.length) next = earliestEmpty ?? next;
     const rows = books.map((book) => {
       const actualSource = selected!;
       book = { ...book, source: actualSource };
@@ -590,14 +701,52 @@ export class AcquisitionTools {
         ...(book.downloaded_at ? { downloaded_at: book.downloaded_at } : {}),
       };
     });
+    if (operation === 'search' && active) {
+      const windows = attempts
+        .filter((a) => a.filtering)
+        .map((a) => {
+          const f = a.filtering!;
+          if (!f.applied.length)
+            return `${a.source}: ${f.examined} rows examined; no metadata predicates were checked (${f.scope}).`;
+          return `${a.source}: ${f.matched} of ${f.examined} examined rows matched; ${f.rejected} rejected, ${f.unknown} unknown metadata excluded (${f.scope}).`;
+        });
+      note = [
+        ...windows,
+        ...attempts
+          .filter((a) => a.filtering && a.source !== 'zlibrary')
+          .map((a) => `This server returns at most 50 ${a.source} rows per query.`),
+        ...(languages.unrecognized.length
+          ? ['Unrecognized language values were matched literally; see filtering.unrecognized.']
+          : []),
+        ...(attempts.some((a) => a.filtering?.native_only?.includes('exact'))
+          ? ['exact was sent to Z-Library, not checked by this server.']
+          : []),
+        ...(!books.length
+          ? [
+              `${Object.keys(filterRequest).length ? 'No matches' : 'No rows returned'} in these windows; later matches may exist. ${attempts.some((a) => a.source === 'zlibrary') ? 'Try a narrower query' : 'Try zlibrary or a narrower query'} without relaxing filters. To see rows excluded for unknown metadata, search without the affected metadata filters.`,
+            ]
+          : []),
+      ].join(' ');
+    }
     return {
       rows,
+      ...(operation === 'search' && active
+        ? {
+            filtering: {
+              requested: effectiveRequest,
+              ...(languages.unrecognized.length
+                ? { unrecognized: { languages: languages.unrecognized } }
+                : {}),
+            },
+          }
+        : {}),
       ...(next ? { next_cursor: this.refs.mintStable('c', next) } : {}),
       ...(operation === 'search'
         ? {
             routing: nonempty({
               requested,
               served_by: rows.length ? selected : undefined,
+              continuation_source: operation === 'search' && active ? next?.served : undefined,
               fell_back: rows.length > 0 && selected !== requested[0],
               attempts,
             }),

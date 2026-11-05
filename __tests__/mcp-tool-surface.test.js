@@ -8,7 +8,7 @@ jest.unstable_mockModule('../lib/venv-manager.js', () => ({ getManagedPythonPath
 jest.unstable_mockModule('../lib/python-runner.js', () => ({ runPythonBridge: run, LONG_BRIDGE_TIMEOUT_MS: 2400000 }));
 const { createServer } = await import('../dist/index.js');
 let server, client, previous;
-const book = { id: '1', hash: 'abc', title: 'Book', author: 'Author', extension: 'pdf', source: 'zlibrary' };
+const book = { id: '1', hash: 'abc', title: 'Book', author: 'Author', year: 1950, language: 'English', extension: 'pdf', source: 'zlibrary' };
 const encode = value => [JSON.stringify({ content: [{ type: 'text', text: JSON.stringify(value) }] })];
 beforeEach(async () => {
   previous = { ...process.env };
@@ -22,10 +22,10 @@ beforeEach(async () => {
 });
 afterEach(async () => { await client.close(); await server.close(); process.env = previous; });
 const call = async (name, args = {}) => (await client.callTool({ name, arguments: args })).structuredContent;
-test('tools/list stays under 6500 characters with success/error output schemas', async () => {
+test('tools/list stays under 7100 characters with success/error output schemas', async () => {
   const list = await client.listTools();
-  expect(JSON.stringify(list).length).toBeLessThan(6500);
-  expect(JSON.stringify(list).length).toBe(6493);
+  expect(JSON.stringify(list).length).toBeLessThan(7100);
+  expect(JSON.stringify(list).length).toBe(7050);
   expect(ERROR_CODES).toHaveLength(19);
   expect(list.tools.map(t => t.name)).toEqual(['search', 'get_book', 'download', 'get_limits', 'get_history']);
   for (const t of list.tools) expect(t.outputSchema.oneOf).toHaveLength(2);

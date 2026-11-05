@@ -358,25 +358,30 @@
           "uniqueItems": true
         },
         "exact": {
+          "description": "Z-Library only: sent, not checked by this server; other sources are skipped.",
           "type": "boolean"
         },
         "year_from": {
+          "description": "Inclusive minimum year; checked on every source. Unknown years are excluded and counted.",
           "type": "integer",
           "minimum": -9007199254740991,
           "maximum": 9007199254740991
         },
         "year_to": {
+          "description": "Inclusive maximum year; checked on every source. Unknown years are excluded and counted.",
           "type": "integer",
           "minimum": -9007199254740991,
           "maximum": 9007199254740991
         },
         "languages": {
+          "description": "OR of names/codes; checked on every source. Unknown metadata is excluded. Empty list adds no constraint.",
           "type": "array",
           "items": {
             "type": "string"
           }
         },
         "formats": {
+          "description": "OR of extensions, case-insensitive, one leading dot ignored; checked on every source. Empty list adds no constraint.",
           "type": "array",
           "items": {
             "type": "string"

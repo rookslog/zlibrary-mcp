@@ -179,15 +179,25 @@ The credentialed live suite, including collection, requires an explicit
 `zlib_blocked=false` from the reachability probe. A true value reports `blocked`;
 missing, empty or any other value reports `unknown` and skips logins. A failed
 Anna's or LibGen probe does not suppress those tests when Z-Library explicitly
-reported healthy on a configured candidate domain. Any Z-Library probe failure
-reports `unknown`; only a complete healthy Z-Library probe emits `false`.
+reported healthy on a configured candidate domain. A recognized Z-Library wall
+reports `true`; other failed or inconclusive probes report `unknown`. Only a
+complete accepted Z-Library probe set emits `false`: both final response hosts
+must match the configured domain, domains must be a non-empty list, and books
+must be a list when present. A zero success value is rejected except for the
+known unauthenticated responses recognized by the runtime's auth helper.
 Anna warning-only results also produce a run annotation. Upstream values are
 kept on one line before rendering; multi-line workflow outputs use a fresh
 random delimiter, and the domain output is limited to configured candidates.
-Upstream text is fenced, comment delimiters are escaped, and
+Workflow-output mode prints only the fixed warning annotation, keeping the report
+in its output file and optional artifacts. Ordinary CLI reports retain their text
+or JSON output with neutral report values. Upstream text is fenced, comment
+delimiters are escaped, and
 only the last machine marker supplies carried dates. Only the exact rolling issue
 title is reused; other issues with the same label are left untouched.
 
 `npm run doctor` runs the release-record audit even when the source check exits
 nonzero. The combined command fails if either check fails or cannot start, and
-creates no probe reports without an explicit report-file flag.
+creates no probe reports without an explicit report-file flag. Trailing command
+arguments are separated from Node options, and probe startup errors are printed.
+Import-time diagnostics can create an ignored debug log; this command does not
+promise an otherwise unchanged filesystem.

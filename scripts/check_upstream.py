@@ -44,7 +44,7 @@ from lib.sources.libgen import LibgenAdapter  # noqa: E402
 from lib.sources.libgen import FALLBACK_MIRRORS as LIBGEN_FALLBACK_MIRRORS  # noqa: E402
 from lib.sources.libgen import _nginx_stub as _libgen_nginx_stub  # noqa: E402
 from lib.sources.libgen import get_user_agent as libgen_user_agent  # noqa: E402
-from zlibrary.eapi import DEFAULT_EAPI_DOMAINS, WALLED_STATUS_CODES  # noqa: E402
+from zlibrary.eapi import DEFAULT_EAPI_DOMAINS, WALLED_STATUS_CODES, _auth_rejected  # noqa: E402
 
 TIMEOUT = httpx.Timeout(20.0, connect=10.0)
 SOURCES = frozenset({"zlibrary", "annas-archive", "libgen"})
@@ -131,7 +131,7 @@ PARKING_MARKERS = (
 
 def _single_line(value: str) -> str:
     """Keep upstream values within one report row or workflow annotation."""
-    return re.sub(r"[\r\n]+", " ", value)
+    return re.sub(r"[\r\n]+", " ", value).replace("##[", "## [")
 
 
 @dataclass
@@ -196,6 +196,8 @@ async def probe_zlibrary_eapi(client: httpx.AsyncClient) -> list[ProbeResult]:
 
     try:
         resp = await client.get(f"{base}/eapi/info/domains")
+        if resp.url.host != ZLIB_DOMAIN:
+            raise ValueError("response host does not match the configured domain")
         walled = _block_detail(resp)
         if walled:
             results.append(
@@ -209,18 +211,22 @@ async def probe_zlibrary_eapi(client: httpx.AsyncClient) -> list[ProbeResult]:
         else:
             resp.raise_for_status()
             payload = resp.json()
-            domains = payload.get("domains") or []
+            domains = payload.get("domains") if isinstance(payload, dict) else None
+            has_shape = (
+                isinstance(domains, list)
+                and bool(domains)
+                and (payload.get("success") != 0 or _auth_rejected(payload))
+            )
             results.append(
                 ProbeResult(
                     name="zlibrary:eapi/info/domains",
-                    ok=bool(domains),
+                    ok=has_shape,
                     detail=(
                         f"{len(domains)} domain(s) advertised: {', '.join(map(str, domains[:3]))}"
-                        if domains
-                        else "endpoint reachable but advertised no domains "
-                        "(contract change — domain discovery drives every later call)"
+                        if has_shape
+                        else f"unexpected domain response shape: {str(payload)[:200]}"
                     ),
-                    extra={"domains": domains[:5]},
+                    extra={"domains": domains[:5] if isinstance(domains, list) else []},
                 )
             )
     except Exception as exc:  # noqa: BLE001 - any failure is a reportable signal
@@ -239,6 +245,8 @@ async def probe_zlibrary_eapi(client: httpx.AsyncClient) -> list[ProbeResult]:
             f"{base}/eapi/book/search",
             data={"message": "philosophy", "limit": "1", "page": "1"},
         )
+        if resp.url.host != ZLIB_DOMAIN:
+            raise ValueError("response host does not match the configured domain")
         walled = _block_detail(resp)
         if walled:
             results.append(
@@ -252,8 +260,11 @@ async def probe_zlibrary_eapi(client: httpx.AsyncClient) -> list[ProbeResult]:
             return results
         resp.raise_for_status()
         payload = resp.json()
-        has_shape = isinstance(payload, dict) and (
-            "books" in payload or "success" in payload
+        has_shape = (
+            isinstance(payload, dict)
+            and ("books" in payload or "success" in payload)
+            and ("books" not in payload or isinstance(payload["books"], list))
+            and (payload.get("success") != 0 or _auth_rejected(payload))
         )
         results.append(
             ProbeResult(
@@ -801,7 +812,7 @@ def summarize(
             candidate = json.loads(matches[-1])
             if isinstance(candidate, dict):
                 previous = candidate
-        except (json.JSONDecodeError, RecursionError):
+        except (ValueError, RecursionError):
             pass
     relied = relied_sources()
     rows = []
@@ -921,6 +932,8 @@ def zlibrary_probe_state(results: list[ProbeResult]) -> str:
     """Only a complete, healthy configured-domain probe authorizes the live suite."""
     if ZLIB_DOMAIN not in DEFAULT_EAPI_DOMAINS:
         return "unknown"
+    if zlibrary_blocked(results):
+        return "true"
     probes = [r for r in results if r.source == "zlibrary"]
     expected = {"zlibrary:eapi/info/domains", "zlibrary:eapi/book/search"}
     if {r.name for r in probes} == expected and all(r.ok for r in probes):
@@ -929,14 +942,18 @@ def zlibrary_probe_state(results: list[ProbeResult]) -> str:
 
 
 def emit_github_output(
-    report: str, failed: bool, zlib_blocked: bool | str = "unknown"
+    report: str, failed: bool, zlib_blocked: str = "unknown"
 ) -> None:
+    if not isinstance(zlib_blocked, str):
+        raise TypeError("zlib_blocked must be a state string")
+    if zlib_blocked not in {"true", "false", "unknown"}:
+        raise ValueError("zlib_blocked must be a canonical state")
     path: Optional[str] = os.environ.get("GITHUB_OUTPUT")
     if not path:
         return
-    state = str(zlib_blocked).lower()
+    state = zlib_blocked
     domain = ZLIB_DOMAIN if ZLIB_DOMAIN in DEFAULT_EAPI_DOMAINS else None
-    if domain is None or state not in {"true", "false", "unknown"}:
+    if domain is None:
         state = "unknown"
     delimiter = "PROBE_" + secrets.token_hex(16)
     while delimiter in report.splitlines():
@@ -991,10 +1008,8 @@ def main() -> int:
             json_report + "\n", encoding="utf-8"
         )
 
-    if args.json:
-        print(json_report)
-    else:
-        print(report)
+    if not args.github_output:
+        print(json_report.replace("##[", "## [") if args.json else report)
 
     if args.github_output:
         emit_github_output(report, summary["failed"], summary["zlib_blocked"])

@@ -654,7 +654,8 @@ test('EVAL-C1-04 never-closing inherited pipes fail bounded with partial raw out
   expect(telemetry).toMatchObject({ complete: false, drainTimedOut: true, code: 0 });
 });
 test('EVAL-C1-04 timeout escalates a TERM-ignoring child and retains output', async () => {
-  fixture = `process.on('SIGTERM',()=>{});process.stdout.write(${JSON.stringify(head)});setInterval(()=>{},1000);`;
+  const termMarker = 'TERM_HANDLED\n';
+  fixture = `process.on('SIGTERM',()=>process.stderr.write(${JSON.stringify(termMarker)}));process.stdout.write(${JSON.stringify(head)});setInterval(()=>{},1000);`;
   // Freeze only capture timers: OS startup and pipe delivery remain real. The
   // deadline must not race installation of the fixture's TERM handler.
   clock = useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
@@ -674,12 +675,25 @@ test('EVAL-C1-04 timeout escalates a TERM-ignoring child and retains output', as
       process.kill(-pgid, signal);
     },
   });
+  attempt.catch(() => {});
   const child = await ready;
   const closed = once(child, 'close');
+  const termHandled = new Promise((resolve) => {
+    let stderr = '';
+    const onData = (chunk) => {
+      stderr += chunk.toString();
+      if (!stderr.includes(termMarker)) return;
+      child.stderr.removeListener('data', onData);
+      resolve();
+    };
+    child.stderr.on('data', onData);
+  });
   clock.tick(149);
   expect(signals).toEqual([]);
   clock.tick(1);
   expect(signals).toEqual(['SIGTERM']);
+  // Let the real child handle TERM and report survival before advancing grace.
+  await termHandled;
   clock.tick(99);
   expect(signals).toEqual(['SIGTERM']);
   clock.tick(1);

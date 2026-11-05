@@ -1,9 +1,10 @@
 import { afterEach, beforeEach, expect, jest, test } from '@jest/globals';
+import { useFakeTimers } from 'sinon';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
-let directory, saved;
+let directory, saved, clock, ownedRunner;
 const listeners = new Map(
   ['exit', 'SIGINT', 'SIGTERM'].map((event) => [event, new Set(process.rawListeners(event))]),
 );
@@ -21,6 +22,11 @@ beforeEach(() => {
   jest.resetModules();
 });
 afterEach(() => {
+  clock?.restore();
+  clock = undefined;
+  // A Jest timeout must still reap a child whose startup watchdog was paused.
+  ownedRunner?.killAllPythonChildren('SIGKILL');
+  ownedRunner = undefined;
   process.env = saved;
   rmSync(directory, { recursive: true, force: true });
   for (const [event, previous] of listeners)
@@ -37,10 +43,11 @@ test.each([
   async (timeoutMs, budget, slice) => {
     jest.unstable_unmockModule('../lib/python-runner.js');
     const runner = await import('../lib/python-runner.js');
+    ownedRunner = runner;
     jest.unstable_mockModule('../lib/venv-manager.js', () => ({
       getManagedPythonPath: async () => join(process.cwd(), '.venv/bin/python'),
     }));
-    // Only redirect the provider entry point; keep API, spawn, timer and acquisition real.
+    // Only redirect the provider entry point; keep API, spawn and acquisition real.
     jest.unstable_mockModule('../lib/python-runner.js', () => ({
       LONG_BRIDGE_TIMEOUT_MS: runner.LONG_BRIDGE_TIMEOUT_MS,
       runPythonBridge: (_script, options, runOptions) =>
@@ -55,6 +62,11 @@ test.each([
         ),
     }));
     const api = await import('../lib/zlibrary-api.js');
+    // This checks budget propagation and reserve arithmetic, not startup speed.
+    // Keep the exact owner value reaching Python, but freeze Node's watchdog
+    // while real Python starts. The fixture retains the real asyncio watchdog;
+    // python-runner.test.js covers Node watchdog expiry separately.
+    clock = useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
     const result = await api.invokeAcquisitionBridge(
       'acquire_book',
       {

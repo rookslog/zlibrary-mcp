@@ -1,11 +1,13 @@
 import { jest, test, expect, beforeEach, afterEach, afterAll } from '@jest/globals';
+import { useFakeTimers } from 'sinon';
+import { once } from 'node:events';
 import * as actualChildProcess from 'node:child_process';
 import { cp, mkdtemp, readFile, readdir, rm } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { performance } from 'node:perf_hooks';
 
-let fixture, directory;
+let fixture, directory, observeSpawn, clock;
 const spawned = [];
 const retained = await mkdtemp(path.join(os.tmpdir(), 'evalfx-connector-r1-capture-evidence-'));
 afterAll(() => {
@@ -29,6 +31,7 @@ jest.unstable_mockModule('node:child_process', () => ({
           )
         : actualChildProcess.spawn(binary, args, options);
     spawned.push(child);
+    observeSpawn?.(child);
     return child;
   },
 }));
@@ -140,6 +143,9 @@ async function teardownAttempt({ children, readCaptures, reap, copyEvidence, rem
     );
 }
 afterEach(async () => {
+  observeSpawn = undefined;
+  clock?.restore();
+  clock = undefined;
   await teardownAttempt({
     children: spawned.splice(0),
     readCaptures: async () =>
@@ -649,9 +655,46 @@ test('EVAL-C1-04 never-closing inherited pipes fail bounded with partial raw out
 });
 test('EVAL-C1-04 timeout escalates a TERM-ignoring child and retains output', async () => {
   fixture = `process.on('SIGTERM',()=>{});process.stdout.write(${JSON.stringify(head)});setInterval(()=>{},1000);`;
-  const { raw, telemetry } = await failure({ ...limits, timeoutMs: 150 });
+  // Freeze only capture timers: OS startup and pipe delivery remain real. The
+  // deadline must not race installation of the fixture's TERM handler.
+  clock = useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+  const ready = new Promise((resolve, reject) => {
+    observeSpawn = (child) => {
+      child.once('error', reject);
+      child.once('exit', () => reject(new Error('fixture exited before readiness')));
+      child.stdout.once('data', () => resolve(child));
+    };
+  });
+  const signals = [];
+  const attempt = failure({
+    ...limits,
+    timeoutMs: 150,
+    signalGroup: (pgid, signal) => {
+      if (signal !== 0) signals.push(signal);
+      process.kill(-pgid, signal);
+    },
+  });
+  const child = await ready;
+  const closed = once(child, 'close');
+  clock.tick(149);
+  expect(signals).toEqual([]);
+  clock.tick(1);
+  expect(signals).toEqual(['SIGTERM']);
+  clock.tick(99);
+  expect(signals).toEqual(['SIGTERM']);
+  clock.tick(1);
+  expect(signals).toEqual(['SIGTERM', 'SIGKILL']);
+  await closed;
+  // close follows reaping the direct child; let the real group probe see ESRCH.
+  clock.tick(25);
+  const { raw, telemetry } = await attempt;
   expect(raw).toBe(head);
-  expect(telemetry).toMatchObject({ complete: false, timedOut: true, signal: 'SIGKILL' });
+  expect(telemetry).toMatchObject({
+    complete: false,
+    timedOut: true,
+    signal: 'SIGKILL',
+    cleanup: { termSent: true, killSent: true, state: 'gone', success: true },
+  });
 });
 test('EVAL-C1-04 signal termination cannot be promoted to successful telemetry', async () => {
   fixture = `process.stdout.write(${JSON.stringify(head + tail)});process.kill(process.pid,'SIGTERM');`;

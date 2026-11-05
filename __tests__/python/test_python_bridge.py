@@ -397,7 +397,9 @@ class TestProfileEndpoints:
         assert result["daily_remaining"] == "unknown"
 
     @pytest.mark.asyncio
-    async def test_get_download_limits_cap_only_is_not_remaining(self, patch_eapi_client):
+    async def test_get_download_limits_cap_only_is_not_remaining(
+        self, patch_eapi_client
+    ):
         patch_eapi_client.get_profile = AsyncMock(
             return_value={"user": {"downloads_limit": 10}}
         )
@@ -1991,6 +1993,8 @@ asyncio.run(python_bridge.main())
         """After a redirect, the failing request host owns the failure."""
         cdn_request = httpx.Request("GET", "https://cdn.example/file")
 
+        delivered_prefix = False
+
         class FakeResponse:
             url = cdn_request.url
             headers = {"content-type": "application/pdf"}
@@ -1999,7 +2003,10 @@ asyncio.run(python_bridge.main())
                 pass
 
             async def aiter_bytes(self, _chunk_size):
-                yield b"partial"
+                nonlocal delivered_prefix
+                if not delivered_prefix:
+                    delivered_prefix = True
+                    yield b"partial"
                 raise httpx.ReadTimeout("CDN body stalled", request=cdn_request)
 
         class FakeStream:
@@ -2055,7 +2062,7 @@ asyncio.run(python_bridge.main())
         failure_envelope = envelope["details"]["failures"][0]
         assert failure_envelope["host"] == "cdn.example"
         assert failure_envelope["reason"] == "partial_transfer"
-        assert "bytes_received=21" in failure_envelope["detail"]
+        assert "bytes_received=7" in failure_envelope["detail"]
         assert "resumes_tried=2" in failure_envelope["detail"]
         assert envelope["details"]["operation"] == "download"
         assert not (tmp_path / "0123456789abcdef0123456789abcdef.download").exists()
@@ -2711,12 +2718,12 @@ class TestPartialTransferRecovery:
                 config=config,
             )
 
-        assert caught.value.reason == (
-            "partial_transfer" if resume_attempts == 1 else "integrity_mismatch"
-        )
-        assert transport.ranges == [None, f"bytes={RESUME_CUT}-"] + (
-            [] if resume_attempts == 1 else [f"bytes={len(corrupt)}-"]
-        )
+        assert caught.value.reason == ("integrity_mismatch")
+        assert transport.ranges == [
+            None,
+            f"bytes={RESUME_CUT}-",
+            f"bytes={len(corrupt)}-",
+        ]
         assert not list(tmp_path.iterdir())
 
     @pytest.mark.asyncio
@@ -2897,7 +2904,7 @@ class TestPartialTransferRecovery:
 
         class CorruptGzip(httpx.AsyncByteStream):
             async def __aiter__(self):
-                if decoded_bytes:
+                if decoded_bytes and len(requests) == 1:
                     yield compressed[:-8]
                     yield b"\x00" * 8  # Invalid CRC after decoded bytes arrived.
                 else:
@@ -2946,6 +2953,7 @@ class TestPartialTransferRecovery:
             [
                 ScriptedResponse(body=RESUME_BODY, fail_after=5000),
                 ScriptedResponse(status_code=503),
+                ScriptedResponse(status_code=503),
             ]
         ).install(mocker)
         with pytest.raises(ProviderResponseError) as caught:
@@ -2954,12 +2962,12 @@ class TestPartialTransferRecovery:
             )
         assert caught.value.reason == "http_error"
         assert caught.value.detail == "HTTP 503"
-        assert transport.ranges == [None, "bytes=5000-"]
+        assert transport.ranges == [None, "bytes=5000-", "bytes=5000-"]
         assert not list(tmp_path.iterdir())
 
     @pytest.mark.asyncio
     @pytest.mark.parametrize("attempts", [1, 2])
-    async def test_short_206_continues_until_complete_or_budget_ends(
+    async def test_short_206_progress_continues_until_complete(
         self, attempts, tmp_path, mocker
     ):
         """A valid 5000-5999/20000 slice is incomplete, not corrupt."""
@@ -2973,31 +2981,22 @@ class TestPartialTransferRecovery:
                 headers={"content-range": "bytes 5000-5999/20000"},
             ),
         ]
-        if attempts == 2:
-            responses.append(
-                ScriptedResponse(
-                    body=body[6000:],
-                    status_code=206,
-                    headers={"content-range": "bytes 6000-19999/20000"},
-                )
+        responses.append(
+            ScriptedResponse(
+                body=body[6000:],
+                status_code=206,
+                headers={"content-range": "bytes 6000-19999/20000"},
             )
+        )
         transport = ScriptedTransport(responses).install(mocker)
         config = python_bridge.get_source_config()
         config.download_resume_attempts = attempts
         operation = python_bridge._download_url_to_file(
             "https://mirror.example/get", str(tmp_path), digest, "libgen", config=config
         )
-        if attempts == 2:
-            result = await operation
-            assert Path(result).read_bytes() == body
-            assert transport.ranges == [None, "bytes=5000-", "bytes=6000-"]
-        else:
-            with pytest.raises(ProviderResponseError) as caught:
-                await operation
-            assert caught.value.reason == "partial_transfer"
-            assert "bytes_received=6000 resumes_tried=1" in caught.value.detail
-            assert transport.ranges == [None, "bytes=5000-"]
-            assert not list(tmp_path.iterdir())
+        result = await operation
+        assert Path(result).read_bytes() == body
+        assert transport.ranges == [None, "bytes=5000-", "bytes=6000-"]
 
     @pytest.mark.asyncio
     @pytest.mark.parametrize("outer", [False, True], ids=["direct", "provider-chain"])
@@ -3138,6 +3137,12 @@ class TestPartialTransferRecovery:
             ("cdn.example", "bytes=65536-"),
         ]
         if resume_status == 503:
+            expected_requests.extend(
+                [
+                    ("mirror.example", "bytes=65536-"),
+                    ("cdn.example", "bytes=65536-"),
+                ]
+            )
             with pytest.raises(ProviderResponseError) as caught:
                 await operation
             assert caught.value.detail == "HTTP 503"
@@ -3569,12 +3574,11 @@ class TestPartialTransferRecovery:
             responses.append(
                 ScriptedResponse(
                     body=RESUME_BODY[offset:],
-                    fail_after=10,
+                    fail_after=0,
                     status_code=206,
                     headers={"content-range": content_range(offset, len(RESUME_BODY))},
                 )
             )
-            offset += 10
         transport = ScriptedTransport(responses).install(mocker)
 
         async def candidates(_md5, source):
@@ -3614,7 +3618,7 @@ class TestPartialTransferRecovery:
                         "content-range": content_range(RESUME_CUT, len(RESUME_BODY))
                     },
                     body=RESUME_BODY[RESUME_CUT:],
-                    fail_after=10,
+                    fail_after=0,
                 ),
                 ScriptedResponse(body=RESUME_BODY),
                 ScriptedResponse(body=RESUME_BODY),

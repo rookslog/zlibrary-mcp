@@ -45,12 +45,14 @@ the outer Node budget must remain larger than the worst-case inner provider walk
 | `BOOK_SOURCE_CONNECT_TIMEOUT` | `10` | TCP/TLS connect budget per phase, in seconds |
 | `BOOK_SOURCE_READ_TIMEOUT` | `30` | Response-read budget per phase, in seconds |
 | `BOOK_SOURCE_TOTAL_TIMEOUT` | `45` | Wall-clock budget for one provider operation, in seconds |
-| `BOOK_SOURCE_DOWNLOAD_TIMEOUT` | `1500` | One wall-clock budget for the complete source candidate walk (resolution plus full-transfer attempts), in seconds |
-| `BOOK_SOURCE_DOWNLOAD_RESUME_ATTEMPTS` | `2` | Maximum extra requests for recovery within one source transfer; `0` disables recovery, values above `10` are capped at `10`, and empty, invalid or negative values use `2`. Recovery uses the same download deadline. |
+| `BOOK_SOURCE_DOWNLOAD_TIMEOUT` | `1500` | Base wall-clock budget for resolution plus full-transfer attempts, in seconds; known size can extend it up to the ceiling |
+| `BOOK_SOURCE_DOWNLOAD_FLOOR_SPEED` | `40960` | Budgeting floor in bytes/second (40 KiB/s); this is an allowance calculation, not a minimum-speed cutoff |
+| `BOOK_SOURCE_DOWNLOAD_TIMEOUT_CEILING` | `3600` | Maximum source chain budget in seconds; also clamped to the Node owner |
+| `BOOK_SOURCE_DOWNLOAD_RESUME_ATTEMPTS` | `2` | No-progress recovery requests allowed within one source transfer; attempts receiving bytes do not spend this budget; `0` disables recovery, values above `10` are capped at `10`, and empty, invalid or negative values use `2`. Recovery uses the same download deadline. |
 | `BOOK_SOURCE_PREFLIGHT` | `true` | Probe DNS and TCP before a provider request |
 | `BOOK_SOURCE_PREFLIGHT_TIMEOUT` | `5` | Budget per DNS or TCP probe phase, in seconds |
 | `PYTHON_BRIDGE_TIMEOUT` | `240000` | Ordinary Python bridge wall-clock budget, in milliseconds |
-| `PYTHON_BRIDGE_LONG_TIMEOUT` | `2400000` | Acquisition bridge budget, in milliseconds |
+| `PYTHON_BRIDGE_LONG_TIMEOUT` | `3900000` | Acquisition bridge budget, in milliseconds |
 | `PYTHON_BRIDGE_KILL_GRACE` | `3000` | Grace between process-tree termination and forced kill, in milliseconds |
 
 The Node runner falls back to defaults for malformed, non-positive, non-finite,
@@ -133,11 +135,16 @@ separate EAPI calls. An L/A child defaults to a 165s walk + 30s overhead,
 leaving 45s under its 240s owner. The public tool does not combine those
 children into one Python `auto` walk or claim a whole-tool 240s deadline.
 
-The provider download chain has a separate 1500s default because a large book
-can exceed a per-attempt search budget. This timeout wraps resolution **and**
-transfer; do not add the 165s resolution walk again. With 30s overhead its
-allocation is 1530s, leaving 870s under the default 2400s long owner. Download
-configuration also clamps the chain timeout to that owner's remainder.
+The source chain uses `min(ceiling, max(download_timeout, known_bytes / floor_speed))`.
+Existing selection metadata (`size_mb`, numeric byte `filesize`/`size`, or a
+size string with B/KB/MB/GB or KiB/MiB/GiB) supplies the size before resolution;
+units use powers of 1024. Missing or malformed sizes retain the base allowance.
+There is no extra size probe and response headers do not restart the deadline.
+The 1500s base and 3600s ceiling wrap resolution **and** transfer; do not add
+the 165s resolution walk again. The 3900s default Node long owner leaves 300s
+over the ceiling for overhead and acquisition reserves. Configured shorter
+owners still clamp the chain, including the size extension. Malformed,
+non-positive or non-finite floor/ceiling settings use the defaults.
 Text processing does not ship in 2.0; there is no OCR allocation here.
 
 Acquisition has a separate **outer deadline** derived from the effective Node
@@ -167,14 +174,22 @@ On download, `walk_budget_exhausted` maps to `outcome_unknown` when a request wa
 issued, and to `provider_timeout` before issuance. Local budget exhaustion is
 not evidence of a provider failure and does not trip its circuit breaker.
 
-Source downloads have a separate 1,500-second default because a valid large
-book can exceed the 45-second search and URL-resolution budget. The 2,400-second
-long bridge default provides headroom over the source candidate-walk budget for
-receipt checks, authentication and publication/finalization. The 1,500-second
-source download budget covers resolution and full-transfer attempts together.
-If provider budgets are overridden, keep
-`PYTHON_BRIDGE_LONG_TIMEOUT` larger than the inner download budget after
-converting milliseconds to seconds, with headroom for the surrounding work.
+Recovery uses the already resolved URL and one staged file. Only recovery
+requests receiving no new bytes spend the cumulative resume budget; progress
+does not reset that count. `0` continues to disable recovery. A Range request
+returning 500, 502, 503 or 504 preserves its prefix and waits 250 ms before
+another allowed request. An exhausted HTTP error keeps its `HTTP NNN` detail.
+Other HTTP statuses retain their existing handling, including 416 recovery.
+All waits and retries stay inside the original chain deadline and acquisition
+owner. Retrying a transfer never re-resolves Anna's keyed fast-download URL or
+counts another quota spend; there is no new whole-download automatic retry.
+
+If every LibGen mirror fails resolution, the adapter waits at most one second
+inside the remaining resolution deadline and walks the mirrors once more.
+Both passes' ordered failures remain in the existing aggregate error. Once a
+candidate has been yielded, no second pass is made. Anna's and Z-Library
+resolution are unchanged. If provider budgets are overridden, keep the long
+Node owner above the ceiling with headroom for overhead and finalization.
 
 LibGen download resolution inspects at most the first 2 KiB of a candidate
 response. Some CDNs ignore `Range` and answer `200`; the probe streams and closes

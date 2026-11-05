@@ -13,6 +13,13 @@ import pytest
 
 ROOT = Path(__file__).resolve().parents[2]
 SCRIPT = ROOT / "scripts" / "classify_live_tests.py"
+
+
+@pytest.fixture(autouse=True)
+def workflow_workspace(monkeypatch):
+    monkeypatch.setenv("GITHUB_WORKSPACE", str(ROOT))
+
+
 RECORDED = ET.parse(ROOT / "__tests__/python/fixtures/live-junit/pytest-junit.xml")
 
 
@@ -406,8 +413,7 @@ def test_live_job_never_invokes_integration_without_explicit_unblocked(
     outputs = {}
     probe_result = "failure" if probe_case == "failed-probe" else "success"
     if probe_case == "failed-probe":
-        # Real failed probe: missing prior issue fails before run_probes, with no
-        # network call and no zlib_blocked output to authorize a login.
+        # A missing prior issue must leave the initial CI state intact.
         probe_output = tmp_path / "probe-output"
         probe = subprocess.run(
             [
@@ -424,9 +430,12 @@ def test_live_job_never_invokes_integration_without_explicit_unblocked(
         )
         assert probe.returncode != 0
         assert "FileNotFoundError" in probe.stderr
-        assert not probe_output.exists()
+        outputs = dict(
+            line.split("=", 1) for line in probe_output.read_text().splitlines()
+        )
+        assert outputs == {"zlib_blocked": "unknown", "zlib_domain": ""}
     elif probe_case == "reported":
-        outputs = {"zlib_blocked": block_value, "zlib_domain": "offline.example.test"}
+        outputs = {"zlib_blocked": block_value, "zlib_domain": "z-library.ec"}
 
     needs = {"reachability": {"result": probe_result, "outputs": outputs}}
     steps = {"live": {"outputs": {}}}
@@ -510,3 +519,149 @@ def test_live_job_never_invokes_integration_without_explicit_unblocked(
             assert steps["live"]["outputs"]["blocked"] == "true"
         else:
             assert steps["live"]["outputs"].get("blocked") != "true"
+
+
+def console_events(data):
+    import re
+
+    paused = None
+    events = []
+    for line in re.split(r"\r\n|\r|\n", data.decode("utf-8", errors="replace")):
+        if paused is not None:
+            if line == f"::{paused}::":
+                paused = None
+            continue
+        if line.startswith("::stop-commands::"):
+            paused = line.removeprefix("::stop-commands::")
+        elif line.startswith("::") or "##[" in line:
+            events.append(line)
+    return events
+
+
+def test_workflow_protects_probe_diagnostics_on_failure(workflow, tmp_path):
+    import re
+
+    step = next(
+        s for s in workflow["jobs"]["reachability"]["steps"] if s.get("id") == "probe"
+    )
+    fixture = tmp_path / "fixture.py"
+    fixture.write_text(
+        "import asyncio,importlib.util,logging,sys,warnings\n"
+        f"spec=importlib.util.spec_from_file_location('fixture_upstream',{str(ROOT / 'scripts/check_upstream.py')!r})\n"
+        "module=importlib.util.module_from_spec(spec);sys.modules[spec.name]=module;spec.loader.exec_module(module)\n"
+        "async def unfinished():\n"
+        "    logger=logging.getLogger('fixture');logger.propagate=False;logger.addHandler(logging.StreamHandler())\n"
+        "    logger.warning('fixture ##[warning]fixture')\n"
+        "    warnings.warn('fixture ##[warning]fixture')\n"
+        "    sys.stderr.write('::warning::fixture\\r##[warning]fixture\\n')\n"
+        "    raise RuntimeError('fixture ##[warning]fixture')\n"
+        "module.run_probes=unfinished\n"
+        "sys.exit(module.main())\n"
+    )
+    fake_uv = tmp_path / "uv"
+    fake_uv.write_text(
+        f"#!{sys.executable}\nimport os,sys\n"
+        "assert sys.argv[1:4]==['run','python','scripts/check_upstream.py']\n"
+        f"os.execv(sys.executable,[sys.executable,{str(fixture)!r},*sys.argv[4:]])\n"
+    )
+    fake_uv.chmod(0o755)
+    (tmp_path / "previous-upstream-issue.md").write_text("")
+    output = tmp_path / "output"
+    markers = []
+    for _ in range(2):
+        result = subprocess.run(
+            ["bash", "-e", "-o", "pipefail", "-c", step["run"]],
+            cwd=tmp_path,
+            env={
+                **os.environ,
+                "PATH": f"{tmp_path}:{os.environ['PATH']}",
+                "GITHUB_OUTPUT": str(output),
+            },
+            capture_output=True,
+        )
+        assert result.returncode != 0
+        assert console_events(result.stdout) == []
+        assert console_events(result.stderr) == []
+        assert result.stderr == b""
+        assert b"Traceback" in result.stdout
+        assert console_events(result.stdout + b"\n::notice::complete\n") == [
+            "::notice::complete"
+        ]
+        found = re.findall(rb"(?m)^::stop-commands::([^\r\n]+)$", result.stdout)
+        assert len(found) == 1
+        markers.append(found[0])
+        values = dict(line.split("=", 1) for line in output.read_text().splitlines())
+        assert values == {"zlib_blocked": "unknown", "zlib_domain": ""}
+    assert markers[0] != markers[1]
+
+
+@pytest.mark.parametrize(
+    "domain", ["unlisted.invalid", "z-library.ec\nextra", "", "z-library.ec "]
+)
+def test_live_job_requires_configured_domain(workflow, tmp_path, domain):
+    step = next(
+        s for s in workflow["jobs"]["live_tests"]["steps"] if s.get("id") == "live"
+    )
+    output = tmp_path / "output"
+    fake_uv = tmp_path / "uv"
+    fake_uv.write_text("#!/bin/sh\nexit 91\n")
+    fake_uv.chmod(0o755)
+    env = {k: v for k, v in os.environ.items() if not k.startswith("ZLIBRARY_")}
+    env.update(
+        PATH=f"{tmp_path}:{env['PATH']}",
+        GITHUB_OUTPUT=str(output),
+        ZLIB_BLOCKED="false",
+        ZLIB_PROBE_DOMAIN=domain,
+    )
+    result = subprocess.run(
+        ["bash", "-e", "-o", "pipefail", "-c", step["run"]],
+        cwd=tmp_path,
+        env=env,
+        capture_output=True,
+        text=True,
+    )
+    assert result.returncode == 0
+    assert (
+        dict(line.split("=", 1) for line in output.read_text().splitlines())["status"]
+        == "unknown"
+    )
+    assert domain not in result.stdout if domain else True
+
+
+@pytest.mark.parametrize(
+    "value,expected",
+    [("2026-10-20", True), ("::warning::fixture", False), ("9999-99-99", False)],
+)
+def test_workflow_warning_uses_validated_summary(workflow, tmp_path, value, expected):
+    step = next(
+        s
+        for s in workflow["jobs"]["reachability"]["steps"]
+        if s.get("id") == "source_warning"
+    )
+    (tmp_path / "upstream-report.json").write_text(
+        json.dumps(
+            {
+                "results": [
+                    {
+                        "source": "annas-archive",
+                        "ok": False,
+                        "relied_on": False,
+                        "first_seen": value,
+                    }
+                ]
+            }
+        )
+    )
+    result = subprocess.run(
+        ["bash", "-e", "-o", "pipefail", "-c", step["run"]],
+        cwd=tmp_path,
+        env=os.environ.copy(),
+        capture_output=True,
+        text=True,
+    )
+    assert result.returncode == 0
+    assert bool(result.stdout) is expected
+    if expected:
+        assert result.stdout.startswith("::warning::Anna's Archive")
+        assert value in result.stdout
+    assert not result.stderr

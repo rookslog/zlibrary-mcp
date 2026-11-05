@@ -1666,6 +1666,19 @@ def read_workflow_outputs(path):
         ("search-auth-required", "false"),
         ("search-login-required", "false"),
         ("domains-auth-required", "false"),
+        ("search-string-zero", "unknown"),
+        ("search-null-success", "unknown"),
+        ("search-negative-success", "unknown"),
+        ("search-text-success", "unknown"),
+        ("search-error-with-books", "unknown"),
+        ("search-error-with-success", "unknown"),
+        ("domains-text-success", "unknown"),
+        ("domains-null-entry", "unknown"),
+        ("domains-empty-entry", "unknown"),
+        ("domains-whitespace-entry", "unknown"),
+        ("domains-missing-key", "unknown"),
+        ("domains-null-value", "unknown"),
+        ("domains-real-shape", "false"),
     ],
 )
 def test_validate_workflow_outputs_through_real_zlibrary_probe(
@@ -1677,6 +1690,18 @@ def test_validate_workflow_outputs_through_real_zlibrary_probe(
     domain = check_upstream.DEFAULT_EAPI_DOMAINS[0]
     monkeypatch.setattr(check_upstream, "ZLIB_DOMAIN", domain)
     domain_payloads = {
+        "domains-text-success": {"success": "0", "error": "x", "domains": [domain]},
+        "domains-null-entry": {"domains": [None]},
+        "domains-empty-entry": {"domains": [""]},
+        "domains-whitespace-entry": {"domains": [" "]},
+        "domains-missing-key": {"domains": [{"other": domain}]},
+        "domains-null-value": {"domains": [{"domain": None}]},
+        "domains-real-shape": {
+            "success": 1,
+            "domains": [
+                {"domain": domain, "contentAvailable": True, "isRedirector": False}
+            ],
+        },
         "domains-zero-refusal": {"success": 0, "domains": [domain]},
         "domains-string": {"domains": "x"},
         "domains-empty": {"domains": []},
@@ -1687,6 +1712,12 @@ def test_validate_workflow_outputs_through_real_zlibrary_probe(
         },
     }
     search_payloads = {
+        "search-string-zero": {"success": "0", "error": "Too many requests"},
+        "search-null-success": {"success": None, "error": "Too many requests"},
+        "search-negative-success": {"success": -1, "error": "Too many requests"},
+        "search-text-success": {"success": "false"},
+        "search-error-with-books": {"books": [], "error": "Too many requests"},
+        "search-error-with-success": {"success": 1, "error": "Too many requests"},
         "search-zero-refusal": {"success": 0, "error": "Too many requests"},
         "search-false": {"success": False},
         "search-books-null": {"books": None},
@@ -1762,6 +1793,7 @@ def test_validate_workflow_outputs_through_real_zlibrary_probe(
         GITHUB_OUTPUT=str(live_output),
         ZLIB_BLOCKED=values["zlib_blocked"],
         ZLIB_PROBE_DOMAIN=values["zlib_domain"],
+        GITHUB_WORKSPACE=str(MODULE_PATH.parent.parent),
     )
     child = subprocess.run(
         ["bash", "-e", "-o", "pipefail", "-c", step["run"]],
@@ -1895,7 +1927,9 @@ def test_neutralise_runner_commands_in_report_values(
     )
     assert check_upstream._single_line(value) == "note ## [warning]fixture"
     assert check_upstream.main() == 1
-    printed = capsys.readouterr().out
+    captured = capsys.readouterr()
+    printed = captured.out
+    assert "##[" not in captured.err
     assert "##[" not in printed
     if github_output:
         assert printed == ""
@@ -1955,3 +1989,125 @@ def test_workflow_output_requires_canonical_state(
     with pytest.raises(ValueError, match="state"):
         check_upstream.emit_github_output("report", failed=False, zlib_blocked=state)
     assert not output.exists()
+
+
+def test_ci_outputs_default_before_probes_start(check_upstream, monkeypatch, tmp_path):
+    output = tmp_path / "output"
+    monkeypatch.setenv("GITHUB_OUTPUT", str(output))
+    monkeypatch.setattr(sys, "argv", ["check_upstream.py", "--github-output"])
+
+    async def unfinished():
+        assert read_workflow_outputs(output) == {
+            "zlib_blocked": "unknown",
+            "zlib_domain": "",
+        }
+        raise LookupError("unfinished probe")
+
+    monkeypatch.setattr(check_upstream, "run_probes", unfinished)
+    with pytest.raises(LookupError, match="unfinished probe"):
+        check_upstream.main()
+    assert read_workflow_outputs(output) == {
+        "zlib_blocked": "unknown",
+        "zlib_domain": "",
+    }
+
+
+@pytest.mark.parametrize("stage", ["ads", "get"])
+def test_probe_reply_decoding_errors_are_reported(
+    check_upstream, libgen_download, stage
+):
+    def respond(request):
+        if request.url.path == "/ads.php" and stage != "ads":
+            return httpx.Response(
+                200, text='<a href="get.php?md5=fixture&key=fixture">GET</a>'
+            )
+        return httpx.Response(
+            200,
+            headers={"content-type": "application/octet-stream; charset=undefined"},
+            content=b"fixture",
+        )
+
+    result = libgen_download(respond, mirrors=("li",))
+    assert result.ok is False
+    assert result.blocked is False
+
+
+@pytest.mark.parametrize(
+    "target",
+    [
+        "probe_zlibrary_eapi",
+        "probe_annas",
+        "probe_libgen_canaries",
+        "probe_libgen_download",
+    ],
+)
+def test_concurrent_probe_errors_are_reported(check_upstream, monkeypatch, target):
+    async def zlib(_client):
+        return [
+            check_upstream.ProbeResult("zlibrary:eapi/info/domains", True, "ok"),
+            check_upstream.ProbeResult("zlibrary:eapi/book/search", True, "ok"),
+        ]
+
+    async def annas(_client):
+        return check_upstream.ProbeResult("annas-archive:search", True, "ok")
+
+    async def canaries(_client):
+        return (
+            check_upstream.ProbeResult("libgen:search", True, "ok"),
+            check_upstream.ProbeResult("libgen:article-search", True, "ok"),
+        )
+
+    async def download(_client):
+        return check_upstream.ProbeResult("libgen:download", True, "ok")
+
+    async def invalid(_client):
+        raise LookupError("reply unavailable")
+
+    for name, func in (
+        ("probe_zlibrary_eapi", zlib),
+        ("probe_annas", annas),
+        ("probe_libgen_canaries", canaries),
+        ("probe_libgen_download", download),
+    ):
+        monkeypatch.setattr(check_upstream, name, invalid if name == target else func)
+    results = asyncio.run(check_upstream.run_probes())
+    failures = [row for row in results if not row.ok]
+    assert len(failures) == 1
+    assert "LookupError" in failures[0].detail
+
+
+def test_concurrent_probe_reports_invalid_rows(check_upstream, monkeypatch):
+    from lib.sources.libgen import LibgenAdapter
+
+    async def bad_rows(self, *args, **kwargs):
+        return [object()]
+
+    async def zlib(_client):
+        return [
+            check_upstream.ProbeResult("zlibrary:eapi/info/domains", True, "ok"),
+            check_upstream.ProbeResult("zlibrary:eapi/book/search", True, "ok"),
+        ]
+
+    async def annas(_client):
+        return check_upstream.ProbeResult("annas-archive:search", True, "ok")
+
+    async def download(_client):
+        return check_upstream.ProbeResult("libgen:download", True, "ok")
+
+    monkeypatch.setattr(LibgenAdapter, "search", bad_rows)
+    monkeypatch.setattr(check_upstream, "probe_zlibrary_eapi", zlib)
+    monkeypatch.setattr(check_upstream, "probe_annas", annas)
+    monkeypatch.setattr(check_upstream, "probe_libgen_download", download)
+    results = asyncio.run(check_upstream.run_probes())
+    failures = [row for row in results if not row.ok]
+    assert len(failures) == 1
+    assert failures[0].source == "libgen"
+    assert "AttributeError" in failures[0].detail
+
+
+@pytest.mark.parametrize("value", ["::error::fixture", "  ::warning::fixture"])
+def test_text_report_values_remain_data(check_upstream, value):
+    report = check_upstream.render(
+        [check_upstream.ProbeResult("libgen:search", False, value)]
+    )
+    assert not any(line.lstrip().startswith("::") for line in report.splitlines())

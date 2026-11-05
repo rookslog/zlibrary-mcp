@@ -9,8 +9,9 @@ and download the original file. Five MCP tools serve Library Genesis, Z-Library 
 Anna's Archive. Book contents never enter the tool response; paths refer to the
 server's disk. See [VISION.md](VISION.md) for the commitments and non-goals.
 
-**Release status:** This README describes the 2.0 interface, which is not yet published on npm.
-`npm install -g zlibrary-mcp` currently installs 1.4.0, whose tools differ; use the
+**Release status:** This README describes the 2.0 interface, which is not yet published on npm or as a Docker image.
+`npm install -g zlibrary-mcp` and the Docker image `ghcr.io/rookslog/zlibrary-mcp:latest`
+currently provide 1.4.0, whose tools differ; use the
 [v1.4.0 README](https://github.com/rookslog/zlibrary-mcp/blob/v1.4.0/README.md) for that release,
 or [install from source](#from-source-for-development) for 2.0.
 
@@ -21,8 +22,9 @@ configuration keys keep their existing names; `serverInfo.name` is `book-acquisi
 
 ## Quick Start
 
-**Release status:** This README describes the 2.0 interface, which is not yet published on npm.
-`npm install -g zlibrary-mcp` currently installs 1.4.0, whose tools differ; use the
+**Release status:** This README describes the 2.0 interface, which is not yet published on npm or as a Docker image.
+`npm install -g zlibrary-mcp` and the Docker image `ghcr.io/rookslog/zlibrary-mcp:latest`
+currently provide 1.4.0, whose tools differ; use the
 [v1.4.0 README](https://github.com/rookslog/zlibrary-mcp/blob/v1.4.0/README.md) for that release,
 or [install from source](#from-source-for-development) for 2.0.
 
@@ -232,6 +234,7 @@ Add account variables only for the sources you use. The container wraps stdio
 with SuperGateway at `http://localhost:8000/sse`. Remote clients receive paths on
 the **server**, not downloadable attachments or local client paths. There is no
 file-reading tool in this five-tool interface.
+The published Docker image is still 1.4.0 until 2.0 is released.
 
 ## Configuration
 

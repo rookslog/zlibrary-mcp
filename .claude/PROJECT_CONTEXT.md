@@ -70,9 +70,9 @@ Build a robust, resilient MCP server for Z-Library integration that provides com
 
 ### Public selections and search
 
-`search` and `get_history` return rows with process-local `ref` handles when
-sufficient download identity is available. Public `get_book` and `download`
-accept that ref; callers do not pass a `Book` object or `bookDetails`.
+Every `search` row gets a process-local `ref` handle. `get_history` rows get a ref
+only when sufficient download identity is available. Public `get_book` and
+`download` accept that ref; callers do not pass a `Book` object or `bookDetails`.
 
 `search` accepts `query`, `author`, an ordered `sources` list, `exact`,
 `year_from`, `year_to`, `languages`, `formats`, and `limit`. Continuation uses

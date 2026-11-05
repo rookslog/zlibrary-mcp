@@ -41,7 +41,7 @@ _Avoid_: Method, channel, path
 The record of which source, route, mirror, and host served a given result.
 
 The public `download` result returns a `record` path to an acquisition sidecar;
-provenance is available to the caller in that file, rather than inline in the tool response.
+provenance is in that file on the server's disk, rather than inline in the tool response.
 The [API reference](docs/api.md#download) and [receipt v1 contract](docs/receipt-format.md#provenance)
 describe the sidecar's `source` and `provenance` fields. Route, mirror and host evidence
 can be unknown or absent; a recovered intent can retain default provenance.

@@ -149,9 +149,9 @@ fields false; the note distinguishes this from a base not trusted for the key.
 This local report makes no provider request.
 
 Live Z-Library mode adds `per_day`, `used_today`, `remaining`, `premium`, `as_of`
-when available. Use `per_day` as the quota signal rather than `premium`: the
-provider's `isPremium` flag can stay true after a plan lapses even when the daily
-limit returns to the free level. `remaining` is computed only from a known cap
+when available. Use `per_day` as the quota signal: `premium` can stay true after a
+plan lapses even when the daily limit returns to the free level. `remaining` is
+computed only from a known cap
 and known spend; a cap-only profile omits `remaining` and reports
 `limit.kind: "unparsed"`.
 A failed lookup stays in that source's `error` entry while other

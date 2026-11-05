@@ -13,7 +13,7 @@ See [interface migration](../docs/interface-migration.md) for the breaking chang
 +-----------------------------------------------------------+
 |                    MCP Client (Claude)                     |
 +-----------------------------+-----------------------------+
-                              | MCP Protocol (SDK 1.32.1, stdio)
+                              | MCP Protocol (SDK 1.32.2, stdio)
 +-----------------------------v-----------------------------+
 |              MCP Server (Node.js/TypeScript)               |
 |  - Five tools via lower-level SDK Server (src/index.ts)    |
@@ -156,7 +156,7 @@ residual DOM-fragile surfaces in the codebase are `lib/sources/annas.py`.
 - UV (Python dependency management, `uv.lock`, project-local `.venv/`)
 
 **Key Dependencies**:
-- `@modelcontextprotocol/sdk` — MCP protocol (locked to 1.32.1; SDK Server API)
+- `@modelcontextprotocol/sdk` — MCP protocol (locked to 1.32.2; SDK Server API)
 - `python-shell` — Node.js to Python bridge
 - `httpx` — EAPI and source-adapter HTTP client
 - `beautifulsoup4` — Anna's Archive HTML parsing

@@ -910,9 +910,9 @@ def render(
 def zlibrary_blocked(results: list[ProbeResult]) -> bool:
     """True when a **Z-Library** probe was walled, ignoring other sources.
 
-    Scoped by the `zlibrary:` name prefix. This value feeds the workflow's
-    live-suite login gate. Another source's block must not suppress independent
-    Z-Library tests. Alerting is controlled separately by relied_sources().
+    Scoped by the `zlibrary:` name prefix for source classification. Workflow
+    permission is determined by zlibrary_probe_state(); alerting is controlled
+    separately by relied_sources().
     """
     return any(r.blocked for r in results if r.name.startswith("zlibrary:"))
 
@@ -925,8 +925,6 @@ def zlibrary_probe_state(results: list[ProbeResult]) -> str:
     expected = {"zlibrary:eapi/info/domains", "zlibrary:eapi/book/search"}
     if {r.name for r in probes} == expected and all(r.ok for r in probes):
         return "false"
-    if any(r.blocked for r in probes):
-        return "true"
     return "unknown"
 
 

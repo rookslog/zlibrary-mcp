@@ -158,35 +158,35 @@ the body preserves each continuously failing probe's first-observed date, even
 if its reason changes. Old bodies without that marker start tracking today;
 the issue creation date is not evidence of a particular source's failure date.
 The scheduled workflow closes the rolling issue on recovery, clearing dates
-for passing probes. It journals each actionable report in a snapshot comment before updating
-the body and state. Both lookups paginate exact-title labelled issues by creation (including closed
-issues); the next failure reopens the same issue. The next run reads the latest
+for passing probes. It journals each actionable report in a snapshot comment
+before updating the body and state. Both lookups paginate exact-title labelled
+issues by creation (including closed issues); the next failure reopens the same issue. The next run reads the latest
 dated snapshot from `github-actions[bot]`, so a failed issue update cannot lose
 the recovery date or cleared probe state. Both date readers reject invalid or
 future dates. Open exact-title labelled issues are preferred; if none is open,
 the newest created match is reused. A missing probe report carries the previous
 status marker forward. Recovery requires an explicit successful probe flag,
 successful reachability and live jobs, and live status `passed`. Inconclusive
-runs leave the issue unchanged; a healthy already-closed issue receives no writes. A failed snapshot write stops before changing the issue body or state.
+runs leave the issue unchanged; a healthy already-closed issue receives no
+writes. A failed snapshot write stops before changing the issue body or state.
 Excluded-source warnings retain first-seen dates too. The workflow uploads both
-files as `upstream-source-report` for 30 days,
-when probe report generation completes, including when a source alerts. No
+files as `upstream-source-report` for 30 days when probe report generation
+completes, including when a source alerts. No
 source artifact is available if the previous-issue read or probe fails before
-writing reports; the artifact step warns in that case. Source blocked and Source changed have separate issue
-headings. A block from the runner does not establish a worldwide outage.
+writing reports; the artifact step warns in that case. Source blocked and
+Source changed have separate issue headings. A block from the runner does not establish a worldwide outage.
 The credentialed live suite, including collection, requires an explicit
 `zlib_blocked=false` from the reachability probe. A true value reports `blocked`;
 missing, empty or any other value reports `unknown` and skips logins. A failed
 Anna's or LibGen probe does not suppress those tests when Z-Library explicitly
-reported healthy on a configured candidate domain. Other Z-Library failures
-report `unknown`; only a complete healthy Z-Library probe emits `false`.
+reported healthy on a configured candidate domain. Any Z-Library probe failure
+reports `unknown`; only a complete healthy Z-Library probe emits `false`.
 Anna warning-only results also produce a run annotation. Upstream values are
 kept on one line before rendering; multi-line workflow outputs use a fresh
 random delimiter, and the domain output is limited to configured candidates.
 Upstream text is fenced, comment delimiters are escaped, and
 only the last machine marker supplies carried dates. Only the exact rolling issue
 title is reused; other issues with the same label are left untouched.
-
 
 `npm run doctor` runs the release-record audit even when the source check exits
 nonzero. The combined command fails if either check fails or cannot start, and

@@ -119,12 +119,23 @@ constraint-dependencies = [
 
 # Ruff configuration
 [tool.ruff.lint]
+# Keep the pre-0.16 rule set explicit: newer Ruff defaults enable a broad
+# lint migration that is separate from upgrading the dependency.
+select = ["E4", "E7", "E9", "F"]
 # E402: Module-level import not at top of file
 # Required because lib/ and __tests__/ scripts manipulate sys.path before imports
 ignore = ["E402"]
 
 # E741: Ambiguous variable names (single-letter vars in comprehensions)
 extend-ignore = ["E741"]
+
+# Existing vendored import debt: public re-exports, unused legacy imports,
+# and repeated imports of the same typing objects. Retain all other checks.
+[tool.ruff.lint.per-file-ignores]
+"zlibrary/src/test.py" = ["F401"]
+"zlibrary/src/zlibrary/__init__.py" = ["F401"]
+"zlibrary/src/zlibrary/abs.py" = ["F401", "F811"]
+"zlibrary/src/zlibrary/profile.py" = ["F401"]
 
 # UV configuration options
 [tool.uv.pip]

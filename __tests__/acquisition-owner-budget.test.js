@@ -4,7 +4,7 @@ import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
-let directory, saved, clock;
+let directory, saved, clock, ownedRunner;
 const listeners = new Map(
   ['exit', 'SIGINT', 'SIGTERM'].map((event) => [event, new Set(process.rawListeners(event))]),
 );
@@ -24,6 +24,9 @@ beforeEach(() => {
 afterEach(() => {
   clock?.restore();
   clock = undefined;
+  // A Jest timeout must still reap a child whose startup watchdog was paused.
+  ownedRunner?.killAllPythonChildren('SIGKILL');
+  ownedRunner = undefined;
   process.env = saved;
   rmSync(directory, { recursive: true, force: true });
   for (const [event, previous] of listeners)
@@ -40,6 +43,7 @@ test.each([
   async (timeoutMs, budget, slice) => {
     jest.unstable_unmockModule('../lib/python-runner.js');
     const runner = await import('../lib/python-runner.js');
+    ownedRunner = runner;
     jest.unstable_mockModule('../lib/venv-manager.js', () => ({
       getManagedPythonPath: async () => join(process.cwd(), '.venv/bin/python'),
     }));

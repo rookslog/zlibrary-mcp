@@ -6,6 +6,7 @@ on: which failures are actionable, and the exact `$GITHUB_OUTPUT` encoding.
 """
 
 import asyncio
+import json
 import importlib.util
 import os
 import sys

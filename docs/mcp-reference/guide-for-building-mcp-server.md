@@ -409,7 +409,7 @@ Add an entry for your server within the `mcpServers` object:
         // Path to your BUILT index.js file.
         // Use absolute paths or paths relative to the settings file location or workspace root.
         // Example assuming settings file is in ~/.roo/ and server is in ~/.roo/mcp_servers/your-server-name/
-        "/Users/your_username/.roo/mcp_servers/your-server-name/build/index.js"
+        "/Users/user/.roo/mcp_servers/your-server-name/build/index.js"
         // Or potentially relative if cwd is set or known
         // "../mcp_servers/your-server-name/build/index.js"
       ],
@@ -423,8 +423,8 @@ Add an entry for your server within the `mcpServers` object:
       "watchPaths": [
         // Optional: Paths RooCode should watch for changes to auto-restart server
         // Point to SOURCE files, not build output!
-        "/Users/your_username/.roo/mcp_servers/your-server-name/src/index.ts",
-        "/Users/your_username/.roo/mcp_servers/your-server-name/src/api-calls.ts"
+        "/Users/user/.roo/mcp_servers/your-server-name/src/index.ts",
+        "/Users/user/.roo/mcp_servers/your-server-name/src/api-calls.ts"
       ]
     }
     // Add other servers here

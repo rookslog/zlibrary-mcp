@@ -341,7 +341,7 @@ test.each(['reachability', 'report'])('reads only bot snapshot dates in %s', asy
   expect(body).toContain(sourceMarker);
 });
 
-test.each(['9999-99-99', '2099-01-01', '2026-02-30'])('validates snapshot recovery date %s in both lookups', async (date) => {
+test.each(['9999-99-99', '2099-01-01', '2026-02-30', '0000-01-01'])('validates snapshot recovery date %s in both lookups', async (date) => {
   const github = api([{ number: 250, title: rollingTitle, body: sourceMarker }]);
   github.rest.issues.listComments.mockResolvedValue({ data: [snapshot(sourceMarker + '\n<!-- upstream-recovered-at: ' + date + ' -->')] });
   await run(script('reachability', 'previous'), github);
@@ -382,10 +382,12 @@ test.each(['reachability', 'report'])('requires the rolling label in %s', async 
 test.each([[1, 0], [0, 1], [0, 0]])('doctor retains audit execution for probe=%i audit=%i', (probeCode, auditCode) => {
   const command = JSON.parse(readFileSync(new URL('../package.json', import.meta.url), 'utf8')).scripts.doctor;
   const calls = join(directory, 'calls');
+  const argsPath = join(directory, 'args.json');
   mkdirSync(join(directory, 'scripts'));
-  writeFileSync(join(directory, 'uv'), '#!' + process.execPath + '\nrequire("node:fs").appendFileSync(' + JSON.stringify(calls) + ', "probe\\n");process.exit(' + probeCode + ');', { mode: 0o755 });
+  writeFileSync(join(directory, 'uv'), '#!' + process.execPath + '\nrequire("node:fs").appendFileSync(' + JSON.stringify(calls) + ', "probe\\n");require("node:fs").writeFileSync(' + JSON.stringify(argsPath) + ', JSON.stringify(process.argv.slice(2)));process.exit(' + probeCode + ');', { mode: 0o755 });
   writeFileSync(join(directory, 'scripts', 'release-audit.mjs'), 'import fs from "node:fs";fs.appendFileSync(' + JSON.stringify(calls) + ', "audit\\n");process.exit(' + auditCode + ');');
   const result = require('node:child_process').spawnSync('bash', ['-c', command], { cwd: directory, env: { ...process.env, PATH: directory + ':' + process.env.PATH }, encoding: 'utf8' });
   expect(result.status).toBe(probeCode || auditCode ? 1 : 0);
   expect(readFileSync(calls, 'utf8')).toBe('probe\naudit\n');
+  expect(JSON.parse(readFileSync(argsPath, 'utf8'))).toEqual(['run', '--no-dev', 'python', 'scripts/check_upstream.py']);
 });

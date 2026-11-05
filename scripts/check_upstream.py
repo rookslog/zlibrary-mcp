@@ -323,7 +323,7 @@ async def probe_annas(client: httpx.AsyncClient) -> ProbeResult:
             name="annas-archive:search",
             ok=bool(titles),
             detail=detail,
-            # Anna's is optional: the router falls back to LibGen without a key
+            # Anna's is optional: the router falls back to LibGen without a key.
             required=False,
         )
     except Exception as exc:  # noqa: BLE001

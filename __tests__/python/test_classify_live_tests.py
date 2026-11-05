@@ -665,3 +665,30 @@ def test_workflow_warning_uses_validated_summary(workflow, tmp_path, value, expe
         assert result.stdout.startswith("::warning::Anna's Archive")
         assert value in result.stdout
     assert not result.stderr
+
+
+@pytest.mark.parametrize("state", ["true", "unknown", "false"])
+def test_live_job_validates_policy_before_diagnostics(workflow, tmp_path, state):
+    step = next(
+        s for s in workflow["jobs"]["live_tests"]["steps"] if s.get("id") == "live"
+    )
+    output = tmp_path / "output"
+    env = {k: v for k, v in os.environ.items() if not k.startswith("ZLIBRARY_")}
+    env.update(
+        GITHUB_OUTPUT=str(output),
+        ZLIB_BLOCKED=state,
+        ZLIB_PROBE_DOMAIN="unlisted.invalid",
+    )
+    result = subprocess.run(
+        ["bash", "-e", "-o", "pipefail", "-c", step["run"]],
+        cwd=tmp_path,
+        env=env,
+        capture_output=True,
+        text=True,
+    )
+    assert result.returncode == 0
+    assert (
+        dict(line.split("=", 1) for line in output.read_text().splitlines())["status"]
+        == "unknown"
+    )
+    assert "unlisted.invalid" not in result.stdout + result.stderr

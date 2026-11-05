@@ -52,7 +52,9 @@ DEFAULT_RELIED_SOURCES = frozenset({"zlibrary", "libgen"})
 
 def relied_sources() -> set[str]:
     """Alert policy only; never changes the connector's routing configuration."""
-    value = os.environ.get("UPSTREAM_RELIED_SOURCES", ",".join(sorted(DEFAULT_RELIED_SOURCES)))
+    value = os.environ.get(
+        "UPSTREAM_RELIED_SOURCES", ",".join(sorted(DEFAULT_RELIED_SOURCES))
+    )
     sources = {part.strip() for part in value.split(",") if part.strip()} or set(
         DEFAULT_RELIED_SOURCES
     )

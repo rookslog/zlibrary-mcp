@@ -1462,7 +1462,9 @@ def test_last_issue_marker_controls_first_seen(check_upstream, leading):
 
 
 @pytest.mark.parametrize("ok", [True, False])
-def test_upstream_text_cannot_escape_report_code_blocks(check_upstream, monkeypatch, ok):
+def test_upstream_text_cannot_escape_report_code_blocks(
+    check_upstream, monkeypatch, ok
+):
     monkeypatch.setenv("UPSTREAM_RELIED_SOURCES", "annas-archive")
     import json
     import re
@@ -1550,10 +1552,14 @@ def test_blank_policy_uses_master_default(check_upstream, monkeypatch, value):
 
 def test_default_annas_warning_keeps_first_seen(check_upstream, monkeypatch):
     monkeypatch.delenv("UPSTREAM_RELIED_SOURCES", raising=False)
-    result = check_upstream.ProbeResult("annas-archive:search", False, "HTTP 403", blocked=True)
+    result = check_upstream.ProbeResult(
+        "annas-archive:search", False, "HTTP 403", blocked=True
+    )
     first = check_upstream.render([result], today="2026-11-01")
     report = check_upstream.render([result], previous_body=first, today="2026-11-05")
-    summary = check_upstream.summarize([result], previous_body=report, today="2026-11-06")
+    summary = check_upstream.summarize(
+        [result], previous_body=report, today="2026-11-06"
+    )
     assert summary["relied_sources"] == ["libgen", "zlibrary"]
     assert summary["failed"] is False
     assert summary["results"][0]["first_seen"] == "2026-11-01"

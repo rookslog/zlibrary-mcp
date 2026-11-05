@@ -331,6 +331,7 @@ test('source detail projection drops provider prose and malformed HTTP status to
 
 test('Python and TypeScript source projection reasons stay in parity with Node controls', async () => {
   const typescriptReasons = sourcePolicy('src/lib/auth-diagnostics.ts', 'detail.reason');
+  expect(typescriptReasons).toHaveLength(new Set(typescriptReasons).size);
   const py = await python(
     `import ast, inspect, json
 import python_bridge as bridge

@@ -204,7 +204,6 @@ export function safeEapiFailureEnvelope(value: any): Record<string, any> | undef
       'tls_error',
       'search_timeout',
       'quota_exhausted',
-      'protocol_error',
       'unknown',
     ];
     const project = (detail: Record<string, any>) => ({

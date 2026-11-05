@@ -2157,7 +2157,7 @@ def test_probe_deadline_preserves_finished_results(
     results = asyncio.run(execute())
     assert cancelled == [stalled]
     failures = [row for row in results if not row.ok]
-    assert len(failures) == 2
+    assert len(failures) == (3 if stalled == "probe_zlibrary_eapi" else 2)
     assert any("deadline" in row.detail for row in failures)
     assert any("LookupError" in row.detail for row in failures)
     assert any(row.name == "libgen:download" and row.ok for row in results)
@@ -2165,3 +2165,80 @@ def test_probe_deadline_preserves_finished_results(
 
 def test_probe_deadline_budget(check_upstream):
     assert check_upstream.PROBE_DEADLINE_SECONDS == 600
+
+
+@pytest.mark.parametrize(
+    "stalled,names",
+    [
+        (
+            "probe_zlibrary_eapi",
+            ("zlibrary:eapi/info/domains", "zlibrary:eapi/book/search"),
+        ),
+        ("probe_libgen_canaries", ("libgen:search", "libgen:article-search")),
+    ],
+)
+def test_probe_deadline_preserves_row_dates(
+    check_upstream, monkeypatch, stalled, names
+):
+    dates = {names[0]: "2026-10-21", names[1]: "2026-10-24"}
+    previous = "<!-- upstream-source-status: " + json.dumps(dates) + " -->"
+    partial = []
+
+    async def pending(_client):
+        partial.append(check_upstream.ProbeResult(names[0], True, "finished subprobe"))
+        await asyncio.Event().wait()
+
+    async def zlib(_client):
+        return [
+            check_upstream.ProbeResult("zlibrary:eapi/info/domains", True, "ok"),
+            check_upstream.ProbeResult("zlibrary:eapi/book/search", True, "ok"),
+        ]
+
+    async def annas(_client):
+        return check_upstream.ProbeResult("annas-archive:search", True, "ok")
+
+    async def canaries(_client):
+        return [
+            check_upstream.ProbeResult("libgen:search", True, "ok"),
+            check_upstream.ProbeResult("libgen:article-search", True, "ok"),
+        ]
+
+    async def download(_client):
+        return check_upstream.ProbeResult("libgen:download", True, "ok")
+
+    for name, function in [
+        ("probe_zlibrary_eapi", zlib),
+        ("probe_annas", annas),
+        ("probe_libgen_canaries", canaries),
+        ("probe_libgen_download", download),
+    ]:
+        monkeypatch.setattr(
+            check_upstream, name, pending if name == stalled else function
+        )
+    monkeypatch.setattr(check_upstream, "PROBE_DEADLINE_SECONDS", 0.01)
+
+    async def execute():
+        return await asyncio.wait_for(check_upstream.run_probes(), timeout=1)
+
+    results = asyncio.run(execute())
+    assert partial[0].ok is True
+    failures = [row for row in results if not row.ok]
+    assert {row.name for row in failures} == set(names)
+    assert all("deadline" in row.detail for row in failures)
+    summary = check_upstream.summarize(
+        results, previous_body=previous, today="2026-11-05"
+    )
+    assert summary["failed"] is True
+    if stalled == "probe_zlibrary_eapi":
+        assert summary["zlib_blocked"] == "unknown"
+    report = check_upstream.render(results, previous_body=previous, today="2026-11-05")
+    state = json.loads(
+        report.rsplit("<!-- upstream-source-status: ", 1)[1].split(" -->", 1)[0]
+    )
+    assert state == dates
+    later = check_upstream.summarize(
+        [check_upstream.ProbeResult(name, False, "still failing") for name in names],
+        previous_body=report,
+        today="2026-11-06",
+    )
+    assert {row["name"]: row["first_seen"] for row in later["results"]} == dates

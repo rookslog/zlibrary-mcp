@@ -323,3 +323,31 @@ test.each([['afrikaans','af'], ['swahili','sw']])('connector Anna %s request adm
   expect(reply.rows.map(r => r.title)).toEqual(['Match']);
   expect(reply.routing.attempts[0].filtering).toMatchObject({ examined: 2, matched: 1, rejected: 1, unknown: 0 });
 });
+
+test('G2 empty LibGen plus skipped Z credentials does not suggest retrying Z', async () => {
+  const invoke = jest.fn(async () => ({ books: [] }));
+  const { call } = await fixture(invoke, {});
+  const reply = await call({ query: 'book', sources: ['libgen', 'zlibrary'], languages: ['fr'] });
+  expect(reply.rows).toEqual([]);
+  expect(reply.routing.attempts.map(a => [a.source, a.outcome])).toEqual([
+    ['libgen', 'empty'], ['zlibrary', 'skipped'],
+  ]);
+  expect(reply.routing.attempts[1]).toMatchObject({ code: 'credentials_missing' });
+  expect(reply.note).toMatch(/Try a narrower query/);
+  expect(reply.note).not.toMatch(/Try zlibrary/);
+  expect(invoke).toHaveBeenCalledTimes(1);
+});
+
+test.each([
+  ['Central khmer', 'central_khmer'],
+  ['Luba katanga', 'luba-katanga'],
+])('G2 spaced request %s still transmits the same native target %s', async (spaced, native) => {
+  const calls = [];
+  const { call } = await fixture(async (_op, args) => { calls.push(args.languages);return { books: [zrow('Match', { language: spaced })] }; }, zenv);
+  const spacedReply = await call({ query: 'book', sources: ['zlibrary'], languages: [spaced] });
+  const nativeReply = await call({ query: 'book', sources: ['zlibrary'], languages: [native] });
+  expect(spacedReply.rows.map(r => r.title)).toEqual(['Match']);
+  expect(nativeReply.rows.map(r => r.title)).toEqual(['Match']);
+  expect(calls).toEqual([[native], [native]]);
+  expect(spacedReply.filtering.unrecognized).toBeUndefined();
+});

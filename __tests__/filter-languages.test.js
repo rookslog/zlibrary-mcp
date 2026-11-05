@@ -105,3 +105,27 @@ test('Traditional chinese is the observed spelling of the chinese alias', async 
   expect(normalizeLanguages(['Traditional chinese'])).toEqual({ values: ['chinese'], unrecognized: [] });
   expect(checkRowFilters({ language: 'Traditional chinese' }, { languages: ['zh'] }).status).toBe('pass');
 });
+
+test.each([
+  ['central_khmer', 'Central khmer'],
+  ['luba-katanga', 'Luba katanga'],
+])('G2 spaced name %s is recognized as %s and matches spaced catalogue rows', async (native, spaced) => {
+  const { checkRowFilters } = await import('../dist/lib/row-filters.js');
+  expect(normalizeLanguages([spaced])).toEqual({ values: [native], unrecognized: [] });
+  expect(normalizeLanguages([native, spaced])).toEqual({ values: [native], unrecognized: [] });
+  expect(checkRowFilters({ language: spaced }, { languages: [native] }).status).toBe('pass');
+  expect(checkRowFilters({ language: native }, { languages: [spaced] }).status).toBe('pass');
+});
+
+test('G2 every multi-word native name recognizes its spaced spelling and matches spaced rows', async () => {
+  const { checkRowFilters } = await import('../dist/lib/row-filters.js');
+  const fixture = JSON.parse(readFileSync(new URL('./fixtures/filter-language-codes.json', import.meta.url), 'utf8'));
+  const multiWord = fixture.rows.map(r => r[0]).filter(native => /[_-]/.test(native));
+  expect(multiWord).toHaveLength(12);
+  for (const native of multiWord) {
+    const spaced = native.replace(/[_-]/g, ' ');
+    expect(normalizeLanguages([spaced])).toEqual({ values: [native], unrecognized: [] });
+    expect(checkRowFilters({ language: spaced }, { languages: [native] }).status).toBe('pass');
+    expect(checkRowFilters({ language: native }, { languages: [spaced] }).status).toBe('pass');
+  }
+});

@@ -464,6 +464,13 @@ def search_books(query, **kwargs):
 
 ## Logging Analysis
 
+The vendored logger writes plain-text lines to `logs/zlibrary_debug.log` using
+`timestamp - logger - level - message` (`zlibrary/src/zlibrary/logger.py`).
+The TypeScript logger writes plain text to stderr (`src/lib/logger.ts`), and
+the Python bridge's logging configuration also uses plain text
+(`lib/python_bridge.py`). These are not JSON logs and do not emit structured
+`module` or `duration` fields for operation filtering or timing analysis.
+
 ### Log Aggregation Script
 
 ```bash
@@ -472,9 +479,6 @@ def search_books(query, **kwargs):
 
 echo "Error Summary:"
 grep -i error logs/*.log | cut -d: -f4- | sort | uniq -c | sort -rn | head -10
-
-echo -e "\nSlowest Operations:"
-grep "duration" logs/*.log | jq -r '.duration' | sort -rn | head -10
 
 echo -e "\nFailed Domains:"
 grep "domain.*failed" logs/*.log | cut -d'"' -f4 | sort | uniq -c
@@ -492,11 +496,8 @@ grep "memory" logs/*.log | tail -5
 # Watch errors in real-time
 tail -f logs/*.log | grep --line-buffered -i error
 
-# Monitor specific operations
-tail -f logs/*.log | jq 'select(.module == "search")'
-
-# Watch performance metrics
-tail -f logs/*.log | jq 'select(.duration > 1000)'
+# Monitor messages from the vendored zlibrary logger
+tail -f logs/zlibrary_debug.log | grep --line-buffered ' - zlibrary - '
 ```
 
 ## Emergency Recovery

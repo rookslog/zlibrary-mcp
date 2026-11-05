@@ -23,6 +23,7 @@ import html
 import json
 import os
 import re
+import secrets
 import sys
 from dataclasses import dataclass, field
 from datetime import date, datetime, timezone
@@ -128,6 +129,11 @@ PARKING_MARKERS = (
 )
 
 
+def _single_line(value: str) -> str:
+    """Keep upstream values within one report row or workflow annotation."""
+    return re.sub(r"[\r\n]+", " ", value)
+
+
 @dataclass
 class ProbeResult:
     name: str
@@ -138,6 +144,10 @@ class ProbeResult:
     # but still alerts when the operator relies on this source.
     blocked: bool = False
     extra: dict[str, Any] = field(default_factory=dict)
+
+    def __post_init__(self) -> None:
+        self.name = _single_line(self.name)
+        self.detail = _single_line(self.detail)
 
     @property
     def symbol(self) -> str:
@@ -313,7 +323,7 @@ async def probe_annas(client: httpx.AsyncClient) -> ProbeResult:
             name="annas-archive:search",
             ok=bool(titles),
             detail=detail,
-            # Router optionality is independent of UPSTREAM_RELIED_SOURCES.
+            # Anna's is optional: the router falls back to LibGen without a key
             required=False,
         )
     except Exception as exc:  # noqa: BLE001
@@ -791,7 +801,7 @@ def summarize(
             candidate = json.loads(matches[-1])
             if isinstance(candidate, dict):
                 previous = candidate
-        except json.JSONDecodeError:
+        except (json.JSONDecodeError, RecursionError):
             pass
     relied = relied_sources()
     rows = []
@@ -830,7 +840,7 @@ def summarize(
     return {
         "checked_at": today,
         "failed": bool(actionable_failures(results)),
-        "zlib_blocked": zlibrary_blocked(results),
+        "zlib_blocked": zlibrary_probe_state(results),
         "relied_sources": sorted(relied),
         "results": rows,
     }
@@ -907,20 +917,41 @@ def zlibrary_blocked(results: list[ProbeResult]) -> bool:
     return any(r.blocked for r in results if r.name.startswith("zlibrary:"))
 
 
-def emit_github_output(report: str, failed: bool, zlib_blocked: bool = False) -> None:
+def zlibrary_probe_state(results: list[ProbeResult]) -> str:
+    """Only a complete, healthy configured-domain probe authorizes the live suite."""
+    if ZLIB_DOMAIN not in DEFAULT_EAPI_DOMAINS:
+        return "unknown"
+    probes = [r for r in results if r.source == "zlibrary"]
+    expected = {"zlibrary:eapi/info/domains", "zlibrary:eapi/book/search"}
+    if {r.name for r in probes} == expected and all(r.ok for r in probes):
+        return "false"
+    if any(r.blocked for r in probes):
+        return "true"
+    return "unknown"
+
+
+def emit_github_output(
+    report: str, failed: bool, zlib_blocked: bool | str = "unknown"
+) -> None:
     path: Optional[str] = os.environ.get("GITHUB_OUTPUT")
     if not path:
         return
+    state = str(zlib_blocked).lower()
+    domain = ZLIB_DOMAIN if ZLIB_DOMAIN in DEFAULT_EAPI_DOMAINS else None
+    if domain is None or state not in {"true", "false", "unknown"}:
+        state = "unknown"
+    delimiter = "PROBE_" + secrets.token_hex(16)
+    while delimiter in report.splitlines():
+        delimiter = "PROBE_" + secrets.token_hex(16)
     with open(path, "a", encoding="utf-8") as handle:
         handle.write(f"failed={'true' if failed else 'false'}\n")
         # The live-suite job gates on this: logging in through a wall would
         # both fail spuriously and burn the ~10/hour login rate limit.
-        handle.write(f"zlib_blocked={'true' if zlib_blocked else 'false'}\n")
-        handle.write(f"zlib_domain={ZLIB_DOMAIN}\n")
+        handle.write(f"zlib_blocked={state}\n")
+        if domain is not None:
+            handle.write(f"zlib_domain={domain}\n")
         # Heredoc form so multi-line reports survive intact.
-        handle.write("report<<PROBE_EOF\n")
-        handle.write(report + "\n")
-        handle.write("PROBE_EOF\n")
+        handle.write(f"report<<{delimiter}\n{report}\n{delimiter}\n")
 
 
 def main() -> int:
@@ -969,6 +1000,17 @@ def main() -> int:
 
     if args.github_output:
         emit_github_output(report, summary["failed"], summary["zlib_blocked"])
+        for row in summary["results"]:
+            if (
+                row["source"] == "annas-archive"
+                and not row["ok"]
+                and not row["relied_on"]
+            ):
+                print(
+                    "::warning::Anna's Archive probe is "
+                    f"{row['status']}; first seen {row['first_seen']} (UTC); "
+                    "warning-only alert policy."
+                )
 
     return 1 if summary["failed"] else 0
 

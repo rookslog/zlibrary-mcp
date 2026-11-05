@@ -54,15 +54,41 @@ jobs:
         with:
           script: |
             const issues = await github.paginate(github.rest.issues.listForRepo, {
-              ...context.repo, state: 'all', labels: 'upstream-drift', per_page: 100, sort: 'updated', direction: 'desc',
+              ...context.repo, state: 'all', labels: 'upstream-drift', per_page: 100, sort: 'created', direction: 'desc',
             });
-            const existing = issues.find(issue => issue.title === 'Upstream contract check failing' && !issue.pull_request);
+            const matching = issues.filter(issue => issue.title === 'Upstream contract check failing' && !issue.pull_request &&
+              issue.labels?.some(label => (label.name || label) === 'upstream-drift'));
+            const existing = matching.find(issue => issue.state === 'open') ||
+              matching.sort((a, b) => Date.parse(b.created_at) - Date.parse(a.created_at))[0];
+            const today = new Date().toISOString().slice(0, 10);
+            const validDate = value => {
+              if (typeof value !== 'string' || !/^\d{4}-\d{2}-\d{2}$/.test(value)) return false;
+              const stamp = Date.parse(value + 'T00:00:00Z');
+              return Number.isFinite(stamp) && new Date(stamp).toISOString().slice(0, 10) === value && value <= today;
+            };
+            const statusMarker = body => {
+              const marker = [...body.matchAll(/<!-- upstream-source-status: (.*?) -->/g)].at(-1);
+              if (!marker) return null;
+              try {
+                const state = JSON.parse(marker[1]);
+                return state && typeof state === 'object' && !Array.isArray(state) && Object.values(state).every(validDate) ? marker[0] : null;
+              } catch { return null; }
+            };
+            const recoveryDate = body => {
+              const value = [...body.matchAll(/<!-- upstream-recovered-at: (.*?) -->/g)].at(-1)?.[1];
+              return validDate(value) ? value : null;
+            };
+            const trustedSnapshot = comment => {
+              const body = comment.body || '';
+              return comment.user?.login === 'github-actions[bot]' && body.startsWith('<!-- upstream-report-snapshot -->\n') &&
+                statusMarker(body) !== null && (!body.includes('<!-- upstream-recovered-at:') || recoveryDate(body) !== null);
+            };
             let previous = existing?.body || '';
             if (existing) {
               const comments = await github.paginate(github.rest.issues.listComments, {
                 ...context.repo, issue_number: existing.number, per_page: 100,
               });
-              const snapshot = comments.filter(comment => comment.body?.startsWith('<!-- upstream-report-snapshot -->\n')).at(-1);
+              const snapshot = comments.filter(trustedSnapshot).at(-1);
               previous = snapshot?.body || previous;
             }
             require('node:fs').writeFileSync(process.env.PREVIOUS_ISSUE_PATH, previous);
@@ -178,9 +204,11 @@ jobs:
           script: |
             const title = 'Upstream contract check failing';
             const runUrl = `${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}`;
-            const report = process.env.PROBE_REPORT || '(no reachability report)';
             const failed = process.env.PROBE_FAILED === 'true' ||
               process.env.REACHABILITY_RESULT === 'failure' || process.env.LIVE_RESULT === 'failure';
+            const recovered = process.env.PROBE_FAILED === 'false' &&
+              process.env.REACHABILITY_RESULT === 'success' && process.env.LIVE_RESULT === 'success' &&
+              process.env.LIVE_STATUS === 'passed';
 
             // Reuse one rolling issue so a prolonged outage does not create a new
             // issue every morning.
@@ -188,22 +216,50 @@ jobs:
               owner: context.repo.owner,
               repo: context.repo.repo,
               state: 'all',
-              sort: 'updated',
+              sort: 'created',
               direction: 'desc',
               labels: 'upstream-drift',
               per_page: 100,
             });
-            const existing = issues.find(issue => issue.title === title && !issue.pull_request);
+            const matching = issues.filter(issue => issue.title === title && !issue.pull_request &&
+              issue.labels?.some(label => (label.name || label) === 'upstream-drift'));
+            const existing = matching.find(issue => issue.state === 'open') ||
+              matching.sort((a, b) => Date.parse(b.created_at) - Date.parse(a.created_at))[0];
+            if (!failed && (!recovered || existing?.state === 'closed')) return;
 
+            const today = new Date().toISOString().slice(0, 10);
+            const validDate = value => {
+              if (typeof value !== 'string' || !/^\d{4}-\d{2}-\d{2}$/.test(value)) return false;
+              const stamp = Date.parse(value + 'T00:00:00Z');
+              return Number.isFinite(stamp) && new Date(stamp).toISOString().slice(0, 10) === value && value <= today;
+            };
+            const statusMarker = body => {
+              const marker = [...body.matchAll(/<!-- upstream-source-status: (.*?) -->/g)].at(-1);
+              if (!marker) return null;
+              try {
+                const state = JSON.parse(marker[1]);
+                return state && typeof state === 'object' && !Array.isArray(state) && Object.values(state).every(validDate) ? marker[0] : null;
+              } catch { return null; }
+            };
+            const recoveryDate = body => {
+              const value = [...body.matchAll(/<!-- upstream-recovered-at: (.*?) -->/g)].at(-1)?.[1];
+              return validDate(value) ? value : null;
+            };
+            const trustedSnapshot = comment => {
+              const body = comment.body || '';
+              return comment.user?.login === 'github-actions[bot]' && body.startsWith('<!-- upstream-report-snapshot -->\n') &&
+                statusMarker(body) !== null && (!body.includes('<!-- upstream-recovered-at:') || recoveryDate(body) !== null);
+            };
             let previous = existing?.body || '';
             if (existing) {
               const comments = await github.paginate(github.rest.issues.listComments, {
                 ...context.repo, issue_number: existing.number, per_page: 100,
               });
-              const snapshot = comments.filter(comment => comment.body?.startsWith('<!-- upstream-report-snapshot -->\n')).at(-1);
+              const snapshot = comments.filter(trustedSnapshot).at(-1);
               previous = snapshot?.body || previous;
             }
-            const recoveredAt = previous.match(/<!-- upstream-recovered-at: (\d{4}-\d{2}-\d{2}) -->/)?.[1] || new Date().toISOString().slice(0, 10);
+            const recoveredAt = recoveryDate(previous) || today;
+            const report = process.env.PROBE_REPORT || ['(no reachability report)', statusMarker(previous) || ''].join('\n');
             const body = [
               '<!-- upstream-report-snapshot -->',
               failed ? 'The scheduled upstream contract check did not pass.' : 'The scheduled upstream contract check passed.',

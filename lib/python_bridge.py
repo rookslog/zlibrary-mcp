@@ -352,8 +352,12 @@ async def initialize_eapi_client() -> EAPIClient:
     email = os.environ.get("ZLIBRARY_EMAIL")
     password = os.environ.get("ZLIBRARY_PASSWORD")
     if not email or not password:
-        error = ValueError(
-            "ZLIBRARY_EMAIL and ZLIBRARY_PASSWORD environment variables required"
+        from lib.acquisition import AcquisitionError
+
+        error = AcquisitionError(
+            "configuration_error",
+            "ZLIBRARY_EMAIL and ZLIBRARY_PASSWORD environment variables required",
+            issued=False,
         )
         error._eapi_local_refusal = True
         raise error
@@ -489,6 +493,51 @@ def _safe_diagnostic(value):
         return item
 
     return visit(value)
+
+
+def _safe_eapi_details(detail):
+    """Retain closed control/source evidence, never hostnames or provider prose."""
+    from lib.sources.errors import REASON_TEXT
+
+    reasons = set(REASON_TEXT) | {
+        "auth_rejected",
+        "outcome_unknown",
+        "output_refused",
+        "invalid_argument",
+        "breaker_open",
+        "internal",
+    }
+
+    def project(value):
+        result = {}
+        if value.get("reason") in reasons:
+            result["reason"] = value["reason"]
+        for key in ("request_issued", "destination_occupied"):
+            if type(value.get(key)) is bool:
+                result[key] = value[key]
+        if value.get("reason") == "http_error" and re.fullmatch(
+            r"HTTP [1-5][0-9]{2}", str(value.get("detail", ""))
+        ):
+            result["detail"] = value["detail"]
+        return result
+
+    result = project(detail)
+    if isinstance(detail.get("failures"), list):
+        result["failures"] = []
+        for failure in detail["failures"]:
+            if not isinstance(failure, dict):
+                continue
+            projected = project(failure)
+            if failure.get("provider") in (
+                "libgen",
+                "annas",
+                "annas_archive",
+                "auto",
+                "zlibrary",
+            ):
+                projected["provider"] = failure["provider"]
+            result["failures"].append(projected)
+    return result
 
 
 async def _login_eapi_client(email: str, password: str) -> EAPIClient:
@@ -2158,6 +2207,25 @@ def _requires_eapi_client(function_name: str, args_dict: dict) -> bool:
     return True
 
 
+_BRIDGE_FUNCTION_NAMES = frozenset(
+    {
+        "acquire_book",
+        "search",
+        "full_text_search",
+        "get_download_history",
+        "get_download_limits",
+        "download_book",
+        "get_book_metadata_complete",
+        "search_by_term_bridge",
+        "search_by_author_bridge",
+        "search_advanced",
+        "get_recent_books",
+        "eapi_health_check",
+        "search_multi_source",
+    }
+)
+
+
 async def main():
     global _session_published
     _session_published = None
@@ -2178,6 +2246,7 @@ async def main():
         sys.exit(1)
 
     needs_eapi = False
+    local_refusal = True
     try:
         if function_name == "download_book":
             _admit_download_args(args_dict)
@@ -2190,11 +2259,14 @@ async def main():
             args_dict["output_dir"] = str(directory)
         elif function_name == "process_document":
             raise ValueError("Text processing was removed in 2.0.")
+        if function_name not in _BRIDGE_FUNCTION_NAMES:
+            raise ValueError(f"Unknown function: {function_name}")
         # Decide before dispatch whether this call needs Z-Library
         # authentication at all — see _requires_eapi_client (#106, #129).
         if function_name in {"search", "get_download_history", "search_multi_source"}:
             _validate_page(args_dict.get("count", 10), args_dict.get("page", 1))
         needs_eapi = _requires_eapi_client(function_name, args_dict)
+        local_refusal = False
 
         # Install before authentication and dispatch: httpx/AnyIO resolves
         # again even after source preflight, and its default executor is joined
@@ -2267,7 +2339,14 @@ async def main():
         error_info = _safe_diagnostic(error_info)
         diagnostics = None
         if not (
-            getattr(e, "_eapi_local_refusal", False) is True
+            local_refusal
+            or isinstance(e, SourceConfigurationError)
+            or getattr(e, "_eapi_local_refusal", False) is True
+            or getattr(e, "reason", None) == "walk_budget_exhausted"
+            or any(
+                getattr(failure, "reason", None) == "walk_budget_exhausted"
+                for failure in getattr(e, "failures", ())
+            )
             or (
                 isinstance(e, AcquisitionError)
                 and e.issued is False
@@ -2279,11 +2358,6 @@ async def main():
                     "breaker_open",
                     "walk_budget_exhausted",
                 )
-            )
-            or (
-                function_name == "acquire_book"
-                and isinstance(e, AcquisitionError)
-                and e.reason == "walk_budget_exhausted"
             )
         ) and (
             needs_eapi
@@ -2311,32 +2385,7 @@ async def main():
             error_info["type"] = failure_type(e)
             # Acquisition wrappers carry useful issuance/reason evidence, not prose.
             if "details" in error_info:
-                detail = error_info["details"]
-                error_info["details"] = {
-                    k: detail[k]
-                    for k in ("reason", "request_issued", "destination_occupied")
-                    if k in detail
-                    and (
-                        type(detail[k]) is bool
-                        or detail[k]
-                        in (
-                            "auth_rejected",
-                            "outcome_unknown",
-                            "http_error",
-                            "read_timeout",
-                            "partial_transfer",
-                            "walk_budget_exhausted",
-                            "connect_timeout",
-                            "configuration_error",
-                            "output_refused",
-                            "invalid_argument",
-                            "breaker_open",
-                            "integrity_mismatch",
-                            "protocol_error",
-                            "internal",
-                        )
-                    )
-                }
+                error_info["details"] = _safe_eapi_details(error_info["details"])
             logger.warning("", extra={"auth_diagnostics": diagnostics})
         if (
             diagnostics is not None

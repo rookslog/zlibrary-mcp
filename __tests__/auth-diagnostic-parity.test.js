@@ -7,6 +7,8 @@ import ts from 'typescript';
 import { authDiagnosticsFor, safeEapiFailureEnvelope } from '../lib/auth-diagnostics.js';
 import { isRetryableError, isTransientDependencyError, withRetry } from '../lib/retry-manager.js';
 import { BridgeTimeoutError } from '../lib/errors.js';
+import { PythonBridgeError } from '../lib/errors.js';
+import { EapiSessionOwner } from '../lib/eapi-session.js';
 import { errorEnvelope } from '../lib/tool-errors.js';
 
 const diagnostics = {
@@ -143,7 +145,8 @@ print(json.dumps(results))`,
   );
   for (const reason of reasons) {
     expect(py[reason].details.reason).toBe(reason);
-    expect(py[reason].diagnostics.failure_kind).toBe('ambiguous_status');
+    if (reason === 'walk_budget_exhausted') expect(py[reason]).not.toHaveProperty('diagnostics');
+    else expect(py[reason].diagnostics.failure_kind).toBe('ambiguous_status');
     const projected = safeEapiFailureEnvelope(py[reason]);
     expect(projected.details).toEqual({ reason, request_issued: true });
     const local = safeEapiFailureEnvelope({
@@ -244,6 +247,8 @@ test('ordinary transport fallback uses an existing code and preserves timeout/ab
 // retry policy. Every listed type must survive both language boundaries.
 test.each([
   ['src/lib/auth-diagnostics.ts', 'type'],
+  ['src/lib/auth-diagnostics.ts', 'value?.type'],
+  ['src/lib/zlibrary-api.ts', 'error?.context?.pythonErrorType'],
   ['src/lib/tool-errors.ts', 'context.pythonErrorType'],
 ])('closed consumer type parity covers %s (%s)', async (file, argument) => {
   const types = [...new Set(sourcePolicy(file, argument))];
@@ -257,4 +262,197 @@ print(json.dumps({name: failure_type(type(name, (Exception,), {})()) for name in
     expect(projected[type]).toBe(type);
     expect(safeEapiFailureEnvelope({ type, diagnostics }).type).toBe(type);
   }
+});
+
+test.each([false, true])(
+  'EAPI source status and failures survive both boundaries (aggregate=%s)',
+  async (aggregate) => {
+    const py = await python(
+      `import asyncio, contextlib, io, json, sys
+import python_bridge as bridge
+from lib.sources.errors import ProviderResponseError, AllSourcesFailedError
+aggregate = sys.argv[1]
+async def initialize(): pass
+async def dispatch(*args):
+ failure = ProviderResponseError('libgen', 'untrusted-host', 'HTTP 503', reason='http_error')
+ raise AllSourcesFailedError('download', [failure]) if aggregate == 'true' else failure
+bridge.initialize_eapi_client = initialize
+bridge._dispatch_bridge_function = dispatch
+bridge._eapi_client = None
+bridge._session_input = None
+async def run():
+ sys.argv = ['python_bridge.py', 'search', '{}']
+ stderr = io.StringIO()
+ with contextlib.redirect_stderr(stderr):
+  try: await bridge.main()
+  except SystemExit as error: assert error.code == 1
+ return json.loads(stderr.getvalue().strip().splitlines()[-1])
+print(json.dumps(asyncio.run(run())))`,
+      [JSON.stringify(aggregate)],
+    );
+    const projected = safeEapiFailureEnvelope(py);
+    const details = aggregate ? projected.details.failures[0] : projected.details;
+    expect(details).toMatchObject({ reason: 'http_error', detail: 'HTTP 503' });
+    expect(JSON.stringify(projected)).not.toContain('untrusted-host');
+    const error = { context: { pythonErrorType: projected.type, details: projected.details } };
+    expect(isTransientDependencyError(error)).toBe(true);
+    const permanent = structuredClone(projected.details);
+    (aggregate ? permanent.failures[0] : permanent).detail = 'HTTP 400';
+    expect(isTransientDependencyError({ context: { ...error.context, details: permanent } })).toBe(
+      false,
+    );
+  },
+);
+
+test.each(['operation', 'login'])(
+  'retained %s EAPI context keeps source configuration refusals local without cooldown',
+  async (action) => {
+    const reply = await python(
+      `import asyncio, contextlib, io, json, os, socket, sys
+from unittest.mock import patch
+import python_bridge as bridge
+from lib.sources.config import get_source_config
+os.environ['PYTHON_BRIDGE_TIMEOUT'] = '9999'
+bridge._eapi_client = None
+bridge._source_router = None
+bridge._session_input = {'action': sys.argv[1]}
+async def initialize(): get_source_config()
+bridge.initialize_eapi_client = initialize
+def forbidden(*args, **kwargs):
+ raise AssertionError('local configuration refusal must not contact a provider')
+async def run():
+ sys.argv = ['python_bridge.py', 'search_multi_source', '{"query":"offline","source":"libgen"}']
+ stdout, stderr = io.StringIO(), io.StringIO()
+ with contextlib.redirect_stdout(stdout), contextlib.redirect_stderr(stderr):
+  try: await bridge.main()
+  except SystemExit as error: assert error.code == 1
+ if stdout.getvalue():
+  return json.loads(json.loads(stdout.getvalue())['content'][0]['text'])
+ return json.loads(stderr.getvalue().strip().splitlines()[-1])
+with patch.object(socket, 'getaddrinfo', forbidden), patch.object(socket.socket, 'connect', forbidden):
+ print(json.dumps(asyncio.run(run())))`,
+      [action],
+    );
+    expect(reply).not.toHaveProperty('diagnostics');
+    expect(reply).not.toHaveProperty('login_failed');
+    const projected = safeEapiFailureEnvelope(reply);
+    expect(projected).toMatchObject({
+      type: 'SourceConfigurationError',
+      details: {
+        reason: 'configuration_error',
+        request_issued: false,
+        variable: 'PYTHON_BRIDGE_TIMEOUT',
+      },
+    });
+    const failure = new PythonBridgeError(
+      projected.error,
+      { pythonErrorType: projected.type, details: projected.details },
+      false,
+    );
+    const owner = new EapiSessionOwner();
+    const identity = 'retained-context-reader';
+    let logins = 0;
+    const invoke = async (input) => {
+      if (input.action === 'login') {
+        if (++logins === 1) throw failure;
+        owner.consume(
+          {
+            identity,
+            generation: input.generation,
+            domain: 'offline.invalid',
+            remix_userid: '7',
+            remix_userkey: 'synthetic-session',
+          },
+          identity,
+          input.generation,
+        );
+      }
+      return 'ok';
+    };
+    await expect(owner.run(identity, invoke)).rejects.toBe(failure);
+    await expect(owner.run(identity, invoke)).resolves.toBe('ok');
+    expect(logins).toBe(2);
+  },
+);
+
+test('source detail projection drops provider prose and malformed HTTP status tokens', () => {
+  const projected = safeEapiFailureEnvelope({
+    type: 'RuntimeError',
+    diagnostics,
+    details: {
+      reason: 'http_error',
+      detail: 'HTTP 503 secret',
+      host: 'secret.invalid',
+      failures: [
+        null,
+        {
+          provider: 'libgen',
+          reason: 'http_error',
+          detail: 'HTTP 503\n',
+          message: 'secret',
+        },
+        { provider: 'secret', reason: 'secret', detail: 'HTTP 503' },
+      ],
+    },
+  });
+  expect(projected.details).toEqual({
+    reason: 'http_error',
+    failures: [{ provider: 'libgen', reason: 'http_error' }, {}],
+  });
+  expect(JSON.stringify(projected)).not.toContain('secret');
+});
+
+test('Python and TypeScript source projection reasons stay in parity with Node controls', async () => {
+  const typescriptReasons = sourcePolicy('src/lib/auth-diagnostics.ts', 'detail.reason');
+  expect(typescriptReasons).toHaveLength(new Set(typescriptReasons).size);
+  const py = await python(
+    `import ast, inspect, json
+import python_bridge as bridge
+from lib.sources.errors import REASON_TEXT
+tree = ast.parse(inspect.getsource(bridge._safe_eapi_details))
+assignment = next(node for node in ast.walk(tree) if isinstance(node, ast.Assign)
+ and any(isinstance(target, ast.Name) and target.id == 'reasons' for target in node.targets))
+expression = assignment.value
+assert isinstance(expression, ast.BinOp) and isinstance(expression.op, ast.BitOr)
+assert ast.unparse(expression.left) == 'set(REASON_TEXT)'
+reasons = sorted(set(REASON_TEXT) | ast.literal_eval(expression.right))
+projected = {reason: bridge._safe_eapi_details({'reason': reason,
+ 'failures': [{'provider': 'libgen', 'reason': reason}]}) for reason in reasons}
+print(json.dumps({'reasons': reasons, 'projected': projected,
+ 'unknown': bridge._safe_eapi_details({'reason': 'r1_unknown_reason'})}))`,
+  );
+  // These two Node runner controls predate this PR; Python source exceptions
+  // do not emit them. All source/acquisition reasons must survive both sides.
+  expect([...new Set(typescriptReasons)].sort()).toEqual(
+    [...py.reasons, 'timeout', 'aborted'].sort(),
+  );
+  expect(py.unknown).toEqual({});
+  for (const reason of py.reasons) {
+    expect(py.projected[reason]).toEqual({
+      reason,
+      failures: [{ provider: 'libgen', reason }],
+    });
+    expect(
+      safeEapiFailureEnvelope({
+        type: 'RuntimeError',
+        diagnostics,
+        details: py.projected[reason],
+      }).details,
+    ).toEqual(py.projected[reason]);
+  }
+  for (const reason of ['timeout', 'aborted'])
+    expect(
+      safeEapiFailureEnvelope({
+        type: 'RuntimeError',
+        diagnostics,
+        details: { reason },
+      }).details,
+    ).toEqual({ reason });
+  expect(
+    safeEapiFailureEnvelope({
+      type: 'RuntimeError',
+      diagnostics,
+      details: { reason: 'r1_unknown_reason' },
+    }).details,
+  ).toEqual({});
 });

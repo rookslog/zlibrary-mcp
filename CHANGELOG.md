@@ -19,8 +19,9 @@ Before/after examples (operator O4):
 
 - LibGen, French EPUBs: before, top rows from an unfiltered page; after,
   only French EPUBs, often none, with examined-window counts and a note.
-- Z-Library with `fr`: before, unfiltered rows could be returned; after,
-  `fr` is translated to `french` and only locally matching rows are returned.
+- Z-Library with `fr`: before, the value was forwarded without local language
+  checks; after, `fr` is normalized to `french` and every returned row is
+  checked locally. This does not assume that the native source ignored `fr`.
 - Year filter: before, unreadable/absent years could survive; after, those
   rows are excluded and counted as unknown unless another field mismatches.
 - `exact` on LibGen alone: before, rows with ignored `exact`; after, an

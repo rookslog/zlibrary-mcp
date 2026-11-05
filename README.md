@@ -9,12 +9,24 @@ and download the original file. Five MCP tools serve Library Genesis, Z-Library 
 Anna's Archive. Book contents never enter the tool response; paths refer to the
 server's disk. See [VISION.md](VISION.md) for the commitments and non-goals.
 
+**Release status:** This README describes the 2.0 interface, which is not yet published on npm or as a Docker image.
+`npm install -g zlibrary-mcp` and the Docker image `ghcr.io/rookslog/zlibrary-mcp:latest`
+currently provide 1.4.0, whose tools differ; use the
+[v1.4.0 README](https://github.com/rookslog/zlibrary-mcp/blob/v1.4.0/README.md) for that release,
+or [install from source](#from-source-for-development) for 2.0.
+
 **2.0 is a breaking interface change.** Saved 1.x tool names are not aliases.
 See the complete [migration table](https://github.com/rookslog/zlibrary-mcp/blob/master/docs/interface-migration.md) and
 [API reference](docs/api.md). The npm package, executable, repository and client
 configuration keys keep their existing names; `serverInfo.name` is `book-acquisition`.
 
 ## Quick Start
+
+**Release status:** This README describes the 2.0 interface, which is not yet published on npm or as a Docker image.
+`npm install -g zlibrary-mcp` and the Docker image `ghcr.io/rookslog/zlibrary-mcp:latest`
+currently provide 1.4.0, whose tools differ; use the
+[v1.4.0 README](https://github.com/rookslog/zlibrary-mcp/blob/v1.4.0/README.md) for that release,
+or [install from source](#from-source-for-development) for 2.0.
 
 **Prerequisites:** Node.js 22+, Python 3.10+, [uv](https://docs.astral.sh/uv/).
 
@@ -39,7 +51,8 @@ Add the server to your MCP client configuration:
 No credentials are needed for Library Genesis. The server starts without a
 Z-Library account; it warns on stderr and keeps the other sources available.
 For Z-Library, add `ZLIBRARY_EMAIL` and `ZLIBRARY_PASSWORD` in the client's `env`.
-For Anna's Archive downloads, add `ANNAS_SECRET_KEY`; its search needs no key.
+For Anna's Archive downloads, add `ANNAS_SECRET_KEY`. Its search needs no key, but the
+site's browser check often refuses it ([#139](https://github.com/rookslog/zlibrary-mcp/issues/139)).
 
 ## Available MCP Tools
 
@@ -107,7 +120,7 @@ Other sources expose one upstream page, sliced locally, with a stated row cap.
 |---|---|---|---|---|
 | `libgen` | None | Yes | Yes | No daily limit |
 | `zlibrary` | Account email and password | With account | With account | Provider daily quota |
-| `annas` | Key required only for download | Without key | With membership API key | Membership-dependent |
+| `annas` | Key required only for download | Often refused by the site's browser check ([#139](https://github.com/rookslog/zlibrary-mcp/issues/139)) | With membership API key | Membership-dependent |
 
 `get_limits` defaults to `mode: "local"`: no network, no account call. It reports
 configuration, search/download availability and supported operations for each
@@ -238,6 +251,7 @@ Add account variables only for the sources you use. The container wraps stdio
 with SuperGateway at `http://localhost:8000/sse`. Remote clients receive paths on
 the **server**, not downloadable attachments or local client paths. There is no
 file-reading tool in this five-tool interface.
+The published Docker image is still 1.4.0 until 2.0 is released.
 
 ## Configuration
 

@@ -729,6 +729,51 @@ class TestLibgenSearchProbeUsesProductionAdapter:
 class TestLibgenArticleSearchProbe:
     """The article canary is separate from the existing book-row canary."""
 
+    def test_article_fixture_through_production_parser_and_probe(self, check_upstream):
+        """Catch parser/conversion drift hidden by separately stubbed canary rows."""
+        from unittest.mock import MagicMock, patch
+        from lib.sources.config import SourceConfig
+
+        fixture = (
+            MODULE_PATH.parent.parent
+            / "test_files/libgen/mixed_book_article_results.html"
+        ).read_text()
+        response = MagicMock(status_code=200, text=fixture)
+        seen = []
+        real_predicate = check_upstream._usable_article_canary_row
+
+        def observe(row):
+            if real_predicate(row):
+                seen.append((row.md5, row.extra["id"], row.extra["content_type"]))
+            return real_predicate(row)
+
+        async def inline_worker(func, *_args, **_kwargs):
+            # Worker deadlines/threads have separate tests; keep the parser
+            # and canary integration deterministic on this test's thread.
+            return func()
+
+        async def go():
+            with (
+                patch.object(
+                    check_upstream,
+                    "get_source_config",
+                    return_value=SourceConfig(preflight_enabled=False),
+                ),
+                patch("requests.get", return_value=response),
+                patch("lib.sources.libgen.run_bounded", side_effect=inline_worker),
+                patch.object(check_upstream, "_usable_article_canary_row", observe),
+            ):
+                async with httpx.AsyncClient(
+                    transport=httpx.MockTransport(lambda request: httpx.Response(500))
+                ) as client:
+                    return await check_upstream.probe_libgen_article(client)
+
+        result = asyncio.run(go())
+        assert result.ok is True
+        assert result.name == "libgen:article-search"
+        assert "1 usable article result(s)" in result.detail
+        assert seen == [("e3f85ebc6faa062bceb95b349f369672", "76430726", "article")]
+
     def _run(self, check_upstream, search_impl):
         from unittest.mock import patch
 

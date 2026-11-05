@@ -99,7 +99,37 @@ jobs:
           # Empty repository variable means the default. Set to zlibrary to
           # retain warning-only behaviour for Anna's Archive and LibGen.
           UPSTREAM_RELIED_SOURCES: ${{ vars.UPSTREAM_RELIED_SOURCES || 'zlibrary,libgen' }}
-        run: uv run python scripts/check_upstream.py --github-output --previous-issue previous-upstream-issue.md --report-file upstream-report.txt
+        run: |
+          command_token="$(python3 -c 'import secrets; print(secrets.token_hex(32))')"
+          printf '::stop-commands::%s\n' "$command_token"
+          trap 'printf "::%s::\n" "$command_token"' EXIT
+          uv run python scripts/check_upstream.py --github-output --previous-issue previous-upstream-issue.md --report-file upstream-report.txt 2>&1
+      - name: Report source warning
+        id: source_warning
+        if: always()
+        run: |
+          python3 - <<'PY'
+          import json
+          from datetime import date
+          from pathlib import Path
+          try:
+              data = json.loads(Path("upstream-report.json").read_text(encoding="utf-8"))
+          except (OSError, ValueError):
+              raise SystemExit(0)
+          rows = data.get("results", []) if isinstance(data, dict) else []
+          for row in rows if isinstance(rows, list) else []:
+              if not isinstance(row, dict) or row.get("source") != "annas-archive" or row.get("ok") is not False or row.get("relied_on") is not False:
+                  continue
+              value = row.get("first_seen")
+              try:
+                  day = date.fromisoformat(value)
+              except (TypeError, ValueError):
+                  continue
+              if day.isoformat() != value or day > date.today():
+                  continue
+              status = row.get("status") if row.get("status") in ("blocked", "changed") else "changed"
+              print(f"::warning::Anna's Archive probe is {status}; first seen {value} (UTC); warning-only alert policy.")
+          PY
       - uses: actions/upload-artifact@v7
         if: always()
         with:
@@ -148,6 +178,21 @@ jobs:
           fi
           if [ "$ZLIB_BLOCKED" != "false" ]; then
             echo "::warning::Z-Library reachability block state is unknown — live suite skipped without logging in."
+            echo "status=unknown" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          if ! python3 - "$ZLIB_PROBE_DOMAIN" <<'PY'
+          import ast
+          import os
+          import sys
+          from pathlib import Path
+          source = Path(os.environ.get("GITHUB_WORKSPACE", ".")) / "zlibrary/src/zlibrary/eapi.py"
+          tree = ast.parse(source.read_text(encoding="utf-8"))
+          domains = next(ast.literal_eval(node.value) for node in tree.body if isinstance(node, ast.Assign) and any(isinstance(target, ast.Name) and target.id == "DEFAULT_EAPI_DOMAINS" for target in node.targets))
+          raise SystemExit(0 if sys.argv[1] in domains else 1)
+          PY
+          then
+            echo "::warning::Z-Library probe domain is not configured — live suite skipped."
             echo "status=unknown" >> "$GITHUB_OUTPUT"
             exit 0
           fi
@@ -274,7 +319,7 @@ jobs:
               report,
               '',
               ...(!failed ? [`Recovered: ${recoveredAt} (UTC)`, `<!-- upstream-recovered-at: ${recoveredAt} -->`, ''] : []),
-              'Unit tests mock these calls and will stay green, so triage from the run log.',
+              'Unit tests mock these calls and will stay green, so triage from the report above or the run artifact.',
             ].join('\n');
 
             if (existing) {

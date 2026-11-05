@@ -131,7 +131,8 @@ PARKING_MARKERS = (
 
 def _single_line(value: str) -> str:
     """Keep upstream values within one report row or workflow annotation."""
-    return re.sub(r"[\r\n]+", " ", value).replace("##[", "## [")
+    value = re.sub(r"[\r\n]+", " ", value).replace("##[", "## [")
+    return re.sub(r"^(\s*)::", r"\1: :", value)
 
 
 @dataclass
@@ -189,6 +190,21 @@ def _block_detail(resp: httpx.Response) -> Optional[str]:
     )
 
 
+def _accepted_eapi_reply(payload: Any) -> bool:
+    return isinstance(payload, dict) and (
+        _auth_rejected(payload)
+        or (
+            ("success" not in payload or payload["success"] == 1)
+            and not payload.get("error")
+        )
+    )
+
+
+def _valid_domain_entry(value: Any) -> bool:
+    domain = value.get("domain") if isinstance(value, dict) else value
+    return isinstance(domain, str) and bool(domain.strip())
+
+
 async def probe_zlibrary_eapi(client: httpx.AsyncClient) -> list[ProbeResult]:
     """Check the EAPI domain-discovery endpoint and the search endpoint's shape."""
     results: list[ProbeResult] = []
@@ -215,7 +231,8 @@ async def probe_zlibrary_eapi(client: httpx.AsyncClient) -> list[ProbeResult]:
             has_shape = (
                 isinstance(domains, list)
                 and bool(domains)
-                and (payload.get("success") != 0 or _auth_rejected(payload))
+                and all(_valid_domain_entry(value) for value in domains)
+                and _accepted_eapi_reply(payload)
             )
             results.append(
                 ProbeResult(
@@ -264,7 +281,7 @@ async def probe_zlibrary_eapi(client: httpx.AsyncClient) -> list[ProbeResult]:
             isinstance(payload, dict)
             and ("books" in payload or "success" in payload)
             and ("books" not in payload or isinstance(payload["books"], list))
-            and (payload.get("success") != 0 or _auth_rejected(payload))
+            and _accepted_eapi_reply(payload)
         )
         results.append(
             ProbeResult(
@@ -686,58 +703,59 @@ async def _probe_libgen_download_mirror(
                 "User-Agent": libgen_user_agent(),
             },
         )
+
+        blocked = _libgen_block_detail(mirror, resp)
+        if blocked:
+            return False, blocked, True
+
+        final_url = str(resp.url)
+        hops = [str(r.headers.get("location", "")) for r in resp.history]
+        if "/ads.php" in urlsplit(final_url).path or any("/ads.php" in h for h in hops):
+            return (
+                False,
+                f"{mirror}: key {key} bounced back to /ads.php — expired or "
+                "rejected key (this returns HTTP 200 HTML, not an error, so it "
+                "must be detected by the redirect target)",
+                False,
+            )
+
+        cdn_host = urlsplit(final_url).netloc or f"libgen.{mirror}"
+        if resp.status_code not in (200, 206):
+            return (
+                False,
+                f"{mirror}: get.php -> {cdn_host} returned HTTP {resp.status_code}",
+                False,
+            )
+
+        content_type = (resp.headers.get("content-type") or "").lower()
+        if "html" in content_type:
+            return (
+                False,
+                f"{mirror}: get.php -> {cdn_host} served a page, not a file "
+                f"(HTTP {resp.status_code}, content-type {content_type or 'unset'})",
+                False,
+            )
+
+        body = resp.content
+        if not body.startswith(b"%PDF"):
+            return (
+                False,
+                f"{mirror}: get.php -> {cdn_host} returned HTTP {resp.status_code} "
+                f"but the bytes are not a PDF (first 8: {body[:8]!r})",
+                False,
+            )
+
+        return (
+            True,
+            f"{mirror}: ads.php key -> {cdn_host} HTTP {resp.status_code}, "
+            f"{len(body)} bytes of PDF (content-type {content_type or 'unset'})",
+            False,
+        )
+
     except Exception as exc:  # noqa: BLE001
         # A dead CDN node lands here (cdn4.booksdl.lc failed TLS on
         # 2026-08-10). That is a real capability failure, not a block.
         return False, f"{mirror}: get.php {type(exc).__name__}: {exc}", False
-
-    blocked = _libgen_block_detail(mirror, resp)
-    if blocked:
-        return False, blocked, True
-
-    final_url = str(resp.url)
-    hops = [str(r.headers.get("location", "")) for r in resp.history]
-    if "/ads.php" in urlsplit(final_url).path or any("/ads.php" in h for h in hops):
-        return (
-            False,
-            f"{mirror}: key {key} bounced back to /ads.php — expired or "
-            "rejected key (this returns HTTP 200 HTML, not an error, so it "
-            "must be detected by the redirect target)",
-            False,
-        )
-
-    cdn_host = urlsplit(final_url).netloc or f"libgen.{mirror}"
-    if resp.status_code not in (200, 206):
-        return (
-            False,
-            f"{mirror}: get.php -> {cdn_host} returned HTTP {resp.status_code}",
-            False,
-        )
-
-    content_type = (resp.headers.get("content-type") or "").lower()
-    if "html" in content_type:
-        return (
-            False,
-            f"{mirror}: get.php -> {cdn_host} served a page, not a file "
-            f"(HTTP {resp.status_code}, content-type {content_type or 'unset'})",
-            False,
-        )
-
-    body = resp.content
-    if not body.startswith(b"%PDF"):
-        return (
-            False,
-            f"{mirror}: get.php -> {cdn_host} returned HTTP {resp.status_code} "
-            f"but the bytes are not a PDF (first 8: {body[:8]!r})",
-            False,
-        )
-
-    return (
-        True,
-        f"{mirror}: ads.php key -> {cdn_host} HTTP {resp.status_code}, "
-        f"{len(body)} bytes of PDF (content-type {content_type or 'unset'})",
-        False,
-    )
 
 
 async def probe_libgen_download(client: httpx.AsyncClient) -> ProbeResult:
@@ -785,13 +803,30 @@ async def run_probes() -> list[ProbeResult]:
         follow_redirects=True,
         headers={"User-Agent": "zlibrary-mcp-upstream-check"},
     ) as client:
-        zlib_results, annas, libgen_canaries, libgen_download = await asyncio.gather(
-            probe_zlibrary_eapi(client),
-            probe_annas(client),
-            probe_libgen_canaries(client),
-            probe_libgen_download(client),
+        probes = [
+            ("zlibrary:probe", probe_zlibrary_eapi(client)),
+            ("annas-archive:search", probe_annas(client)),
+            ("libgen:canaries", probe_libgen_canaries(client)),
+            ("libgen:download", probe_libgen_download(client)),
+        ]
+        collected = await asyncio.gather(
+            *(probe for _, probe in probes), return_exceptions=True
         )
-    return [*zlib_results, annas, *libgen_canaries, libgen_download]
+    results = []
+    for (name, _), value in zip(probes, collected):
+        if isinstance(value, Exception):
+            results.append(ProbeResult(name, False, f"{type(value).__name__}: {value}"))
+        elif isinstance(value, BaseException):
+            raise value
+        elif isinstance(value, ProbeResult):
+            results.append(value)
+        elif isinstance(value, (list, tuple)) and all(
+            isinstance(row, ProbeResult) for row in value
+        ):
+            results.extend(value)
+        else:
+            results.append(ProbeResult(name, False, "probe returned an invalid result"))
+    return results
 
 
 def actionable_failures(results: list[ProbeResult]) -> list[ProbeResult]:
@@ -977,7 +1012,7 @@ def main() -> int:
     parser.add_argument(
         "--github-output",
         action="store_true",
-        help="also write failed/report to $GITHUB_OUTPUT",
+        help="write failed/report to $GITHUB_OUTPUT instead of stdout",
     )
     parser.add_argument(
         "--report-file",
@@ -990,6 +1025,10 @@ def main() -> int:
         help="previous rolling issue body, used only to retain first-seen dates",
     )
     args = parser.parse_args()
+
+    if args.github_output and (output := os.environ.get("GITHUB_OUTPUT")):
+        with open(output, "a", encoding="utf-8") as handle:
+            handle.write("zlib_blocked=unknown\nzlib_domain=\n")
 
     try:
         relied_sources()

@@ -183,13 +183,18 @@ reported healthy on a configured candidate domain. A recognized Z-Library wall
 reports `true`; other failed or inconclusive probes report `unknown`. Only a
 complete accepted Z-Library probe set emits `false`: both final response hosts
 must match the configured domain, domains must be a non-empty list, and books
-must be a list when present. A zero success value is rejected except for the
-known unauthenticated responses recognized by the runtime's auth helper.
+must be a list when present. A success field must be absent or 1, and truthy error fields are rejected except
+for the known unauthenticated responses recognized by the runtime's auth helper.
+Every domain entry must be a non-empty string or a dictionary containing a
+non-empty domain string.
 Anna warning-only results also produce a run annotation. Upstream values are
 kept on one line before rendering; multi-line workflow outputs use a fresh
 random delimiter, and the domain output is limited to configured candidates.
-Workflow-output mode prints only the fixed warning annotation, keeping the report
-in its output file and optional artifacts. Ordinary CLI reports retain their text
+Workflow-output mode initializes an inconclusive state before probing and keeps
+the report in its output file and optional artifacts. The scheduled probe runs
+inside a per-run console guard that covers both output streams and failures.
+A later step emits the warning annotation using validated summary fields.
+The live step checks the configured domain list directly before continuing. Ordinary CLI reports retain their text
 or JSON output with neutral report values. Upstream text is fenced, comment
 delimiters are escaped, and
 only the last machine marker supplies carried dates. Only the exact rolling issue

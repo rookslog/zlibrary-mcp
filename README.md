@@ -49,7 +49,8 @@ Add the server to your MCP client configuration:
 No credentials are needed for Library Genesis. The server starts without a
 Z-Library account; it warns on stderr and keeps the other sources available.
 For Z-Library, add `ZLIBRARY_EMAIL` and `ZLIBRARY_PASSWORD` in the client's `env`.
-For Anna's Archive downloads, add `ANNAS_SECRET_KEY`; its search needs no key.
+For Anna's Archive downloads, add `ANNAS_SECRET_KEY`. Its search needs no key, but the
+site's browser check often refuses it ([#139](https://github.com/rookslog/zlibrary-mcp/issues/139)).
 
 ## Available MCP Tools
 
@@ -100,7 +101,7 @@ Other sources expose one upstream page, sliced locally, with a stated row cap.
 |---|---|---|---|---|
 | `libgen` | None | Yes | Yes | No daily limit |
 | `zlibrary` | Account email and password | With account | With account | Provider daily quota |
-| `annas` | Key required only for download | Without key | With membership API key | Membership-dependent |
+| `annas` | Key required only for download | Often refused by the site's browser check ([#139](https://github.com/rookslog/zlibrary-mcp/issues/139)) | With membership API key | Membership-dependent |
 
 `get_limits` defaults to `mode: "local"`: no network, no account call. It reports
 configuration, search/download availability and supported operations for each

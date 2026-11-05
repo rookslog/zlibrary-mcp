@@ -110,7 +110,7 @@ jobs:
         run: |
           python3 - <<'PY'
           import json
-          from datetime import date
+          from datetime import date, datetime, timezone
           from pathlib import Path
           try:
               data = json.loads(Path("upstream-report.json").read_text(encoding="utf-8"))
@@ -125,7 +125,7 @@ jobs:
                   day = date.fromisoformat(value)
               except (TypeError, ValueError):
                   continue
-              if day.isoformat() != value or day > date.today():
+              if day.isoformat() != value or day > datetime.now(timezone.utc).date():
                   continue
               status = row.get("status") if row.get("status") in ("blocked", "changed") else "changed"
               print(f"::warning::Anna's Archive probe is {status}; first seen {value} (UTC); warning-only alert policy.")
@@ -170,17 +170,6 @@ jobs:
           ZLIB_PROBE_DOMAIN: ${{ needs.reachability.outputs.zlib_domain }}
           ZLIBRARY_EAPI_DOMAIN: ${{ needs.reachability.outputs.zlib_domain }}
         run: |
-          if [ "$ZLIB_BLOCKED" = "true" ]; then
-            echo "::warning::Z-Library reachability probe reported a block on $ZLIB_PROBE_DOMAIN — live suite skipped. Run npm run doctor from another network to distinguish an IP refusal from a domain-wide wall."
-            echo "status=blocked" >> "$GITHUB_OUTPUT"
-            echo "blocked=true" >> "$GITHUB_OUTPUT"
-            exit 0
-          fi
-          if [ "$ZLIB_BLOCKED" != "false" ]; then
-            echo "::warning::Z-Library reachability block state is unknown — live suite skipped without logging in."
-            echo "status=unknown" >> "$GITHUB_OUTPUT"
-            exit 0
-          fi
           if ! python3 - "$ZLIB_PROBE_DOMAIN" <<'PY'
           import ast
           import os
@@ -193,6 +182,17 @@ jobs:
           PY
           then
             echo "::warning::Z-Library probe domain is not configured — live suite skipped."
+            echo "status=unknown" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          if [ "$ZLIB_BLOCKED" = "true" ]; then
+            echo "::warning::Z-Library reachability probe reported a block on $ZLIB_PROBE_DOMAIN — live suite skipped. Run npm run doctor from another network to distinguish an IP refusal from a domain-wide wall."
+            echo "status=blocked" >> "$GITHUB_OUTPUT"
+            echo "blocked=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          if [ "$ZLIB_BLOCKED" != "false" ]; then
+            echo "::warning::Z-Library reachability block state is unknown — live suite skipped without logging in."
             echo "status=unknown" >> "$GITHUB_OUTPUT"
             exit 0
           fi

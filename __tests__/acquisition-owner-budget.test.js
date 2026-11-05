@@ -22,6 +22,7 @@ beforeEach(() => {
   jest.resetModules();
 });
 afterEach(() => {
+  jest.restoreAllMocks();
   clock?.restore();
   clock = undefined;
   // A Jest timeout must still reap a child whose startup watchdog was paused.
@@ -65,8 +66,9 @@ test.each([
     // This checks budget propagation and reserve arithmetic, not startup speed.
     // Keep the exact owner value reaching Python, but freeze Node's watchdog
     // while real Python starts. The fixture retains the real asyncio watchdog;
-    // python-runner.test.js covers Node watchdog expiry separately.
+    // Assert its scheduled delay here; python-runner.test.js covers expiry.
     clock = useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+    const watchdog = jest.spyOn(globalThis, 'setTimeout');
     const result = await api.invokeAcquisitionBridge(
       'acquire_book',
       {
@@ -76,6 +78,7 @@ test.each([
       },
       { timeoutMs },
     );
+    expect(watchdog).toHaveBeenCalledWith(expect.any(Function), timeoutMs);
     expect(result.budget).toBeCloseTo(budget, 8);
     expect(result.transfer_slice).toBeCloseTo(slice, 8);
   },

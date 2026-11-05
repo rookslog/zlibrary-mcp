@@ -468,8 +468,10 @@ The vendored logger writes lines to `logs/zlibrary_debug.log` using
 `timestamp - logger - level - message` (`zlibrary/src/zlibrary/logger.py`).
 The path is relative to the working directory where the server was started.
 Under the bridge, `DiagnosticLogFilter` (`lib/auth_diagnostics.py`) drops ordinary
-`zlibrary` and `zlibrary.*` records. The file holds only allowlisted diagnostic
-records whose message is compact JSON, including records from `zlibrary.sources`.
+`zlibrary` and `zlibrary.*` records. Surviving records carry an allowlisted
+`auth_diagnostics` payload, projected to compact JSON. Currently only
+`lib/python_bridge.py` emits these diagnostics, through the `zlibrary` logger;
+ordinary `zlibrary.sources` messages are dropped.
 A quiet tail does not mean nothing happened: ordinary records are suppressed.
 
 The TypeScript logger writes plain text to stderr (`src/lib/logger.ts`), and
@@ -478,33 +480,40 @@ the Python bridge's logging configuration also uses a text prefix
 message is JSON. They do not emit structured `module` or `duration` fields for
 operation filtering or timing analysis.
 
-### Log Aggregation Script
+### Diagnostic Failure Counts
+
+Extract the JSON message after the vendored logger's text prefix and count its
+`failure_kind`. This reads existing logs only. Domain-discovery, login prose and
+memory messages are suppressed by the bridge filter, so grepping for them
+cannot diagnose those events. Measure memory separately with system tools.
 
 ```bash
-#!/bin/bash
-# analyze_logs.sh - Aggregate and analyze logs
+python3 - <<'PY'
+from collections import Counter
+import json
+from pathlib import Path
 
-echo "Error Summary:"
-grep -i error logs/*.log | cut -d: -f4- | sort | uniq -c | sort -rn | head -10
-
-echo -e "\nFailed Domains:"
-grep "domain.*failed" logs/*.log | cut -d'"' -f4 | sort | uniq -c
-
-echo -e "\nAuthentication Issues:"
-grep -i "auth\|login" logs/*.log | grep -i "fail\|error" | tail -5
-
-echo -e "\nMemory Usage:"
-grep "memory" logs/*.log | tail -5
+counts = Counter()
+for line in Path('logs/zlibrary_debug.log').read_text().splitlines():
+    fields = line.split(' - ', 3)
+    if len(fields) != 4 or fields[1] != 'zlibrary':
+        continue
+    try:
+        record = json.loads(fields[3])
+    except json.JSONDecodeError:
+        continue  # Historical or direct-library records can be plain text.
+    if isinstance(record, dict) and isinstance(record.get('failure_kind'), str):
+        counts[record['failure_kind']] += 1
+for kind, count in counts.most_common():
+    print(f'{kind}: {count}')
+PY
 ```
 
 ### Real-time Log Monitoring
 
 ```bash
-# Watch errors in real-time
-tail -f logs/*.log | grep --line-buffered -i error
-
-# Watch bridge diagnostic records
-tail -f logs/zlibrary_debug.log | grep --line-buffered -E ' - zlibrary(\.[^ ]+)? - '
+# Watch projected bridge diagnostics (including WARNING-level failures)
+tail -f logs/zlibrary_debug.log | grep --line-buffered -E ' - zlibrary - (WARNING|ERROR|CRITICAL) - \{'
 ```
 
 ## Emergency Recovery

@@ -99,7 +99,10 @@ availability fields to plan calls. Anna's search requires a usable HTTP(S)
 `ANNAS_BASE_URL` (default `https://annas-archive.gl`); download and `configured`
 additionally require a trusted host and `ANNAS_SECRET_KEY`.
 `mode: "live"` adds Z-Library account numbers; remaining quota is omitted when
-spend is unknown. A source failure remains
+spend is unknown. For Z-Library, use the daily limit (`per_day`) as the quota
+signal: `premium` reflects the provider's `isPremium` flag, which can stay true
+after a plan lapses even when the daily limit returns to the free level.
+A source failure remains
 in that source's `error` entry without discarding other reports. `none`, `daily`,
 `unknown` and `unparsed` are distinct limit kinds. Availability is local
 configuration, not a reachability probe. Only Z-Library supports account history.

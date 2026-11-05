@@ -723,7 +723,7 @@ export class AcquisitionTools {
           : []),
         ...(!books.length
           ? [
-              `${Object.keys(filterRequest).length ? 'No matches' : 'No rows returned'} in these windows; later matches may exist. ${attempts.some((a) => a.source === 'zlibrary' && a.filtering) ? 'Try a narrower query' : 'Try zlibrary or a narrower query'} without relaxing filters. To see rows excluded for unknown metadata, search without the affected metadata filters.`,
+              `${Object.keys(filterRequest).length ? 'No matches' : 'No rows returned'} in these windows; later matches may exist. ${attempts.some((a) => a.source === 'zlibrary') ? 'Try a narrower query' : 'Try zlibrary or a narrower query'} without relaxing filters. To see rows excluded for unknown metadata, search without the affected metadata filters.`,
             ]
           : []),
       ].join(' ');

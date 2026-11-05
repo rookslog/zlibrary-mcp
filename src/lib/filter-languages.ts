@@ -197,7 +197,10 @@ const aliases = new Map<string, string>(
   languages.flatMap(([native, ...codes]) =>
     native === 'indigenous'
       ? []
-      : [native, ...codes].map((value): [string, string] => [value.toLowerCase(), native]),
+      : [native, native.replace(/[_-]/g, ' '), ...codes].map((value): [string, string] => [
+          value.toLowerCase(),
+          native,
+        ]),
   ),
 );
 

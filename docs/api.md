@@ -54,7 +54,10 @@ request. Unknown language values stay literal and appear in
 `filtering.unrecognized.languages`; they are matched literally, never silently
 ignored. Recognized names/codes are case-insensitive; native Z-Library sending
 uses deduplicated names (`fr` → `french`, `en` plus `english` → one `english`).
-The same aliases apply to rows. `nb` and `nn` map to Norwegian. Semicolon row
+The same aliases apply to rows. Multi-word native names also recognize spaced
+spellings (`Central khmer` → `central_khmer`, `Luba katanga` → `luba-katanga`);
+the native values sent to Z-Library retain their existing spellings.
+`nb` and `nn` map to Norwegian. Semicolon row
 languages use membership (`English;French` matches `fr`). ISO code aliases cover
 every supported language name, including Afrikaans (`af`) and Swahili (`sw`).
 `Traditional chinese` maps to `chinese`. The generic category `indigenous` has

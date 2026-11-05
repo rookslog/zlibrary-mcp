@@ -599,24 +599,98 @@ test.each(transportCases)(
 );
 
 // Real Python validation occurs before the offline provider transport is reached.
-test('pre-dispatch argument ValueError retains invalid_argument without provider contact', async () => {
-  const failure = await api.searchBooks({ query: 'offline', count: 0 }).catch((error) => error);
-  expect(envelope(failure, 'search', 'zlibrary').error.code).toBe('invalid_argument');
-  expect(fs.existsSync(callsFile)).toBe(false);
+test.each(['per-call', 'memory'])(
+  'pre-dispatch argument ValueError in %s retains invalid_argument without provider contact',
+  async (mode) => {
+    process.env.ZLIBRARY_SESSION_MODE = mode;
+    const failure = await api.searchBooks({ query: 'offline', count: 0 }).catch((error) => error);
+    expect(envelope(failure, 'search', 'zlibrary').error.code).toBe('invalid_argument');
+    expect(fs.existsSync(callsFile)).toBe(false);
+  },
+);
+
+test.each(['per-call', 'memory'])(
+  'pre-dispatch local argument refusal in %s has no EAPI request diagnostic',
+  async (mode) => {
+    process.env.ZLIBRARY_SESSION_MODE = mode;
+    const failure = await api.searchBooks({ query: 'offline', count: 0 }).catch((error) => error);
+    expect(failure).toBeInstanceOf(Error);
+    expect(envelope(failure, 'search', 'zlibrary').error.detail).not.toHaveProperty('diagnostics');
+    expect(fs.existsSync(callsFile)).toBe(false);
+  },
+);
+
+test.each(['per-call', 'memory'])(
+  'missing credentials in %s project credentials_missing without provider diagnostics',
+  async (mode) => {
+    process.env.ZLIBRARY_SESSION_MODE = mode;
+    delete process.env.ZLIBRARY_EMAIL;
+    delete process.env.ZLIBRARY_PASSWORD;
+    const failure = await api.searchBooks({ query: 'offline' }).catch((error) => error);
+    expect(failure).toBeInstanceOf(Error);
+    expect(envelope(failure, 'search', 'zlibrary').error.code).toBe('credentials_missing');
+    expect(envelope(failure, 'search', 'zlibrary').error.detail).not.toHaveProperty('diagnostics');
+    expect(fs.existsSync(callsFile)).toBe(false);
+  },
+);
+
+test('memory argument refusals do not start login cooldown before a valid search', async () => {
+  process.env.ZLIBRARY_SESSION_MODE = 'memory';
+  for (const arguments_ of [{ count: 0 }, { page: 0 }]) {
+    const failure = await api
+      .invokeAcquisitionBridge('search', { query: 'offline', ...arguments_ })
+      .catch((error) => error);
+    expect(failure).toBeInstanceOf(Error);
+    expect(fs.existsSync(callsFile)).toBe(false);
+  }
+  await expect(api.searchBooks({ query: 'offline' })).resolves.toMatchObject({ books: [] });
+  const calls = fs.readFileSync(callsFile, 'utf8').trim().split('\n');
+  expect(calls.filter((route) => route === '/eapi/user/login')).toHaveLength(1);
+  expect(calls.filter((route) => route === '/eapi/book/search')).toHaveLength(1);
 });
 
-test('pre-dispatch local argument refusal has no EAPI request diagnostic', async () => {
-  const failure = await api.searchBooks({ query: 'offline', count: 0 }).catch((error) => error);
-  expect(failure).toBeInstanceOf(Error);
-  expect(envelope(failure, 'search', 'zlibrary').error.detail).not.toHaveProperty('diagnostics');
-  expect(fs.existsSync(callsFile)).toBe(false);
-});
+test.each([{ unknown_option: true }, { processed_output_format: 'txt' }])(
+  'memory download argument refusal %j has no login diagnostic or cooldown',
+  async (invalid) => {
+    process.env.ZLIBRARY_SESSION_MODE = 'memory';
+    const failure = await api
+      .invokeAcquisitionBridge('download_book', {
+        book_details: { id: '17', book_hash: 'hash', source: 'zlibrary' },
+        output_dir: temporary,
+        ...invalid,
+      })
+      .catch((error) => error);
+    expect(failure).toBeInstanceOf(Error);
+    expect(envelope(failure, 'download', 'zlibrary').error.code).toBe('invalid_argument');
+    expect(failure.context.diagnostics).toBeUndefined();
+    expect(failure.context.reason).not.toBe('login_failed');
+    expect(fs.existsSync(callsFile)).toBe(false);
+    await expect(api.searchBooks({ query: 'offline' })).resolves.toMatchObject({ books: [] });
+    expect(fs.readFileSync(callsFile, 'utf8').trim().split('\n')).toEqual([
+      '/eapi/user/login',
+      '/eapi/user/profile',
+      '/eapi/book/search',
+    ]);
+  },
+);
 
-test('missing credentials are a local refusal with no provider diagnostic', async () => {
-  delete process.env.ZLIBRARY_EMAIL;
-  delete process.env.ZLIBRARY_PASSWORD;
-  const failure = await api.searchBooks({ query: 'offline' }).catch((error) => error);
-  expect(failure).toBeInstanceOf(Error);
-  expect(envelope(failure, 'search', 'zlibrary').error.detail).not.toHaveProperty('diagnostics');
-  expect(fs.existsSync(callsFile)).toBe(false);
-});
+test.each(['per-call', 'memory'])(
+  'unknown function in %s is refused before login without diagnostic or cooldown',
+  async (mode) => {
+    process.env.ZLIBRARY_SESSION_MODE = mode;
+    const failure = await api
+      .invokeAcquisitionBridge('r1_unknown_function', {})
+      .catch((error) => error);
+    expect(failure).toBeInstanceOf(Error);
+    expect(envelope(failure, 'search', 'zlibrary').error.code).toBe('invalid_argument');
+    expect(failure.context.diagnostics).toBeUndefined();
+    expect(failure.context.reason).not.toBe('login_failed');
+    expect(fs.existsSync(callsFile)).toBe(false);
+    await expect(api.searchBooks({ query: 'offline' })).resolves.toMatchObject({ books: [] });
+    expect(fs.readFileSync(callsFile, 'utf8').trim().split('\n')).toEqual([
+      '/eapi/user/login',
+      ...(mode === 'memory' ? ['/eapi/user/profile'] : []),
+      '/eapi/book/search',
+    ]);
+  },
+);

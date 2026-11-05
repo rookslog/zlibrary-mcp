@@ -119,7 +119,7 @@ constraint-dependencies = [
 
 # Ruff configuration
 [tool.ruff.lint]
-# Keep the pre-0.15 rule set explicit: newer Ruff defaults enable a broad
+# Keep the pre-0.16 rule set explicit: newer Ruff defaults enable a broad
 # lint migration that is separate from upgrading the dependency.
 select = ["E4", "E7", "E9", "F"]
 # E402: Module-level import not at top of file

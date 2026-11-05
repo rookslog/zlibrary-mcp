@@ -1,6 +1,6 @@
 # Acquisition MCP API
 
-The 2.0 server exposes exactly five tools using SDK 1.32.1 and protocol
+The 2.0 server exposes exactly five tools using SDK 1.32.2 and protocol
 2025-11-25. Every result is a JSON object in `structuredContent` and a text
 block containing the identical JSON. Every tool declares success and error
 output schemas. Arguments are strict: unknown or removed fields return a typed

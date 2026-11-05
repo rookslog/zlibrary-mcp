@@ -18,7 +18,7 @@ Build a robust, resilient MCP server for Z-Library integration that provides com
 - **EAPI Transport**: JSON API endpoints bypass Cloudflare browser challenges — zero HTML scraping remains in the vendored `zlibrary/` fork
 - **Node-Side Resilience**: Every Python bridge call is wrapped in retry with exponential backoff (`src/lib/retry-manager.ts`) and a circuit breaker (`src/lib/circuit-breaker.ts`) inside `src/lib/zlibrary-api.ts`
 - **Source Diversification**: `lib/sources/` provides a `SourceAdapter` abstraction with Anna's Archive (primary) and LibGen (fallback) adapters behind a `SourceRouter`, reducing single-source risk
-- **Graceful Degradation**: Continue operating despite partial failures (e.g., booklist tools degrade when EAPI lacks endpoints)
+- **Graceful Degradation**: Optional detail fields absent upstream are omitted from `get_book` results
 - **Drift Detection, Not Assumption**: unit suites mock all third-party calls, so the scheduled Upstream Contract Check workflow and `npm run doctor` exist to catch real-world breakage
 
 ### 2. Abstraction Layers
@@ -47,16 +47,16 @@ Build a robust, resilient MCP server for Z-Library integration that provides com
 ### Working Features
 
 - **Five public MCP tools**: `search`, `get_book`, `download`, `get_limits`, and `get_history`. `TOOL_DEFINITIONS` and `createServer()` in `src/index.ts` define and register them; CI compares the registrations with the README (`scripts/validate-readme-tools.sh`)
-- EAPI JSON transport for search, metadata, browse, and download operations
+- EAPI JSON transport for search, metadata, download, account quota and history operations
 - Multi-source search (`search_multi_source`) across Anna's Archive and LibGen with automatic fallback
 - UV-based Python dependency management (project-local `.venv/`, `uv.lock`)
 - Health check with Cloudflare detection; scheduled upstream contract monitoring
 
 ### Known Limitations
 
-- Booklist tools gracefully degrade (no EAPI booklist endpoint)
-- Full-text search routes through regular EAPI search (no dedicated mode)
-- Terms and IPFS CIDs return empty defaults (not available via EAPI)
+- No public booklist tools (no EAPI booklist endpoint)
+- Public `search` searches catalogue metadata, not text inside books
+- `get_book` omits terms, booklists and IPFS IDs (not available via EAPI)
 - Anna's Archive adapter (`lib/sources/annas.py`) is the residual HTML-parsed surface
 - Z-Library itself is not yet a `SourceAdapter` — its tools bypass `SourceRouter`
 
@@ -68,31 +68,16 @@ Build a robust, resilient MCP server for Z-Library integration that provides com
 
 ## Domain Model
 
-### Core Entities (TypeScript layer)
+### Public selections and search
 
-```typescript
-interface Book {
-  id: string;
-  title: string;
-  author: string;
-  year: number;
-  language: string;
-  extension: string;
-  size: number;
-  hash: string;
-  bookDetails?: BookDetails; // Required for download
-}
+Every `search` row gets a process-local `ref` handle. `get_history` rows get a ref
+only when sufficient download identity is available. Public `get_book` and
+`download` accept that ref; callers do not pass a `Book` object or `bookDetails`.
 
-interface SearchParams {
-  query: string;
-  yearFrom?: number;
-  yearTo?: number;
-  languages?: Language[];
-  extensions?: Extension[];
-  limit?: number;
-  page?: number;
-}
-```
+`search` accepts `query`, `author`, an ordered `sources` list, `exact`,
+`year_from`, `year_to`, `languages`, `formats`, and `limit`. Continuation uses
+`cursor` alone. See the [public API](../docs/api.md) for field constraints and
+response shapes.
 
 ### Multi-Source Entities (Python, lib/sources/models.py)
 

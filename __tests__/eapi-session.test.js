@@ -258,6 +258,40 @@ test('failed acquisition rejects its waiters and can lead again after backoff', 
   expect(attempts).toBe(2);
 });
 
+test.each([false, true])(
+  'configuration_error request_issued=%s controls login cooldown',
+  async (issued) => {
+    const { PythonBridgeError } = await import('../lib/errors.js');
+    const owner = new ownerModule.EapiSessionOwner();
+    let attempts = 0;
+    const failure = new PythonBridgeError(
+      'Missing source configuration',
+      {
+        pythonErrorType: 'AcquisitionError',
+        details: { reason: 'configuration_error', request_issued: issued },
+      },
+      false,
+    );
+    const backend = async (input) => {
+      if (input.action === 'login') {
+        if (++attempts === 1) throw failure;
+        owner.consume(session(input.generation), identity, input.generation);
+      }
+      return 'ok';
+    };
+    await expect(owner.run(identity, backend)).rejects.toBe(failure);
+    if (issued) {
+      await expect(owner.run(identity, backend)).rejects.toMatchObject({
+        context: { reason: 'auth_backoff', retryAfterMs: 30000 },
+      });
+      expect(attempts).toBe(1);
+      now += 30000;
+    }
+    await expect(owner.run(identity, backend)).resolves.toBe('ok');
+    expect(attempts).toBe(2);
+  },
+);
+
 test('private marker never appears in malformed stdout errors or logs', async () => {
   fakeBackend();
   await call();

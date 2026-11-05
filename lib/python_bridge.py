@@ -2340,6 +2340,7 @@ async def main():
         diagnostics = None
         if not (
             local_refusal
+            or isinstance(e, SourceConfigurationError)
             or getattr(e, "_eapi_local_refusal", False) is True
             or getattr(e, "reason", None) == "walk_budget_exhausted"
             or any(

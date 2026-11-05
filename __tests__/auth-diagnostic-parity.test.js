@@ -7,6 +7,8 @@ import ts from 'typescript';
 import { authDiagnosticsFor, safeEapiFailureEnvelope } from '../lib/auth-diagnostics.js';
 import { isRetryableError, isTransientDependencyError, withRetry } from '../lib/retry-manager.js';
 import { BridgeTimeoutError } from '../lib/errors.js';
+import { PythonBridgeError } from '../lib/errors.js';
+import { EapiSessionOwner } from '../lib/eapi-session.js';
 import { errorEnvelope } from '../lib/tool-errors.js';
 
 const diagnostics = {
@@ -299,6 +301,77 @@ print(json.dumps(asyncio.run(run())))`,
     expect(isTransientDependencyError({ context: { ...error.context, details: permanent } })).toBe(
       false,
     );
+  },
+);
+
+test.each(['operation', 'login'])(
+  'retained %s EAPI context keeps source configuration refusals local without cooldown',
+  async (action) => {
+    const reply = await python(
+      `import asyncio, contextlib, io, json, os, socket, sys
+from unittest.mock import patch
+import python_bridge as bridge
+from lib.sources.config import get_source_config
+os.environ['PYTHON_BRIDGE_TIMEOUT'] = '9999'
+bridge._eapi_client = None
+bridge._source_router = None
+bridge._session_input = {'action': sys.argv[1]}
+async def initialize(): get_source_config()
+bridge.initialize_eapi_client = initialize
+def forbidden(*args, **kwargs):
+ raise AssertionError('local configuration refusal must not contact a provider')
+async def run():
+ sys.argv = ['python_bridge.py', 'search_multi_source', '{"query":"offline","source":"libgen"}']
+ stdout, stderr = io.StringIO(), io.StringIO()
+ with contextlib.redirect_stdout(stdout), contextlib.redirect_stderr(stderr):
+  try: await bridge.main()
+  except SystemExit as error: assert error.code == 1
+ if stdout.getvalue():
+  return json.loads(json.loads(stdout.getvalue())['content'][0]['text'])
+ return json.loads(stderr.getvalue().strip().splitlines()[-1])
+with patch.object(socket, 'getaddrinfo', forbidden), patch.object(socket.socket, 'connect', forbidden):
+ print(json.dumps(asyncio.run(run())))`,
+      [action],
+    );
+    expect(reply).not.toHaveProperty('diagnostics');
+    expect(reply).not.toHaveProperty('login_failed');
+    const projected = safeEapiFailureEnvelope(reply);
+    expect(projected).toMatchObject({
+      type: 'SourceConfigurationError',
+      details: {
+        reason: 'configuration_error',
+        request_issued: false,
+        variable: 'PYTHON_BRIDGE_TIMEOUT',
+      },
+    });
+    const failure = new PythonBridgeError(
+      projected.error,
+      { pythonErrorType: projected.type, details: projected.details },
+      false,
+    );
+    const owner = new EapiSessionOwner();
+    const identity = 'retained-context-reader';
+    let logins = 0;
+    const invoke = async (input) => {
+      if (input.action === 'login') {
+        if (++logins === 1) throw failure;
+        owner.consume(
+          {
+            identity,
+            generation: input.generation,
+            domain: 'offline.invalid',
+            remix_userid: '7',
+            remix_userkey: 'synthetic-session',
+          },
+          identity,
+          input.generation,
+        );
+      }
+      return 'ok';
+    };
+    await expect(owner.run(identity, invoke)).rejects.toBe(failure);
+    await expect(owner.run(identity, invoke)).resolves.toBe('ok');
+    expect(logins).toBe(2);
   },
 );
 

@@ -146,6 +146,44 @@ async def test_missing_credentials_keep_configuration_reason(
     assert "diagnostics" not in data
 
 
+@pytest.mark.parametrize("action", ["operation", "login"])
+async def test_source_configuration_refusal_with_retained_eapi_context_is_local(
+    action, monkeypatch, capsys
+):
+    from lib.sources.config import get_source_config
+
+    async def initialize():
+        # A login-control child can encounter this same local refusal.
+        get_source_config()
+
+    monkeypatch.setenv("PYTHON_BRIDGE_TIMEOUT", "9999")
+    monkeypatch.setattr(python_bridge, "_eapi_client", None)
+    monkeypatch.setattr(python_bridge, "_source_router", None)
+    monkeypatch.setattr(python_bridge, "_session_input", {"action": action})
+    monkeypatch.setattr(python_bridge, "initialize_eapi_client", initialize)
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "python_bridge.py",
+            "search_multi_source",
+            '{"query":"offline","source":"libgen"}',
+        ],
+    )
+    with pytest.raises(SystemExit) as stopped:
+        await python_bridge.main()
+    assert stopped.value.code == 1
+    streams = capsys.readouterr()
+    assert streams.out == ""
+    data = json.loads(streams.err.strip().splitlines()[-1])
+    assert data["type"] == "SourceConfigurationError"
+    assert data["details"]["reason"] == "configuration_error"
+    assert data["details"]["request_issued"] is False
+    assert data["details"]["variable"] == "PYTHON_BRIDGE_TIMEOUT"
+    assert "diagnostics" not in data
+    assert "login_failed" not in data
+
+
 @pytest.mark.parametrize("aggregate", [False, True])
 async def test_eapi_source_details_keep_http_status_and_failures(
     aggregate, monkeypatch, capsys

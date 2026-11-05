@@ -9,12 +9,22 @@ and download the original file. Five MCP tools serve Library Genesis, Z-Library 
 Anna's Archive. Book contents never enter the tool response; paths refer to the
 server's disk. See [VISION.md](VISION.md) for the commitments and non-goals.
 
+**Release status:** This README describes the 2.0 interface, which is not yet published on npm.
+`npm install -g zlibrary-mcp` currently installs 1.4.0, whose tools differ; use the
+[v1.4.0 README](https://github.com/rookslog/zlibrary-mcp/blob/v1.4.0/README.md) for that release,
+or [install from source](#from-source-for-development) for 2.0.
+
 **2.0 is a breaking interface change.** Saved 1.x tool names are not aliases.
 See the complete [migration table](https://github.com/rookslog/zlibrary-mcp/blob/master/docs/interface-migration.md) and
 [API reference](docs/api.md). The npm package, executable, repository and client
 configuration keys keep their existing names; `serverInfo.name` is `book-acquisition`.
 
 ## Quick Start
+
+**Release status:** This README describes the 2.0 interface, which is not yet published on npm.
+`npm install -g zlibrary-mcp` currently installs 1.4.0, whose tools differ; use the
+[v1.4.0 README](https://github.com/rookslog/zlibrary-mcp/blob/v1.4.0/README.md) for that release,
+or [install from source](#from-source-for-development) for 2.0.
 
 **Prerequisites:** Node.js 22+, Python 3.10+, [uv](https://docs.astral.sh/uv/).
 

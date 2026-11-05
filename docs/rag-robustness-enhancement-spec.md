@@ -9,7 +9,7 @@
 This document outlines the functional requirements, constraints, edge cases, and implementation details for enhancing the robustness of the Retrieval-Augmented Generation (RAG) document processing pipeline within the `zlibrary-mcp` project. The primary goal is to improve the reliability and quality of text extraction and processing, particularly for real-world PDF and EPUB documents obtained from sources like Z-Library, with an initial focus on philosophy texts.
 
 This specification builds upon existing work documented in:
-*   `docs/rag-pipeline-implementation-spec.md` (v2.1)
+*   [Historical pipeline implementation spec](https://github.com/rookslog/zlibrary-mcp/blob/c8798addc98d83e50bb743b98b48d2490476dcb0/docs/rag-pipeline-implementation-spec.md) (v2.1)
 *   [`docs/rag-output-quality-spec.md`](https://github.com/rookslog/zlibrary-mcp/blob/c8798addc98d83e50bb743b98b48d2490476dcb0/docs/rag-output-quality-spec.md) (v1.0)
 *   [`docs/pdf-processing-implementation-spec.md`](https://github.com/rookslog/zlibrary-mcp/blob/c8798addc98d83e50bb743b98b48d2490476dcb0/docs/pdf-processing-implementation-spec.md) (v2.0)
 *   [`docs/rag-output-qa-report-rerun-20250429.md`](https://github.com/rookslog/zlibrary-mcp/blob/c8798addc98d83e50bb743b98b48d2490476dcb0/docs/rag-output-qa-report-rerun-20250429.md) (QA Feedback)

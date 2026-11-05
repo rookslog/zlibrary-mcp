@@ -1638,7 +1638,9 @@ def read_workflow_outputs(path):
     return result
 
 
-@pytest.mark.parametrize("case", ["403", "429", "503", "html", "connect", "read", "healthy"])
+@pytest.mark.parametrize(
+    "case", ["403", "429", "503", "html", "connect", "read", "healthy"]
+)
 def test_validate_workflow_outputs_through_real_zlibrary_probe(
     check_upstream, monkeypatch, tmp_path, capsys, case
 ):

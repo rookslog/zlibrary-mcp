@@ -113,6 +113,7 @@ stay fixed. **Q2:** `BOOK_SOURCE_DEFAULT_ORDER=libgen,zlibrary` versus unset;
 `ZLIBRARY_OUTPUT_ROOT` bounds B's destinations. **History-disabled:** proxy
 unregisters history on tools/list and rejects calls; account history is not
 replaced with disk receipts. T7 must admit inability; any download/quota is wrong.
+The disabled arm also removes history from `get_limits` replies.
 
 ## Driver pins and settings
 

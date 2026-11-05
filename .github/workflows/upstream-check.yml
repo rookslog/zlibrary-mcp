@@ -154,18 +154,23 @@ jobs:
 
             // Reuse one rolling issue so a prolonged outage does not create a new
             // issue every morning.
-            const existing = await github.rest.issues.listForRepo({
+            const existing = await github.paginate(github.rest.issues.listForRepo, {
               owner: context.repo.owner,
               repo: context.repo.repo,
               state: 'open',
               labels: 'upstream-drift',
+              per_page: 100,
             });
 
-            if (existing.data.length > 0) {
+            const rollingIssue = existing.find(
+              issue => issue.title === title && !issue.pull_request
+            );
+
+            if (rollingIssue) {
               await github.rest.issues.createComment({
                 owner: context.repo.owner,
                 repo: context.repo.repo,
-                issue_number: existing.data[0].number,
+                issue_number: rollingIssue.number,
                 body,
               });
             } else {

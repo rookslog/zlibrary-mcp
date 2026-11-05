@@ -56,6 +56,25 @@ UNREACHABLE_REASONS = frozenset(
 )
 
 
+class SourceConfigurationError(ValueError):
+    """An operator deadline setting prevents source-walk admission."""
+
+    def __init__(self, message: str, *, variable: Optional[str] = None):
+        super().__init__(message)
+        self.variable = (
+            variable
+            if variable in ("PYTHON_BRIDGE_TIMEOUT", "PYTHON_BRIDGE_LONG_TIMEOUT")
+            else None
+        )
+
+    def to_dict(self):
+        return {
+            "reason": "configuration_error",
+            "request_issued": False,
+            **({"variable": self.variable} if self.variable else {}),
+        }
+
+
 class SourceError(Exception):
     """Base class for a failure attributed to one source provider.
 

@@ -5,20 +5,20 @@ handoffs, and research findings. Kebab-case naming; timestamped when the content
 is a point-in-time record (see the documentation-guidelines paragraph in
 [AGENTS.md](../AGENTS.md) for what goes where).
 
-## Current contents
+## Retained historical records
 
 - [architecture/repo-health-and-roadmap-2026-07-24.md](architecture/repo-health-and-roadmap-2026-07-24.md)
-  — the live health assessment and forward roadmap (the "current plan" document)
+  — a historical health assessment and roadmap; not current priorities
 - [architecture/phase-20-21-review-2026-07-24.md](architecture/phase-20-21-review-2026-07-24.md)
-  — acceptance criteria for the pending RAG quality-scoring work
+  — historical proposed acceptance criteria for parked quality-scoring work
   (referenced by issue [#39](https://github.com/rookslog/zlibrary-mcp/issues/39))
 - [milestone-history.md](milestone-history.md) — condensed record of all
   development milestones from v1.0 through v1.3
-- [session-notes/2025-10-28-footnote-continuation-state-machine.md](session-notes/2025-10-28-footnote-continuation-state-machine.md)
+- [session-notes/2025-10-28-footnote-continuation-state-machine.md](https://github.com/rookslog/zlibrary-mcp/blob/c8798addc98d83e50bb743b98b48d2490476dcb0/claudedocs/session-notes/2025-10-28-footnote-continuation-state-machine.md)
   — design notes behind the footnote-continuation detector
   (referenced by `docs/FOOTNOTE_CONTINUATION_QUICKSTART.md`)
 - [research/pdf-fixture-dependency-audit/2026-08-12-dependency-audit.md](research/pdf-fixture-dependency-audit/2026-08-12-dependency-audit.md)
-  — current dependency, size, and Git/LFS-remediation audit for the four
+  — a dated dependency, size, and Git/LFS-remediation audit for the four
   full-book PDF fixtures tracked by issue [#105](https://github.com/rookslog/zlibrary-mcp/issues/105)
 
 ## Where did everything else go?

@@ -19,6 +19,8 @@ import math
 import os
 from dataclasses import dataclass
 
+from lib.sources.errors import SourceConfigurationError
+
 # Timeout defaults. Every outbound call in this package is bounded by these;
 # nothing here may fall back to "no timeout". The per-provider TOTAL budget
 # exists because a per-request timeout does not bound a call that walks several
@@ -288,12 +290,20 @@ def get_source_config(*, for_download: bool = False) -> SourceConfig:
     owner = _node_bridge_timeout_seconds(for_download=for_download)
     if owner < MIN_SOURCE_OWNER_SECONDS:
         name = "PYTHON_BRIDGE_LONG_TIMEOUT" if for_download else "PYTHON_BRIDGE_TIMEOUT"
-        raise ValueError(f"{name} must be at least 10000 ms for source walks")
+        raise SourceConfigurationError(
+            f"Source deadline configuration error: {name} must be at least 10000 ms "
+            "for source walks; see docs/RETRY_CONFIGURATION.md",
+            variable=name,
+        )
     overhead = min(WALK_OVERHEAD_ALLOWANCE, owner / 8.0)
     available = owner - overhead - WALK_BUDGET_SAFETY_MARGIN
     if available <= 0:
         name = "PYTHON_BRIDGE_LONG_TIMEOUT" if for_download else "PYTHON_BRIDGE_TIMEOUT"
-        raise ValueError(f"{name} leaves no time for a source walk after overhead")
+        raise SourceConfigurationError(
+            f"Source deadline configuration error: {name} leaves no time for a source "
+            "walk after overhead; see docs/RETRY_CONFIGURATION.md",
+            variable=name,
+        )
     download_timeout = _positive_float(
         "BOOK_SOURCE_DOWNLOAD_TIMEOUT", DEFAULT_DOWNLOAD_TIMEOUT
     )

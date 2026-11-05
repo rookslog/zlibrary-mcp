@@ -70,6 +70,7 @@ from lib.sources.errors import (
     ProviderResponseError,
     ProviderTimeoutError,
     ProviderUnreachableError,
+    SourceConfigurationError,
     SourceError,
 )
 from lib.sources.net import (
@@ -1170,8 +1171,8 @@ def _publish_or_reuse(source: Path, destination: Path, expected_md5: str = "") -
     directory resolves to the same deterministic name, and finding our own
     prior artifact there is success, not a collision. A destination that does
     not match is still never replaced. Stage cleanup is attempted on every
-    path; cleanup after a successful final link is best effort so a cleanup
-    failure cannot replace a committed success.
+    path; cleanup after successful publication or adoption is best effort so a
+    cleanup failure cannot replace a committed success.
     """
     from lib.acquisition import _check_deadline, _mark_published
 
@@ -1189,13 +1190,17 @@ def _publish_or_reuse(source: Path, destination: Path, expected_md5: str = "") -
     try:
         if _artifacts_match(source, destination, expected_md5):
             _mark_published()
+            with suppress(OSError):
+                source.unlink(missing_ok=True)
             return True
-        raise FileExistsError(
-            f"Refusing to replace {destination}: the existing file differs from the "
-            f"freshly downloaded artifact staged at {source}"
-        )
-    finally:
+    except BaseException:
         source.unlink(missing_ok=True)
+        raise
+    source.unlink(missing_ok=True)
+    raise FileExistsError(
+        f"Refusing to replace {destination}: the existing file differs from the "
+        f"freshly downloaded artifact staged at {source}"
+    )
 
 
 async def _download_url_to_file(
@@ -1774,7 +1779,7 @@ def _admit_download_args(arguments: dict) -> None:
 
 async def download_book(
     book_details: dict,
-    output_dir: str,
+    output_dir: str = None,
     *,
     filename=None,
     publication_hook=None,
@@ -1782,6 +1787,11 @@ async def download_book(
 ):
     """Download the original book and return its local file_path."""
     _admit_download_args(legacy_arguments)
+    from lib.acquisition import output_directory, _prepare_directory, _chmod_private
+
+    directory = output_directory(output_dir)
+    _prepare_directory(directory)
+    output_dir = str(directory)
 
     # Route by source. A result from search_multi_source carries md5 + source
     # and has no Z-Library id/hash, so it takes the source path — which also
@@ -1829,7 +1839,6 @@ async def download_book(
             # Raw server names can equal a previously published identity name.
             # Keep EAPI's replacing write in a private per-call namespace until
             # the final no-replace publication checks have run.
-            Path(output_dir).mkdir(parents=True, exist_ok=True)
             eapi_staging = tempfile.TemporaryDirectory(prefix=".eapi-", dir=output_dir)
             receipt_options = {}
             if publication_hook is not None:
@@ -1902,7 +1911,6 @@ async def download_book(
         # Step 3: Rename the downloaded file to the enhanced filename, or adopt
         # an identical artifact a previous acquisition of this book already
         # published under the same deterministic name.
-        Path(output_dir).mkdir(parents=True, exist_ok=True)
         catalog_md5 = str(book_details.get("md5") or "").strip().lower()
         if publication_hook is not None:
             publication_hook(Path(original_download_path_str), final_file_path)
@@ -1917,6 +1925,7 @@ async def download_book(
                 f"discarded redundant download {original_download_path_str}"
             )
         else:
+            _chmod_private(final_file_path, 0o600)
             logger.info(
                 f"Published downloaded file from {original_download_path_str} to {final_file_path_str}"
             )
@@ -2084,7 +2093,18 @@ async def get_recent_books(count: int = 10) -> dict:
     """Get recently added books via EAPI."""
     eapi = await get_eapi_client()
     response = await eapi.get_recently()
-    books = response.get("books", [])
+    if (
+        not isinstance(response, dict)
+        or not isinstance(response.get("books"), list)
+        or any(not isinstance(book, dict) for book in response["books"])
+    ):
+        raise ProviderResponseError(
+            "zlibrary",
+            eapi.domain,
+            "Recent-books provider contract error: expected a books list of objects",
+            reason="protocol_error",
+        )
+    books = response["books"]
     return {
         "books": [normalize_eapi_book(b) for b in books[:count]],
     }
@@ -2230,6 +2250,13 @@ async def main():
     try:
         if function_name == "download_book":
             _admit_download_args(args_dict)
+            # Legacy CLI calls authenticate before dispatch. Admit their output
+            # first, just as acquire_book does before its deferred login.
+            from lib.acquisition import output_directory, _prepare_directory
+
+            directory = output_directory(args_dict.get("output_dir"))
+            _prepare_directory(directory)
+            args_dict["output_dir"] = str(directory)
         elif function_name == "process_document":
             raise ValueError("Text processing was removed in 2.0.")
         if function_name not in _BRIDGE_FUNCTION_NAMES:
@@ -2291,7 +2318,15 @@ async def main():
         # MCP caller can act on it instead of pattern-matching prose.
         from lib.acquisition import AcquisitionError
 
-        if isinstance(e, (SourceError, AllSourcesFailedError, AcquisitionError)):
+        if isinstance(
+            e,
+            (
+                SourceError,
+                AllSourcesFailedError,
+                AcquisitionError,
+                SourceConfigurationError,
+            ),
+        ):
             error_info["details"] = e.to_dict()
             operation = (
                 "download"
@@ -2336,6 +2371,15 @@ async def main():
                 ),
             )
             error_info["error"] = f"EAPI request failed ({diagnostics['failure_kind']})"
+            if (
+                function_name == "get_recent_books"
+                and isinstance(e, ProviderResponseError)
+                and e.reason == "protocol_error"
+            ):
+                # Fixed local text; never expose the provider's payload/prose.
+                error_info["error"] = (
+                    "Recent-books provider contract error: expected a books list of objects"
+                )
             error_info["diagnostics"] = diagnostics
             error_info["type"] = failure_type(e)
             # Acquisition wrappers carry useful issuance/reason evidence, not prose.

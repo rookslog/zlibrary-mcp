@@ -255,7 +255,7 @@ interface DownloadBooklistParams {
 
   max_downloads?: number;       // Safety limit (default: 50)
   skip_existing?: boolean;      // Skip already downloaded (default: true)
-  output_dir?: string;          // Where to save (default: ./downloads/booklists/{name})
+  output_dir?: string;          // Where to save (default: configured output root/booklists/{name})
   include_rag?: boolean;        // Process for RAG (default: false)
 
   filters?: {

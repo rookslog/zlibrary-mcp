@@ -547,6 +547,17 @@ export class AcquisitionTools {
           : 'all_sources_failed';
       const diagnostics = failures.find((failure) => failure.info.detail?.diagnostics)?.info.detail
         .diagnostics;
+      const configurationRecovery =
+        !answered &&
+        failures.every(
+          (failure) =>
+            failure.code === 'invalid_argument' &&
+            failure.info.detail?.reason === 'configuration_error' &&
+            failure.info.detail?.request_issued === false &&
+            failure.info.recovery === failures[0]!.info.recovery,
+        )
+          ? failures[0]!.info.recovery
+          : undefined;
       throw new ToolFailure(
         code,
         answered
@@ -555,6 +566,7 @@ export class AcquisitionTools {
         {
           attempts,
           retry: failures.some((f) => f.info.retry === 'safe') ? 'safe' : 'no',
+          ...(configurationRecovery ? { recovery: configurationRecovery } : {}),
           ...(diagnostics ? { detail: { diagnostics } } : {}),
         },
       );

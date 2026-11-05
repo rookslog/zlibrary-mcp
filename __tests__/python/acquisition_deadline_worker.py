@@ -34,7 +34,7 @@ async def main():
         wait_for = acq.asyncio.wait_for
 
         async def expire_transfer(task, timeout):
-            assert abs(timeout - 10.624125) < 0.000001
+            assert abs(timeout - 10.724125) < 0.000001
             return await wait_for(task, 0)
 
         acq.asyncio.wait_for = expire_transfer

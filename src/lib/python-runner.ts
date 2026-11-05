@@ -5,7 +5,7 @@
  * child, so a bridge call that never finishes has no way to end: abandoning the
  * promise (as an MCP client does when it hits its own idle timeout) leaves the
  * Python process running with nothing waiting on it. That is how three
- * `python_bridge.py search...` processes were found alive on dionysus
+ * `python_bridge.py search...` processes were found alive on a development machine on
  * 2026-08-11, the oldest 9h10m old and belonging to a session that had already
  * exited.
  *

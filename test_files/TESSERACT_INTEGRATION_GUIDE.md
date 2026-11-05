@@ -280,7 +280,8 @@ def extract_page_tesseract_adaptive(pdf_path: Path, page_num: int) -> str:
 
 ```bash
 # Test Tesseract vs PyMuPDF on sample PDFs
-venv/bin/python test_files/test_tesseract_comparison.py
+# Historical script: https://github.com/rookslog/zlibrary-mcp/blob/c8798addc98d83e50bb743b98b48d2490476dcb0/scripts/archive/test_tesseract_comparison.py
+# Run only with the separately preserved processing installation.
 ```
 
 ### Verify Installation
@@ -409,5 +410,5 @@ Based on testing with Derrida and Heidegger texts:
 
 - Test Results: `test_files/tesseract_comparison_report.txt`
 - Summary: `test_files/tesseract_findings_summary.md`
-- Test Script: `test_files/test_tesseract_comparison.py`
+- Test Script: [historical test script](https://github.com/rookslog/zlibrary-mcp/blob/c8798addc98d83e50bb743b98b48d2490476dcb0/scripts/archive/test_tesseract_comparison.py)
 - JSON Data: `test_files/tesseract_comparison_data.json`

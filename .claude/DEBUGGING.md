@@ -1,8 +1,15 @@
 # Z-Library MCP - Comprehensive Debugging Guide
 
+Server-side TypeScript diagnostics must use the shared stderr logger from
+`src/lib/logger.ts`; adjust its relative import for the module. stdout carries
+MCP JSON-RPC only. Shell snippets below are standalone terminal commands, not
+output to add to the running server. At debug level, queries can enter client
+logs; follow `SECURITY.md` before collecting or sharing them.
+
 ## Quick Diagnostics
 
 ### Health Check Script
+
 ```bash
 #!/bin/bash
 # Run this first when debugging issues
@@ -58,11 +65,13 @@ curl -s -o /dev/null -w "HTTP %{http_code}" https://singlelogin.me || echo " - F
 ### Issue: "Cannot find module" Error
 
 **Symptoms:**
+
 ```
 Error: Cannot find module '../dist/lib/venv-manager.js'
 ```
 
 **Diagnosis:**
+
 ```bash
 # Check if TypeScript is built
 ls -la dist/
@@ -75,6 +84,7 @@ npm run build 2>&1 | grep -i error
 ```
 
 **Solution:**
+
 ```bash
 # Clean and rebuild
 rm -rf dist/
@@ -87,11 +97,13 @@ cat tsconfig.json | grep -A5 "compilerOptions"
 ### Issue: Python Bridge Connection Fails
 
 **Symptoms:**
+
 ```
 Error: Python shell process exited with code 1
 ```
 
 **Diagnosis:**
+
 ```bash
 # Test Python directly
 python3 lib/python_bridge.py test_connection
@@ -104,6 +116,7 @@ uv pip list | grep -E "zlibrary|httpx|beautifulsoup4"
 ```
 
 **Solution:**
+
 ```bash
 # Recreate venv with UV
 rm -rf .venv/
@@ -114,11 +127,13 @@ bash setup-uv.sh
 ### Issue: Z-Library Authentication Fails
 
 **Symptoms:**
+
 ```
 Error: Invalid credentials or login failed
 ```
 
 **Diagnosis:**
+
 ```python
 # Test authentication manually
 import asyncio
@@ -140,9 +155,11 @@ asyncio.run(test_auth())
 ```
 
 **Solution:**
+
 1. Verify credentials are correct
 2. Check if account is blocked/limited
 3. Try different domain:
+
 ```bash
 export ZLIBRARY_MIRROR="https://1lib.fr"
 # or
@@ -152,11 +169,13 @@ export ZLIBRARY_MIRROR="https://singlelogin.me"
 ### Issue: Domain Not Accessible
 
 **Symptoms:**
+
 ```
 Error: ECONNREFUSED or timeout errors
 ```
 
 **Diagnosis:**
+
 ```bash
 # Test domain connectivity
 for domain in singlelogin.me 1lib.fr z-lib.org; do
@@ -172,6 +191,7 @@ curl --socks5 127.0.0.1:9050 https://singlelogin.me
 ```
 
 **Solution:**
+
 ```typescript
 // Implement domain rotation in code
 const domains = [
@@ -186,7 +206,7 @@ async function tryDomains(operation) {
       process.env.ZLIBRARY_MIRROR = domain;
       return await operation();
     } catch (error) {
-      console.log(`Domain ${domain} failed, trying next...`);
+      logger.debug(`Domain ${domain} failed, trying next...`);
     }
   }
   throw new Error('All domains failed');
@@ -196,6 +216,7 @@ async function tryDomains(operation) {
 ### Issue: Test Suite Warnings
 
 **Symptoms:**
+
 ```
 console.error
   Warning: Failed to read or validate venv config
@@ -203,16 +224,20 @@ console.error
 ```
 
 **Root Cause Analysis:**
+
 ```typescript
 // The issue is in venv-manager.ts:255
 // venvPath is undefined when reading config
 
 // Debug with:
-console.log('Config content:', configContent);
-console.log('venvPath before trim:', venvPath);
+logger.debug('Venv config state', {
+  hasConfig: Boolean(configContent),
+  hasVenvPath: Boolean(venvPath)
+});
 ```
 
 **Solution:**
+
 ```typescript
 // Add null check before trim
 const venvPath = configContent?.trim();
@@ -221,6 +246,7 @@ if (!venvPath) {
 }
 ```
 
+```python
 # Test document processing directly
 
 # Test with a known good file
@@ -236,6 +262,7 @@ print(f"ebooklib available: {ebooklib is not None}")
 ```
 
 **Solution:**
+
 ```python
 # Add better error handling
 def process_document(file_path, output_format='markdown'):
@@ -270,11 +297,12 @@ def process_document(file_path, output_format='markdown'):
 ### Slow Search Response
 
 **Diagnosis:**
+
 ```bash
 # Profile search performance
 time node -e "
 const api = require('./dist/lib/zlibrary-api.js');
-api.searchBooks({ query: 'test' }).then(console.log);
+api.searchBooks({ query: 'test' }).then((result) => console.error(result));
 "
 
 # Check network latency
@@ -285,11 +313,12 @@ node --expose-gc --trace-gc dist/index.js
 ```
 
 **Optimization:**
+
 ```typescript
 // Add timing logs
 const start = Date.now();
 const result = await searchBooks(params);
-console.log(`Search took ${Date.now() - start}ms`);
+logger.debug(`Search took ${Date.now() - start}ms`);
 
 // Implement caching
 const cache = new Map();
@@ -306,6 +335,7 @@ cache.set(cacheKey, result);
 ### Memory Leaks
 
 **Detection:**
+
 ```bash
 # Monitor memory over time
 node --inspect dist/index.js
@@ -317,6 +347,7 @@ node --inspect dist/index.js
 ```
 
 **Common Causes:**
+
 ```typescript
 // Event listener leaks
 emitter.on('event', handler); // Accumulates if not removed
@@ -353,18 +384,13 @@ debug('Search results: %d books found', results.length);
 
 ### Network Request Debugging
 
-```bash
-# Use mitmproxy to inspect HTTPS traffic
-mitmproxy -p 8888
+Keep TLS certificate verification enabled. Check the system clock, the server's
+certificate chain and the local trusted CA configuration when a TLS error occurs.
+For an intercepting proxy, use the operator-approved CA trust configuration;
+do not disable certificate verification to make a request succeed.
 
-# Configure Node.js to use proxy
-export HTTP_PROXY=http://localhost:8888
-export HTTPS_PROXY=http://localhost:8888
-export NODE_TLS_REJECT_UNAUTHORIZED=0
-
-# Run your application
-node dist/index.js
-```
+Treat request captures as sensitive: they can contain account credentials, session
+cookies and queries. Follow `SECURITY.md` before sharing diagnostic output.
 
 ### Python Bridge Debugging
 
@@ -438,72 +464,73 @@ def search_books(query, **kwargs):
 
 ## Logging Analysis
 
-### Log Aggregation Script
+The vendored logger writes lines to `logs/zlibrary_debug.log` using
+`timestamp - logger - level - message` (`zlibrary/src/zlibrary/logger.py`).
+The path is relative to the working directory where the server was started.
+Under the bridge, `DiagnosticLogFilter` (`lib/auth_diagnostics.py`) drops ordinary
+`zlibrary` and `zlibrary.*` records. Surviving records carry an allowlisted
+`auth_diagnostics` payload, projected to compact JSON. Currently only
+`lib/python_bridge.py` emits these diagnostics, through the `zlibrary` logger;
+ordinary `zlibrary.sources` messages are dropped.
+A quiet tail does not mean nothing happened: ordinary records are suppressed.
+
+The TypeScript logger writes plain text to stderr (`src/lib/logger.ts`), and
+the Python bridge's logging configuration also uses a text prefix
+(`lib/python_bridge.py`). These are not whole-line JSON logs, even when the
+message is JSON. They do not emit structured `module` or `duration` fields for
+operation filtering or timing analysis.
+
+### Diagnostic Failure Counts
+
+Extract the JSON message after the vendored logger's text prefix and count its
+`failure_kind`. This reads existing logs only. Domain-discovery, login prose and
+memory messages are suppressed by the bridge filter, so grepping for them
+cannot diagnose those events. Measure memory separately with system tools.
 
 ```bash
-#!/bin/bash
-# analyze_logs.sh - Aggregate and analyze logs
+python3 - <<'PY'
+from collections import Counter
+import json
+from pathlib import Path
 
-echo "Error Summary:"
-grep -i error logs/*.log | cut -d: -f4- | sort | uniq -c | sort -rn | head -10
-
-echo -e "\nSlowest Operations:"
-grep "duration" logs/*.log | jq -r '.duration' | sort -rn | head -10
-
-echo -e "\nFailed Domains:"
-grep "domain.*failed" logs/*.log | cut -d'"' -f4 | sort | uniq -c
-
-echo -e "\nAuthentication Issues:"
-grep -i "auth\|login" logs/*.log | grep -i "fail\|error" | tail -5
-
-echo -e "\nMemory Usage:"
-grep "memory" logs/*.log | tail -5
+counts = Counter()
+for line in Path('logs/zlibrary_debug.log').read_text().splitlines():
+    fields = line.split(' - ', 3)
+    if len(fields) != 4 or fields[1] != 'zlibrary':
+        continue
+    try:
+        record = json.loads(fields[3])
+    except json.JSONDecodeError:
+        continue  # Historical or direct-library records can be plain text.
+    if isinstance(record, dict) and isinstance(record.get('failure_kind'), str):
+        counts[record['failure_kind']] += 1
+for kind, count in counts.most_common():
+    print(f'{kind}: {count}')
+PY
 ```
 
 ### Real-time Log Monitoring
 
 ```bash
-# Watch errors in real-time
-tail -f logs/*.log | grep --line-buffered -i error
-
-# Monitor specific operations
-tail -f logs/*.log | jq 'select(.module == "search")'
-
-# Watch performance metrics
-tail -f logs/*.log | jq 'select(.duration > 1000)'
+# Watch projected bridge diagnostics (including WARNING-level failures)
+tail -f logs/zlibrary_debug.log | grep --line-buffered -E ' - zlibrary - (WARNING|ERROR|CRITICAL) - \{'
 ```
 
 ## Emergency Recovery
 
-### Complete Reset
+### Targeted Build Recovery
+
+For a missing or stale TypeScript build, rebuild from the checkout:
 
 ```bash
-#!/bin/bash
-# reset.sh - Complete project reset
-
-echo "⚠️  This will reset the entire project. Continue? (y/n)"
-read -r response
-
-if [ "$response" = "y" ]; then
-    # Clean build artifacts
-    rm -rf dist/ node_modules/ .venv/ __pycache__/
-
-    # Clean logs and cache
-    rm -rf logs/ cache/ downloads/
-
-    # Clean test artifacts
-    rm -rf coverage/ .pytest_cache/
-
-    # Reinstall everything
-    npm install
-    npm run build
-    bash setup-uv.sh
-
-    echo "✅ Reset complete"
-else
-    echo "Reset cancelled"
-fi
+npm run build
 ```
+
+If this fails, inspect the reported error and repair the specific dependency or
+configuration. Do not use a blanket reset that removes downloads, acquisition
+records, logs or the Python environment. Downloads can live outside this checkout
+under the configured output root; see [README, Download output](../README.md#download-output).
+A rebuild does not establish provider availability or repair acquired files.
 
 ### Session Recovery
 
@@ -549,4 +576,4 @@ if state:
 
 ---
 
-*Keep this guide updated with new issues and solutions discovered during development.*
+_Keep this guide updated with new issues and solutions discovered during development._

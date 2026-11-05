@@ -2,7 +2,7 @@
   "mcpServers": {
     "zlibrary": {
       "command": "node",
-      "args": ["/home/rookslog/mcp-servers/zlibrary-mcp/dist/index.js"],
+      "args": ["/home/your-user/mcp-servers/zlibrary-mcp/dist/index.js"],
       "env": {
         "ZLIBRARY_EMAIL": "your@email.com",
         "ZLIBRARY_PASSWORD": "your_password"

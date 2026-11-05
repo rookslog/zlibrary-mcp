@@ -1,4 +1,5 @@
 import { jest, describe, test, expect } from '@jest/globals';
+import { spawnSync } from 'node:child_process';
 
 describe('Python Bridge', () => {
   async function setup({
@@ -109,6 +110,36 @@ describe('Python Bridge', () => {
       .catch((e) => e);
     expect(String(error.stack) + JSON.stringify(error)).not.toContain('i251-token');
     expect(error.context.diagnostics).toEqual(diagnostics);
+  });
+
+  test('keeps protocol_error from a real recent-books contract error envelope', async () => {
+    const child = spawnSync('.venv/bin/python', ['-c', `
+import asyncio, os, socket, sys
+from unittest.mock import AsyncMock
+sys.path.insert(0, os.path.join(os.getcwd(), 'lib'))
+def forbidden(*args, **kwargs):
+    raise AssertionError('real network forbidden')
+socket.socket.connect = forbidden
+socket.getaddrinfo = forbidden
+from lib import python_bridge as bridge
+eapi = bridge.EAPIClient('zlibrary.example', remix_userkey='offline-cookie-marker')
+eapi.get_recently = AsyncMock(return_value={'success': 1, 'error': 'untrusted-provider-text'})
+bridge._eapi_client = eapi
+bridge.initialize_eapi_client = AsyncMock(return_value=eapi)
+sys.argv = ['python_bridge.py', 'get_recent_books', '{}']
+asyncio.run(bridge.main())
+`], { encoding: 'utf8', timeout: 10000 });
+    expect(child.error).toBeUndefined();
+    expect(child.status).toBe(1);
+    expect(child.stdout).toBe('');
+    const raw = JSON.parse(child.stderr.trim().split('\n').at(-1));
+    expect(raw.details.reason).toBe('protocol_error');
+    expect(raw.diagnostics.failure_kind).toBe('ambiguous_status');
+    expect(child.stderr).not.toContain('untrusted-provider-text');
+    const { pythonBridge } = await setup();
+    const parsed = pythonBridge.parseBridgeErrorEnvelope(child.stderr);
+    expect(parsed.details.reason).toBe('protocol_error');
+    expect(parsed.error).toBe('EAPI request failed (ambiguous_status)');
   });
 
   test('treats all-permanent quota/configuration aggregates as non-retryable', async () => {

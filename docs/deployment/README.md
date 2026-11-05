@@ -1,17 +1,23 @@
 # Deployment Documentation
 
-This directory contains deployment guides and validation matrices for the Z-Library MCP server.
+This directory retains deployment guides and validation reports from the older
+interface. Start with the current [README](../../README.md) for installation,
+configuration and the five public MCP tools: `search`, `get_book`, `download`,
+`get_limits` and `get_history`. See the [interface migration](../interface-migration.md)
+for saved-call and download-location changes.
 
-## Files
+## Historical references
 
-- **DEPLOYMENT_CHECKLIST.md** - Step-by-step deployment guide with prerequisites, configuration, and validation
-- **DEPLOYMENT_READINESS_AND_IMPROVEMENTS.md** - Analysis of deployment readiness, improvement opportunities, and recommendations
-- **ALL_TOOLS_VALIDATION_MATRIX.md** - Comprehensive validation results for all 11 MCP tools with data completeness verification
+- **DEPLOYMENT_CHECKLIST.md** — Older deployment procedure; compare each step with
+  the current README before using it.
+- **DEPLOYMENT_READINESS_AND_IMPROVEMENTS.md** — Historical readiness analysis and
+  recommendations, not acceptance evidence for the current implementation.
+- **ALL_TOOLS_VALIDATION_MATRIX.md** — Historical validation of the former eleven-tool
+  interface. It does not establish that the current five tools work.
 
-## Quick Start
+## Current checks
 
-For deploying the MCP server, start with **DEPLOYMENT_CHECKLIST.md** which provides complete setup instructions.
-
-For understanding the system's readiness and potential improvements, see **DEPLOYMENT_READINESS_AND_IMPROVEMENTS.md**.
-
-For verification that all tools work correctly, see **ALL_TOOLS_VALIDATION_MATRIX.md**.
+Use the README and `AGENTS.md` for contributor commands. `npm test` runs Jest with
+coverage; pytest is a separate suite. Unit and offline rehearsal tests do not
+establish live provider availability. A historical validation matrix is not a
+current deployment receipt.

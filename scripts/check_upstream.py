@@ -818,10 +818,24 @@ async def run_probes() -> list[ProbeResult]:
                 timeout=PROBE_DEADLINE_SECONDS,
             )
         except asyncio.TimeoutError:
+            deadline_rows = {
+                "zlibrary:probe": (
+                    "zlibrary:eapi/info/domains",
+                    "zlibrary:eapi/book/search",
+                ),
+                "libgen:canaries": ("libgen:search", "libgen:article-search"),
+            }
             collected = []
-            for task in tasks:
+            for (name, _), task in zip(probes, tasks):
                 if task.cancelled():
-                    collected.append(TimeoutError("probe deadline exceeded"))
+                    collected.append(
+                        [
+                            ProbeResult(
+                                row, False, "TimeoutError: probe deadline exceeded"
+                            )
+                            for row in deadline_rows.get(name, (name,))
+                        ]
+                    )
                 else:
                     error = task.exception()
                     collected.append(error if error is not None else task.result())

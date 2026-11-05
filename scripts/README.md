@@ -167,8 +167,9 @@ future dates. Open exact-title labelled issues are preferred; if none is open,
 the newest created match is reused. A missing probe report carries the previous
 status marker forward. Recovery requires an explicit successful probe flag,
 successful reachability and live jobs, and live status `passed`. Inconclusive
-runs leave the issue unchanged; a healthy already-closed issue receives no
-writes. A failed snapshot write stops before changing the issue body or state.
+runs leave an open issue unchanged; an already-closed issue is written only when
+a successful reachability report changes its source dates.
+A failed snapshot write stops before changing the issue body or state.
 Excluded-source warnings retain first-seen dates too. The workflow uploads both
 files as `upstream-source-report` for 30 days when probe report generation
 completes, including when a source alerts. No
@@ -195,8 +196,10 @@ the report in its output file and optional artifacts. The scheduled probe runs
 inside a per-run console guard that covers both output streams and failures.
 Commands stay suspended for the rest of that step, including interruption.
 A later step emits the warning annotation using validated summary fields.
-The probe has a 10-minute overall deadline; completed results are retained and
-unfinished probes become failures. The reachability job has a 20-minute timeout
+The probe has a 10-minute overall deadline; results from completed probe tasks
+are retained. An unfinished task reports failures for all its normal row names,
+preserving their first-seen dates; partial results within that task are not retained.
+The reachability job has a 20-minute timeout
 to allow setup and artifact handling. Python cancellation waits for cleanup;
 the job timeout is the outer backstop for blocking work.
 The live step uses an isolated Python interpreter to read one literal configured

@@ -129,3 +129,94 @@ historical proposed base/rag/scholar/Text installer matrix. No rag/scholar or
 Text installation is supplied. The current npm manifest still says 1.4.0;
 the check identifies candidate code by its packed hash, distinct runtime bytes
 and exact five-tool 2.0 surface, not a version bump performed by this script.
+
+## Daily source alerts
+
+`check_upstream.py` keeps alert policy separate from connector routing. Set
+`UPSTREAM_RELIED_SOURCES` to a comma-separated subset of `zlibrary,annas-archive,libgen`.
+The default is `zlibrary,libgen`; Anna's Archive remains probed as a dated warning
+unless explicitly listed (for example, `zlibrary,annas-archive,libgen`).
+Any blocked or failing probe of a listed source exits 1;
+excluded sources produce warnings. `UPSTREAM_RELIED_SOURCES=zlibrary` retains the
+old warning-only treatment of Anna's Archive and LibGen. Z-Library blocks also
+alert now; excluding a source is the way to suppress its alerts. This setting
+never changes the connector's source selection or Anna's fallback without a key.
+Unknown source names are configuration errors, detected before provider calls.
+An unset, blank or whitespace-only value selects the default of `zlibrary,libgen`,
+both in the CLI and in GitHub Actions. Configure a named subset to narrow alerts.
+
+Use `--report-file PATH.txt` to write text plus adjacent JSON, including on an alert
+exit. The workflow sets `--report-file upstream-report.txt` and uploads both files.
+Without this flag the probe only prints its report; `npm run doctor` leaves no report
+files behind. `--json` prints JSON instead of text. Each JSON `results`
+row contains `source`, probe `name`, `status` (`passed`, `blocked`, `changed`),
+`reason`, `first_seen` (UTC date or null for a pass), and `relied_on`.
+`changed` covers a failed contract or transport, not a confirmed provider change.
+
+`--previous-issue PATH` reads the prior rolling issue body. A machine marker in
+the body preserves each continuously failing probe's first-observed date, even
+if its reason changes. Old bodies without that marker start tracking today;
+the issue creation date is not evidence of a particular source's failure date.
+The scheduled workflow closes the rolling issue on recovery, clearing dates
+for passing probes. It journals each actionable report in a snapshot comment
+before updating the body and state. Both lookups paginate exact-title labelled
+issues by creation (including closed issues); the next failure reopens the same issue. The next run reads the latest
+dated snapshot from `github-actions[bot]`, so a failed issue update cannot lose
+the recovery date or cleared probe state. Both date readers reject invalid or
+future dates. Open exact-title labelled issues are preferred; if none is open,
+the newest created match is reused. A missing probe report carries the previous
+status marker forward. Recovery requires an explicit successful probe flag,
+successful reachability and live jobs, and live status `passed`. Inconclusive
+runs leave an open issue unchanged; an already-closed issue is written only when
+a successful reachability report changes its source dates.
+A failed snapshot write stops before changing the issue body or state.
+Excluded-source warnings retain first-seen dates too. The workflow uploads both
+files as `upstream-source-report` for 30 days when probe report generation
+completes, including when a source alerts. No
+source artifact is available if the previous-issue read or probe fails before
+writing reports; the artifact step warns in that case. Source blocked and
+Source changed have separate issue headings. A block from the runner does not establish a worldwide outage.
+The credentialed live suite, including collection, requires an explicit
+`zlib_blocked=false` from the reachability probe. A true value reports `blocked`;
+missing, empty or any other value reports `unknown` and skips logins. A failed
+Anna's or LibGen probe does not suppress those tests when Z-Library explicitly
+reported healthy on a configured candidate domain. A recognized Z-Library wall
+reports `true`; other failed or inconclusive probes report `unknown`. Only a
+complete accepted Z-Library probe set emits `false`: both final response hosts
+must match the configured domain, domains must be a non-empty list, and books
+must be a list when present. A success field must be absent or 1, and truthy error fields are rejected except
+for the known unauthenticated responses recognized by the runtime's auth helper.
+Every domain entry must be a non-empty string or a dictionary containing a
+non-empty domain string.
+Anna warning-only results also produce a run annotation. Upstream values are
+kept on one line before rendering; multi-line workflow outputs use a fresh
+random delimiter, and the domain output is limited to configured candidates.
+Workflow-output mode initializes an inconclusive state before probing and keeps
+the report in its output file and optional artifacts. The scheduled probe runs
+inside a per-run console guard that covers both output streams and failures.
+Commands stay suspended for the rest of that step, including interruption.
+A later step emits the warning annotation using validated summary fields.
+The probe has a 10-minute overall deadline; results from completed probe tasks
+are retained. An unfinished task reports failures for all its normal row names,
+preserving their first-seen dates; partial results within that task are not retained.
+The reachability job has a 20-minute timeout
+to allow setup and artifact handling. Python cancellation waits for cleanup;
+the job timeout is the outer backstop for blocking work.
+The live step uses an isolated Python interpreter to read one literal configured
+domain list or tuple, validates its shape, and checks exact membership before
+continuing. Ordinary CLI reports retain their text
+or JSON output with neutral report values. Upstream text is fenced, comment
+delimiters are escaped, and
+only the last machine marker supplies carried dates. Only the exact rolling issue
+title is reused; other issues with the same label are left untouched.
+
+`npm run doctor` runs the release-record audit even when the source check exits
+nonzero. The combined command fails if either check fails or cannot start, and
+creates no probe reports without an explicit report-file flag. Trailing command
+arguments are separated from Node options, and probe startup errors are printed.
+Import-time diagnostics can create an ignored debug log; this command does not
+promise an otherwise unchanged filesystem.
+
+A successful reachability report also persists changed source dates on an already
+closed rolling issue. Skipped or cancelled live tests do not establish recovery;
+the saved source state can still clear a completed warning-only outage.

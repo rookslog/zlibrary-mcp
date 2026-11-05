@@ -464,6 +464,20 @@ def search_books(query, **kwargs):
 
 ## Logging Analysis
 
+The vendored logger writes lines to `logs/zlibrary_debug.log` using
+`timestamp - logger - level - message` (`zlibrary/src/zlibrary/logger.py`).
+The path is relative to the working directory where the server was started.
+Under the bridge, `DiagnosticLogFilter` (`lib/auth_diagnostics.py`) drops ordinary
+`zlibrary` and `zlibrary.*` records. The file holds only allowlisted diagnostic
+records whose message is compact JSON, including records from `zlibrary.sources`.
+A quiet tail does not mean nothing happened: ordinary records are suppressed.
+
+The TypeScript logger writes plain text to stderr (`src/lib/logger.ts`), and
+the Python bridge's logging configuration also uses a text prefix
+(`lib/python_bridge.py`). These are not whole-line JSON logs, even when the
+message is JSON. They do not emit structured `module` or `duration` fields for
+operation filtering or timing analysis.
+
 ### Log Aggregation Script
 
 ```bash
@@ -472,9 +486,6 @@ def search_books(query, **kwargs):
 
 echo "Error Summary:"
 grep -i error logs/*.log | cut -d: -f4- | sort | uniq -c | sort -rn | head -10
-
-echo -e "\nSlowest Operations:"
-grep "duration" logs/*.log | jq -r '.duration' | sort -rn | head -10
 
 echo -e "\nFailed Domains:"
 grep "domain.*failed" logs/*.log | cut -d'"' -f4 | sort | uniq -c
@@ -492,11 +503,8 @@ grep "memory" logs/*.log | tail -5
 # Watch errors in real-time
 tail -f logs/*.log | grep --line-buffered -i error
 
-# Monitor specific operations
-tail -f logs/*.log | jq 'select(.module == "search")'
-
-# Watch performance metrics
-tail -f logs/*.log | jq 'select(.duration > 1000)'
+# Watch bridge diagnostic records
+tail -f logs/zlibrary_debug.log | grep --line-buffered -E ' - zlibrary(\.[^ ]+)? - '
 ```
 
 ## Emergency Recovery

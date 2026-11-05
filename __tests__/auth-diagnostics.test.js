@@ -284,7 +284,7 @@ test('real SDK tool error keeps diagnostics and the tools/list contract unchange
     await Promise.all([client.connect(a), server.connect(b)]);
     const listed = await client.listTools();
     expect(listed.tools).toHaveLength(5);
-    expect(JSON.stringify(listed).length).toBe(6493);
+    expect(JSON.stringify(listed).length).toBe(7050);
     fs.writeFileSync(modeFile, '400');
     const result = await client.callTool({
       name: 'search',

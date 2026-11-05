@@ -1,3 +1,4 @@
+import { normalizeLanguages } from './filter-languages.js';
 import type { SessionInput } from './eapi-session.js';
 import type { Options as PythonShellOptions } from 'python-shell';
 import { randomUUID } from 'node:crypto';
@@ -152,6 +153,9 @@ async function callPythonFunction(
   args: Record<string, any> = {},
   callOptions: CallOptions = {},
 ): Promise<any> {
+  // All public and legacy search facades share this transmission boundary.
+  if (Array.isArray(args.languages))
+    args = { ...args, languages: normalizeLanguages(args.languages).values };
   const configuredEnv = { ...process.env };
   const identity = configuredEnv.ZLIBRARY_EMAIL || '';
   const memory = getSessionMode() === 'memory';

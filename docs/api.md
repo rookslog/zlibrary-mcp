@@ -15,9 +15,9 @@ Catalogue metadata, not the text inside a book. Give `query`, `author`, or both.
 | `query` | Nonblank string, 1–500 characters |
 | `author` | Nonblank string, 1–200 characters; author-only exact names are quoted |
 | `sources` | Ordered, distinct array of 1–3 of `libgen`, `zlibrary`, `annas`; optional only with operator defaults |
-| `exact` | Boolean, default false; applies to the whole combined query, not just the title |
+| `exact` | Boolean, default false; whole combined query; Z-Library only, sent but not checked locally; other sources are skipped |
 | `year_from`, `year_to` | Inclusive integer year range |
-| `languages`, `formats` | String arrays; unsupported source filters are listed in attempts' `ignored` |
+| `languages`, `formats` | String arrays; OR within each list, AND across fields; checked locally on all sources |
 | `limit` | Integer 1–50, default 10 |
 | `cursor` | Continuation, exclusive of every other argument |
 
@@ -35,6 +35,62 @@ empty page: `served_by` is omitted and `fell_back` is false, including an
 exhausted continuation. `requested` and `attempts` still describe the walk.
 Empty plus failure is `partial_failure`; all attempted sources
 failing is `all_sources_failed`. An explicit unconfigured source fails locally.
+
+### Filters: partial milestone for 2.0
+
+Year, language and format are checked against each row on all three sources.
+This is a **partial milestone**: `exact` remains a gap. It is sent to Z-Library
+and reported as `native_only`, not checked by this server. Other sources are
+skipped before configuration/provider work with `code: "unsupported_operation"`,
+`reason: "filter_unsupported"`, `unsupported: ["exact"]`. If all requested
+sources refuse it, the error names Z-Library and the option to drop `exact`.
+A skip plus an answered empty page remains success; a skip plus unavailable
+Z-Library credentials with no answer is `all_sources_failed`.
+
+With active filters, top-level `filtering.requested` echoes the effective
+request. Unknown language values stay literal and appear in
+`filtering.unrecognized.languages`; they are matched literally, never silently
+ignored. Recognized names/codes are case-insensitive; native Z-Library sending
+uses deduplicated names (`fr` → `french`, `en` plus `english` → one `english`).
+The same aliases apply to rows. `nb` and `nn` map to Norwegian. Semicolon row
+languages use membership (`English;French` matches `fr`). `Traditional chinese`
+has no vendored native counterpart and matches as normalized literal text.
+Formats are trimmed, case-folded and stripped of one leading dot, without
+family aliases (`azw3` differs from `mobi`). Empty lists, blank list entries
+and `exact:false` add no constraint.
+
+Year bounds are inclusive integers. Row years must be positive integers of at
+least four digits, digit strings of the same numeric domain, or a leading
+four-digit year plus a listed month/season/quarter word, optionally a day
+(1–31). Supported date words cover English, French, Italian, Spanish, German
+and Portuguese; examples: `2014 Juin`, `2001 Gennaio 29`, `1968 Dezembro`,
+`1975 Januar 01`, `2001 Spring`, `2001 Q4`. Ranges, two-year strings, zero,
+circa/unlisted suffixes and values below 1000 remain unknown. Titles are never
+used to infer years. Public rows show the same parsed year used for filtering.
+
+Each answered attempt has `ignored: []` and, with active filters, a `filtering`
+record. Each set predicate appears exactly once in `applied`, `native_only` or
+`ignored`. Metadata predicates are `applied`; only Z-Library `exact` is
+`native_only`. `native_sent` records the values transmitted to Z-Library,
+independently of whether they are locally checked. Counts describe the examined
+window: `examined = matched + rejected + unknown`. A known mismatch outranks
+missing metadata; otherwise a missing checked field counts as unknown and is
+excluded. `unknown_metadata: "excluded"` appears per attempt only when
+`applied` is nonempty. Skipped/failed attempts have no counts.
+
+LibGen/Anna windows use `scope: "first_upstream_page"`; Z-Library uses `"page"`.
+Filtering precedes the public `limit` and refs are minted only for returned
+rows. Held-list continuations retain the original window counts and slice its
+already-filtered matches. Counts are not catalogue totals or completeness
+claims. No extra pages are fetched to fill a short page.
+
+A full raw Z-Library page can yield zero matches and still have `next_cursor`.
+If later sources win, their cursor replaces that pointer (or it is absent).
+If all sources answer empty, the earliest onward pointer is returned.
+`routing.continuation_source` names the cursor's source whenever a cursor is
+returned. Continuing walks only that source; replay re-queries the same
+Z-Library position and can change with upstream data. Z-Library still fetches
+`limit` rows per page; the 50-row candidate page and held-tail drain are deferred.
 
 ## get_book
 
@@ -131,7 +187,9 @@ and invalidates the estimate. A refusal before transfer does not spend quota.
 
 Optional `sources` (same array contract as search; default all) and `mode`
 (`local`, default, or `live`). Local mode makes no network call. It returns
-optional `default_order` and a `sources` object. Each source has `configured`,
+optional `default_order` and a `sources` object. Each source also has `filters`:
+`year_from`, `year_to`, `languages`, `formats` are `"local"`; `exact` is
+`"native_only"` for Z-Library and `"unsupported"` for the others. Each source has `configured`,
 `search_available`, `download_available`, `operations`, and `limit.kind`:
 `daily`, `none`, `unknown`, or `unparsed`.
 

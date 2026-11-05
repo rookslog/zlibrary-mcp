@@ -7,6 +7,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Filters — partial milestone for 2.0 (unreleased)
+
+Year, language and format are checked locally on all three sources, with
+examined-window counts and excluded unknown metadata. `exact` remains a gap:
+unsupported sources are skipped; Z-Library receives it as `native_only`, sent
+but not checked by this server. The 50-row Z-Library page/held-tail drain is
+deferred; there is no overfetch or new input field in this slice.
+
+Before/after examples (operator O4):
+
+- LibGen, French EPUBs: before, top rows from an unfiltered page; after,
+  only French EPUBs, often none, with examined-window counts and a note.
+- Z-Library with `fr`: before, unfiltered rows could be returned; after,
+  `fr` is translated to `french` and only locally matching rows are returned.
+- Year filter: before, unreadable/absent years could survive; after, those
+  rows are excluded and counted as unknown unless another field mismatches.
+- `exact` on LibGen alone: before, rows with ignored `exact`; after, an
+  `unsupported_operation` error pointing to Z-Library or dropping `exact`.
+
 ### Security
 
 - Updated locked dependencies body-parser, fast-uri, qs, Brotli and msgpack for

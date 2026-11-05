@@ -73,6 +73,23 @@ source with rows and reports each attempt in `routing`. There is no hidden
 preferred source. Omitting `sources` requires an operator-configured default;
 otherwise `sources_required` includes the choices and their availability.
 
+**Filters — partial milestone for 2.0.** Year (`year_from`/`year_to`), language
+and format are checked locally on every source, with AND across fields and OR
+within lists. Missing checked metadata is excluded and counted. The reply echoes
+the understood request and gives per-attempt examined/matched/rejected/unknown
+window counts, not totals; a short or empty page can miss later matches. Language
+codes are translated for Z-Library (`fr` → `french`) and aliases deduplicated.
+Formats ignore case and one leading dot; readable date years appear as parsed
+years. Empty lists and `exact:false` add no constraint.
+
+`exact` remains a gap: LibGen/Anna attempts are skipped as unsupported; Z-Library
+receives it as `native_only`, **sent, not checked by this server**. Local
+`get_limits` reports these filter capabilities without provider contact.
+A full Z-Library page filtered to zero can still supply a continuation, named by
+`routing.continuation_source`; a later winning source owns its own cursor.
+No extra fetching or 50-row Z-Library candidate page ships in this slice.
+See the [filter contract](docs/api.md#filters-partial-milestone-for-20).
+
 Refs are opaque, in-memory handles shared by this process's clients. The most
 recent 5,000 row/cursor entries are held; reconnecting to the same process keeps
 them, restarting does not. On `ref_unavailable`, search and choose the edition

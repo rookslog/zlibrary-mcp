@@ -29,8 +29,36 @@ already-parked false no-op for non-MCP callers; it is not registered as a tool.
 
 Author-only exact queries retain quoted-author behavior. With both `query` and
 `author`, `exact` covers the **whole combined query**, not the title alone.
-No author post-filter is promised. Unsupported source filters are reported in
-`routing.attempts[].ignored` rather than silently claimed as applied.
+No author post-filter is promised. Metadata filters are checked locally on every
+source; `exact` is delegated only to Z-Library as described below.
+
+## Filters: partial milestone for 2.0
+
+Year, language and format are checked locally on every source. Missing checked
+metadata is excluded and counted; `exact` remains a gap. Sources without
+`exact` are skipped before contact. Z-Library keeps receiving it, reported as
+`native_only`: sent, not checked by this server. The additive `filtering`
+request/attempt records report the checked window, not completeness. Existing
+clients must accept these keys and `routing.continuation_source`. A later
+winning source owns the continuation; an all-empty walk can retain a full
+Z-Library page's onward pointer. The 50-row Z-Library candidate page and
+held-tail drain are deferred; no new input fields or overfetch are introduced.
+See [the detailed contract](api.md#filters-partial-milestone-for-20).
+
+Before/after examples (operator O4):
+
+- LibGen, French EPUBs: before, top rows from an unfiltered page; after,
+  only French EPUBs, often none, with examined-window counts and a note.
+- Z-Library with `fr`: before, unfiltered rows could be returned; after,
+  `fr` is translated to `french` and only locally matching rows are returned.
+- Year filter: before, unreadable/absent years could survive; after, those
+  rows are excluded and counted as unknown unless another field mismatches.
+- `exact` on LibGen alone: before, rows with ignored `exact`; after, an
+  `unsupported_operation` error pointing to Z-Library or dropping `exact`.
+
+Reinstalling the older 1.4.0 behavior restores its filtering problems; it cannot
+undo downloads or answers already based on newer replies, or retract published
+release notes. This entry describes the pending 2.0 transition, not a release.
 
 ## Result shapes
 

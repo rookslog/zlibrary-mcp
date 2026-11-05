@@ -9,6 +9,301 @@ import python_bridge
 
 
 @pytest.mark.parametrize(
+    "function,arguments",
+    [
+        ("search", {"count": 0}),
+        ("search", {"page": 0}),
+        ("download_book", {"unknown_option": True}),
+        ("download_book", {"processed_output_format": "txt"}),
+    ],
+)
+async def test_login_control_argument_refusal_is_not_a_failed_login(
+    function, arguments, monkeypatch, capsys
+):
+    async def forbidden():
+        pytest.fail("local arguments must be refused before login")
+
+    monkeypatch.setattr(python_bridge, "_eapi_client", None)
+    monkeypatch.setattr(python_bridge, "_session_input", {"action": "login"})
+    monkeypatch.setattr(python_bridge, "initialize_eapi_client", forbidden)
+    monkeypatch.setattr(
+        sys, "argv", ["python_bridge.py", function, json.dumps(arguments)]
+    )
+    with pytest.raises(SystemExit) as stopped:
+        await python_bridge.main()
+    assert stopped.value.code == 1
+    streams = capsys.readouterr()
+    assert streams.out == ""
+    data = json.loads(streams.err.strip().splitlines()[-1])
+    assert data["type"] == "ValueError"
+    assert "diagnostics" not in data
+    assert "login_failed" not in data
+
+
+@pytest.mark.parametrize("session", [None, {"action": "login"}])
+async def test_unknown_function_refused_before_authentication(
+    session, monkeypatch, capsys
+):
+    initialized = []
+
+    async def initialize():
+        initialized.append(True)
+
+    monkeypatch.setattr(python_bridge, "_eapi_client", None)
+    monkeypatch.setattr(python_bridge, "_session_input", session)
+    monkeypatch.setattr(python_bridge, "initialize_eapi_client", initialize)
+    monkeypatch.setattr(sys, "argv", ["python_bridge.py", "r1_unknown_function", "{}"])
+    with pytest.raises(SystemExit) as stopped:
+        await python_bridge.main()
+    assert stopped.value.code == 1
+    streams = capsys.readouterr()
+    assert initialized == []
+    assert streams.out == ""
+    data = json.loads(streams.err.strip().splitlines()[-1])
+    assert data["type"] == "ValueError"
+    assert "diagnostics" not in data
+    assert "login_failed" not in data
+
+
+def test_early_admission_names_match_actual_dispatch():
+    """A supported dispatch addition must not be refused by early admission."""
+    import ast
+    import inspect
+
+    tree = ast.parse(inspect.getsource(python_bridge._dispatch_bridge_function))
+    names = {
+        node.comparators[0].value
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Compare)
+        and isinstance(node.left, ast.Name)
+        and node.left.id == "function_name"
+        and len(node.comparators) == 1
+        and isinstance(node.comparators[0], ast.Constant)
+        and isinstance(node.ops[0], ast.Eq)
+    }
+    assert names
+    assert python_bridge._BRIDGE_FUNCTION_NAMES == names
+
+
+@pytest.mark.parametrize(
+    "provider",
+    [
+        "libgen",
+        "annas",
+        "annas_archive",
+        "auto",
+        "zlibrary",
+        "r1_unknown_provider",
+    ],
+)
+def test_eapi_source_projection_drops_unknown_provider_and_all_hosts(provider):
+    projected = python_bridge._safe_eapi_details(
+        {
+            "provider": provider,
+            "host": "r1-secret-host.invalid",
+            "reason": "http_error",
+            "detail": "HTTP 503",
+            "message": "r1-untrusted-prose",
+            "failures": [
+                {
+                    "provider": provider,
+                    "host": "r1-secret-host.invalid",
+                    "reason": "http_error",
+                    "detail": "HTTP 503",
+                    "message": "r1-untrusted-prose",
+                }
+            ],
+        }
+    )
+    assert projected["reason"] == "http_error"
+    assert projected["failures"][0]["detail"] == "HTTP 503"
+    if provider == "r1_unknown_provider":
+        assert "provider" not in projected["failures"][0]
+        assert provider not in json.dumps(projected)
+    else:
+        assert projected["failures"][0]["provider"] == provider
+    assert "provider" not in projected
+    assert "host" not in json.dumps(projected)
+    assert "r1-untrusted-prose" not in json.dumps(projected)
+
+
+@pytest.mark.parametrize("missing", ["ZLIBRARY_EMAIL", "ZLIBRARY_PASSWORD"])
+async def test_missing_credentials_keep_configuration_reason(
+    missing, monkeypatch, capsys
+):
+    monkeypatch.setenv("ZLIBRARY_EMAIL", "offline@example.test")
+    monkeypatch.setenv("ZLIBRARY_PASSWORD", "offline-password")
+    monkeypatch.delenv(missing)
+    monkeypatch.setattr(python_bridge, "_eapi_client", None)
+    monkeypatch.setattr(python_bridge, "_session_input", None)
+    monkeypatch.setattr(sys, "argv", ["python_bridge.py", "search", "{}"])
+    with pytest.raises(SystemExit) as stopped:
+        await python_bridge.main()
+    assert stopped.value.code == 1
+    data = json.loads(capsys.readouterr().err.strip().splitlines()[-1])
+    assert data["details"]["reason"] == "configuration_error"
+    assert data["details"]["request_issued"] is False
+    assert "diagnostics" not in data
+
+
+@pytest.mark.parametrize("action", ["operation", "login"])
+async def test_source_configuration_refusal_with_retained_eapi_context_is_local(
+    action, monkeypatch, capsys
+):
+    from lib.sources.config import get_source_config
+
+    async def initialize():
+        # A login-control child can encounter this same local refusal.
+        get_source_config()
+
+    monkeypatch.setenv("PYTHON_BRIDGE_TIMEOUT", "9999")
+    monkeypatch.setattr(python_bridge, "_eapi_client", None)
+    monkeypatch.setattr(python_bridge, "_source_router", None)
+    monkeypatch.setattr(python_bridge, "_session_input", {"action": action})
+    monkeypatch.setattr(python_bridge, "initialize_eapi_client", initialize)
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "python_bridge.py",
+            "search_multi_source",
+            '{"query":"offline","source":"libgen"}',
+        ],
+    )
+    with pytest.raises(SystemExit) as stopped:
+        await python_bridge.main()
+    assert stopped.value.code == 1
+    streams = capsys.readouterr()
+    assert streams.out == ""
+    data = json.loads(streams.err.strip().splitlines()[-1])
+    assert data["type"] == "SourceConfigurationError"
+    assert data["details"]["reason"] == "configuration_error"
+    assert data["details"]["request_issued"] is False
+    assert data["details"]["variable"] == "PYTHON_BRIDGE_TIMEOUT"
+    assert "diagnostics" not in data
+    assert "login_failed" not in data
+
+
+@pytest.mark.parametrize("aggregate", [False, True])
+async def test_eapi_source_details_keep_http_status_and_failures(
+    aggregate, monkeypatch, capsys
+):
+    from lib.sources.errors import AllSourcesFailedError, ProviderResponseError
+
+    failure = ProviderResponseError(
+        "libgen", "cdn.example", "HTTP 503", reason="http_error"
+    )
+
+    async def initialize():
+        pass
+
+    async def dispatch(*args):
+        raise AllSourcesFailedError("download", [failure]) if aggregate else failure
+
+    monkeypatch.setattr(python_bridge, "_eapi_client", None)
+    monkeypatch.setattr(python_bridge, "_session_input", None)
+    monkeypatch.setattr(python_bridge, "initialize_eapi_client", initialize)
+    monkeypatch.setattr(python_bridge, "_dispatch_bridge_function", dispatch)
+    monkeypatch.setattr(sys, "argv", ["python_bridge.py", "search", "{}"])
+    with pytest.raises(SystemExit) as stopped:
+        await python_bridge.main()
+    assert stopped.value.code == 1
+    data = json.loads(capsys.readouterr().err.strip().splitlines()[-1])
+    assert "diagnostics" in data
+    details = data["details"]
+    if aggregate:
+        assert len(details["failures"]) == 1
+        details = details["failures"][0]
+    assert details["reason"] == "http_error"
+    assert details["detail"] == "HTTP 503"
+    assert "message" not in details
+
+
+@pytest.mark.parametrize("eapi_context", [False, True])
+async def test_download_source_failure_with_and_without_retained_eapi_context(
+    eapi_context, tmp_path, monkeypatch, capsys
+):
+    from lib.sources.config import SourceConfig
+    from lib.sources.errors import AllSourcesFailedError, ProviderResponseError
+
+    class Router:
+        config = SourceConfig(preflight_enabled=False)
+
+        async def iter_download_candidates(self, *args, **kwargs):
+            raise AllSourcesFailedError(
+                "download", [ProviderResponseError("libgen", "cdn.example", "HTTP 503")]
+            )
+            yield  # The production router exposes an async generator.
+
+    async def router(**kwargs):
+        return Router()
+
+    async def forbidden():
+        pytest.fail("source downloads must not initialize EAPI")
+
+    monkeypatch.setattr(python_bridge, "get_source_router", router)
+    monkeypatch.setattr(python_bridge, "initialize_eapi_client", forbidden)
+    monkeypatch.setattr(python_bridge, "_eapi_client", None)
+    monkeypatch.setattr(python_bridge, "_source_router", None)
+    monkeypatch.setattr(
+        python_bridge,
+        "_session_input",
+        {"action": "operation"} if eapi_context else None,
+    )
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "python_bridge.py",
+            "download_book",
+            json.dumps(
+                {
+                    "book_details": {"source": "libgen", "md5": "a" * 32},
+                    "output_dir": str(tmp_path),
+                }
+            ),
+        ],
+    )
+    with pytest.raises(SystemExit) as stopped:
+        await python_bridge.main()
+    assert stopped.value.code == 1
+    data = json.loads(capsys.readouterr().err.strip().splitlines()[-1])
+    assert ("diagnostics" in data) is eapi_context
+    assert data["details"]["failures"][0]["detail"] == "HTTP 503"
+
+
+@pytest.mark.parametrize("aggregate", [False, True])
+async def test_source_walk_budget_never_gains_eapi_request_diagnostics(
+    aggregate, monkeypatch, capsys
+):
+    from lib.sources.errors import AllSourcesFailedError, ProviderTimeoutError
+
+    failure = ProviderTimeoutError(
+        "libgen", "", "local deadline", reason="walk_budget_exhausted"
+    )
+
+    async def initialize():
+        pass
+
+    async def dispatch(*args):
+        raise AllSourcesFailedError("download", [failure]) if aggregate else failure
+
+    # Deliberately supply EAPI context: source walks normally have none.
+    monkeypatch.setattr(python_bridge, "_eapi_client", None)
+    monkeypatch.setattr(python_bridge, "_session_input", {"action": "operation"})
+    monkeypatch.setattr(python_bridge, "initialize_eapi_client", initialize)
+    monkeypatch.setattr(python_bridge, "_dispatch_bridge_function", dispatch)
+    monkeypatch.setattr(sys, "argv", ["python_bridge.py", "download_book", "{}"])
+    with pytest.raises(SystemExit) as stopped:
+        await python_bridge.main()
+    assert stopped.value.code == 1
+    data = json.loads(capsys.readouterr().err.strip().splitlines()[-1])
+    assert "diagnostics" not in data
+    details = data["details"]["failures"][0] if aggregate else data["details"]
+    assert details["reason"] == "walk_budget_exhausted"
+
+
+@pytest.mark.parametrize(
     "status,cleanup",
     [(200, False), (400, False), (503, False), (None, False), (400, True)],
 )

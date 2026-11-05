@@ -347,7 +347,7 @@ const fs = require('fs');
 const data = JSON.parse(fs.readFileSync(0, 'utf8'));
 const enabled = new Function('needs', 'github', 'always', 'return ' + data.condition)(data.needs, {event_name:'schedule'}, () => true);
 let body = '';
-const github = {paginate: async () => [], rest: {issues: {
+const github = {paginate: async (list, args) => (await list(args)).data, rest: {issues: {
   listForRepo: async () => ({data: []}),
   create: async value => { body = value.body; },
 }}};

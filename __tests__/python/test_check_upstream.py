@@ -78,9 +78,14 @@ def test_github_output_uses_heredoc_for_multiline_report(
 
     written = out.read_text(encoding="utf-8")
     assert "failed=true\n" in written
-    assert "report<<PROBE_EOF\n" in written
+    delimiter = next(
+        line.removeprefix("report<<")
+        for line in written.splitlines()
+        if line.startswith("report<<")
+    )
+    assert delimiter != "PROBE_EOF"
     assert "line one\nline two\n" in written
-    assert written.rstrip().endswith("PROBE_EOF")
+    assert written.rstrip().endswith(delimiter)
 
 
 def test_github_output_is_a_noop_outside_ci(check_upstream, monkeypatch):
@@ -1609,4 +1614,193 @@ def test_default_annas_warning_keeps_first_seen(check_upstream, monkeypatch):
     assert summary["failed"] is False
     assert summary["results"][0]["first_seen"] == "2026-11-01"
     assert "WARN" in report
+    assert "### Source warnings" in report
     assert "First seen: 2026-11-01" in report
+
+
+# Workflow outputs are parsed independently of the producer.
+def read_workflow_outputs(path):
+    lines = path.read_text().splitlines()
+    result = {}
+    iterator = iter(lines)
+    for line in iterator:
+        if "<<" in line:
+            name, delimiter = line.split("<<", 1)
+            body = []
+            for item in iterator:
+                if item == delimiter:
+                    break
+                body.append(item)
+            result[name] = "\n".join(body)
+        elif "=" in line:
+            name, value = line.split("=", 1)
+            result[name] = value
+    return result
+
+
+@pytest.mark.parametrize("case", ["429", "503", "html", "connect", "read", "healthy"])
+def test_validate_workflow_outputs_through_real_zlibrary_probe(
+    check_upstream, monkeypatch, tmp_path, capsys, case
+):
+    import subprocess
+    import json
+
+    domain = check_upstream.DEFAULT_EAPI_DOMAINS[0]
+    monkeypatch.setattr(check_upstream, "ZLIB_DOMAIN", domain)
+
+    def respond(request):
+        if case == "connect":
+            raise httpx.ConnectError("offline request", request=request)
+        if case == "read":
+            raise httpx.ReadTimeout("offline request", request=request)
+        if case == "html":
+            return httpx.Response(200, text="<html>Check your browser</html>")
+        if case != "healthy":
+            return httpx.Response(int(case))
+        return httpx.Response(
+            200,
+            json={"domains": [domain]} if request.method == "GET" else {"books": []},
+        )
+
+    async def probes():
+        async with httpx.AsyncClient(transport=httpx.MockTransport(respond)) as client:
+            return await check_upstream.probe_zlibrary_eapi(client)
+
+    monkeypatch.setattr(check_upstream, "run_probes", probes)
+    output = tmp_path / "probe-output"
+    monkeypatch.setenv("GITHUB_OUTPUT", str(output))
+    monkeypatch.setattr(sys, "argv", ["check_upstream.py", "--github-output"])
+    assert check_upstream.main() == (0 if case == "healthy" else 1)
+    capsys.readouterr()
+    values = read_workflow_outputs(output)
+    assert values["zlib_blocked"] == ("false" if case == "healthy" else "unknown")
+    assert values["zlib_domain"] in check_upstream.DEFAULT_EAPI_DOMAINS
+    workflow = subprocess.check_output(
+        [
+            "node",
+            "--input-type=module",
+            "-e",
+            "import fs from 'node:fs';import {parse} from 'yaml';process.stdout.write(JSON.stringify(parse(fs.readFileSync('.github/workflows/upstream-check.yml','utf8'))));",
+        ],
+        cwd=MODULE_PATH.parent.parent,
+        text=True,
+    )
+    step = next(
+        x
+        for x in json.loads(workflow)["jobs"]["live_tests"]["steps"]
+        if x.get("id") == "live"
+    )
+    live_output = tmp_path / "live-output"
+    fake_uv = tmp_path / "uv"
+    fake_uv.write_text("#!/bin/sh\nexit 89\n")
+    fake_uv.chmod(0o755)
+    env = {k: v for k, v in os.environ.items() if not k.startswith("ZLIBRARY_")}
+    env.update(
+        PATH=f"{tmp_path}:{env['PATH']}",
+        GITHUB_OUTPUT=str(live_output),
+        ZLIB_BLOCKED=values["zlib_blocked"],
+        ZLIB_PROBE_DOMAIN=values["zlib_domain"],
+    )
+    child = subprocess.run(
+        ["bash", "-e", "-o", "pipefail", "-c", step["run"]],
+        cwd=tmp_path,
+        env=env,
+        capture_output=True,
+        text=True,
+    )
+    assert child.returncode == 0
+    assert read_workflow_outputs(live_output)["status"] == (
+        "skipped" if case == "healthy" else "unknown"
+    )
+
+
+def test_validate_workflow_outputs_use_per_run_delimiters(
+    check_upstream, monkeypatch, tmp_path
+):
+    output = tmp_path / "output"
+    monkeypatch.setenv("GITHUB_OUTPUT", str(output))
+    for _ in range(2):
+        check_upstream.emit_github_output(
+            "line one\nPROBE_EOF\nline two", failed=True, zlib_blocked=True
+        )
+    delimiters = [
+        x for x in output.read_text().splitlines() if x.startswith("report<<")
+    ]
+    assert len(set(delimiters)) == 2
+    values = read_workflow_outputs(output)
+    assert values["failed"] == "true"
+    assert values["zlib_blocked"] == "true"
+    assert values["report"] == "line one\nPROBE_EOF\nline two"
+
+
+@pytest.mark.parametrize(
+    "domain", ["other.invalid", "sample.invalid\nextra", "sample.invalid\rextra"]
+)
+def test_validate_workflow_outputs_require_configured_domain(
+    check_upstream, monkeypatch, tmp_path, domain
+):
+    output = tmp_path / "output"
+    monkeypatch.setenv("GITHUB_OUTPUT", str(output))
+    monkeypatch.setattr(check_upstream, "ZLIB_DOMAIN", domain)
+    check_upstream.emit_github_output("report", failed=False, zlib_blocked=False)
+    values = read_workflow_outputs(output)
+    assert values["zlib_blocked"] == "unknown"
+    assert "zlib_domain" not in values
+
+
+def test_treat_upstream_text_as_data_in_report_rows(check_upstream, monkeypatch):
+    monkeypatch.setattr(check_upstream, "LIBGEN_MIRROR_CANDIDATES", ("li",))
+    monkeypatch.setattr(check_upstream, "LIBGEN_PROBE_DELAY_SECONDS", 0)
+
+    def respond(request):
+        if request.url.path == "/get.php":
+            return httpx.Response(307, headers={"location": "/ads.php"})
+        return httpx.Response(
+            200, text='<a href="get.php?md5=fixture&key=part%0Anext%0Dlast">GET</a>'
+        )
+
+    async def probe():
+        async with httpx.AsyncClient(
+            transport=httpx.MockTransport(respond), follow_redirects=True
+        ) as client:
+            return await check_upstream.probe_libgen_download(client)
+
+    result = asyncio.run(probe())
+    report = check_upstream.render([result])
+    assert "key part next last bounced" in report
+    assert not any(
+        line.startswith("next") or line.startswith("last")
+        for line in report.splitlines()
+    )
+
+
+def test_status_json_recursion_is_treated_as_missing_state(check_upstream, monkeypatch):
+    def unavailable(*args, **kwargs):
+        raise RecursionError("deep status data")
+
+    monkeypatch.setattr(check_upstream.json, "loads", unavailable)
+    result = check_upstream.ProbeResult("libgen:search", False, "offline")
+    summary = check_upstream.summarize(
+        [result],
+        previous_body="<!-- upstream-source-status: {} -->",
+        today="2026-11-05",
+    )
+    assert summary["results"][0]["first_seen"] == "2026-11-05"
+
+
+def test_annas_warning_has_run_annotation(
+    check_upstream, monkeypatch, tmp_path, capsys
+):
+    async def probes():
+        return [
+            check_upstream.ProbeResult(
+                "annas-archive:search", False, "HTTP 403", blocked=True
+            )
+        ]
+
+    monkeypatch.delenv("UPSTREAM_RELIED_SOURCES", raising=False)
+    monkeypatch.setattr(check_upstream, "run_probes", probes)
+    monkeypatch.setattr(sys, "argv", ["check_upstream.py", "--github-output"])
+    monkeypatch.setenv("GITHUB_OUTPUT", str(tmp_path / "output"))
+    assert check_upstream.main() == 0
+    assert "::warning::Anna's Archive" in capsys.readouterr().out

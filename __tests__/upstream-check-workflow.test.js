@@ -1,5 +1,5 @@
 import { jest } from '@jest/globals';
-import { readFileSync, mkdtempSync, rmSync, existsSync } from 'node:fs';
+import { readFileSync, mkdtempSync, rmSync, existsSync, writeFileSync, mkdirSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { createRequire } from 'node:module';
@@ -16,6 +16,11 @@ function script(job, id) {
 
 function api(issues, laterPages = []) {
   const pages = [issues, ...laterPages];
+  for (const rows of pages) for (const row of rows) {
+    row.state ??= 'open';
+    row.labels ??= [{ name: 'upstream-drift' }];
+    row.created_at ??= '2026-11-01T00:00:00Z';
+  }
   return {
     paginate: jest.fn(async (method, parameters) => {
       const rows = [];
@@ -190,9 +195,10 @@ test.each(['reachability', 'report'])('paginates %s lookup and finds issue250 af
   firstPage.push({ number: 399, title: rollingTitle, pull_request: {} });
   const github = api(firstPage, [[{ number: 250, title: rollingTitle, body: 'later page state' }]]);
   await run(script(job, job === 'report' ? 'issue' : 'previous'), github);
-  expect(github.paginate).toHaveBeenCalledWith(github.rest.issues.listForRepo, expect.objectContaining({
-    state: 'all', labels: 'upstream-drift', per_page: 100,
-  }));
+  expect(github.paginate).toHaveBeenCalledWith(github.rest.issues.listForRepo, {
+    owner: 'example', repo: 'books', state: 'all', labels: 'upstream-drift', per_page: 100, sort: 'created', direction: 'desc',
+  });
+  expect(github.paginate.mock.calls.filter(([method]) => method === github.rest.issues.listForRepo)).toHaveLength(1);
   expect(github.rest.issues.listForRepo).toHaveBeenCalledTimes(2);
   if (job === 'report') {
     expect(github.rest.issues.update).toHaveBeenCalledWith(expect.objectContaining({ issue_number: 250 }));
@@ -206,7 +212,7 @@ test('failed recovery issue update retains its date and cleared state on the nex
   const issue = { number: 250, title: rollingTitle, state: 'open', body: 'old failure\n<!-- upstream-source-status: {"zlibrary:search":"2026-10-20"} -->' };
   const github = api([issue]);
   const comments = [];
-  github.rest.issues.createComment.mockImplementation(async ({ body }) => { comments.push({ body }); });
+  github.rest.issues.createComment.mockImplementation(async ({ body }) => { comments.push({ body, user: { login: 'github-actions[bot]' } }); });
   github.rest.issues.listComments.mockImplementation(async () => ({ data: comments }));
   github.rest.issues.update.mockRejectedValueOnce(new Error('update unavailable'));
   process.env.REACHABILITY_RESULT = 'success';
@@ -259,12 +265,127 @@ test.each([
 
 test('next probe reads the latest snapshot on a later comments page', async () => {
   const github = api([{ number: 250, title: rollingTitle, body: 'stale failure' }]);
-  const firstPage = Array.from({ length: 100 }, () => ({ body: '<!-- upstream-report-snapshot -->\nold state' }));
+  const firstPage = Array.from({ length: 100 }, () => ({ body: '<!-- upstream-report-snapshot -->\nold state', user: { login: 'github-actions[bot]' } }));
   github.rest.issues.listComments.mockImplementation(async ({ page }) => ({ data: page === 1 ? firstPage : [
-    { body: '<!-- upstream-report-snapshot -->\nlatest recovery\n<!-- upstream-source-status: {} -->' },
+    { body: '<!-- upstream-report-snapshot -->\nlatest recovery\n<!-- upstream-source-status: {} -->', user: { login: 'github-actions[bot]' } },
     { body: 'ordinary maintainer comment' },
   ] }));
   await run(script('reachability', 'previous'), github);
   expect(github.rest.issues.listComments).toHaveBeenCalledTimes(2);
   expect(readFileSync(process.env.PREVIOUS_ISSUE_PATH, 'utf8')).toBe('<!-- upstream-report-snapshot -->\nlatest recovery\n<!-- upstream-source-status: {} -->');
+});
+
+
+test.each(['reachability', 'report'])('selects the open labelled issue in %s despite an older updated duplicate', async (job) => {
+  const github = api([
+    { number: 71, title: rollingTitle, state: 'closed', body: 'old report', created_at: '2026-08-01T00:00:00Z', updated_at: '2026-11-06T00:00:00Z' },
+    { number: 250, title: rollingTitle, state: 'open', body: 'current report', created_at: '2026-10-01T00:00:00Z', updated_at: '2026-11-01T00:00:00Z' },
+  ]);
+  await run(script(job, job === 'report' ? 'issue' : 'previous'), github);
+  expect(github.paginate).toHaveBeenCalledWith(github.rest.issues.listForRepo, {
+    owner: 'example', repo: 'books', state: 'all', labels: 'upstream-drift', per_page: 100, sort: 'created', direction: 'desc',
+  });
+  expect(github.rest.issues.listForRepo).toHaveBeenCalledTimes(1);
+  if (job === 'report') expect(github.rest.issues.update).toHaveBeenCalledWith(expect.objectContaining({ issue_number: 250 }));
+  else expect(readFileSync(process.env.PREVIOUS_ISSUE_PATH, 'utf8')).toBe('current report');
+});
+
+test.each(['reachability', 'report'])('selects the newest created closed issue in %s', async (job) => {
+  const github = api([
+    { number: 71, title: rollingTitle, state: 'closed', body: 'old report', created_at: '2026-08-01T00:00:00Z', updated_at: '2026-11-06T00:00:00Z' },
+    { number: 250, title: rollingTitle, state: 'closed', body: 'newest report', created_at: '2026-10-01T00:00:00Z' },
+  ]);
+  await run(script(job, job === 'report' ? 'issue' : 'previous'), github);
+  if (job === 'report') expect(github.rest.issues.update).toHaveBeenCalledWith(expect.objectContaining({ issue_number: 250 }));
+  else expect(readFileSync(process.env.PREVIOUS_ISSUE_PATH, 'utf8')).toBe('newest report');
+});
+
+test('healthy closed issue receives no writes or comment lookup', async () => {
+  process.env.REACHABILITY_RESULT = 'success';
+  process.env.PROBE_FAILED = 'false';
+  const github = api([{ number: 250, title: rollingTitle, state: 'closed' }]);
+  await run(script('report', 'issue'), github);
+  expect(github.rest.issues.update).not.toHaveBeenCalled();
+  expect(github.rest.issues.createComment).not.toHaveBeenCalled();
+  expect(github.rest.issues.listComments).not.toHaveBeenCalled();
+});
+
+test.each([
+  ['cancelled', 'success', 'unknown', 'false'],
+  ['success', 'cancelled', 'unknown', 'false'],
+  ['success', 'success', 'skipped', 'false'],
+  ['success', 'success', 'blocked', 'false'],
+  ['success', 'success', 'unknown', 'false'],
+  ['success', 'success', 'passed', ''],
+  ['success', 'success', 'passed', 'False'],
+])('inconclusive evidence leaves issue state unchanged: %s %s %s %s', async (reachability, live, status, failed) => {
+  Object.assign(process.env, { REACHABILITY_RESULT: reachability, LIVE_RESULT: live, LIVE_STATUS: status, PROBE_FAILED: failed });
+  const github = api([{ number: 250, title: rollingTitle, state: 'open' }]);
+  await run(script('report', 'issue'), github);
+  expect(github.rest.issues.update).not.toHaveBeenCalled();
+  expect(github.rest.issues.createComment).not.toHaveBeenCalled();
+});
+
+const sourceMarker = '<!-- upstream-source-status: {"zlibrary:search":"2026-10-20"} -->';
+const snapshot = (body, login = 'github-actions[bot]') => ({ body: '<!-- upstream-report-snapshot -->\n' + body, user: { login } });
+
+test.each(['reachability', 'report'])('reads only bot snapshot dates in %s', async (job) => {
+  const github = api([{ number: 250, title: rollingTitle, body: sourceMarker }]);
+  github.rest.issues.listComments.mockResolvedValue({ data: [
+    snapshot(sourceMarker),
+    snapshot('<!-- upstream-source-status: {} -->', 'someone-else'),
+  ] });
+  process.env.PROBE_REPORT = '';
+  await run(script(job, job === 'report' ? 'issue' : 'previous'), github);
+  const body = job === 'report' ? github.rest.issues.update.mock.calls[0][0].body : readFileSync(process.env.PREVIOUS_ISSUE_PATH, 'utf8');
+  expect(body).toContain(sourceMarker);
+});
+
+test.each(['9999-99-99', '2099-01-01', '2026-02-30'])('validates snapshot recovery date %s in both lookups', async (date) => {
+  const github = api([{ number: 250, title: rollingTitle, body: sourceMarker }]);
+  github.rest.issues.listComments.mockResolvedValue({ data: [snapshot(sourceMarker + '\n<!-- upstream-recovered-at: ' + date + ' -->')] });
+  await run(script('reachability', 'previous'), github);
+  expect(readFileSync(process.env.PREVIOUS_ISSUE_PATH, 'utf8')).not.toContain(date);
+  Object.assign(process.env, { REACHABILITY_RESULT: 'success', PROBE_FAILED: 'false', PROBE_REPORT: '<!-- upstream-source-status: {} -->' });
+  await run(script('report', 'issue'), github);
+  expect(github.rest.issues.update.mock.calls[0][0].body).not.toContain(date);
+});
+
+test('validates source dates before selecting a snapshot', async () => {
+  const github = api([{ number: 250, title: rollingTitle, body: sourceMarker }]);
+  github.rest.issues.listComments.mockResolvedValue({ data: [snapshot('<!-- upstream-source-status: {"zlibrary:search":"2026-02-30"} -->')] });
+  await run(script('reachability', 'previous'), github);
+  expect(readFileSync(process.env.PREVIOUS_ISSUE_PATH, 'utf8')).toBe(sourceMarker);
+});
+
+test('a missing report preserves source dates across the next probe', async () => {
+  const issue = { number: 250, title: rollingTitle, state: 'open', body: sourceMarker };
+  const github = api([issue]);
+  const comments = [];
+  github.rest.issues.listComments.mockImplementation(async () => ({ data: comments }));
+  github.rest.issues.createComment.mockImplementation(async ({ body }) => comments.push(snapshot(body.replace('<!-- upstream-report-snapshot -->\n', ''))));
+  github.rest.issues.update.mockImplementation(async ({ body, state }) => Object.assign(issue, { body, state }));
+  process.env.PROBE_REPORT = '';
+  await run(script('report', 'issue'), github);
+  expect(issue.body).toContain(sourceMarker);
+  await run(script('reachability', 'previous'), github);
+  expect(readFileSync(process.env.PREVIOUS_ISSUE_PATH, 'utf8')).toContain(sourceMarker);
+});
+
+test.each(['reachability', 'report'])('requires the rolling label in %s', async (job) => {
+  const github = api([{ number: 71, title: rollingTitle, body: 'unlabelled', labels: [] }]);
+  await run(script(job, job === 'report' ? 'issue' : 'previous'), github);
+  expect(github.rest.issues.update).not.toHaveBeenCalled();
+  if (job === 'reachability') expect(readFileSync(process.env.PREVIOUS_ISSUE_PATH, 'utf8')).toBe('');
+});
+
+test.each([[1, 0], [0, 1], [0, 0]])('doctor retains audit execution for probe=%i audit=%i', (probeCode, auditCode) => {
+  const command = JSON.parse(readFileSync(new URL('../package.json', import.meta.url), 'utf8')).scripts.doctor;
+  const calls = join(directory, 'calls');
+  mkdirSync(join(directory, 'scripts'));
+  writeFileSync(join(directory, 'uv'), '#!' + process.execPath + '\nrequire("node:fs").appendFileSync(' + JSON.stringify(calls) + ', "probe\\n");process.exit(' + probeCode + ');', { mode: 0o755 });
+  writeFileSync(join(directory, 'scripts', 'release-audit.mjs'), 'import fs from "node:fs";fs.appendFileSync(' + JSON.stringify(calls) + ', "audit\\n");process.exit(' + auditCode + ');');
+  const result = require('node:child_process').spawnSync('bash', ['-c', command], { cwd: directory, env: { ...process.env, PATH: directory + ':' + process.env.PATH }, encoding: 'utf8' });
+  expect(result.status).toBe(probeCode || auditCode ? 1 : 0);
+  expect(readFileSync(calls, 'utf8')).toBe('probe\naudit\n');
 });

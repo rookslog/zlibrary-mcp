@@ -2111,3 +2111,57 @@ def test_text_report_values_remain_data(check_upstream, value):
         [check_upstream.ProbeResult("libgen:search", False, value)]
     )
     assert not any(line.lstrip().startswith("::") for line in report.splitlines())
+
+
+@pytest.mark.parametrize("stalled", ["probe_zlibrary_eapi", "probe_annas"])
+def test_probe_deadline_preserves_finished_results(
+    check_upstream, monkeypatch, stalled
+):
+    cancelled = []
+
+    async def pending(_client):
+        try:
+            await asyncio.Event().wait()
+        finally:
+            cancelled.append(stalled)
+
+    async def zlib(_client):
+        return [
+            check_upstream.ProbeResult("zlibrary:eapi/info/domains", True, "ok"),
+            check_upstream.ProbeResult("zlibrary:eapi/book/search", True, "ok"),
+        ]
+
+    async def annas(_client):
+        return check_upstream.ProbeResult("annas-archive:search", True, "ok")
+
+    async def canaries(_client):
+        raise LookupError("fixture reply")
+
+    async def download(_client):
+        return check_upstream.ProbeResult("libgen:download", True, "ok")
+
+    for name, function in [
+        ("probe_zlibrary_eapi", zlib),
+        ("probe_annas", annas),
+        ("probe_libgen_canaries", canaries),
+        ("probe_libgen_download", download),
+    ]:
+        monkeypatch.setattr(
+            check_upstream, name, pending if name == stalled else function
+        )
+    monkeypatch.setattr(check_upstream, "PROBE_DEADLINE_SECONDS", 0.01, raising=False)
+
+    async def execute():
+        return await asyncio.wait_for(check_upstream.run_probes(), timeout=1)
+
+    results = asyncio.run(execute())
+    assert cancelled == [stalled]
+    failures = [row for row in results if not row.ok]
+    assert len(failures) == 2
+    assert any("deadline" in row.detail for row in failures)
+    assert any("LookupError" in row.detail for row in failures)
+    assert any(row.name == "libgen:download" and row.ok for row in results)
+
+
+def test_probe_deadline_budget(check_upstream):
+    assert check_upstream.PROBE_DEADLINE_SECONDS == 600

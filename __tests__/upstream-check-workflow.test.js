@@ -300,9 +300,10 @@ test.each(['reachability', 'report'])('selects the newest created closed issue i
   else expect(readFileSync(process.env.PREVIOUS_ISSUE_PATH, 'utf8')).toBe('newest report');
 });
 
-test('healthy closed issue receives no writes or comment lookup', async () => {
+test('closed issue without a current tracking report receives no writes', async () => {
   process.env.REACHABILITY_RESULT = 'success';
   process.env.PROBE_FAILED = 'false';
+  process.env.PROBE_REPORT = 'all passing';
   const github = api([{ number: 250, title: rollingTitle, state: 'closed' }]);
   await run(script('report', 'issue'), github);
   expect(github.rest.issues.update).not.toHaveBeenCalled();
@@ -437,4 +438,69 @@ test.each([
   expect(github.rest.issues.create).not.toHaveBeenCalled();
   expect(issue.state).toBe('open');
   expect(issue.body).toBe('previous failure');
+});
+
+
+test.each(['passed', 'skipped', 'cancelled'])('closed issue retains changed source dates with live status %s', async (status) => {
+  const oldMarker = '<!-- upstream-source-status: {"annas-archive:search":"2026-10-20"} -->';
+  const issue = { number: 250, title: rollingTitle, state: 'closed', body: oldMarker };
+  const github = api([issue]);
+  const comments = [];
+  github.rest.issues.listComments.mockImplementation(async () => ({ data: comments }));
+  github.rest.issues.createComment.mockImplementation(async ({ body }) => comments.push(snapshot(body.replace('<!-- upstream-report-snapshot -->\n', ''))));
+  github.rest.issues.update.mockImplementation(async ({ body, state }) => Object.assign(issue, { body, state }));
+  Object.assign(process.env, {
+    REACHABILITY_RESULT: 'success', PROBE_FAILED: 'false',
+    LIVE_RESULT: status === 'cancelled' ? 'cancelled' : 'success', LIVE_STATUS: status,
+    PROBE_REPORT: 'all passing\n<!-- upstream-source-status: {} -->',
+  });
+  await run(script('report', 'issue'), github);
+  expect(github.rest.issues.createComment).toHaveBeenCalledTimes(1);
+  expect(github.rest.issues.update).toHaveBeenCalledWith(expect.objectContaining({ state: 'closed' }));
+  expect(issue.body).toContain('upstream-source-status: {}');
+  expect(issue.body).not.toContain('2026-10-20');
+  if (status !== 'passed') expect(issue.body).not.toContain('upstream-recovered-at:');
+  await run(script('reachability', 'previous'), github);
+  const previous = readFileSync(process.env.PREVIOUS_ISSUE_PATH, 'utf8');
+  expect(previous).toContain('upstream-source-status: {}');
+  expect(previous).not.toContain('2026-10-20');
+  await run(script('report', 'issue'), github);
+  expect(github.rest.issues.createComment).toHaveBeenCalledTimes(1);
+  expect(github.rest.issues.update).toHaveBeenCalledTimes(1);
+});
+
+test('closed tracking update reads the latest saved state and retains a recorded recovery date', async () => {
+  const old = '<!-- upstream-source-status: {"annas-archive:search":"2026-10-20"} -->';
+  const github = api([{ number: 250, title: rollingTitle, state: 'closed', body: '<!-- upstream-source-status: {} -->' }]);
+  github.rest.issues.listComments.mockResolvedValue({ data: [snapshot(old + '\n<!-- upstream-recovered-at: 2026-10-21 -->')] });
+  Object.assign(process.env, { REACHABILITY_RESULT: 'success', PROBE_FAILED: 'false', LIVE_STATUS: 'skipped', PROBE_REPORT: '<!-- upstream-source-status: {} -->' });
+  await run(script('report', 'issue'), github);
+  const body = github.rest.issues.update.mock.calls[0][0].body;
+  expect(body).toContain('upstream-source-status: {}');
+  expect(body).toContain('upstream-recovered-at: 2026-10-21');
+});
+
+test('closed tracking state survives an interrupted issue update', async () => {
+  const old = '<!-- upstream-source-status: {"annas-archive:search":"2026-10-20"} -->';
+  const github = api([{ number: 250, title: rollingTitle, state: 'closed', body: old }]);
+  const comments = [];
+  github.rest.issues.listComments.mockImplementation(async () => ({ data: comments }));
+  github.rest.issues.createComment.mockImplementation(async ({ body }) => comments.push(snapshot(body.replace('<!-- upstream-report-snapshot -->\n', ''))));
+  github.rest.issues.update.mockRejectedValueOnce(new Error('update unavailable'));
+  Object.assign(process.env, { REACHABILITY_RESULT: 'success', PROBE_FAILED: 'false', PROBE_REPORT: '<!-- upstream-source-status: {} -->' });
+  await expect(run(script('report', 'issue'), github)).rejects.toThrow('update unavailable');
+  await run(script('reachability', 'previous'), github);
+  expect(readFileSync(process.env.PREVIOUS_ISSUE_PATH, 'utf8')).toContain('upstream-source-status: {}');
+});
+
+test.each(['cancelled', 'failure', 'skipped'])('unqualified reachability cannot clear closed tracking: %s', async (reachability) => {
+  const github = api([{ number: 250, title: rollingTitle, state: 'closed', body: sourceMarker }]);
+  Object.assign(process.env, { REACHABILITY_RESULT: reachability, PROBE_FAILED: 'false', PROBE_REPORT: '<!-- upstream-source-status: {} -->' });
+  await run(script('report', 'issue'), github);
+  if (reachability !== 'failure') {
+    expect(github.rest.issues.update).not.toHaveBeenCalled();
+    expect(github.rest.issues.createComment).not.toHaveBeenCalled();
+  } else {
+    expect(github.rest.issues.update).toHaveBeenCalledWith(expect.objectContaining({ state: 'open' }));
+  }
 });

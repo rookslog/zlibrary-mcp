@@ -584,9 +584,7 @@ def test_workflow_protects_probe_diagnostics_on_failure(workflow, tmp_path):
         assert console_events(result.stderr) == []
         assert result.stderr == b""
         assert b"Traceback" in result.stdout
-        assert console_events(result.stdout + b"\n::notice::complete\n") == [
-            "::notice::complete"
-        ]
+        assert console_events(result.stdout + b"\n::notice::complete\n") == []
         found = re.findall(rb"(?m)^::stop-commands::([^\r\n]+)$", result.stdout)
         assert len(found) == 1
         markers.append(found[0])
@@ -692,3 +690,172 @@ def test_live_job_validates_policy_before_diagnostics(workflow, tmp_path, state)
         == "unknown"
     )
     assert "unlisted.invalid" not in result.stdout + result.stderr
+
+
+@pytest.mark.parametrize(
+    "assignment,domain,expected",
+    [
+        (
+            'DEFAULT_EAPI_DOMAINS = "listed.invalid,other.invalid"',
+            "listed.invalid",
+            "unknown",
+        ),
+        ('DEFAULT_EAPI_DOMAINS = {"listed.invalid": 0}', "listed.invalid", "unknown"),
+        ("DEFAULT_EAPI_DOMAINS = []", "", "unknown"),
+        ("DEFAULT_EAPI_DOMAINS = ()", "", "unknown"),
+        ('DEFAULT_EAPI_DOMAINS = ["listed.invalid", ""]', "listed.invalid", "unknown"),
+        ('DEFAULT_EAPI_DOMAINS = ["listed.invalid", " "]', "listed.invalid", "unknown"),
+        ('DEFAULT_EAPI_DOMAINS = ["listed.invalid", 1]', "listed.invalid", "unknown"),
+        (
+            'DEFAULT_EAPI_DOMAINS = ["listed.invalid"]\nDEFAULT_EAPI_DOMAINS = ["other.invalid"]',
+            "listed.invalid",
+            "unknown",
+        ),
+        (
+            'DEFAULT_EAPI_DOMAINS = ["listed.invalid"]\nDEFAULT_EAPI_DOMAINS += ["other.invalid"]',
+            "listed.invalid",
+            "unknown",
+        ),
+        (
+            'DEFAULT_EAPI_DOMAINS = ["listed.invalid"]\nDEFAULT_EAPI_DOMAINS: list[str] = ["other.invalid"]',
+            "listed.invalid",
+            "unknown",
+        ),
+        (
+            'DEFAULT_EAPI_DOMAINS = ["listed.invalid"]\nif True:\n    DEFAULT_EAPI_DOMAINS = ["other.invalid"]',
+            "listed.invalid",
+            "unknown",
+        ),
+        ('DEFAULT_EAPI_DOMAINS = ["listed.invalid"]', "listed.invalid", "skipped"),
+        ('DEFAULT_EAPI_DOMAINS = ("listed.invalid",)', "listed.invalid", "skipped"),
+    ],
+)
+def test_live_policy_accepts_only_one_valid_literal(
+    workflow, tmp_path, assignment, domain, expected
+):
+    step = next(
+        s for s in workflow["jobs"]["live_tests"]["steps"] if s.get("id") == "live"
+    )
+    source = tmp_path / "zlibrary/src/zlibrary/eapi.py"
+    source.parent.mkdir(parents=True)
+    source.write_text(assignment + "\n")
+    output = tmp_path / "output"
+    env = {k: v for k, v in os.environ.items() if not k.startswith("ZLIBRARY_")}
+    env.update(
+        GITHUB_WORKSPACE=str(tmp_path),
+        GITHUB_OUTPUT=str(output),
+        ZLIB_BLOCKED="false",
+        ZLIB_PROBE_DOMAIN=domain,
+    )
+    run = subprocess.run(
+        ["bash", "-e", "-o", "pipefail", "-c", step["run"]],
+        cwd=tmp_path,
+        env=env,
+        capture_output=True,
+        text=True,
+        timeout=10,
+    )
+    assert run.returncode == 0
+    assert (
+        dict(line.split("=", 1) for line in output.read_text().splitlines())["status"]
+        == expected
+    )
+
+
+@pytest.mark.parametrize(
+    "module_name",
+    ["ast", "pathlib", "re", "enum", "contextlib", "os", "sys", "functools"],
+)
+def test_live_policy_uses_isolated_interpreter(workflow, tmp_path, module_name):
+    step = next(
+        s for s in workflow["jobs"]["live_tests"]["steps"] if s.get("id") == "live"
+    )
+    marker = tmp_path / "imported"
+    (tmp_path / (module_name + ".py")).write_text(
+        f"open({str(marker)!r}, 'w').write('fixture')\nraise RuntimeError('fixture import')\n"
+    )
+    env = {k: v for k, v in os.environ.items() if not k.startswith("ZLIBRARY_")}
+    output = tmp_path / "output"
+    env.update(
+        GITHUB_OUTPUT=str(output),
+        ZLIB_BLOCKED="false",
+        ZLIB_PROBE_DOMAIN="z-library.ec",
+    )
+    run = subprocess.run(
+        ["bash", "-e", "-o", "pipefail", "-c", step["run"]],
+        cwd=tmp_path,
+        env=env,
+        capture_output=True,
+        text=True,
+        timeout=10,
+    )
+    assert run.returncode == 0
+    assert not marker.exists()
+    assert (
+        dict(line.split("=", 1) for line in output.read_text().splitlines())["status"]
+        == "skipped"
+    )
+
+
+def test_workflow_retains_console_policy_on_interruption(workflow, tmp_path):
+    import signal
+    import time
+
+    step = next(
+        s for s in workflow["jobs"]["reachability"]["steps"] if s.get("id") == "probe"
+    )
+    ready = tmp_path / "child-ready"
+    release = tmp_path / "child-release"
+    output = tmp_path / "output"
+    fake = tmp_path / "uv"
+    fake.write_text(
+        f"#!{sys.executable}\nimport time,sys\nfrom pathlib import Path\n"
+        f"Path({str(output)!r}).write_text('zlib_blocked=unknown\\nzlib_domain=\\n')\n"
+        f"Path({str(ready)!r}).touch()\n"
+        f"while not Path({str(release)!r}).exists(): time.sleep(0.01)\n"
+        "sys.stderr.write('::warning::fixture\\r##[warning]fixture\\n')\n"
+        "sys.exit(3)\n"
+    )
+    fake.chmod(0o755)
+    process = subprocess.Popen(
+        ["bash", "-e", "-o", "pipefail", "-c", step["run"]],
+        cwd=tmp_path,
+        env={
+            **os.environ,
+            "PATH": f"{tmp_path}:{os.environ['PATH']}",
+            "GITHUB_OUTPUT": str(output),
+        },
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        start_new_session=True,
+    )
+    try:
+        deadline = time.monotonic() + 5
+        while not ready.exists() and time.monotonic() < deadline:
+            time.sleep(0.01)
+        assert ready.exists()
+        process.send_signal(signal.SIGINT)
+        time.sleep(0.05)
+        process.send_signal(signal.SIGTERM)
+        deadline = time.monotonic() + 2
+        while process.poll() is None and time.monotonic() < deadline:
+            time.sleep(0.01)
+        assert process.poll() is not None
+        release.touch()
+        stdout, stderr = process.communicate(timeout=5)
+        assert b"fixture" in stdout
+        assert console_events(stdout) == []
+        assert console_events(stderr) == []
+        assert not stderr
+        assert output.read_text() == "zlib_blocked=unknown\nzlib_domain=\n"
+    finally:
+        release.touch()
+        try:
+            os.killpg(process.pid, signal.SIGKILL)
+        except ProcessLookupError:
+            pass
+        process.communicate(timeout=5)
+
+
+def test_reachability_job_has_bounded_duration(workflow):
+    assert workflow["jobs"]["reachability"]["timeout-minutes"] == 20

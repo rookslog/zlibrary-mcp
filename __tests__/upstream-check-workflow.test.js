@@ -1,5 +1,5 @@
 import { jest } from '@jest/globals';
-import { readFileSync, mkdtempSync, rmSync, existsSync, writeFileSync, mkdirSync } from 'node:fs';
+import { readFileSync, mkdtempSync, rmSync, existsSync, writeFileSync, mkdirSync, symlinkSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { createRequire } from 'node:module';
@@ -379,15 +379,41 @@ test.each(['reachability', 'report'])('requires the rolling label in %s', async 
   if (job === 'reachability') expect(readFileSync(process.env.PREVIOUS_ISSUE_PATH, 'utf8')).toBe('');
 });
 
-test.each([[1, 0], [0, 1], [0, 0]])('doctor retains audit execution for probe=%i audit=%i', (probeCode, auditCode) => {
+function doctorScenario(probeCode, auditCode, { extraArgs = '', missingUv = false } = {}) {
   const command = JSON.parse(readFileSync(new URL('../package.json', import.meta.url), 'utf8')).scripts.doctor;
   const calls = join(directory, 'calls');
   const argsPath = join(directory, 'args.json');
+  const bin = join(directory, 'bin');
+  mkdirSync(bin);
   mkdirSync(join(directory, 'scripts'));
-  writeFileSync(join(directory, 'uv'), '#!' + process.execPath + '\nrequire("node:fs").appendFileSync(' + JSON.stringify(calls) + ', "probe\\n");require("node:fs").writeFileSync(' + JSON.stringify(argsPath) + ', JSON.stringify(process.argv.slice(2)));process.exit(' + probeCode + ');', { mode: 0o755 });
+  symlinkSync(process.execPath, join(bin, 'node'));
+  if (!missingUv) {
+    writeFileSync(join(bin, 'uv'), '#!' + process.execPath + '\nrequire("node:fs").appendFileSync(' + JSON.stringify(calls) + ', "probe\\n");require("node:fs").writeFileSync(' + JSON.stringify(argsPath) + ', JSON.stringify(process.argv.slice(2)));process.exit(' + probeCode + ');', { mode: 0o755 });
+  }
   writeFileSync(join(directory, 'scripts', 'release-audit.mjs'), 'import fs from "node:fs";fs.appendFileSync(' + JSON.stringify(calls) + ', "audit\\n");process.exit(' + auditCode + ');');
-  const result = require('node:child_process').spawnSync('bash', ['-c', command], { cwd: directory, env: { ...process.env, PATH: directory + ':' + process.env.PATH }, encoding: 'utf8' });
+  const result = require('node:child_process').spawnSync('/bin/bash', ['-c', command + extraArgs], { cwd: directory, env: { ...process.env, PATH: bin }, encoding: 'utf8' });
+  return { result, calls, argsPath };
+}
+
+test.each([[1, 0], [0, 1], [0, 0]])('doctor retains audit execution for probe=%i audit=%i', (probeCode, auditCode) => {
+  const { result, calls, argsPath } = doctorScenario(probeCode, auditCode);
   expect(result.status).toBe(probeCode || auditCode ? 1 : 0);
   expect(readFileSync(calls, 'utf8')).toBe('probe\naudit\n');
   expect(JSON.parse(readFileSync(argsPath, 'utf8'))).toEqual(['run', '--no-dev', 'python', 'scripts/check_upstream.py']);
+});
+
+test('doctor accepts trailing command arguments', () => {
+  const { result, calls, argsPath } = doctorScenario(0, 0, { extraArgs: ' --json' });
+  expect(result.status).toBe(0);
+  expect(readFileSync(calls, 'utf8')).toBe('probe\naudit\n');
+  expect(JSON.parse(readFileSync(argsPath, 'utf8'))).toEqual(['run', '--no-dev', 'python', 'scripts/check_upstream.py']);
+});
+
+test('doctor reports probe startup errors while retaining the audit', () => {
+  const { result, calls, argsPath } = doctorScenario(0, 0, { missingUv: true });
+  expect(result.status).toBe(1);
+  expect(readFileSync(calls, 'utf8')).toBe('audit\n');
+  expect(existsSync(argsPath)).toBe(false);
+  expect(result.stderr).toContain('ENOENT');
+  expect(result.stderr).toContain('uv');
 });

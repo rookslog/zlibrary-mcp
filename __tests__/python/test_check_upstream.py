@@ -189,7 +189,7 @@ def test_github_output_carries_zlib_blocked_flag(check_upstream, tmp_path, monke
     out = tmp_path / "gh_output"
     monkeypatch.setenv("GITHUB_OUTPUT", str(out))
 
-    check_upstream.emit_github_output("report", failed=False, zlib_blocked=True)
+    check_upstream.emit_github_output("report", failed=False, zlib_blocked="true")
 
     written = out.read_text(encoding="utf-8")
     assert "failed=false\n" in written
@@ -1458,7 +1458,11 @@ def test_main_writes_text_and_json_on_success_and_failure(
         assert summary["results"][0]["first_seen"] is None
     else:
         assert summary["results"][0]["first_seen"]
-    assert target.read_text().rstrip() == capsys.readouterr().out.rstrip()
+    assert capsys.readouterr().out == ""
+    assert (
+        read_workflow_outputs(tmp_path / "github-output")["report"]
+        == target.read_text().rstrip()
+    )
     assert (
         f"failed={'false' if ok else 'true'}"
         in (tmp_path / "github-output").read_text()
@@ -1639,16 +1643,57 @@ def read_workflow_outputs(path):
 
 
 @pytest.mark.parametrize(
-    "case", ["403", "429", "503", "html", "connect", "read", "healthy"]
+    "case,expected_state",
+    [
+        ("403", "true"),
+        ("429", "unknown"),
+        ("503", "unknown"),
+        ("wall", "true"),
+        ("html", "unknown"),
+        ("connect", "unknown"),
+        ("read", "unknown"),
+        ("healthy", "false"),
+        ("search-zero-refusal", "unknown"),
+        ("search-false", "unknown"),
+        ("search-books-null", "unknown"),
+        ("search-books-object", "unknown"),
+        ("domains-zero-refusal", "unknown"),
+        ("domains-string", "unknown"),
+        ("domains-empty", "unknown"),
+        ("domains-off-host", "unknown"),
+        ("search-off-host", "unknown"),
+        ("both-off-host", "unknown"),
+        ("search-auth-required", "false"),
+        ("search-login-required", "false"),
+        ("domains-auth-required", "false"),
+    ],
 )
 def test_validate_workflow_outputs_through_real_zlibrary_probe(
-    check_upstream, monkeypatch, tmp_path, capsys, case
+    check_upstream, monkeypatch, tmp_path, capsys, case, expected_state
 ):
     import subprocess
     import json
 
     domain = check_upstream.DEFAULT_EAPI_DOMAINS[0]
     monkeypatch.setattr(check_upstream, "ZLIB_DOMAIN", domain)
+    domain_payloads = {
+        "domains-zero-refusal": {"success": 0, "domains": [domain]},
+        "domains-string": {"domains": "x"},
+        "domains-empty": {"domains": []},
+        "domains-auth-required": {
+            "success": 0,
+            "error": "Authentication required",
+            "domains": [domain],
+        },
+    }
+    search_payloads = {
+        "search-zero-refusal": {"success": 0, "error": "Too many requests"},
+        "search-false": {"success": False},
+        "search-books-null": {"books": None},
+        "search-books-object": {"books": {}},
+        "search-auth-required": {"success": 0, "error": "Authentication required"},
+        "search-login-required": {"success": 0, "error": "Please login"},
+    }
 
     def respond(request):
         if case == "connect":
@@ -1657,25 +1702,40 @@ def test_validate_workflow_outputs_through_real_zlibrary_probe(
             raise httpx.ReadTimeout("offline request", request=request)
         if case == "html":
             return httpx.Response(200, text="<html>Check your browser</html>")
-        if case != "healthy":
+        if case == "wall":
+            return httpx.Response(200, text="<html>DiamWall</html>")
+        if case in ("403", "429", "503"):
             return httpx.Response(int(case))
-        return httpx.Response(
-            200,
-            json={"domains": [domain]} if request.method == "GET" else {"books": []},
+        redirect = (
+            case == "both-off-host"
+            or (case == "domains-off-host" and request.method == "GET")
+            or (case == "search-off-host" and request.method == "POST")
         )
+        if redirect and request.url.host == domain:
+            return httpx.Response(
+                307, headers={"location": "https://other.invalid" + request.url.path}
+            )
+        payload = (
+            domain_payloads.get(case, {"domains": [domain]})
+            if request.method == "GET"
+            else search_payloads.get(case, {"books": []})
+        )
+        return httpx.Response(200, json=payload)
 
     async def probes():
-        async with httpx.AsyncClient(transport=httpx.MockTransport(respond)) as client:
+        async with httpx.AsyncClient(
+            transport=httpx.MockTransport(respond), follow_redirects=True
+        ) as client:
             return await check_upstream.probe_zlibrary_eapi(client)
 
     monkeypatch.setattr(check_upstream, "run_probes", probes)
     output = tmp_path / "probe-output"
     monkeypatch.setenv("GITHUB_OUTPUT", str(output))
     monkeypatch.setattr(sys, "argv", ["check_upstream.py", "--github-output"])
-    assert check_upstream.main() == (0 if case == "healthy" else 1)
+    assert check_upstream.main() == (0 if expected_state == "false" else 1)
     capsys.readouterr()
     values = read_workflow_outputs(output)
-    assert values["zlib_blocked"] == ("false" if case == "healthy" else "unknown")
+    assert values["zlib_blocked"] == expected_state
     assert values["zlib_domain"] in check_upstream.DEFAULT_EAPI_DOMAINS
     workflow = subprocess.check_output(
         [
@@ -1711,8 +1771,9 @@ def test_validate_workflow_outputs_through_real_zlibrary_probe(
         text=True,
     )
     assert child.returncode == 0
-    assert read_workflow_outputs(live_output)["status"] == (
-        "skipped" if case == "healthy" else "unknown"
+    assert (
+        read_workflow_outputs(live_output)["status"]
+        == {"false": "skipped", "true": "blocked", "unknown": "unknown"}[expected_state]
     )
 
 
@@ -1723,7 +1784,7 @@ def test_validate_workflow_outputs_use_per_run_delimiters(
     monkeypatch.setenv("GITHUB_OUTPUT", str(output))
     for _ in range(2):
         check_upstream.emit_github_output(
-            "line one\nPROBE_EOF\nline two", failed=True, zlib_blocked=True
+            "line one\nPROBE_EOF\nline two", failed=True, zlib_blocked="true"
         )
     delimiters = [
         x for x in output.read_text().splitlines() if x.startswith("report<<")
@@ -1744,7 +1805,7 @@ def test_validate_workflow_outputs_require_configured_domain(
     output = tmp_path / "output"
     monkeypatch.setenv("GITHUB_OUTPUT", str(output))
     monkeypatch.setattr(check_upstream, "ZLIB_DOMAIN", domain)
-    check_upstream.emit_github_output("report", failed=False, zlib_blocked=False)
+    check_upstream.emit_github_output("report", failed=False, zlib_blocked="false")
     values = read_workflow_outputs(output)
     assert values["zlib_blocked"] == "unknown"
     assert "zlib_domain" not in values
@@ -1806,3 +1867,91 @@ def test_annas_warning_has_run_annotation(
     monkeypatch.setenv("GITHUB_OUTPUT", str(tmp_path / "output"))
     assert check_upstream.main() == 0
     assert "::warning::Anna's Archive" in capsys.readouterr().out
+
+
+@pytest.mark.parametrize("github_output", [False, True])
+@pytest.mark.parametrize("json_stdout", [False, True])
+def test_neutralise_runner_commands_in_report_values(
+    check_upstream, monkeypatch, tmp_path, capsys, github_output, json_stdout
+):
+    value = "note ##[warning]fixture"
+
+    async def probes():
+        return [
+            check_upstream.ProbeResult(
+                "libgen:search", False, value, extra={"domains": [value]}
+            )
+        ]
+
+    monkeypatch.setattr(check_upstream, "run_probes", probes)
+    output = tmp_path / "output"
+    monkeypatch.setenv("GITHUB_OUTPUT", str(output))
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        ["check_upstream.py"]
+        + (["--github-output"] if github_output else [])
+        + (["--json"] if json_stdout else []),
+    )
+    assert check_upstream._single_line(value) == "note ## [warning]fixture"
+    assert check_upstream.main() == 1
+    printed = capsys.readouterr().out
+    assert "##[" not in printed
+    if github_output:
+        assert printed == ""
+        assert "##[" not in read_workflow_outputs(output)["report"]
+
+
+@pytest.mark.parametrize("error_type", [ValueError, RecursionError])
+def test_status_json_parser_limits_retain_default_dates(
+    check_upstream, monkeypatch, error_type
+):
+    def unavailable(*args, **kwargs):
+        raise error_type("unsupported status value")
+
+    monkeypatch.setattr(check_upstream.json, "loads", unavailable)
+    result = check_upstream.ProbeResult("libgen:search", False, "offline")
+    summary = check_upstream.summarize(
+        [result],
+        previous_body="<!-- upstream-source-status: {} -->",
+        today="2026-11-05",
+    )
+    assert summary["results"][0]["first_seen"] == "2026-11-05"
+
+
+def test_status_json_integer_limit_retains_default_dates(check_upstream):
+    if not hasattr(sys, "set_int_max_str_digits"):
+        pytest.skip("interpreter has no integer conversion limit")
+    original = sys.get_int_max_str_digits()
+    try:
+        sys.set_int_max_str_digits(4300)
+        body = "<!-- upstream-source-status: " + "1" * 5000 + " -->"
+        result = check_upstream.ProbeResult("libgen:search", False, "offline")
+        summary = check_upstream.summarize(
+            [result], previous_body=body, today="2026-11-05"
+        )
+        assert summary["results"][0]["first_seen"] == "2026-11-05"
+    finally:
+        sys.set_int_max_str_digits(original)
+
+
+@pytest.mark.parametrize("state", [False, True, None, 0])
+def test_workflow_output_requires_state_string(
+    check_upstream, monkeypatch, tmp_path, state
+):
+    output = tmp_path / "output"
+    monkeypatch.setenv("GITHUB_OUTPUT", str(output))
+    with pytest.raises(TypeError, match="state string"):
+        check_upstream.emit_github_output("report", failed=False, zlib_blocked=state)
+    assert not output.exists()
+
+
+@pytest.mark.parametrize("state", ["False", "false\nnext", "unexpected"])
+def test_workflow_output_requires_canonical_state(
+    check_upstream, monkeypatch, tmp_path, state
+):
+    output = tmp_path / "output"
+    monkeypatch.setenv("GITHUB_OUTPUT", str(output))
+    with pytest.raises(ValueError, match="state"):
+        check_upstream.emit_github_output("report", failed=False, zlib_blocked=state)
+    assert not output.exists()

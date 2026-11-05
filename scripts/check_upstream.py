@@ -47,6 +47,7 @@ from lib.sources.libgen import get_user_agent as libgen_user_agent  # noqa: E402
 from zlibrary.eapi import DEFAULT_EAPI_DOMAINS, WALLED_STATUS_CODES, _auth_rejected  # noqa: E402
 
 TIMEOUT = httpx.Timeout(20.0, connect=10.0)
+PROBE_DEADLINE_SECONDS = 600
 SOURCES = frozenset({"zlibrary", "annas-archive", "libgen"})
 DEFAULT_RELIED_SOURCES = frozenset({"zlibrary", "libgen"})
 
@@ -94,6 +95,7 @@ LIBGEN_BASE_URL = f"https://libgen.{_source_config.libgen_mirror}"
 # is a fact about one busy walk, not about the mirror's health — and reporting
 # it as untested would hide the reachability-vs-capability gap this script
 # exists to close (Codex on #153).
+# The overall probe deadline still applies.
 LIBGEN_MIRROR_CANDIDATES: tuple[str, ...] = tuple(
     LibgenAdapter(_source_config)._mirror_candidates()
 )
@@ -809,9 +811,20 @@ async def run_probes() -> list[ProbeResult]:
             ("libgen:canaries", probe_libgen_canaries(client)),
             ("libgen:download", probe_libgen_download(client)),
         ]
-        collected = await asyncio.gather(
-            *(probe for _, probe in probes), return_exceptions=True
-        )
+        tasks = [asyncio.create_task(probe) for _, probe in probes]
+        try:
+            collected = await asyncio.wait_for(
+                asyncio.gather(*tasks, return_exceptions=True),
+                timeout=PROBE_DEADLINE_SECONDS,
+            )
+        except asyncio.TimeoutError:
+            collected = []
+            for task in tasks:
+                if task.cancelled():
+                    collected.append(TimeoutError("probe deadline exceeded"))
+                else:
+                    error = task.exception()
+                    collected.append(error if error is not None else task.result())
     results = []
     for (name, _), value in zip(probes, collected):
         if isinstance(value, Exception):

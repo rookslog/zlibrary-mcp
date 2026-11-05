@@ -34,6 +34,7 @@ jobs:
   reachability:
     name: Source reachability
     runs-on: ubuntu-latest
+    timeout-minutes: 20
     outputs:
       report: ${{ steps.probe.outputs.report }}
       failed: ${{ steps.probe.outputs.failed }}
@@ -102,7 +103,6 @@ jobs:
         run: |
           command_token="$(python3 -c 'import secrets; print(secrets.token_hex(32))')"
           printf '::stop-commands::%s\n' "$command_token"
-          trap 'printf "::%s::\n" "$command_token"' EXIT
           uv run python scripts/check_upstream.py --github-output --previous-issue previous-upstream-issue.md --report-file upstream-report.txt 2>&1
       - name: Report source warning
         id: source_warning
@@ -170,14 +170,20 @@ jobs:
           ZLIB_PROBE_DOMAIN: ${{ needs.reachability.outputs.zlib_domain }}
           ZLIBRARY_EAPI_DOMAIN: ${{ needs.reachability.outputs.zlib_domain }}
         run: |
-          if ! python3 - "$ZLIB_PROBE_DOMAIN" <<'PY'
+          if ! python3 -I - "$ZLIB_PROBE_DOMAIN" <<'PY'
           import ast
           import os
           import sys
           from pathlib import Path
           source = Path(os.environ.get("GITHUB_WORKSPACE", ".")) / "zlibrary/src/zlibrary/eapi.py"
           tree = ast.parse(source.read_text(encoding="utf-8"))
-          domains = next(ast.literal_eval(node.value) for node in tree.body if isinstance(node, ast.Assign) and any(isinstance(target, ast.Name) and target.id == "DEFAULT_EAPI_DOMAINS" for target in node.targets))
+          assignments = [node for node in tree.body if isinstance(node, ast.Assign) and any(isinstance(target, ast.Name) and target.id == "DEFAULT_EAPI_DOMAINS" for target in node.targets)]
+          stores = [node for node in ast.walk(tree) if isinstance(node, ast.Name) and node.id == "DEFAULT_EAPI_DOMAINS" and isinstance(node.ctx, ast.Store)]
+          if len(assignments) != 1 or len(stores) != 1:
+              raise SystemExit(1)
+          domains = ast.literal_eval(assignments[0].value)
+          if not isinstance(domains, (list, tuple)) or not domains or not all(isinstance(value, str) and value.strip() for value in domains):
+              raise SystemExit(1)
           raise SystemExit(0 if sys.argv[1] in domains else 1)
           PY
           then
@@ -270,7 +276,9 @@ jobs:
               issue.labels?.some(label => (label.name || label) === 'upstream-drift'));
             const existing = matching.find(issue => issue.state === 'open') ||
               matching.sort((a, b) => Date.parse(b.created_at) - Date.parse(a.created_at))[0];
-            if (!failed && (!recovered || existing?.state === 'closed')) return;
+            const trackingOnly = !failed && existing?.state === 'closed' &&
+              process.env.REACHABILITY_RESULT === 'success' && process.env.PROBE_FAILED === 'false';
+            if (!failed && !recovered && !trackingOnly) return;
 
             const today = new Date().toISOString().slice(0, 10);
             const validDate = value => {
@@ -295,6 +303,15 @@ jobs:
               return comment.user?.login === 'github-actions[bot]' && body.startsWith('<!-- upstream-report-snapshot -->\n') &&
                 statusMarker(body) !== null && (!body.includes('<!-- upstream-recovered-at:') || recoveryDate(body) !== null);
             };
+            const sourceDates = body => {
+              const marker = statusMarker(body);
+              return marker ? JSON.parse(marker.match(/<!-- upstream-source-status: (.*?) -->/)[1]) : null;
+            };
+            const sameDates = (left, right) => left && right &&
+              Object.keys(left).length === Object.keys(right).length &&
+              Object.entries(left).every(([key, value]) => right[key] === value);
+            const currentDates = trackingOnly ? sourceDates(process.env.PROBE_REPORT || '') : null;
+            if (trackingOnly && !currentDates) return;
             let previous = existing?.body || '';
             if (existing) {
               const comments = await github.paginate(github.rest.issues.listComments, {
@@ -303,11 +320,14 @@ jobs:
               const snapshot = comments.filter(trustedSnapshot).at(-1);
               previous = snapshot?.body || previous;
             }
+            if (trackingOnly && sameDates(currentDates, sourceDates(previous)) &&
+                sameDates(currentDates, sourceDates(existing.body || ''))) return;
             const recoveredAt = recoveryDate(previous) || today;
             const report = process.env.PROBE_REPORT || ['(no reachability report)', statusMarker(previous) || ''].join('\n');
             const body = [
               '<!-- upstream-report-snapshot -->',
-              failed ? 'The scheduled upstream contract check did not pass.' : 'The scheduled upstream contract check passed.',
+              failed ? 'The scheduled upstream contract check did not pass.' : recovered
+                ? 'The scheduled upstream contract check passed.' : 'The scheduled upstream contract check updated source tracking.',
               '',
               `- reachability job: **${process.env.REACHABILITY_RESULT}**`,
               `- live integration job: **${process.env.LIVE_STATUS || process.env.LIVE_RESULT}**`,
@@ -318,7 +338,7 @@ jobs:
               '',
               report,
               '',
-              ...(!failed ? [`Recovered: ${recoveredAt} (UTC)`, `<!-- upstream-recovered-at: ${recoveredAt} -->`, ''] : []),
+              ...(!failed && (recovered || recoveryDate(previous)) ? [`Recovered: ${recoveredAt} (UTC)`, `<!-- upstream-recovered-at: ${recoveredAt} -->`, ''] : []),
               'Unit tests mock these calls and will stay green, so triage from the report above or the run artifact.',
             ].join('\n');
 

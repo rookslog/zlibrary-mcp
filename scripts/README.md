@@ -193,8 +193,15 @@ random delimiter, and the domain output is limited to configured candidates.
 Workflow-output mode initializes an inconclusive state before probing and keeps
 the report in its output file and optional artifacts. The scheduled probe runs
 inside a per-run console guard that covers both output streams and failures.
+Commands stay suspended for the rest of that step, including interruption.
 A later step emits the warning annotation using validated summary fields.
-The live step checks the configured domain list directly before continuing. Ordinary CLI reports retain their text
+The probe has a 10-minute overall deadline; completed results are retained and
+unfinished probes become failures. The reachability job has a 20-minute timeout
+to allow setup and artifact handling. Python cancellation waits for cleanup;
+the job timeout is the outer backstop for blocking work.
+The live step uses an isolated Python interpreter to read one literal configured
+domain list or tuple, validates its shape, and checks exact membership before
+continuing. Ordinary CLI reports retain their text
 or JSON output with neutral report values. Upstream text is fenced, comment
 delimiters are escaped, and
 only the last machine marker supplies carried dates. Only the exact rolling issue
@@ -206,3 +213,7 @@ creates no probe reports without an explicit report-file flag. Trailing command
 arguments are separated from Node options, and probe startup errors are printed.
 Import-time diagnostics can create an ignored debug log; this command does not
 promise an otherwise unchanged filesystem.
+
+A successful reachability report also persists changed source dates on an already
+closed rolling issue. Skipped or cancelled live tests do not establish recovery;
+the saved source state can still clear a completed warning-only outage.

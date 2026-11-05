@@ -170,9 +170,7 @@ export class EvaluationServer {
           ['search', 'get_book', 'download', 'get_limits', 'get_history'].sort().join(',')
       )
         throw new Error('B must advertise exactly the five specified tools');
-      s.tools = s.rawTools.filter(
-        (t) => arm.history || !['get_history', 'get_download_history'].includes(t.name),
-      );
+      s.tools = s.listTools();
       s.measurement = {
         count: s.tools.length,
         serializedCharacters: JSON.stringify({ tools: s.tools }).length,
@@ -204,6 +202,11 @@ export class EvaluationServer {
       await s.close();
       throw e;
     }
+  }
+  listTools() {
+    return this.rawTools.filter(
+      (t) => this.arm.history || !['get_history', 'get_download_history'].includes(t.name),
+    );
   }
   async assertNodeIdentity() {
     const evaluator = await verifyEvaluatorIdentity(),
@@ -262,6 +265,27 @@ export class EvaluationServer {
       c.reply = await this.client.callTool({ name, arguments: args }, undefined, {
         timeout: 25000,
       });
+      if (!this.arm.history && name === 'get_limits') {
+        // This ablation belongs to the evaluator. Keep the product reply intact,
+        // and filter both MCP representations before tracing or returning it.
+        const hideHistory = (data) => {
+          const capability = data?.sources?.zlibrary;
+          if (Array.isArray(capability?.operations))
+            capability.operations = capability.operations.filter((op) => op !== 'history');
+          return data;
+        };
+        c.reply = structuredClone(c.reply);
+        if (c.reply.structuredContent) hideHistory(c.reply.structuredContent);
+        c.reply.content = c.reply.content?.map((block) => {
+          if (block.type !== 'text') return block;
+          try {
+            return { ...block, text: JSON.stringify(hideHistory(JSON.parse(block.text))) };
+          } catch {
+            // Diagnostic text is not a capability payload.
+            return block;
+          }
+        });
+      }
       const data = dataOf(c.reply);
       for (const r of rowsOf(data)) {
         this.observed.set(canonicalRow(r), r);

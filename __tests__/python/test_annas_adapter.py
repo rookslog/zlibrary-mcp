@@ -682,7 +682,9 @@ class TestSecretKeyHostAllowlist:
             )
         )
         request = httpx.Request(
-            "GET", "https://annas-archive.gl/dyn/api/fast_download.json"
+            "GET",
+            "https://annas-archive.gl/dyn/api/fast_download.json",
+            params={"key": "rejected-key", "md5": "abc123def456", "domain_index": 1},
         )
         mock_client = AsyncMock()
         mock_client.get.return_value = httpx.Response(status, request=request)

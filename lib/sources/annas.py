@@ -10,8 +10,8 @@ Key decisions:
 """
 
 import re
-from typing import Dict, List, Optional
-from urllib.parse import quote, urlsplit
+from typing import Dict, List, NoReturn, Optional
+from urllib.parse import quote, quote_plus, urlsplit
 
 import httpx
 from bs4 import BeautifulSoup
@@ -38,6 +38,34 @@ from .net import (
 )
 
 PROVIDER = "annas"
+
+
+def _raise_keyed_error(error: SourceError) -> NoReturn:
+    """Do not retain the keyed request, including in an active caller handler."""
+    try:
+        raise error from None
+    finally:
+        # `from None` only suppresses display; raising still sets __context__.
+        error.__context__ = None
+
+
+def _valid_download_url(url: str) -> bool:
+    """Validate components without rewriting a provider's signed URL text."""
+    if url != url.strip() or any(ord(c) < 32 or 127 <= ord(c) <= 159 for c in url):
+        return False
+    try:
+        parts = urlsplit(url)
+        # Reading .port validates numeric syntax and the 0..65535 range.
+        parts.port
+        return (
+            parts.scheme in ("http", "https")
+            and bool(parts.hostname)
+            and parts.username is None
+            and parts.password is None
+        )
+    except ValueError:
+        return False
+
 
 # Each Anna's result renders a metadata strip of "·"-separated segments, e.g.
 #   English [en] · PDF · 5.6MB · 2008 · 📕 Book (fiction) · 🚀/lgli/nexusstc/zlib
@@ -404,29 +432,30 @@ class AnnasArchiveAdapter(SourceAdapter):
         """
         host = (urlsplit(self.base_url).hostname or "").lower()
         if not self.secret_key:
-            raise ProviderConfigurationError(
-                PROVIDER,
-                host,
-                "ANNAS_SECRET_KEY not configured",
+            _raise_keyed_error(
+                ProviderConfigurationError(
+                    PROVIDER,
+                    host,
+                    "ANNAS_SECRET_KEY not configured",
+                )
             )
 
         if host not in ANNAS_TRUSTED_HOSTS:
-            raise ProviderConfigurationError(
-                PROVIDER,
-                host,
-                f"Refusing to send ANNAS_SECRET_KEY to unverified host '{host}'. "
-                f"The fast-download API passes the key as a URL parameter, and "
-                f"lapsed Anna's Archive domains get re-registered by squatters "
-                f"(annas-archive.li is now a parking page). Set ANNAS_BASE_URL "
-                f"to a known Anna's Archive domain "
-                f"({', '.join(sorted(ANNAS_TRUSTED_HOSTS))}) or update "
-                f"ANNAS_TRUSTED_HOSTS in lib/sources/config.py if the project "
-                f"has moved to a new domain you have verified yourself.",
+            _raise_keyed_error(
+                ProviderConfigurationError(
+                    PROVIDER,
+                    host,
+                    f"Refusing to send ANNAS_SECRET_KEY to unverified host '{host}'. "
+                    f"The fast-download API passes the key as a URL parameter, and "
+                    f"lapsed Anna's Archive domains get re-registered by squatters "
+                    f"(annas-archive.li is now a parking page). Set ANNAS_BASE_URL "
+                    f"to a known Anna's Archive domain "
+                    f"({', '.join(sorted(ANNAS_TRUSTED_HOSTS))}) or update "
+                    f"ANNAS_TRUSTED_HOSTS in lib/sources/config.py if the project "
+                    f"has moved to a new domain you have verified yourself.",
+                )
             )
 
-        await self._preflight(deadline)
-
-        client = await self._get_client()
         url = f"{self.base_url}/dyn/api/fast_download.json"
         params = {
             "md5": md5,
@@ -435,6 +464,8 @@ class AnnasArchiveAdapter(SourceAdapter):
         }
 
         try:
+            await self._preflight(deadline)
+            client = await self._get_client()
             response = await bounded_await(
                 self._fetch(client, url, params=params),
                 _attempt_budget(self.config, deadline),
@@ -442,61 +473,104 @@ class AnnasArchiveAdapter(SourceAdapter):
                 host=self.host,
                 operation="download resolution",
             )
+            response.content.decode("utf-8")
             data = response.json()
         except httpx.HTTPStatusError as exc:
-            final_url = urlsplit(str(exc.response.url))
-            final_host = (final_url.hostname or "").lower()
+            final_url = exc.response.request.url
+            configured_url = httpx.URL(url)
             is_configured_fast_download_endpoint = (
-                final_host == self.host
-                and final_host in ANNAS_TRUSTED_HOSTS
-                and final_url.path == "/dyn/api/fast_download.json"
+                (
+                    (final_url.scheme, final_url.port)
+                    == (configured_url.scheme, configured_url.port)
+                    or (configured_url.scheme == "http" and final_url.scheme == "https")
+                )
+                and final_url.host == configured_url.host
+                and final_url.raw_path.partition(b"?")[0]
+                == configured_url.raw_path.partition(b"?")[0]
+                and final_url.userinfo == configured_url.userinfo
+                and final_url.params.get_list("key") == [self.secret_key]
+                and final_url.params.get_list("md5") == [md5]
             )
             if (
                 exc.response.status_code in (401, 403)
                 and is_configured_fast_download_endpoint
             ):
-                raise ProviderConfigurationError(
+                _raise_keyed_error(
+                    ProviderConfigurationError(
+                        PROVIDER,
+                        self.host,
+                        f"ANNAS_SECRET_KEY rejected by fast-download endpoint "
+                        f"(HTTP {exc.response.status_code})",
+                    )
+                )
+            _raise_keyed_error(
+                ProviderResponseError(
                     PROVIDER,
                     self.host,
-                    f"ANNAS_SECRET_KEY rejected by fast-download endpoint "
-                    f"(HTTP {exc.response.status_code})",
-                    # `from None`, not `from exc`, on every path out of this
-                    # method: the fast-download API takes ANNAS_SECRET_KEY as a
-                    # URL *query parameter*, and httpx exceptions carry
-                    # `.request.url`. A chained cause therefore puts the key
-                    # into any formatted traceback — logs, crash reports, an
-                    # error surfaced to an MCP client. The adapter's own
-                    # message already says what went wrong without it.
-                ) from None
-            raise self._as_source_error(exc) from None
+                    f"HTTP {exc.response.status_code}",
+                    reason="http_error",
+                )
+            )
+        except UnicodeDecodeError:
+            _raise_keyed_error(
+                ProviderResponseError(
+                    PROVIDER,
+                    self.host,
+                    "Response body is not valid UTF-8",
+                    reason="protocol_error",
+                )
+            )
         except Exception as exc:
-            raise self._as_source_error(exc) from None
+            attributed = self._as_source_error(exc)
+            # Preserve classification, but never transport prose or attached
+            # request/response attributes. Search keeps its diagnostic chain.
+            _raise_keyed_error(
+                type(attributed)(
+                    PROVIDER, self.host, type(exc).__name__, reason=attributed.reason
+                )
+            )
 
         if not isinstance(data, dict):
-            raise ProviderResponseError(
-                PROVIDER,
-                self.host,
-                f"Expected JSON object, received {type(data).__name__}",
-                reason="protocol_error",
+            _raise_keyed_error(
+                ProviderResponseError(
+                    PROVIDER,
+                    self.host,
+                    f"Expected JSON object, received {type(data).__name__}",
+                    reason="protocol_error",
+                )
             )
 
         # Check for API error
         if data.get("error"):
-            raise ProviderResponseError(
-                PROVIDER,
-                self.host,
-                f"Anna's Archive API error: {data['error']}",
-                reason="http_error",
+            detail = str(data["error"])
+            # Keep benign API diagnostics, but omit an echoed keyed request.
+            if (
+                self.secret_key in detail
+                or quote(self.secret_key, safe="").lower() in detail.lower()
+                or quote_plus(self.secret_key, safe="").lower() in detail.lower()
+                or "key=" in detail.lower()
+            ):
+                detail = "details omitted"
+            _raise_keyed_error(
+                ProviderResponseError(
+                    PROVIDER,
+                    self.host,
+                    f"Anna's Archive API error: {detail}",
+                    reason="http_error",
+                )
             )
 
         # Extract download URL
         download_url = data.get("download_url")
-        if not isinstance(download_url, str) or not download_url.strip():
-            raise ProviderResponseError(
-                PROVIDER,
-                self.host,
-                "download_url must be a non-empty string",
-                reason="protocol_error",
+        if not isinstance(download_url, str) or not _valid_download_url(download_url):
+            _raise_keyed_error(
+                ProviderResponseError(
+                    PROVIDER,
+                    self.host,
+                    "download_url must be an absolute HTTP(S) URL with a host, valid port, "
+                    "no credentials, surrounding whitespace or control characters",
+                    reason="protocol_error",
+                )
             )
 
         # Extract quota info if available
@@ -504,20 +578,35 @@ class AnnasArchiveAdapter(SourceAdapter):
         if "account_fast_download_info" in data:
             account_info = data["account_fast_download_info"]
             if not isinstance(account_info, dict):
-                raise ProviderResponseError(
-                    PROVIDER,
-                    self.host,
-                    "account_fast_download_info must be an object",
-                    reason="protocol_error",
+                _raise_keyed_error(
+                    ProviderResponseError(
+                        PROVIDER,
+                        self.host,
+                        "account_fast_download_info must be an object",
+                        reason="protocol_error",
+                    )
                 )
-            if (
-                "downloads_left" in account_info
-                and account_info["downloads_left"] is not None
+            for field in (
+                "downloads_left",
+                "downloads_per_day",
+                "downloads_done_today",
             ):
+                if account_info.get(field) is not None and (
+                    type(account_info[field]) is not int or account_info[field] < 0
+                ):
+                    _raise_keyed_error(
+                        ProviderResponseError(
+                            PROVIDER,
+                            self.host,
+                            f"{field} must be a non-negative integer",
+                            reason="protocol_error",
+                        )
+                    )
+            if account_info.get("downloads_left") is not None:
                 quota_info = QuotaInfo(
                     downloads_left=account_info["downloads_left"],
-                    downloads_per_day=account_info.get("downloads_per_day", 0),
-                    downloads_done_today=account_info.get("downloads_done_today", 0),
+                    downloads_per_day=account_info.get("downloads_per_day"),
+                    downloads_done_today=account_info.get("downloads_done_today"),
                 )
 
         return DownloadResult(

@@ -272,7 +272,8 @@ async def probe_host(
     enter the un-interruptible third-party call at all).
 
     DNS and connect are probed separately on purpose: they are the two failure
-    modes measured on 2026-08-11 (annas-archive.org had no DNS record;
+    modes measured on a development machine on 2026-08-11
+    (annas-archive.org had no DNS record;
     libgen.is resolved, but the address dropped every SYN) and they call for
     different remedies.
 

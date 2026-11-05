@@ -197,8 +197,16 @@ export function safeEapiFailureEnvelope(value: any): Record<string, any> | undef
       'internal',
       'timeout',
       'aborted',
+      'dns_failure',
+      'dns_timeout',
+      'connect_refused',
+      'connect_error',
+      'tls_error',
+      'search_timeout',
+      'quota_exhausted',
+      'unknown',
     ];
-    result.details = {
+    const project = (detail: Record<string, any>) => ({
       ...(reasons.includes(detail.reason) ? { reason: detail.reason } : {}),
       ...(typeof detail.request_issued === 'boolean'
         ? { request_issued: detail.request_issued }
@@ -206,7 +214,22 @@ export function safeEapiFailureEnvelope(value: any): Record<string, any> | undef
       ...(typeof detail.destination_occupied === 'boolean'
         ? { destination_occupied: detail.destination_occupied }
         : {}),
-    };
+      ...(detail.reason === 'http_error' &&
+      typeof detail.detail === 'string' &&
+      /^HTTP [1-5][0-9]{2}$/.test(detail.detail)
+        ? { detail: detail.detail }
+        : {}),
+    });
+    result.details = project(detail);
+    if (Array.isArray(detail.failures))
+      result.details.failures = detail.failures
+        .filter((failure: any) => failure && typeof failure === 'object' && !Array.isArray(failure))
+        .map((failure: any) => ({
+          ...project(failure),
+          ...(['libgen', 'annas', 'annas_archive', 'auto', 'zlibrary'].includes(failure.provider)
+            ? { provider: failure.provider }
+            : {}),
+        }));
   }
   return result;
 }

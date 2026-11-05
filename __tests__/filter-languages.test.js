@@ -50,20 +50,20 @@ test('every table target and alias resolves to an exact vendored Language value'
   for (const row of rows) {
     for (const input of row) {
       const result = normalizeLanguages([input]);
-      expect(result.unrecognized).toEqual([]);
+      expect(result.unrecognized).toEqual(row[0] === 'indigenous' ? [input] : []);
       expect(result.values).toEqual([row[0]]);
       expect(native.has(result.values[0])).toBe(true);
     }
   }
   for (const value of native) {
-    expect(normalizeLanguages([value.toUpperCase()])).toEqual({ values: [value], unrecognized: [] });
+    expect(normalizeLanguages([value.toUpperCase()])).toEqual({ values: [value === 'indigenous' ? value.toUpperCase() : value], unrecognized: value === 'indigenous' ? [value.toUpperCase()] : [] });
   }
 });
 
-test('names without an enum counterpart remain unrecognized and are sent literally', () => {
+test('observed Traditional Chinese spelling maps to the existing native chinese target', () => {
   expect(normalizeLanguages(['Traditional chinese', ' TRADITIONAL CHINESE '])).toEqual({
-    values: ['Traditional chinese', ' TRADITIONAL CHINESE '],
-    unrecognized: ['Traditional chinese', ' TRADITIONAL CHINESE '],
+    values: ['chinese'],
+    unrecognized: [],
   });
 });
 
@@ -80,4 +80,28 @@ test.each([
 });
 test('equivalent language aliases are sent once', () => {
   expect(normalizeLanguages(['en', 'english', 'ENG', 'fr', 'french'])).toEqual({ values: ['english', 'french'], unrecognized: [] });
+});
+
+test('connector whole-table ISO fixture matches names to Anna bracket-extracted codes', async () => {
+  const { checkRowFilters } = await import('../dist/lib/row-filters.js');
+  const rows = JSON.parse(readFileSync(new URL('./fixtures/filter-language-codes.json', import.meta.url), 'utf8')).rows;
+  expect(rows).toHaveLength(186);
+  const nativeSource = readFileSync(new URL('../zlibrary/src/zlibrary/const.py', import.meta.url), 'utf8').split('class Language(Enum):')[1].split(/^class /m)[0];
+  const native = [...nativeSource.matchAll(/^    [A-Z_]+ = "([^"]+)"/gm)].map(m => m[1]);
+  expect(new Set([...rows.map(r => r[0]), 'indigenous'])).toEqual(new Set(native));
+  for (const [name, ...codes] of rows) {
+    expect(codes.length).toBeGreaterThan(0);
+    for (const code of codes) {
+      expect(checkRowFilters({ language: code }, { languages: [name] }).status).toBe('pass');
+      expect(normalizeLanguages([code]).unrecognized).toEqual([]);
+    }
+  }
+});
+test('indigenous stays literal-only and is flagged, never assigned a guessed ISO code', () => {
+  expect(normalizeLanguages(['indigenous'])).toEqual({ values: ['indigenous'], unrecognized: ['indigenous'] });
+});
+test('Traditional chinese is the observed spelling of the chinese alias', async () => {
+  const { checkRowFilters } = await import('../dist/lib/row-filters.js');
+  expect(normalizeLanguages(['Traditional chinese'])).toEqual({ values: ['chinese'], unrecognized: [] });
+  expect(checkRowFilters({ language: 'Traditional chinese' }, { languages: ['zh'] }).status).toBe('pass');
 });

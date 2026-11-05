@@ -39,11 +39,19 @@ metadata is excluded and counted; `exact` remains a gap. Sources without
 `exact` are skipped before contact. Z-Library keeps receiving it, reported as
 `native_only`: sent, not checked by this server. The additive `filtering`
 request/attempt records report the checked window, not completeness. Existing
-clients must accept these keys and `routing.continuation_source`. A later
+clients must accept `filtering` and, on filtered searches with a cursor,
+`routing.continuation_source`. Unfiltered replies do not add that routing key. A later
 winning source owns the continuation; an all-empty walk can retain a full
 Z-Library page's onward pointer. The 50-row Z-Library candidate page and
 held-tail drain are deferred; no new input fields or overfetch are introduced.
 See [the detailed contract](api.md#filters-partial-milestone-for-20).
+
+Compatibility details: existing numeric public years, including `0` and values
+below 1000, retain their old conversion on unfiltered/non-year paths, get_book
+and history. Readable date strings such as `2014 Juin` now add a parsed year.
+Explicit `exact:false` and empty/blank lists no longer appear in `ignored`: they
+add no constraint. Dot-only formats are blank. These two intentional changes
+(parsed dates and inactive-key reporting) remain distinct from local year checks.
 
 Before/after examples (operator O4):
 

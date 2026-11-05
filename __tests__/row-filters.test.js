@@ -128,3 +128,16 @@ test.each([
     checks: { year_from: { status: 'pass' }, languages: { status: 'pass' }, formats: { status: 'pass' } },
   });
 });
+
+test('a dot-only format is blank after normalization, without broadening real predicates', () => {
+  expect(checkRowFilters({}, { formats: ['.', ' . '] }).checks).toEqual({});
+  expect(checkRowFilters({ extension: 'epub' }, { formats: ['.', '.pdf'] }).status).toBe('fail');
+});
+
+test('Norwegian variety names match their own codes without admitting the other variety', () => {
+  expect(checkRowFilters({ language: 'nn' }, { languages: ['norwegian_bokmal'] }).status).toBe('fail');
+  expect(checkRowFilters({ language: 'nb' }, { languages: ['norwegian_nynorsk'] }).status).toBe('fail');
+  expect(checkRowFilters({ language: 'nb' }, { languages: ['norwegian_bokmal'] }).status).toBe('pass');
+  expect(checkRowFilters({ language: 'nn' }, { languages: ['norwegian_nynorsk'] }).status).toBe('pass');
+  expect(checkRowFilters({ language: 'nob' }, { languages: ['nn'] }).status).toBe('pass'); // nn normalizes to broad Norwegian by lead ruling
+});

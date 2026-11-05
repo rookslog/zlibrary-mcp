@@ -99,7 +99,8 @@ years. Empty lists and `exact:false` add no constraint.
 receives it as `native_only`, **sent, not checked by this server**. Local
 `get_limits` reports these filter capabilities without provider contact.
 A full Z-Library page filtered to zero can still supply a continuation, named by
-`routing.continuation_source`; a later winning source owns its own cursor.
+`routing.continuation_source` on a filtered search; a later winning source
+owns its own cursor. Unfiltered search/history keep their cursor shape.
 No extra fetching or 50-row Z-Library candidate page ships in this slice.
 See the [filter contract](docs/api.md#filters-partial-milestone-for-20).
 

@@ -21,13 +21,15 @@ Catalogue metadata, not the text inside a book. Give `query`, `author`, or both.
 | `limit` | Integer 1–50, default 10 |
 | `cursor` | Continuation, exclusive of every other argument |
 
-Returns `rows`, `routing`, optional `next_cursor` and a steering `note`.
+Returns `rows`, `routing`, optional `next_cursor`, active-filter `filtering`,
+and a steering `note`.
 Rows carry `ref`, `title`, `author`, `year`, `language`, `format`, `size_mb`,
 `pages`, `publisher`, `source`, `also_available_on` when known. Unknown scalars
 are omitted, not empty strings. Raw IDs, hashes and download URLs are not
 search row fields; `get_book` exposes identifiers when needed.
 
-`routing` reports `requested`, `served_by`, `fell_back`, and ordered `attempts`.
+`routing` reports `requested`, `served_by`, `fell_back`, ordered `attempts`,
+and `continuation_source` only when a filtered search returns a cursor.
 Outcomes are `rows`, `empty`, `skipped`, `failed`; failures preserve typed codes
 and sub-reasons. Routing stops at the first source with rows. A continuation
 uses only that source: it never restarts fallback. All-empty is a successful
@@ -53,11 +55,17 @@ request. Unknown language values stay literal and appear in
 ignored. Recognized names/codes are case-insensitive; native Z-Library sending
 uses deduplicated names (`fr` → `french`, `en` plus `english` → one `english`).
 The same aliases apply to rows. `nb` and `nn` map to Norwegian. Semicolon row
-languages use membership (`English;French` matches `fr`). `Traditional chinese`
-has no vendored native counterpart and matches as normalized literal text.
+languages use membership (`English;French` matches `fr`). ISO code aliases cover
+every supported language name, including Afrikaans (`af`) and Swahili (`sw`).
+`Traditional chinese` maps to `chinese`. The generic category `indigenous` has
+no ISO language code: it stays literal-only and is flagged as unrecognized.
+Requests using `nb`/`nn` normalize to broad Norwegian by the existing ruling.
+Named `norwegian_bokmal`/`norwegian_nynorsk` filters match their own row codes
+(`nb`/`nob` or `nn`/`nno`), without admitting the other variety. Moldavian is
+equivalent to Romanian locally (legacy `mo`/`mol` aliases are retained).
 Formats are trimmed, case-folded and stripped of one leading dot, without
 family aliases (`azw3` differs from `mobi`). Empty lists, blank list entries
-and `exact:false` add no constraint.
+and `exact:false` add no constraint. A dot-only format is blank after stripping.
 
 Year bounds are inclusive integers. Row years must be positive integers of at
 least four digits, digit strings of the same numeric domain, or a leading
@@ -69,7 +77,14 @@ circa/unlisted suffixes and values below 1000 remain unknown. Titles are never
 used to infer years. Public rows show the same parsed year used for filtering.
 
 With active filters, each answered attempt has `ignored: []` and a `filtering`
-record. Unfiltered attempts retain their previous shape without these keys.
+record. With no filter keys, unfiltered attempts retain their previous shape.
+Explicit `exact:false` and empty/blank lists no longer produce the legacy
+`ignored` entries, because they add no constraint. Date-like readable years
+(such as `2014 Juin`) now add a parsed public year even without a year filter.
+Existing numeric year representations (including zero and years below 1000)
+retain their legacy public numeric conversion on non-year paths, including
+get_book/history. Zero, sub-1000 and unreadable year values still count as
+unknown and are excluded by year filters.
 Each set predicate appears exactly once in `applied`, `native_only` or
 `ignored`. Metadata predicates are `applied`; only Z-Library `exact` is
 `native_only`. `native_sent` records the values transmitted to Z-Library,
@@ -88,8 +103,9 @@ claims. No extra pages are fetched to fill a short page.
 A full raw Z-Library page can yield zero matches and still have `next_cursor`.
 If later sources win, their cursor replaces that pointer (or it is absent).
 If all sources answer empty, the earliest onward pointer is returned.
-`routing.continuation_source` names the cursor's source whenever a cursor is
-returned. Continuing walks only that source; replay re-queries the same
+On a filtered search, `routing.continuation_source` names the cursor's source
+when a cursor is returned. Unfiltered search/history cursors do not add this key.
+Continuing walks only that source; replay re-queries the same
 Z-Library position and can change with upstream data. Z-Library still fetches
 `limit` rows per page; the 50-row candidate page and held-tail drain are deferred.
 

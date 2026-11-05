@@ -232,3 +232,94 @@ test('format grammar strips exactly one leading dot from the original request an
   expect(reply.rows.map(r => r.title)).toEqual(['Two dots']);
   expect(reply.routing.attempts[0].filtering).toMatchObject({ examined: 3, matched: 1, rejected: 2, unknown: 0 });
 });
+
+// Whole replies, with only opaque handles replaced; extra wire keys fail equality.
+const wireShape = value => JSON.parse(JSON.stringify(value, (key, v) => key === 'ref' ? '<ref>' : key === 'next_cursor' ? '<cursor>' : v));
+test('F5 unfiltered Z reply keeps legacy years and cursor on an oversupplied page', async () => {
+  const { call } = await fixture(async () => ({ books: [zrow('Old', { year: 850 }), zrow('Zero', { year: 0 }), zrow('Tail', { year: 2001 })] }), zenv);
+  expect(wireShape(await call({ query: 'book', sources: ['zlibrary'], limit: 2 }))).toEqual({
+    rows: [{ ref: '<ref>', title: 'Old', year: 850, source: 'zlibrary' }, { ref: '<ref>', title: 'Zero', year: 0, source: 'zlibrary' }],
+    next_cursor: '<cursor>', routing: { requested: ['zlibrary'], served_by: 'zlibrary', fell_back: false, attempts: [{ source: 'zlibrary', outcome: 'rows' }] },
+  });
+});
+test('F5 unfiltered LibGen reply keeps legacy years, held cursor and exact old shape', async () => {
+  const { call } = await fixture(async () => ({ books: [row('Old', undefined, { year: 101 }), row('Zero', undefined, { year: 0 }), row('Tail', undefined, { year: 2001 })] }));
+  expect(wireShape(await call({ query: 'book', sources: ['libgen'], limit: 2 }))).toEqual({
+    rows: [{ ref: '<ref>', title: 'Old', year: 101, source: 'libgen' }, { ref: '<ref>', title: 'Zero', year: 0, source: 'libgen' }],
+    next_cursor: '<cursor>', routing: { requested: ['libgen'], served_by: 'libgen', fell_back: false, attempts: [{ source: 'libgen', outcome: 'rows' }] },
+    note: 'This server returns at most 50 libgen rows per query.',
+  });
+});
+test.each([850, 101, 0, -5, 2.5, '1e3'])('F1 non-year paths retain numeric public year %s', async year => {
+  const { call, client } = await fixture(async op => op === 'get_download_history' ? [zrow('Book', { year })] : { books: [row('Book', undefined, { year, language: 'French' })] }, zenv);
+  const search = await call({ query: 'book', sources: ['libgen'], languages: ['fr'] });
+  expect(search.rows[0].year).toBe(Number(year));
+  const detail = (await client.callTool({ name: 'get_book', arguments: { ref: search.rows[0].ref } })).structuredContent;
+  expect(detail.year).toBe(Number(year));
+  const history = (await client.callTool({ name: 'get_history', arguments: { limit: 2 } })).structuredContent;
+  expect(history.rows[0].year).toBe(Number(year));
+});
+test('F3 history oversupply keeps onward page after slicing to limit', async () => {
+  const { client } = await fixture(async () => [zrow('One'), zrow('Two'), zrow('Extra')], zenv);
+  const reply = (await client.callTool({ name: 'get_history', arguments: { limit: 2 } })).structuredContent;
+  expect(reply.rows).toHaveLength(2); expect(reply.next_cursor).toEqual(expect.any(String));
+});
+test('F4 continuation rechecks mixed rows and a full zero-match page keeps its cursor', async () => {
+  const calls = [];
+  const { call } = await fixture(async (_op, args) => {
+    calls.push(args.page);
+    return { books: args.page === 1 ? [zrow('Start1', { language: 'French' }), zrow('Start2', { language: 'French' })]
+      : args.page === 2 ? [zrow('Good', { language: 'French' }), zrow('Wrong', { language: 'English' })]
+      : [zrow('Wrong3', { language: 'English' }), zrow('Unknown3')] };
+  }, zenv);
+  const first = await call({ query: 'book', sources: ['zlibrary', 'libgen'], languages: ['fr'], limit: 2 });
+  const mixed = await call({ cursor: first.next_cursor });
+  expect(mixed.rows.map(r => r.title)).toEqual(['Good']);
+  expect(mixed.routing.attempts[0].filtering).toMatchObject({ examined: 2, matched: 1, rejected: 1, unknown: 0, applied: ['languages'] });
+  expect(mixed.next_cursor).toEqual(expect.any(String));
+  const empty = await call({ cursor: mixed.next_cursor });
+  expect(empty.rows).toEqual([]);
+  expect(empty.routing.attempts[0].filtering).toMatchObject({ examined: 2, matched: 0, rejected: 1, unknown: 1 });
+  expect(empty.next_cursor).toEqual(expect.any(String)); expect(empty.routing.continuation_source).toBe('zlibrary');
+  expect(calls).toEqual([1, 2, 3]);
+});
+test('F3 filtered oversupply slices rows but retains onward cursor', async () => {
+  const { call } = await fixture(async () => ({ books: [zrow('One', { language: 'French' }), zrow('Two', { language: 'French' }), zrow('Three', { language: 'French' })] }), zenv);
+  const reply = await call({ query: 'book', sources: ['zlibrary'], languages: ['fr'], limit: 2 });
+  expect(reply.rows).toHaveLength(2);expect(reply.routing.attempts[0].filtering.matched).toBe(3);expect(reply.next_cursor).toEqual(expect.any(String));
+});
+
+test('F6 format fallback, window and empty notes and case-folded effective language remain visible', async () => {
+  const { call } = await fixture(async () => ({ books: [row('Format fallback', undefined, { format: 'PDF', language: 'French' })] }));
+  const reply = await call({ query: 'book', sources: ['libgen'], formats: ['pdf'], languages: [' FrEnCh '] });
+  expect(reply.rows.map(r => r.title)).toEqual(['Format fallback']);
+  expect(reply.filtering.requested.languages).toEqual(['french']);
+  expect(reply.note).toMatch(/1 of 1 examined rows matched/);expect(reply.note).toMatch(/at most 50 libgen rows/);
+  const empty = await call({ query: 'book', sources: ['libgen'], formats: ['epub'] });
+  expect(empty.rows).toEqual([]); expect(empty.note).toMatch(/No matches in these windows/);
+});
+test('F10 exact-only note never claims local matches', async () => {
+  const { call } = await fixture(async () => ({ books: [zrow('Book')] }), zenv);
+  const reply = await call({ query: 'book', sources: ['zlibrary'], exact: true });
+  expect(reply.note).toMatch(/1 rows examined/);expect(reply.note).not.toMatch(/matched/);expect(reply.note).toMatch(/not checked by this server/);
+});
+test('F11 dot-only formats are blank after normalization, including beside a real format', async () => {
+  const sent = [];
+  const { call } = await fixture(async (_op, args) => { sent.push(args.extensions);return { books: [zrow('PDF', { extension: 'pdf' }), zrow('EPUB', { extension: 'epub' })] }; }, zenv);
+  const all = await call({ query: 'book', sources: ['zlibrary'], formats: ['.', ' . '] });
+  expect(all.rows).toHaveLength(2);expect(all.filtering).toBeUndefined();expect(sent[0]).toEqual([]);
+  const pdf = await call({ query: 'book', sources: ['zlibrary'], formats: ['.', '.pdf'] });
+  expect(pdf.rows.map(r => r.title)).toEqual(['PDF']);expect(sent[1]).toEqual(['pdf']);
+});
+test('F13 empty advice omits a Z retry after Z has answered', async () => {
+  const { call } = await fixture(async () => ({ books: [] }), zenv);
+  const reply = await call({ query: 'book', sources: ['zlibrary'], formats: ['pdf'] });
+  expect(reply.note).toMatch(/narrower query/);expect(reply.note).not.toMatch(/Try zlibrary/);
+});
+
+test.each([['afrikaans','af'], ['swahili','sw']])('connector Anna %s request admits bracket-extracted %s rows and counts mismatches', async (language, code) => {
+  const { call } = await fixture(async () => ({ books: [row('Match', 'pdf', { language: code }), row('Wrong', 'pdf', { language: 'en' })] }));
+  const reply = await call({ query: 'book', sources: ['annas'], languages: [language] });
+  expect(reply.rows.map(r => r.title)).toEqual(['Match']);
+  expect(reply.routing.attempts[0].filtering).toMatchObject({ examined: 2, matched: 1, rejected: 1, unknown: 0 });
+});

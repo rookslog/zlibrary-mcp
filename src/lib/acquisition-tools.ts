@@ -267,7 +267,7 @@ export class AcquisitionTools {
       ...(mint ? { ref: this.refs.mintStable('r', selection) } : {}),
       title: b.title ?? b.name,
       author,
-      year: checkRowFilters(b, {}).year ?? undefined,
+      year: checkRowFilters(b, {}).year ?? numberOrUndefined(b.year),
       language: b.language,
       format: b.extension ?? b.format,
       size_mb: sizeMB(b),
@@ -459,7 +459,8 @@ export class AcquisitionTools {
       ...new Set<string>(
         (args.formats ?? [])
           .filter((v: string) => v.trim())
-          .map((v: string) => v.normalize('NFC').trim().toLowerCase().replace(/^\./u, '')),
+          .map((v: string) => v.normalize('NFC').trim().toLowerCase().replace(/^\./u, ''))
+          .filter(Boolean),
       ),
     ];
     const languages = normalizeLanguages(args.languages ?? []);
@@ -606,7 +607,7 @@ export class AcquisitionTools {
           ...(filtering ? { filtering } : {}),
         };
         let onward: Cursor | undefined;
-        if (source === 'zlibrary' && fetched.length === count) onward = { ...base, page: page + 1 };
+        if (source === 'zlibrary' && fetched.length >= count) onward = { ...base, page: page + 1 };
         if (source !== 'zlibrary') {
           if (books.length) note = `This server returns at most 50 ${source} rows per query.`;
           if (offset + count < matches.length)
@@ -705,10 +706,15 @@ export class AcquisitionTools {
         .filter((a) => a.filtering)
         .map((a) => {
           const f = a.filtering!;
+          if (!f.applied.length)
+            return `${a.source}: ${f.examined} rows examined; no metadata predicates were checked (${f.scope}).`;
           return `${a.source}: ${f.matched} of ${f.examined} examined rows matched; ${f.rejected} rejected, ${f.unknown} unknown metadata excluded (${f.scope}).`;
         });
       note = [
         ...windows,
+        ...attempts
+          .filter((a) => a.filtering && a.source !== 'zlibrary')
+          .map((a) => `This server returns at most 50 ${a.source} rows per query.`),
         ...(languages.unrecognized.length
           ? ['Unrecognized language values were matched literally; see filtering.unrecognized.']
           : []),
@@ -717,7 +723,7 @@ export class AcquisitionTools {
           : []),
         ...(!books.length
           ? [
-              'No matches in these windows; later matches may exist. Try zlibrary or a narrower query without relaxing filters. To see rows excluded for unknown metadata, search without the affected metadata filters.',
+              `${Object.keys(filterRequest).length ? 'No matches' : 'No rows returned'} in these windows; later matches may exist. ${attempts.some((a) => a.source === 'zlibrary' && a.filtering) ? 'Try a narrower query' : 'Try zlibrary or a narrower query'} without relaxing filters. To see rows excluded for unknown metadata, search without the affected metadata filters.`,
             ]
           : []),
       ].join(' ');
@@ -740,7 +746,7 @@ export class AcquisitionTools {
             routing: nonempty({
               requested,
               served_by: rows.length ? selected : undefined,
-              continuation_source: next?.served,
+              continuation_source: operation === 'search' && active ? next?.served : undefined,
               fell_back: rows.length > 0 && selected !== requested[0],
               attempts,
             }),

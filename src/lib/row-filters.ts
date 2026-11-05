@@ -65,8 +65,14 @@ function parseYear(raw: unknown): { year: number | null; reason: string } {
 
 const normalizeFormat = (value: string): string =>
   value.normalize('NFC').trim().toLowerCase().replace(/^\./u, '');
-const languageKey = (value: string): string =>
-  normalizeLanguages([value]).values[0]!.normalize('NFC').trim().toLowerCase();
+const languageKey = (value: string): string => {
+  const text = value.normalize('NFC').trim().toLowerCase();
+  // Preserve row-code precision; request nb/nn have already normalized to broad Norwegian.
+  if (text === 'nb' || text === 'nob') return 'norwegian_bokmal';
+  if (text === 'nn' || text === 'nno') return 'norwegian_nynorsk';
+  const key = normalizeLanguages([value]).values[0]!.normalize('NFC').trim().toLowerCase();
+  return key === 'moldavian' ? 'romanian' : key;
+};
 
 /** Evaluate catalogue metadata only; callers decide what to do with unknown rows.
  * Empty lists and blank entries add no check. Known failure outranks unknown in the AND result.
@@ -112,14 +118,23 @@ export function checkRowFilters(row: CatalogueFields, request: RowFilterRequest)
     checks.languages = !components.length
       ? { status: 'unknown', reason: 'language_missing_or_invalid' }
       : components.some((component) =>
-            languages.values.some((wanted) => languageKey(component) === languageKey(wanted)),
+            languages.values.some((wanted) => {
+              const actual = languageKey(component);
+              const expected = languageKey(wanted);
+              return (
+                actual === expected ||
+                (expected === 'norwegian' &&
+                  ['norwegian_bokmal', 'norwegian_nynorsk'].includes(actual))
+              );
+            }),
           )
         ? { status: 'pass', reason: 'language_matches' }
         : { status: 'fail', reason: 'language_mismatch' };
   }
   const formats = (request.formats ?? [])
     .filter((value) => value.trim().length > 0)
-    .map(normalizeFormat);
+    .map(normalizeFormat)
+    .filter(Boolean);
   if (formats.length) {
     const format = typeof row.extension === 'string' ? normalizeFormat(row.extension) : '';
     checks.formats = !format

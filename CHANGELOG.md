@@ -15,6 +15,11 @@ unsupported sources are skipped; Z-Library receives it as `native_only`, sent
 but not checked by this server. The 50-row Z-Library page/held-tail drain is
 deferred; there is no overfetch or new input field in this slice.
 
+Compatibility: numeric public years remain unchanged on non-year paths, and
+`continuation_source` is limited to filtered searches. Readable date strings
+now add a public year; inactive `exact:false`/empty lists no longer add false
+`ignored` entries. Full or oversupplied raw pages retain an onward cursor.
+
 Before/after examples (operator O4):
 
 - LibGen, French EPUBs: before, top rows from an unfiltered page; after,

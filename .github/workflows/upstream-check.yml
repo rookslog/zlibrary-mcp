@@ -54,17 +54,25 @@ jobs:
         with:
           script: |
             const issues = await github.paginate(github.rest.issues.listForRepo, {
-              ...context.repo, state: 'open', labels: 'upstream-drift', per_page: 100,
+              ...context.repo, state: 'all', labels: 'upstream-drift', per_page: 100, sort: 'updated', direction: 'desc',
             });
             const existing = issues.find(issue => issue.title === 'Upstream contract check failing' && !issue.pull_request);
-            require('node:fs').writeFileSync(process.env.PREVIOUS_ISSUE_PATH, existing?.body || '');
+            let previous = existing?.body || '';
+            if (existing) {
+              const comments = await github.paginate(github.rest.issues.listComments, {
+                ...context.repo, issue_number: existing.number, per_page: 100,
+              });
+              const snapshot = comments.filter(comment => comment.body?.startsWith('<!-- upstream-report-snapshot -->\n')).at(-1);
+              previous = snapshot?.body || previous;
+            }
+            require('node:fs').writeFileSync(process.env.PREVIOUS_ISSUE_PATH, previous);
       - name: Probe configured sources
         id: probe
         continue-on-error: true
         env:
           # Empty repository variable means the default. Set to zlibrary to
           # retain warning-only behaviour for Anna's Archive and LibGen.
-          UPSTREAM_RELIED_SOURCES: ${{ vars.UPSTREAM_RELIED_SOURCES || 'zlibrary,annas-archive,libgen' }}
+          UPSTREAM_RELIED_SOURCES: ${{ vars.UPSTREAM_RELIED_SOURCES || 'zlibrary,libgen' }}
         run: uv run python scripts/check_upstream.py --github-output --previous-issue previous-upstream-issue.md --report-file upstream-report.txt
       - uses: actions/upload-artifact@v7
         if: always()
@@ -173,7 +181,31 @@ jobs:
             const report = process.env.PROBE_REPORT || '(no reachability report)';
             const failed = process.env.PROBE_FAILED === 'true' ||
               process.env.REACHABILITY_RESULT === 'failure' || process.env.LIVE_RESULT === 'failure';
+
+            // Reuse one rolling issue so a prolonged outage does not create a new
+            // issue every morning.
+            const issues = await github.paginate(github.rest.issues.listForRepo, {
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              state: 'all',
+              sort: 'updated',
+              direction: 'desc',
+              labels: 'upstream-drift',
+              per_page: 100,
+            });
+            const existing = issues.find(issue => issue.title === title && !issue.pull_request);
+
+            let previous = existing?.body || '';
+            if (existing) {
+              const comments = await github.paginate(github.rest.issues.listComments, {
+                ...context.repo, issue_number: existing.number, per_page: 100,
+              });
+              const snapshot = comments.filter(comment => comment.body?.startsWith('<!-- upstream-report-snapshot -->\n')).at(-1);
+              previous = snapshot?.body || previous;
+            }
+            const recoveredAt = previous.match(/<!-- upstream-recovered-at: (\d{4}-\d{2}-\d{2}) -->/)?.[1] || new Date().toISOString().slice(0, 10);
             const body = [
+              '<!-- upstream-report-snapshot -->',
               failed ? 'The scheduled upstream contract check did not pass.' : 'The scheduled upstream contract check passed.',
               '',
               `- reachability job: **${process.env.REACHABILITY_RESULT}**`,
@@ -185,26 +217,22 @@ jobs:
               '',
               report,
               '',
+              ...(!failed ? [`Recovered: ${recoveredAt} (UTC)`, `<!-- upstream-recovered-at: ${recoveredAt} -->`, ''] : []),
               'Unit tests mock these calls and will stay green, so triage from the run log.',
             ].join('\n');
 
-            // Reuse one rolling issue so a prolonged outage does not create a new
-            // issue every morning.
-            const issues = await github.paginate(github.rest.issues.listForRepo, {
-              owner: context.repo.owner,
-              repo: context.repo.repo,
-              state: 'open',
-              labels: 'upstream-drift',
-              per_page: 100,
-            });
-            const existing = issues.find(issue => issue.title === title && !issue.pull_request);
-
             if (existing) {
+              // Persist state before updating/closing so an interrupted update
+              // can be retried without losing recovery or source dates.
+              await github.rest.issues.createComment({
+                ...context.repo, issue_number: existing.number, body,
+              });
               await github.rest.issues.update({
                 owner: context.repo.owner,
                 repo: context.repo.repo,
                 issue_number: existing.number,
                 body,
+                state: failed ? 'open' : 'closed',
               });
             } else if (failed) {
               await github.rest.issues.create({

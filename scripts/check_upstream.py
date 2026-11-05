@@ -47,13 +47,14 @@ from zlibrary.eapi import DEFAULT_EAPI_DOMAINS, WALLED_STATUS_CODES  # noqa: E40
 
 TIMEOUT = httpx.Timeout(20.0, connect=10.0)
 SOURCES = frozenset({"zlibrary", "annas-archive", "libgen"})
+DEFAULT_RELIED_SOURCES = frozenset({"zlibrary", "libgen"})
 
 
 def relied_sources() -> set[str]:
     """Alert policy only; never changes the connector's routing configuration."""
-    value = os.environ.get("UPSTREAM_RELIED_SOURCES", ",".join(sorted(SOURCES)))
+    value = os.environ.get("UPSTREAM_RELIED_SOURCES", ",".join(sorted(DEFAULT_RELIED_SOURCES)))
     sources = {part.strip() for part in value.split(",") if part.strip()} or set(
-        SOURCES
+        DEFAULT_RELIED_SOURCES
     )
     unknown = sources - SOURCES
     if unknown:
@@ -872,6 +873,18 @@ def render(
                         _fenced_upstream(row["reason"]),
                     ]
                 )
+    warnings = [r for r in summary["results"] if not r["ok"] and not r["relied_on"]]
+    if warnings:
+        lines.extend(["", "### Source warnings"])
+        for row in warnings:
+            lines.extend(
+                [
+                    "",
+                    f"#### {row['name']}",
+                    f"First seen: {row['first_seen']} (UTC; first observed by this tracker)",
+                    _fenced_upstream(row["reason"]),
+                ]
+            )
     state = {r["name"]: r["first_seen"] for r in summary["results"] if not r["ok"]}
     encoded = (
         json.dumps(state, sort_keys=True)

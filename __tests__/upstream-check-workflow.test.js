@@ -188,7 +188,7 @@ test('previous-body lookup supplies empty state when only an exact-title PR exis
 test.each(['reachability', 'report'])('paginates %s lookup and finds issue250 after a full page', async (job) => {
   const firstPage = Array.from({ length: 99 }, (_, i) => ({ number: 400 + i, title: 'Other upstream drift' }));
   firstPage.push({ number: 399, title: rollingTitle, pull_request: {} });
-  const github = api(firstPage, [{ number: 250, title: rollingTitle, body: 'later page state' }]);
+  const github = api(firstPage, [[{ number: 250, title: rollingTitle, body: 'later page state' }]]);
   await run(script(job, job === 'report' ? 'issue' : 'previous'), github);
   expect(github.paginate).toHaveBeenCalledWith(github.rest.issues.listForRepo, expect.objectContaining({
     state: 'all', labels: 'upstream-drift', per_page: 100,
@@ -244,4 +244,27 @@ test('a new failure reopens the closed exact-title rolling issue', async () => {
   await run(script('report', 'issue'), github);
   expect(github.rest.issues.update).toHaveBeenCalledWith(expect.objectContaining({ issue_number: 250, state: 'open' }));
   expect(github.rest.issues.create).not.toHaveBeenCalled();
+});
+
+
+test.each([
+  [undefined, 'zlibrary,libgen'],
+  ['', 'zlibrary,libgen'],
+  ['zlibrary,annas-archive,libgen', 'zlibrary,annas-archive,libgen'],
+])('workflow passes default or override reliance %s to the probe', (value, expected) => {
+  const expression = workflow.jobs.reachability.steps.find(step => step.id === 'probe').env.UPSTREAM_RELIED_SOURCES;
+  const evaluate = new Function('vars', 'return ' + expression.slice(3, -2).trim());
+  expect(evaluate({ UPSTREAM_RELIED_SOURCES: value })).toBe(expected);
+});
+
+test('next probe reads the latest snapshot on a later comments page', async () => {
+  const github = api([{ number: 250, title: rollingTitle, body: 'stale failure' }]);
+  const firstPage = Array.from({ length: 100 }, () => ({ body: '<!-- upstream-report-snapshot -->\nold state' }));
+  github.rest.issues.listComments.mockImplementation(async ({ page }) => ({ data: page === 1 ? firstPage : [
+    { body: '<!-- upstream-report-snapshot -->\nlatest recovery\n<!-- upstream-source-status: {} -->' },
+    { body: 'ordinary maintainer comment' },
+  ] }));
+  await run(script('reachability', 'previous'), github);
+  expect(github.rest.issues.listComments).toHaveBeenCalledTimes(2);
+  expect(readFileSync(process.env.PREVIOUS_ISSUE_PATH, 'utf8')).toBe('<!-- upstream-report-snapshot -->\nlatest recovery\n<!-- upstream-source-status: {} -->');
 });

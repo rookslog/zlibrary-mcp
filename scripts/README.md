@@ -134,13 +134,15 @@ and exact five-tool 2.0 surface, not a version bump performed by this script.
 
 `check_upstream.py` keeps alert policy separate from connector routing. Set
 `UPSTREAM_RELIED_SOURCES` to a comma-separated subset of `zlibrary,annas-archive,libgen`.
-The default is all three. Any blocked or failing probe of a listed source exits 1;
+The default is `zlibrary,libgen`; Anna's Archive remains probed as a dated warning
+unless explicitly listed (for example, `zlibrary,annas-archive,libgen`).
+Any blocked or failing probe of a listed source exits 1;
 excluded sources produce warnings. `UPSTREAM_RELIED_SOURCES=zlibrary` retains the
 old warning-only treatment of Anna's Archive and LibGen. Z-Library blocks also
 alert now; excluding a source is the way to suppress its alerts. This setting
 never changes the connector's source selection or Anna's fallback without a key.
 Unknown source names are configuration errors, detected before provider calls.
-An unset, blank or whitespace-only value selects the default of all three sources,
+An unset, blank or whitespace-only value selects the default of `zlibrary,libgen`,
 both in the CLI and in GitHub Actions. Configure a named subset to narrow alerts.
 
 Use `--report-file PATH.txt` to write text plus adjacent JSON, including on an alert
@@ -155,8 +157,14 @@ row contains `source`, probe `name`, `status` (`passed`, `blocked`, `changed`),
 the body preserves each continuously failing probe's first-observed date, even
 if its reason changes. Old bodies without that marker start tracking today;
 the issue creation date is not evidence of a particular source's failure date.
-The scheduled workflow updates the issue body on recovery too, clearing dates
-for passing probes. It uploads both files as `upstream-source-report` for 30 days,
+The scheduled workflow closes the rolling issue on recovery, clearing dates
+for passing probes. It journals each report in a snapshot comment before updating
+the body and state. Both lookups paginate exact-title issues (including closed
+issues); the next failure reopens the same issue. The next run reads the latest
+snapshot, so a failed issue update cannot lose the recovery date or cleared probe
+state. A failed snapshot write stops before changing the issue body or state.
+Excluded-source warnings retain first-seen dates too. The workflow uploads both
+files as `upstream-source-report` for 30 days,
 even when a source alerts. Source blocked and Source changed have separate issue
 headings. A block from the runner does not establish a worldwide outage.
 The credentialed live suite, including collection, requires an explicit

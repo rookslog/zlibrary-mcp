@@ -713,9 +713,9 @@ class LibgenAdapter(SourceAdapter):
 
         This matters more for LibGen than for Anna's: once the third-party
         search call starts it cannot be interrupted, only abandoned. Probing
-        first means an unroutable mirror (libgen.is resolves to
-        an unreachable address but drops every SYN, measured 2026-08-11) costs one
-        bounded probe and never enters that call.
+        first means an unroutable mirror (libgen.is resolved, but the address
+        dropped every SYN, measured on 2026-08-11) costs one bounded probe and
+        never enters that call.
 
         Args:
             mirror: Mirror suffix, e.g. 'li'

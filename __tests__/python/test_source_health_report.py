@@ -176,6 +176,111 @@ def test_missing_execution_stays_not_run_or_blocked(
     assert auth["coverage_complete"] is False
 
 
+@pytest.mark.parametrize(
+    "job,outcome,state,reason,ran",
+    [
+        ("failure", "failure", "failed", "live_collection_error", False),
+        ("cancelled", "failure", "failed", "live_collection_error", False),
+        ("skipped", "failure", "failed", "live_collection_error", False),
+        ("success", "failure", "failed", "live_collection_error", False),
+        ("failure", "", "failed", "execution_not_recorded", None),
+        ("success", "success", "failed", "execution_not_recorded", None),
+        ("cancelled", "success", "failed", "execution_not_recorded", None),
+        ("skipped", "success", "failed", "execution_not_recorded", None),
+        ("failure", "cancelled", "failed", "execution_not_recorded", None),
+        ("", "", "failed", "execution_not_recorded", None),
+        ("failure", "skipped", "not_run", "live_step_not_started", False),
+        ("skipped", "", "not_run", "live_job_skipped", False),
+        ("cancelled", "", "not_run", "live_job_cancelled", None),
+    ],
+)
+def test_unmarked_live_step_uses_outcome_before_inferring_non_execution(
+    inputs, job, outcome, state, reason, ran
+):
+    no_live(inputs, "")
+    inputs["env"].update(LIVE_RESULT=job, LIVE_OUTCOME=outcome)
+    auth = produce(inputs)["sources"]["zlibrary"]["authenticated"]
+    assert (auth["status"], auth["reason"], auth["ran"]) == (state, reason, ran)
+    assert auth["counts"] is None and auth["coverage_complete"] is False
+
+
+@pytest.mark.parametrize("outcome", ["skipped", "", "success"])
+@pytest.mark.parametrize("job", ["failure", "cancelled", "skipped"])
+def test_unmarked_live_step_with_junit_cannot_claim_non_execution(inputs, outcome, job):
+    inputs["env"].update(
+        LIVE_STARTED="", LIVE_STATUS="", LIVE_OUTCOME=outcome, LIVE_RESULT=job
+    )
+    auth = produce(inputs)["sources"]["zlibrary"]["authenticated"]
+    assert (auth["status"], auth["reason"], auth["ran"]) == (
+        "failed",
+        "execution_not_recorded",
+        None,
+    )
+    assert auth["counts"]["total"] == 3 and auth["coverage_complete"] is False
+
+
+def test_preliminary_collection_failure_in_actual_workflow_is_reported_failed(inputs):
+    workflow = json.loads(
+        subprocess.check_output(
+            [
+                "node",
+                "--input-type=module",
+                "-e",
+                "import fs from 'node:fs';import {parse} from 'yaml';process.stdout.write(JSON.stringify(parse(fs.readFileSync('.github/workflows/upstream-check.yml','utf8'))));",
+            ],
+            cwd=ROOT,
+            text=True,
+        )
+    )
+    step = next(
+        step
+        for step in workflow["jobs"]["live_tests"]["steps"]
+        if step.get("id") == "live"
+    )
+    path = inputs["path"]
+    policy = path / "zlibrary/src/zlibrary/eapi.py"
+    policy.parent.mkdir(parents=True)
+    policy.write_text("DEFAULT_EAPI_DOMAINS = ['z-library.ec']\n")
+    bin_path = path / "bin"
+    bin_path.mkdir()
+    (bin_path / "python3").symlink_to(sys.executable)
+    uv = bin_path / "uv"
+    uv.write_text(
+        f"#!{sys.executable}\nimport sys\nfrom pathlib import Path\n"
+        "assert sys.argv[1:] == ['run', 'pytest', '-m', 'integration', '--collect-only', '--no-cov', '-q']\n"
+        "Path('collection-called').touch()\nraise SystemExit(2)\n"
+    )
+    uv.chmod(0o755)
+    output = path / "github-output"
+    run = subprocess.run(
+        ["/bin/bash", "-e", "-o", "pipefail", "-c", step["run"]],
+        cwd=path,
+        env={
+            "PATH": str(bin_path),
+            "GITHUB_WORKSPACE": str(path),
+            "GITHUB_OUTPUT": str(output),
+            "ZLIB_PROBE_DOMAIN": "z-library.ec",
+            "ZLIB_BLOCKED": "false",
+            "ZLIBRARY_EMAIL": "synthetic@example.test",
+            "ZLIBRARY_PASSWORD": "synthetic-password",
+        },
+        capture_output=True,
+        text=True,
+    )
+    assert run.returncode == 2, run.stderr
+    assert (path / "collection-called").exists()
+    assert not output.exists() and not (path / "live.xml").exists()
+    no_live(inputs, "")
+    inputs["env"].update(LIVE_RESULT="failure", LIVE_OUTCOME="failure")
+    auth = produce(inputs)["sources"]["zlibrary"]["authenticated"]
+    assert (auth["status"], auth["reason"], auth["ran"]) == (
+        "failed",
+        "live_collection_error",
+        False,
+    )
+    assert auth["counts"] is None and auth["coverage_complete"] is False
+
+
 @pytest.mark.parametrize("missing", ["missing", "malformed", "empty", "doctype"])
 def test_started_suite_with_missing_or_invalid_required_evidence_fails(inputs, missing):
     raw = None
@@ -268,7 +373,7 @@ def test_inconsistent_execution_flags_cannot_claim_a_skip_or_pass(inputs, status
 @pytest.mark.parametrize("job", ["failure", "cancelled", "skipped", "success"])
 def test_missing_probe_input_never_becomes_healthy(inputs, job):
     inputs["probe"] = None
-    inputs["env"]["REACHABILITY_RESULT"] = job
+    inputs["env"].update(REACHABILITY_RESULT=job, PROBE_OUTCOME=job)
     report = produce(inputs)
     for source, expected in EXPECTED.items():
         reach = report["sources"][source]["reachability"]
@@ -277,6 +382,33 @@ def test_missing_probe_input_never_becomes_healthy(inputs, job):
         )
         assert reach["missing_checks"] == expected
         assert all(check["status"] != "passed" for check in reach["checks"])
+
+
+@pytest.mark.parametrize("job", ["cancelled", "skipped", "failure", ""])
+@pytest.mark.parametrize("outcome", ["failure", "success"])
+def test_completed_probe_with_missing_report_cannot_be_relabelled_unstarted(
+    inputs, job, outcome
+):
+    inputs["probe"] = None
+    inputs["env"].update(REACHABILITY_RESULT=job, PROBE_OUTCOME=outcome)
+    report = produce(inputs)
+    assert report["probe_contract_complete"] is False
+    for source in report["sources"].values():
+        reach = source["reachability"]
+        assert (reach["status"], reach["reason"], reach["evidence_complete"]) == (
+            "failed",
+            "missing_probe_report",
+            False,
+        )
+        assert all(check["status"] == "failed" for check in reach["checks"])
+
+
+@pytest.mark.parametrize("job", ["cancelled", "skipped", ""])
+def test_failed_probe_with_report_cannot_be_relabelled_unstarted(inputs, job):
+    inputs["probe"]["results"][0].update(ok=False, status="changed")
+    inputs["env"].update(REACHABILITY_RESULT=job, PROBE_OUTCOME="failure")
+    reach = produce(inputs)["sources"]["zlibrary"]["reachability"]
+    assert reach["status"] == "failed" and reach["evidence_complete"] is False
 
 
 @pytest.mark.parametrize(

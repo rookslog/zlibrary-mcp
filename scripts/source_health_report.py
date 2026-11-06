@@ -82,7 +82,10 @@ def reachability(source, rows, problem, job, outcome, relied, today):
         if not matches:
             missing.append(name)
         if problem == "missing":
-            unstarted = job in ("cancelled", "skipped") or outcome == "skipped"
+            unstarted = outcome == "skipped" or (
+                job in ("cancelled", "skipped")
+                and outcome not in ("success", "failure")
+            )
             state = "not_run" if unstarted else "failed"
             reason = (
                 "probe_step_not_started"
@@ -94,7 +97,8 @@ def reachability(source, rows, problem, job, outcome, relied, today):
         elif problem:
             pass
         elif job in ("cancelled", "skipped", "unknown"):
-            state, reason = "not_run", "reachability_not_completed"
+            state = "failed" if outcome == "failure" else "not_run"
+            reason = "reachability_not_completed"
         elif outcome not in ("success", "failure"):
             reason = "probe_execution_not_recorded"
         elif not matches:
@@ -262,7 +266,7 @@ def authenticated(evidence, problem, status, job, outcome, started, exit_code):
     ran = True if marked and evidence else None if marked else False
     if not marked and (evidence or status in ("passed", "failed", "skipped")):
         ran = None
-    if job == "cancelled" and outcome != "skipped" and not marked:
+    if job == "cancelled" and outcome not in ("skipped", "failure") and not marked:
         ran = None
     counts = evidence["counts"] if evidence else None
     result = {
@@ -283,9 +287,13 @@ def authenticated(evidence, problem, status, job, outcome, started, exit_code):
             "coverage_complete": complete,
         }
 
-    if job == "cancelled":
+    if not marked and (evidence or status in ("passed", "failed", "skipped")):
+        return finish("failed", "execution_not_recorded")
+    if not marked and not status and outcome == "failure" and problem == "missing":
+        return finish("failed", "live_collection_error")
+    if job == "cancelled" and (marked or outcome not in ("success", "failure")):
         return finish("not_run", "live_job_cancelled")
-    if job == "skipped":
+    if job == "skipped" and (marked or outcome not in ("success", "failure")):
         return finish("not_run", "live_job_skipped")
     if status in ("no_account", "blocked", "unknown"):
         if marked or problem != "missing" or outcome != "success":
@@ -298,7 +306,8 @@ def authenticated(evidence, problem, status, job, outcome, started, exit_code):
             }[status]
         )
     if not marked:
-        if status in ("passed", "failed", "skipped"):
+        if problem != "missing" or outcome != "skipped":
+            result["ran"] = None
             return finish("failed", "execution_not_recorded")
         return finish("not_run", "live_step_not_started")
     if problem:

@@ -74,6 +74,10 @@ include `probe_passed`, `probe_refused`, `probe_timeout`, `probe_tls_failure`,
 Missing, malformed, duplicate or unexpected checks have distinct evidence
 reasons. A skipped probe step is `not_run` / `probe_step_not_started`; a completed
 probe without its required report is `failed` / `missing_probe_report`.
+An observed step failure takes precedence over a skipped/cancelled/unknown job
+when classifying failure; it cannot be relabelled as work that never started.
+Completed step outcomes also prevent job cancellation or skipping from turning
+a missing required report into a skip. Genuine setup skips remain `not_run`.
 
 ### Authenticated suite
 
@@ -95,7 +99,17 @@ A passing subset with skips remains explicitly partial (`coverage_complete`
 false, `live_suite_partially_covered`). All-skipped results are `not_run`, and a
 missing or entirely skipped required authentication check cannot establish an
 authenticated pass. Missing/invalid JUnit after an execution marker is `failed`;
-an unstarted live step is `not_run`. Collection/report errors remain failures.
+an explicitly skipped live step without execution evidence is `not_run`.
+If the live step fails before emitting a marker or status, without JUnit,
+the report is `failed` / `live_collection_error`, even if its job was cancelled
+or skipped. `ran=false` refers to suite execution, not preliminary collection.
+A missing marker alone never establishes a skip. Without positive skip or
+cancellation evidence or an admission status, unknown/completed step outcomes
+are `failed` / `execution_not_recorded`, `ran=null`. For an unmarked live step,
+completed step outcomes take precedence over its job's skip/cancellation.
+JUnit cases or a completed-suite status without a marker are contradictory
+execution evidence and also fail with `ran=null`, rather than claiming no run.
+Collection/report errors remain failures.
 No-account reports use `no_ci_account_configured`. The existing live log and
 JUnit artifacts remain available for detailed diagnosis.
 

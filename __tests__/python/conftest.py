@@ -81,7 +81,11 @@ def _no_preflight_probes(request, monkeypatch):
 
 @pytest.fixture(autouse=True)
 def _no_real_httpx_requests(request, monkeypatch):
-    """Block real non-loopback HTTP before DNS, and fail even if it is swallowed."""
+    """Block offline non-loopback HTTPX before DNS, even if it is swallowed."""
+    if request.node.get_closest_marker("integration"):
+        yield
+        return
+
     import httpx
 
     attempted = []

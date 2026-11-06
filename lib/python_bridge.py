@@ -1263,6 +1263,8 @@ async def _download_url_to_file(
     written = 0
     bytes_received = 0
     resumes_tried = 0
+    no_progress_attempts = 0
+    furthest = 0
     body_complete = False
 
     def progress_detail(detail: str) -> str:
@@ -1279,6 +1281,7 @@ async def _download_url_to_file(
 
     async def stream_to_disk() -> tuple[int, str]:
         nonlocal active_host, written, bytes_received, resumes_tried, body_complete
+        nonlocal no_progress_attempts, furthest
         try:
             # Keep the admitted source-specific UA and one client throughout
             # recovery. The caller owns the single deadline around this loop.
@@ -1289,6 +1292,7 @@ async def _download_url_to_file(
             ) as client:
                 while True:
                     offset = written
+                    furthest_before = furthest
                     request_options = (
                         {"headers": {"Range": f"bytes={offset}-"}} if offset else {}
                     )
@@ -1329,10 +1333,14 @@ async def _download_url_to_file(
                                 attempt_path.write_bytes(b"")
                                 written = 0
                                 body_complete = False
-                                if resumes_tried < config.download_resume_attempts:
+                                no_progress_attempts += 1
+                                if (
+                                    no_progress_attempts
+                                    < config.download_resume_attempts
+                                ):
                                     resumes_tried += 1
                                     observe_progress()
-                                    await asyncio.sleep(0)
+                                    await asyncio.sleep(0.25)
                                     continue
                             response.raise_for_status()
                             content_type = response.headers.get("content-type", "")
@@ -1408,6 +1416,7 @@ async def _download_url_to_file(
                                         written += len(chunk)
                                         received += len(chunk)
                                         bytes_received += len(chunk)
+                                        furthest = max(furthest, written)
                                         observe_progress()
                                 if (
                                     expected_length is not None
@@ -1441,7 +1450,7 @@ async def _download_url_to_file(
 
                         # A valid 206 may cover only part of the remainder.
                         # Close it before requesting the next staged offset;
-                        # the normal recovery gate charges each extra request.
+                        # progress does not spend the no-progress budget.
                         if status == 206 and expected_total is None:
                             # A fully delivered wildcard slice may already
                             # complete the file. Only its expected digest can
@@ -1472,17 +1481,31 @@ async def _download_url_to_file(
                         httpx.ReadTimeout,
                         httpx.RemoteProtocolError,
                         httpx.DecodingError,
+                        httpx.HTTPStatusError,
                     ) as exc:
-                        if (
+                        retry_status = isinstance(exc, httpx.HTTPStatusError)
+                        if retry_status and (
+                            not offset
+                            or exc.response.status_code not in {500, 502, 503, 504}
+                        ):
+                            raise
+                        if not config.download_resume_attempts or (
                             not bytes_received
                             and not isinstance(exc, httpx.DecodingError)
-                        ) or resumes_tried >= config.download_resume_attempts:
+                        ):
+                            raise
+                        # Count useful net gain beyond the previous high-water
+                        # mark, even when an encoded restart resets written.
+                        # Repeated prefixes and tiny ranges spend the budget.
+                        if resumes_tried and furthest - furthest_before < 65536:
+                            no_progress_attempts += 1
+                        if no_progress_attempts >= config.download_resume_attempts:
                             raise
                         resumes_tried += 1
                         observe_progress()
-                        # This cancellation point uses the caller's existing
-                        # timer; there is no new budget per retry or mirror.
-                        await asyncio.sleep(0)
+                        # Release the response before waiting. Do not re-resolve
+                        # a keyed URL or acquire another quota allocation.
+                        await asyncio.sleep(0.25)
                         continue
                     break
 
@@ -1530,7 +1553,7 @@ async def _download_url_to_file(
         if enforce_timeout:
             written, completed_path = await bounded_await(
                 stream_to_disk(),
-                config.download_timeout,
+                config.download_budget(),
                 provider=provider,
                 host=original_host,
                 operation="download",
@@ -1619,6 +1642,29 @@ def _provenance_hostname(value) -> Optional[str]:
     except ValueError:
         return None
     return host.lower() if host else None
+
+
+def _source_size_bytes(book_details: dict) -> Optional[float]:
+    """Read existing size metadata; absent/malformed sizes retain the base limit."""
+    import math
+
+    for name in ("size_mb", "filesize", "size"):
+        raw = book_details.get(name)
+        if raw is None:
+            continue
+        if isinstance(raw, bool):
+            continue
+        match = re.fullmatch(
+            r"\s*(\d+(?:\.\d+)?)\s*(B|[KMG]i?B)?\s*", str(raw), re.IGNORECASE
+        )
+        if match is None:
+            continue
+        unit = (match[2] or ("MB" if name == "size_mb" else "B")).upper()
+        power = {"B": 0, "KB": 1, "KIB": 1, "MB": 2, "MIB": 2, "GB": 3, "GIB": 3}[unit]
+        size = float(match[1]) * 1024**power
+        if math.isfinite(size) and size > 0:
+            return size
+    return None
 
 
 async def _fetch_from_source(book_details: dict, output_dir: str) -> str:
@@ -1731,7 +1777,9 @@ async def _fetch_from_source(book_details: dict, output_dir: str) -> str:
 
         return await bounded_await(
             acquire(),
-            _remaining_transfer_budget(config.download_timeout),
+            _remaining_transfer_budget(
+                config.download_budget(_source_size_bytes(book_details))
+            ),
             provider=selection,
             host=active_host,
             operation="download",

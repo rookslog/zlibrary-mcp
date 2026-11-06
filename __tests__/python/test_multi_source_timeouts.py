@@ -190,6 +190,7 @@ class TestConfigTimeouts:
         assert excinfo.value.failures[0].reason == "walk_budget_exhausted"
         assert "li" in excinfo.value.failures[0].detail
 
+
 class TestLibgenSearchIsBounded:
     """LibGen search is the path that hung; it gets the closest scrutiny."""
 
@@ -873,12 +874,12 @@ class TestTheDocumentedTimeoutMarginIsEnforced:
         """Provider chain + overhead only; whole acquisition is tracked in #280.
 
         Catch counting resolution twice or retaining removed processing phases.
-        The 1500s transfer-chain timeout already wraps candidate resolution.
+        The 3600s transfer-chain ceiling already wraps candidate resolution.
         """
         from lib.sources.config import SourceConfig, worst_case_download_seconds
 
         worst = worst_case_download_seconds(SourceConfig())
-        assert worst == 1530.0
+        assert worst == 3630.0
         assert worst < self._node_long_timeout_seconds(), (
             f"a provider download chain allocates {worst}s against a "
             f"{self._node_long_timeout_seconds()}s long-bridge budget; "

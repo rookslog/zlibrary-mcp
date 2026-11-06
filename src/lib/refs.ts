@@ -69,6 +69,16 @@ export class RefStore {
     this.stableKeys.set(ref, key);
     return ref;
   }
+  /** Retire an alias when its owning retained search is evicted. */
+  discard(ref: string): void {
+    if (!this.values.delete(ref)) return;
+    const key = this.stableKeys.get(ref);
+    if (key) this.stable.delete(key);
+    this.stableKeys.delete(ref);
+    this.expired.add(ref);
+    if (this.expired.size > this.tombstones)
+      this.expired.delete(this.expired.values().next().value!);
+  }
   get<T = any>(ref: string, kind: Kind): T {
     if (!ref || ref[0] !== kind)
       throw new ToolFailure('invalid_argument', 'Reference has the wrong kind.');

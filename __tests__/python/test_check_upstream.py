@@ -1806,7 +1806,9 @@ def test_validate_workflow_outputs_through_real_zlibrary_probe(
     assert child.returncode == 0
     assert (
         read_workflow_outputs(live_output)["status"]
-        == {"false": "skipped", "true": "blocked", "unknown": "unknown"}[expected_state]
+        == {"false": "no_account", "true": "blocked", "unknown": "unknown"}[
+            expected_state
+        ]
     )
 
 

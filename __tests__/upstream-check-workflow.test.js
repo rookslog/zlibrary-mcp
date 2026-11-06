@@ -40,9 +40,11 @@ function api(issues, laterPages = []) {
 
 async function run(code, github) {
   expect(typeof code).toBe('string');
+  const core = { setOutput: jest.fn(), info: jest.fn() };
   await new AsyncFunction('github', 'context', 'core', 'require', code)(
-    github, context, { setOutput: jest.fn() }, require,
+    github, context, core, require,
   );
+  return core;
 }
 
 let directory;
@@ -503,4 +505,54 @@ test.each(['cancelled', 'failure', 'skipped'])('unqualified reachability cannot 
   } else {
     expect(github.rest.issues.update).toHaveBeenCalledWith(expect.objectContaining({ state: 'open' }));
   }
+});
+
+
+test('live workflow maps only dedicated CI secrets to the existing test environment', () => {
+  const text = readFileSync(new URL('../.github/workflows/upstream-check.yml', import.meta.url), 'utf8');
+  const live = workflow.jobs.live_tests.steps.find(step => step.id === 'live');
+  expect(live.env.ZLIBRARY_EMAIL).toBe('${{ secrets.ZLIBRARY_CI_EMAIL }}');
+  expect(live.env.ZLIBRARY_PASSWORD).toBe('${{ secrets.ZLIBRARY_CI_PASSWORD }}');
+  expect(text).not.toMatch(/secrets\s*(?:\.\s*ZLIBRARY_(?:EMAIL|PASSWORD)\b|\[\s*['"]ZLIBRARY_(?:EMAIL|PASSWORD)['"]\s*\])/);
+});
+
+test.each(['absent', 'open', 'closed'])('no CI account is reported without passing or recovering an %s issue', async (state) => {
+  const issues = state === 'absent' ? [] : [{ number: 250, title: rollingTitle, state, body: sourceMarker }];
+  const github = api(issues);
+  Object.assign(process.env, {
+    REACHABILITY_RESULT: 'success', PROBE_FAILED: 'false', LIVE_RESULT: 'success',
+    LIVE_STATUS: 'no_account', PROBE_REPORT: 'healthy probes\n<!-- upstream-source-status: {} -->',
+  });
+  const core = await run(script('report', 'issue'), github);
+  expect(core.info).toHaveBeenCalledWith('live suite not run: no CI account configured');
+  expect(github.rest.issues.create).not.toHaveBeenCalled();
+  if (state === 'closed') {
+    const change = github.rest.issues.update.mock.calls[0][0];
+    expect(change.state).toBe('closed');
+    expect(change.body).toContain('live suite not run: no CI account configured');
+    expect(change.body).not.toContain('contract check passed.');
+    expect(change.body).not.toContain('upstream-recovered-at:');
+  } else {
+    expect(github.rest.issues.update).not.toHaveBeenCalled();
+    expect(github.rest.issues.createComment).not.toHaveBeenCalled();
+  }
+});
+
+test('no CI account does not suppress independent probe failures', async () => {
+  process.env.LIVE_STATUS = 'no_account';
+  const github = api([]);
+  const core = await run(script('report', 'issue'), github);
+  expect(core.info).toHaveBeenCalledWith('live suite not run: no CI account configured');
+  expect(github.rest.issues.create).toHaveBeenCalledTimes(1);
+  const body = github.rest.issues.create.mock.calls[0][0].body;
+  expect(body).toContain('live suite not run: no CI account configured');
+  expect(body).toContain('### Source blocked');
+  expect(body).not.toContain('contract check passed.');
+});
+
+test('no CI account cannot enable the live-test failure step', () => {
+  const failure = workflow.jobs.live_tests.steps.find(step => step.name === 'Fail the job when live tests regressed');
+  const enabled = new Function('steps', 'return ' + failure.if);
+  expect(enabled({ live: { outputs: { status: 'no_account', blocked: 'false' } } })).toBe(false);
+  expect(enabled({ live: { outputs: { status: 'failed', blocked: 'false' } } })).toBe(true);
 });

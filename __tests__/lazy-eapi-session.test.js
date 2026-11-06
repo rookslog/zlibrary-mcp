@@ -14,6 +14,7 @@ import path from 'node:path';
 import os from 'node:os';
 import { spawn } from 'node:child_process';
 import { once } from 'node:events';
+import assert from 'node:assert/strict';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { InMemoryTransport } from '@modelcontextprotocol/sdk/inMemory.js';
 import { EapiSessionOwner, authRejected } from '../dist/lib/eapi-session.js';
@@ -179,10 +180,11 @@ describe('SDK lazy acquisition with real bridge and query-sensitive loopback fak
       } finally {
         process.env.PYTHONPATH = pythonPath;
       }
-      expect(failure.context.pythonErrorType).toBe('AcquisitionError');
-      expect(failure.context.details).toMatchObject({
-        reason: 'walk_budget_exhausted',
-        request_issued: false,
+      expect(failure).toMatchObject({
+        context: {
+          pythonErrorType: 'AcquisitionError',
+          details: { reason: 'walk_budget_exhausted', request_issued: false },
+        },
       });
       const { errorEnvelope } = await import('../dist/lib/tool-errors.js');
       expect(errorEnvelope(failure, 'download', 'zlibrary').error).toMatchObject({
@@ -291,7 +293,7 @@ describe('SDK lazy acquisition with real bridge and query-sensitive loopback fak
       await new Promise((resolve) => setTimeout(resolve, 10));
     expect((await h.stats()).logins).toBe(1);
     controller.abort();
-    expect((await outcome).context.reason).toBe('aborted');
+    expect(await outcome).toMatchObject({ context: { reason: 'aborted' } });
     expect(runner.liveChildCount()).toBe(0);
     const reply = await acquire(api, 202, 'aborted-login.epub');
     expect(reply.transfer_skipped).toBe(false);
@@ -579,9 +581,11 @@ describe('native protocol real Node/Python pipes', () => {
     'caller abort at %s reaps child, removes listener and releases lease',
     async (phase) => {
       const controller = new AbortController();
+      let demands = 0;
       const promise = run('stall', {
         signal: controller.signal,
         onSessionNeeded: (c) => {
+          demands++;
           if (phase === 'demand') controller.abort();
           else c.grant(input);
         },
@@ -593,7 +597,17 @@ describe('native protocol real Node/Python pipes', () => {
           controller.abort();
         }
         const error = await outcome;
-        expect(error.context.reason).toBe('aborted');
+        let trace;
+        if (demands === 0 && diagnostics)
+          trace = await fs
+            .readFile(path.join(directory, 'protocol-diagnostic.jsonl'), 'utf8')
+            .catch((failure) => `Trace unavailable: ${failure.code}`);
+        assert.equal(
+          demands,
+          1,
+          `Expected one session demand before abort; worker error: ${error?.message}; trace: ${trace ?? 'unavailable (enable LAZY_PROTOCOL_DIAGNOSTICS=1)'}`,
+        );
+        expect(error).toMatchObject({ context: { reason: 'aborted' } });
         expect(JSON.stringify(error)).not.toContain(input.remix_userkey);
         const { getEventListeners } = await import('node:events');
         expect(getEventListeners(controller.signal, 'abort')).toHaveLength(0);
@@ -618,7 +632,7 @@ describe('native protocol real Node/Python pipes', () => {
       .catch((error) => error);
     await waitFile('control-ready');
     controller.abort();
-    expect((await pending).context.reason).toBe('aborted');
+    expect(await pending).toMatchObject({ context: { reason: 'aborted' } });
     expect(runner.liveChildCount()).toBe(0);
     if (process.platform !== 'win32') expect(await waitFile('control-cleaned')).toBe('yes');
   });
@@ -874,7 +888,8 @@ describe('native protocol real Node/Python pipes', () => {
       }).catch((e) => e);
       expect(events.some((event) => event.phase === 'request-data')).toBe(true);
       expect(grants).toBe(0);
-      if (mode === 'request-partial-open') expect(error.context.reason).toBe('timeout');
+      if (mode === 'request-partial-open')
+        expect(error).toMatchObject({ context: { reason: 'timeout' } });
       else expect(error.privateSessionProtocolCorruption).toBe(true);
     },
   );

@@ -1,6 +1,7 @@
 """Offline real-pipe/lease child; never contacts a provider."""
 
 import asyncio
+import builtins
 import json
 import os
 from pathlib import Path
@@ -222,6 +223,38 @@ async def run():
         if mode == "refuse-admission" and isinstance(error, AcquisitionError):
             (root / "refusal.json").write_text(json.dumps(error.to_dict()))
         _emit(trace, "primary", "error", error=error)
+        try:
+            # Fixed names/codes only: never serialize exception text or paths.
+            names = {
+                name
+                for name, value in vars(builtins).items()
+                if isinstance(value, type) and issubclass(value, Exception)
+            } | {"AcquisitionError", "SessionProtocolError"}
+            name = type(error).__name__
+            reason = getattr(error, "reason", None)
+            trace(
+                {
+                    "phase": "primary-exception",
+                    "state": "error",
+                    "exception_type": name if name in names else "OtherError",
+                    "reason": reason
+                    if type(reason) is str
+                    and reason
+                    in {
+                        "breaker_open",
+                        "walk_budget_exhausted",
+                        "invalid_argument",
+                        "output_refused",
+                        "internal",
+                        "integrity_mismatch",
+                    }
+                    else None
+                    if reason is None
+                    else "other",
+                }
+            )
+        except Exception:
+            pass  # Diagnostics must preserve the original exit behaviour.
         print("Synthetic private worker failed", file=sys.stderr)
         sys.exit(1)
 

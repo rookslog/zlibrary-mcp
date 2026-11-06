@@ -2,6 +2,9 @@ import { expect, test } from '@jest/globals';
 import { planSearch, prepareSearch, renderSearchPage } from '../../dist/lib/search-assembly.js';
 import { ToolFailure } from '../../dist/lib/tool-errors.js';
 import { assertAccounting } from './model-assertions.js';
+import { fanOut } from '../../dist/lib/fan-out.js';
+import { SourceRegistry } from '../../dist/lib/source-registry.js';
+import { windowFixture } from './window-fixture.js';
 const names = ['libgen','zlibrary','annas'];
 const views = () => names.map(name => ({ name, capabilities: { configured: true, search_available: true, download_available: true }, defaultSearch: { on: true } }));
 const copy = (source, id = source, metadata = {}, md5) => ({ source, id, ref: `r-${id}`, md5, metadata: { title: 'Solaris', author: 'Lem', language: 'French', format: 'pdf', ...metadata } });
@@ -93,4 +96,26 @@ test('A6 aggregate errors retain allowlisted diagnostics and shared configuratio
 test('M09 malformed collected states, source identities and duplicate refs cannot become a reply', () => {
   const plan=planSearch({query:'Solaris',sources:['libgen']},views(),{waitMs:12000});
   for(const data of [[{source:'libgen',state:'unrecognized',ms:1}],[{source:'libgen',state:'late',ms:1,copies:[copy('libgen')]}],[{source:'libgen',state:'late'}],[answer('libgen',[copy('annas')])],[answer('libgen',[copy('libgen'),copy('libgen')])],[{source:'libgen',state:'not_asked',reason:''}]]) expect(()=>prepareSearch(plan,data)).toThrow();
+});
+
+test('N1 S4b adapter evidence survives the request guard and preserves all copy outcomes', async () => {
+  const request={query:'Solaris',exact:true,languages:['fr'],formats:['pdf'],year_from:2000,year_to:2002};
+  const md5='a'.repeat(32);
+  const records=[
+    {id:'pass',md5,metadata:{title:'Solaris',author:'Lem',language:'French',format:'pdf',year:2001}},
+    {id:'fail',md5,metadata:{title:'Other',language:'English',format:'epub',year:1990}},
+    {id:'unknown',md5,metadata:{}},
+  ];
+  const source={name:'libgen',capabilities:()=>views()[0].capabilities,defaultSearch:()=>({on:true}),md5:row=>row.md5,
+    searchWindow:async actual=>windowFixture(records,{},actual)};
+  const snapshot=await fanOut(new SourceRegistry([source]),request);
+  expect(snapshot.sources.libgen).toMatchObject({state:'rows',rows:1});
+  const kept=snapshot.windows.get('libgen').rows;
+  expect(kept.map(r=>r.filterResult.status)).toEqual(['pass','fail','unknown']);
+  for(const row of kept)expect(Object.keys(row.filterResult.checks).sort()).toEqual(['exact','formats','languages','year_from','year_to']);
+  const plan=planSearch(request,[views()[0]],{waitMs:12000});
+  const prepared=prepareSearch(plan,[{source:'libgen',state:'answered',ms:1,copies:kept.map(row=>({...row,source:'libgen',ref:`r-${row.id}`}))}]);
+  expect(prepared.acceptedRecords).toBe(1);expect(prepared.copies).toHaveLength(3);
+  const reply=renderSearchPage(prepared);expect(reply.rows).toHaveLength(1);expect(reply.rows[0].ref).toBe('r-pass');
+  expect(reply.rows[0].other_copies.map(c=>[c.ref,c.filter])).toEqual([['r-fail','fail'],['r-unknown','unknown']]);
 });

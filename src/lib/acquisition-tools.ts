@@ -284,7 +284,6 @@ export class AcquisitionTools {
         source,
         detail: {
           reason: 'configuration_error',
-          request_issued: false,
           variables:
             source === 'zlibrary'
               ? ['ZLIBRARY_EMAIL', 'ZLIBRARY_PASSWORD']
@@ -829,6 +828,8 @@ export class AcquisitionTools {
         },
       );
     } catch (error) {
+      if (error instanceof ToolFailure && error.code === 'cancelled')
+        for (const line of error.info.attempts ?? []) this.recent.record(line.source, line);
       // A refill's subscribers can leave immediately, but its position stays
       // leased until the actual adapter promises settle. Physical cleanup and
       // source-lock release remain with the adapter/runner, never this cache.
@@ -869,7 +870,11 @@ export class AcquisitionTools {
           try {
             this.configured(source);
           } catch (error) {
-            if (error instanceof ToolFailure) failure = error;
+            if (error instanceof ToolFailure)
+              failure = new ToolFailure(error.code, error.message, {
+                ...error.info,
+                detail: { ...error.info.detail, request_issued: false },
+              });
             else throw error;
           }
         }

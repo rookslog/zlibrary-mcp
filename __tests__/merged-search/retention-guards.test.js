@@ -3,6 +3,7 @@ import { AcquisitionTools } from '../../dist/lib/acquisition-tools.js';
 import { SourceRegistry } from '../../dist/lib/source-registry.js';
 import { SearchRecords } from '../../dist/lib/search-records.js';
 import { planSearch } from '../../dist/lib/search-assembly.js';
+import { ToolFailure } from '../../dist/lib/tool-errors.js';
 import { CircuitBreaker } from '../../dist/lib/circuit-breaker.js';
 import { windowFixture } from './window-fixture.js';
 
@@ -130,6 +131,7 @@ test('seven deep searches do not evict relationships belonging to another retain
     for (let number = 2; number <= 20; number++) page = await store.page(page.next_cursor);
   }
   expect(store.select(first.rows[0].ref).copy.id).toBe('first');
+  expect(store.related(first.rows[0].ref)).toBeDefined();
   expect(store.related(first.rows[0].ref).copies[0].id).toBe('first');
 });
 
@@ -192,4 +194,26 @@ test('caller cancellation is absent from recent provider health on first pages',
   const limits = await tools.call('get_limits');
   for (const source of ['libgen', 'zlibrary'])
     expect(limits.sources[source].recent).toEqual({ searches: 0, late: 0, failed: 0 });
+});
+
+test('caller withdrawal preserves a peer provider failure that already settled', async () => {
+  const tools = new AcquisitionTools(async (operation) => {
+    if (operation === 'search') return new Promise(() => {});
+    throw new ToolFailure('provider_error', 'Fixture response failed.', {
+      retry: 'safe',
+      detail: { reason: 'protocol_error' },
+    });
+  }, env);
+  const controller = new AbortController();
+  const pending = tools.call('search', { query: 'Solaris' }, { signal: controller.signal });
+  await jest.advanceTimersByTimeAsync(0);
+  controller.abort();
+  const reply = await pending;
+  expect(reply.error.attempts.find((line) => line.source === 'libgen')).toMatchObject({
+    state: 'failed',
+    code: 'provider_error',
+  });
+  const limits = await tools.call('get_limits');
+  expect(limits.sources.libgen.recent).toEqual({ searches: 1, late: 0, failed: 1 });
+  expect(limits.sources.zlibrary.recent).toEqual({ searches: 0, late: 0, failed: 0 });
 });

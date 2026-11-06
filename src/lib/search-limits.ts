@@ -30,10 +30,15 @@ export class RecentSearches {
     if (new Set(names).size !== names.length || names.some((name) => !name)) invalid();
     names.forEach((name) => this.outcomes.set(name, []));
   }
-  record(source: string, line: { state: string }): void {
+  record(source: string, line: { state: string; code?: string; reason?: string }): void {
     const jobs = this.outcomes.get(source);
     if (!jobs) invalid();
-    if (line.state === 'not_asked') return;
+    if (
+      line.state === 'not_asked' ||
+      line.code === 'cancelled' ||
+      ['aborted', 'caller_timeout'].includes(line.reason ?? '')
+    )
+      return;
     if (!['rows', 'empty', 'late', 'failed'].includes(line.state)) invalid();
     jobs!.push(line.state as JobState);
     if (jobs!.length > 20) jobs!.shift();

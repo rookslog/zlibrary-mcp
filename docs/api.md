@@ -39,9 +39,10 @@ hint, not another selectable copy or proof of a current route.
 
 The shipped server registers LibGen, Z-Library and Anna’s Archive. Embedded
 `AcquisitionTools` callers can supply a custom registry for search, details and
-acquisition without quota estimates; the shipped server and quota-estimate
-schema support the three built-in sources only. Every registered source has a
-line, including sources outside the requested set. Intent is resolved once, before local admission checks. An explicit
+acquisition without quota estimates. The shipped server supports these three
+built-in sources; `quota_estimate` accepts Z-Library and Anna’s Archive only.
+Every registered source has a line, including sources outside the requested set.
+Intent is resolved once, before local admission checks. An explicit
 `sources` set or operator list stays in intent even if credentials are missing
 or a breaker is open. Without either, install-disabled sources are excluded;
 Anna's stays outside this unset default until its route is on. A key alone does
@@ -301,7 +302,8 @@ or `backoff`, with `retry_after_s` where applicable. These are read-only local
 snapshots: inspecting them never resets health, claims a probe or logs in.
 `recent` counts `searches`, `late`, `failed` over the last 20 dispatched source
 jobs in this process. The denominator is jobs, not network requests; refusals
-before dispatch and caller cancellation or subscriber timeout consume no slot.
+before dispatch and pending jobs withdrawn by a caller consume no slot.
+Already-settled peer outcomes still count.
 Comparison cuts still count as `late`; actual source failures count as `failed`.
 Restart clears these counters.
 

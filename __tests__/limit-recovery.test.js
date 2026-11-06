@@ -15,7 +15,7 @@ test.each(['search', 'get_history'])(
     expect(result.error.detail).toEqual({ reason: 'schema', fields: ['limit', ''] });
     expect(result.error.recovery).toBe(
       'Set limit to an integer from 1 to 50 (default 10); use paging with next_cursor passed as cursor for more. ' +
-        'Use snake_case arguments; count becomes limit and source order is sources.',
+        'Use snake_case arguments; count becomes limit and sources is a set.',
     );
   },
 );
@@ -51,12 +51,12 @@ test.each([
   [
     'search',
     { query: 5 },
-    'Use snake_case arguments; count becomes limit and source order is sources.',
+    'Use snake_case arguments; count becomes limit and sources is a set.',
   ],
   [
     'get_history',
     { source: 'unknown' },
-    'Use snake_case arguments; count becomes limit and source order is sources.',
+    'Use snake_case arguments; count becomes limit and sources is a set.',
   ],
   [
     'download',

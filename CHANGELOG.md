@@ -9,10 +9,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
-- Source downloads gaining at least 64 KiB beyond the furthest offset keep
-  recovering without spending the no-progress budget. Repeated prefixes, gzip
-  restarts and tiny ranges spend it; every retry is paced by 250 ms. Staged
-  bytes survive Range 500/502/503/504 replies.
+- Source downloads persist decoded chunks without waiting for a full buffer,
+  preserving dropped tails smaller than 8 KiB. New high-water gain accumulates
+  across attempts; each 64 KiB credit resets the no-progress count. Repeated
+  prefixes, gzip restarts and tiny ranges cannot repeatedly earn credit;
+  every retry is paced by 250 ms. Encoded drops still restart from zero, and
+  staged bytes survive Range 500/502/503/504 replies.
 - LibGen retries a wholly unresolved mirror walk once under the same deadline.
 - Known source sizes can extend the transfer allowance at a configurable
   40 KiB/s floor up to a 3600s ceiling (or a higher configured base); the long

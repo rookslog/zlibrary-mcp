@@ -1265,6 +1265,7 @@ async def _download_url_to_file(
     resumes_tried = 0
     no_progress_attempts = 0
     furthest = 0
+    credited = 0
     body_complete = False
 
     def progress_detail(detail: str) -> str:
@@ -1281,7 +1282,7 @@ async def _download_url_to_file(
 
     async def stream_to_disk() -> tuple[int, str]:
         nonlocal active_host, written, bytes_received, resumes_tried, body_complete
-        nonlocal no_progress_attempts, furthest
+        nonlocal no_progress_attempts, furthest, credited
         try:
             # Keep the admitted source-specific UA and one client throughout
             # recovery. The caller owns the single deadline around this loop.
@@ -1292,7 +1293,6 @@ async def _download_url_to_file(
             ) as client:
                 while True:
                     offset = written
-                    furthest_before = furthest
                     request_options = (
                         {"headers": {"Range": f"bytes={offset}-"}} if offset else {}
                     )
@@ -1411,7 +1411,10 @@ async def _download_url_to_file(
                                 with open(
                                     attempt_path, "ab" if written else "wb"
                                 ) as handle:
-                                    async for chunk in response.aiter_bytes(65536):
+                                    # A fixed chunk size hides the last partial
+                                    # chunk if the stream raises before flush.
+                                    # Persist each decoded piece as it arrives.
+                                    async for chunk in response.aiter_bytes(None):
                                         handle.write(chunk)
                                         written += len(chunk)
                                         received += len(chunk)
@@ -1494,10 +1497,13 @@ async def _download_url_to_file(
                             and not isinstance(exc, httpx.DecodingError)
                         ):
                             raise
-                        # Count useful net gain beyond the previous high-water
-                        # mark, even when an encoded restart resets written.
-                        # Repeated prefixes and tiny ranges spend the budget.
-                        if resumes_tried and furthest - furthest_before < 65536:
+                        # Credit net high-water gain across attempts, even if
+                        # a restart resets written. A useful block earns a new
+                        # allowance; repeated prefixes cannot earn it twice.
+                        if furthest - credited >= 65536:
+                            credited = furthest
+                            no_progress_attempts = 0
+                        elif resumes_tried:
                             no_progress_attempts += 1
                         if no_progress_attempts >= config.download_resume_attempts:
                             raise

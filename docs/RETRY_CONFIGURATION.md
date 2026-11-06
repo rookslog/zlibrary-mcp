@@ -48,7 +48,7 @@ the outer Node budget must remain larger than the worst-case inner provider walk
 | `BOOK_SOURCE_DOWNLOAD_TIMEOUT` | `1500` | Base wall-clock budget for resolution plus full-transfer attempts, in seconds; known size can extend it up to the ceiling |
 | `BOOK_SOURCE_DOWNLOAD_FLOOR_SPEED` | `40960` | Budgeting floor in bytes/second (40 KiB/s); this is an allowance calculation, not a minimum-speed cutoff |
 | `BOOK_SOURCE_DOWNLOAD_TIMEOUT_CEILING` | `3600` | Size-scaling ceiling in seconds; effective ceiling is at least the configured base, and both are clamped to the Node owner |
-| `BOOK_SOURCE_DOWNLOAD_RESUME_ATTEMPTS` | `2` | No-progress recovery requests allowed within one source transfer; attempts gaining at least 64 KiB beyond the previous furthest offset do not spend this budget; `0` disables recovery, values above `10` are capped at `10`, and empty, invalid or negative values use `2`. Recovery uses the same download deadline. |
+| `BOOK_SOURCE_DOWNLOAD_RESUME_ATTEMPTS` | `2` | No-progress recovery requests allowed within one source transfer; new high-water gain accumulates across attempts and each 64 KiB credit resets the count; `0` disables recovery, values above `10` are capped at `10`, and empty, invalid or negative values use `2`. Recovery uses the same download deadline. |
 | `BOOK_SOURCE_PREFLIGHT` | `true` | Probe DNS and TCP before a provider request |
 | `BOOK_SOURCE_PREFLIGHT_TIMEOUT` | `5` | Budget per DNS or TCP probe phase, in seconds |
 | `PYTHON_BRIDGE_TIMEOUT` | `240000` | Ordinary Python bridge wall-clock budget, in milliseconds |
@@ -177,13 +177,17 @@ On download, `walk_budget_exhausted` maps to `outcome_unknown` when a request wa
 issued, and to `provider_timeout` before issuance. Local budget exhaustion is
 not evidence of a provider failure and does not trip its circuit breaker.
 
-Recovery uses the already resolved URL and one staged file. A recovery attempt
-must gain at least 64 KiB beyond the furthest offset previously reached to avoid
-spending the cumulative no-progress budget. Resending a prefix, restarting gzip
-at the same prefix, and tiny valid ranges spend that budget. Progress does not
-refund earlier empty attempts; `0` continues to disable recovery. Every admitted
-retry waits 250 ms, including read/protocol drops and 416 restarts. A Range reply
-of 500, 502, 503 or 504 preserves its prefix for another allowed request.
+Recovery uses the already resolved URL and one staged file. New high-water bytes
+are credited across attempts. At least 64 KiB beyond the last credited offset
+resets the no-progress count; smaller gains accumulate toward
+that next credit while spending the allowance. The initial attempt retains its
+existing recovery allowance. Resending a prefix, restarting gzip at the same
+prefix, and tiny valid ranges cannot earn repeated credit. Decoded chunks are
+written as they arrive, including tails smaller than 8 KiB; a dropped encoded
+response still clears its stage and restarts without Range because decoded
+offsets cannot address encoded bytes. `0` continues to disable recovery.
+Every admitted retry waits 250 ms, including read/protocol drops and 416
+restarts. A Range reply of 500, 502, 503 or 504 preserves its prefix for another allowed request.
 An exhausted HTTP error keeps its `HTTP NNN` detail.
 Other HTTP statuses retain their existing handling, including 416 recovery.
 All waits and retries stay inside the original chain deadline and acquisition

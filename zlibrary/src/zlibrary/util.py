@@ -30,7 +30,8 @@ async def GET_request(url, cookies=None, proxy_list=None) -> str:
         ) as sess:
             logger.info(f"GET {url}")
             logger.debug(f"Request cookies for {url}: {cookies}")
-            async with sess.get(url) as resp:
+            # Legacy requests can carry session cookies or keys in the URL.
+            async with sess.get(url, allow_redirects=False) as resp:
                 response_text = await resp.text()
                 logger.debug(f"Response status for {url}: {resp.status}")
                 logger.debug(f"Response headers for {url}: {resp.headers}")
@@ -63,7 +64,7 @@ async def GET_request_cookies(
             connector=ChainProxyConnector.from_urls(proxy_list) if proxy_list else None,
         ) as sess:
             logger.info("GET %s" % url)
-            async with sess.get(url) as resp:
+            async with sess.get(url, allow_redirects=False) as resp:
                 return (await resp.text(), sess.cookie_jar)
     except asyncio.exceptions.CancelledError:
         raise LoopError("Asyncio loop has been closed before request could finish.")
@@ -78,7 +79,8 @@ async def POST_request(url, data, proxy_list=None):
             connector=ChainProxyConnector.from_urls(proxy_list) if proxy_list else None,
         ) as sess:
             logger.info("POST %s" % url)
-            async with sess.post(url, data=data) as resp:
+            # Login forms contain a password; 307/308 would replay the body.
+            async with sess.post(url, data=data, allow_redirects=False) as resp:
                 return (await resp.text(), sess.cookie_jar)
     except asyncio.exceptions.CancelledError:
         raise LoopError("Asyncio loop has been closed before request could finish.")

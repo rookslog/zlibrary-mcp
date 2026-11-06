@@ -186,7 +186,7 @@ def eapi_file_writer(monkeypatch):
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("reuse", [False, True], ids=["redirect", "receipt-reuse"])
+@pytest.mark.parametrize("reuse", [False, True], ids=["direct", "receipt-reuse"])
 @pytest.mark.parametrize(
     "domain",
     [
@@ -196,25 +196,18 @@ def eapi_file_writer(monkeypatch):
         "EAPI.EXAMPLE.INVALID/catalog",
     ],
 )
-async def test_eapi_redirect_host_and_original_receipt_authority(
+async def test_eapi_file_host_and_original_receipt_authority(
     tmp_path, monkeypatch, reuse, domain, eapi_file_writer
 ):
     """EAPI must retain its response host; later reuse cannot stamp a new client domain."""
 
     eapi = EAPIClient(domain=domain, remix_userid="offline", remix_userkey="offline")
     eapi.get_download_link = AsyncMock(
-        return_value={"downloadLink": "https://resolved.example.invalid/book"}
+        return_value={"downloadLink": "https://eapi-bytes.example.invalid/book.pdf"}
     )
     monkeypatch.setattr(bridge, "get_eapi_client", AsyncMock(return_value=eapi))
 
     def handler(request):
-        if request.url.host == "resolved.example.invalid":
-            return httpx.Response(
-                302,
-                headers={
-                    "location": "https://eapi-bytes.example.invalid/book.pdf?token=private"
-                },
-            )
         assert request.url.host == "eapi-bytes.example.invalid"
         return httpx.Response(200, content=PAYLOAD)
 
@@ -239,7 +232,7 @@ async def test_eapi_redirect_host_and_original_receipt_authority(
         "mirror": "eapi.example.invalid",
         "host": "eapi-bytes.example.invalid",
     }
-    assert len(requests) == 2
+    assert len(requests) == 1
     assert "host" not in result and "provenance" not in result
 
 

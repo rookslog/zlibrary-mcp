@@ -263,9 +263,13 @@ class AnnasArchiveAdapter(SourceAdapter):
         Exists so the status check sits *inside* the wall-clock budget rather
         than after it.
         """
-        response = (
-            await client.get(url, params=params) if params else await client.get(url)
-        )
+        if params and "key" in params:
+            # Keyed resolution must not replay the API key through redirects.
+            response = await client.get(url, params=params, follow_redirects=False)
+        elif params:
+            response = await client.get(url, params=params)
+        else:
+            response = await client.get(url)
         response.raise_for_status()
         return response
 

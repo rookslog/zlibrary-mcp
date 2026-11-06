@@ -345,7 +345,9 @@ class EAPIClient:
                 headers=EAPI_HEADERS,
                 cookies=self._cookies,
                 timeout=httpx.Timeout(30.0, connect=10.0),
-                follow_redirects=True,
+                # Login bodies and hostless session cookies must not be replayed.
+                # Refuse same-host redirects too; no implicit redirect trust policy.
+                follow_redirects=False,
             )
         return self._client
 
@@ -491,7 +493,7 @@ class EAPIClient:
             book_hash: Book hash for URL construction
             output_dir: Directory to save the file
             filename: Optional filename; derived from response headers or URL if omitted
-            host_observer: Receives the final response hostname after redirects
+            host_observer: Receives the serving response hostname; redirects are refused
 
         Returns:
             Absolute path to the downloaded file
@@ -527,7 +529,9 @@ class EAPIClient:
             # Stream download
             async with httpx.AsyncClient(
                 cookies=self._cookies,
-                follow_redirects=True,
+                # The initial download host already receives auth cookies, but
+                # cannot delegate those credentials to a redirect destination.
+                follow_redirects=False,
                 timeout=httpx.Timeout(60.0, connect=10.0),
             ) as dl_client:
                 async with dl_client.stream("GET", download_url) as response:

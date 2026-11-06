@@ -477,7 +477,8 @@ class AsyncZlib:
             cookies = self._eapi._cookies if self._eapi else (self.cookies or {})
             async with httpx.AsyncClient(
                 cookies=cookies,
-                follow_redirects=True,
+                # Never replay session cookies to a redirect destination.
+                follow_redirects=False,
                 timeout=httpx.Timeout(60.0, connect=10.0),
             ) as client:
                 async with client.stream("GET", download_url) as response:

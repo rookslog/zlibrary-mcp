@@ -20,7 +20,7 @@ load_dotenv(Path(__file__).parent.parent.parent / ".env")
 
 SECRET_KEY = os.environ.get("ANNAS_SECRET_KEY")
 TEST_MD5 = os.environ.get("TEST_MD5")
-BASE_URL = os.environ.get("ANNAS_BASE_URL", "https://annas-archive.li")
+BASE_URL = os.environ.get("ANNAS_BASE_URL", "https://annas-archive.example.invalid")
 
 
 def test_fast_download(md5: str):
@@ -29,7 +29,7 @@ def test_fast_download(md5: str):
     print(f"Requesting: {url[:60]}...&key=***")
 
     try:
-        response = httpx.get(url, timeout=30, follow_redirects=True)
+        response = httpx.get(url, timeout=30, follow_redirects=False)
         print(f"Status: {response.status_code}")
         print(f"Content-Type: {response.headers.get('content-type', 'unknown')}")
 

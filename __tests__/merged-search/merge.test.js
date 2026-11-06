@@ -1,11 +1,13 @@
+import { checkMergedRowFilters } from '../../dist/lib/row-filters.js';
 import { expect, test } from '@jest/globals';
 import { mergeRows, normalizeText } from '../../dist/lib/merge.js';
 const md5 = 'abcdef0123456789abcdef0123456789';
 const copy = (source, id, extra = {}) => ({
-  source, id, ref: `r-${source}-${id}`, rank: 1,
+  source, id, ref: `r-${source}-${id}`, rank: 1, filterResult: { status: 'pass', checks: {} },
   metadata: { title: 'Solaris', author: 'Stanisław Lem', format: 'pdf', size_mb: 3, language: 'Polish' },
   ...extra,
 });
+const withFilters = (copies, filters) => copies.map(copy => ({ ...copy, filterResult: checkMergedRowFilters({ ...copy.metadata, extension: copy.metadata.format }, filters) }));
 const merge = (copies, request = {}, options = {}) => mergeRows(copies, { query: 'Solaris', ...request }, options);
 
 test('F20 mixed-case MD5 groups copies and preserves both source-bound refs without leaking identity', () => {
@@ -49,15 +51,14 @@ test('F24 differing known metadata is listed while the recommended metadata stay
   expect(row).not.toHaveProperty('publisher');
 });
 test('F25 any passing copy admits a file, all copies remain reachable, and only passing copies recommend', () => {
-  const a = copy('libgen', 'a', { md5, filterStatus: 'pass' });
-  const b = copy('annas', 'b', { md5, filterStatus: 'unknown', metadata: { title: 'Solaris' } });
+  const [a,b] = withFilters([copy('libgen', 'a', { md5 }), copy('annas', 'b', { md5, metadata: { title: 'Solaris' } })], { languages: ['pl'] });
   const before = JSON.stringify([a, b]);
   const [row] = merge([a, b], {}, { filtersActive: true, routeOrder: ['annas', 'libgen'] });
   expect(row.ref).toBe(a.ref);
-  expect(row.other_copies).toEqual([{ ref: b.ref, source: 'annas', filter: 'unknown', unknown: [] }]);
+  expect(row.other_copies).toEqual([{ ref: b.ref, source: 'annas', filter: 'unknown', unknown: ['language'] }]);
   expect(JSON.stringify([a, b])).toBe(before);
   expect(merge([b], {}, { filtersActive: true })).toEqual([]);
-  expect(merge([copy('annas', 'f', { filterStatus: 'fail' })], {}, { filtersActive: true })).toEqual([]);
+  expect(merge(withFilters([copy('annas', 'f')], { languages: ['fr'] }), {}, { filtersActive: true })).toEqual([]);
 });
 test('F26 different or missing authors never get likely groups; subtitles share an exact key', () => {
   const a = copy('libgen', 'a');
@@ -89,7 +90,7 @@ test('F30 format preference only reorders a likely group at its best member posi
   const other = copy('libgen', 'other', { rank: 2, metadata: { title: 'Solaris', author: 'Other' } });
   const pdf = copy('annas', 'pdf', { rank: 9, metadata: { ...epub.metadata, format: 'pdf' } });
   expect(merge([other, epub, pdf], {}, { formatPreference: ['pdf'] }).map(r => r.ref)).toEqual([pdf.ref, epub.ref, other.ref]);
-  expect(merge([{ ...pdf, filterStatus: 'fail' }, { ...epub, filterStatus: 'pass' }], {}, { filtersActive: true, formatPreference: ['pdf'] }).map(r => r.ref)).toEqual([epub.ref]);
+  expect(merge(withFilters([pdf, epub], { formats: ['epub'] }), {}, { filtersActive: true, formatPreference: ['pdf'] }).map(r => r.ref)).toEqual([epub.ref]);
 });
 test('F32 stable hashes make row order and route ties independent of arrival and repetition', () => {
   const inputs = [copy('libgen', 'a'), copy('annas', 'b', { metadata: { title: 'Solaris', author: 'Other' } }), copy('zlibrary', 'c', { md5 }), copy('annas', 'd', { md5 })];

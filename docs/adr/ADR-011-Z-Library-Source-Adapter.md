@@ -190,9 +190,13 @@ class SourceAdapter(ABC):
 
 `acquire` receives the full selected search result and writes the upstream
 bytes to disk. `RawAcquisitionResult` contains the raw file path and nested
-transfer provenance. The existing shared rename and optional RAG-processing
-pipeline remains outside adapters, after raw acquisition, so every source
-produces the same final file bundle.
+transfer provenance. Shared rename, validation, and acquisition receipt
+finalization remain outside adapters, after raw acquisition. The optional
+RAG-processing pipeline and final processing bundle described by the original
+decision were removed for [acquisition-only 2.0](../text-processing-migration.md).
+Check current reply and receipt compatibility against
+[the tool interface migration](../interface-migration.md) and
+[the receipt contract](../receipt-format.md).
 
 Each acquisition attempt writes to an attempt-specific temporary path beneath
 `output_dir`. On failure or cancellation, the adapter removes that temporary
@@ -819,8 +823,10 @@ until parity is demonstrated.
 - Before router validation, normalise a full legacy Z-Library `bookDetails`
   result to `source=zlibrary` and `source_ref={id, hash}`; do not normalise raw
   direct-ID parameters.
-- Keep rename, validation, RAG processing, and final bundle construction in
-  the shared post-acquisition pipeline.
+- Keep rename, validation, and acquisition receipt finalization in the shared
+  post-acquisition pipeline. RAG processing and final processing bundle
+  construction from the original plan were removed for
+  [acquisition-only 2.0](../text-processing-migration.md).
 - Reject source/ref mismatches and raw-ID-only input at the router boundary.
 
 ### Stage 4: route search and optional capabilities

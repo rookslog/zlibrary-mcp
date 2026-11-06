@@ -35,7 +35,9 @@ an area you would like a closer look at.
 If you touched any of these, please note it explicitly:
   - `src/` logging — stdout is the JSON-RPC channel; diagnostics must use
     `logger` (stderr). A `console.log` in `src/` breaks stdio clients.
-  - Python bridge output shape — the RAG bundle contract is consumed by MCP
-    clients; additive fields only.
+  - Acquisition replies and persisted receipts — check compatibility against
+    [the tool interface migration](../docs/interface-migration.md) and
+    [the receipt contract](../docs/receipt-format.md). Flag breaking reply-shape
+    or receipt-schema changes explicitly.
   - Dependency floors in `pyproject.toml` — see SECURITY.md for the audit policy.
 -->

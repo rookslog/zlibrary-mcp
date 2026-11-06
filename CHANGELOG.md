@@ -21,6 +21,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - The shared long timer also extends Z-Library's EAPI acquisition transfer window
   from about 2235s to 3735s by default, even without size scaling. Its per-read
   timeout remains 60s; shorter caller/owner limits and cancellation still apply.
+- Source mirror walks share a `BOOK_SOURCE_WALK_BUDGET` deadline (default 165s)
+  across configured mirror attempts, without capping the fallback list. DNS and
+  TCP preflight share one aggregate `BOOK_SOURCE_PREFLIGHT_TIMEOUT` budget
+  (default 5s). Skipped mirrors carry `walk_budget_exhausted`, attributing local
+  budget exhaustion rather than declaring the host slow. The walk is clamped
+  below its owning bridge timer with overhead reserved; increase the walk
+  setting, or its owner if already clamped, to allow more time.
+  Each LibGen/Anna's search child has its own walk, not a whole-tool deadline.
+  Download resolution runs inside the 1500s source-chain base, size-scaled up to
+  the 3600s ceiling under the 3900000-ms long bridge owner; the resolution walk
+  is not an extra transfer allowance.
+- Source walks reject valid positive `PYTHON_BRIDGE_TIMEOUT` /
+  `PYTHON_BRIDGE_LONG_TIMEOUT` settings below 10000 ms before provider contact.
+  Current defaults are 240000 ms for ordinary bridge calls and 3900000 ms for
+  acquisition; malformed timer values still fall back to defaults. See
+  [timeout configuration](docs/RETRY_CONFIGURATION.md#multi-source-timeout-configuration).
 
 ### Filters — partial milestone for 2.0 (unreleased)
 

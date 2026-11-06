@@ -1,0 +1,170 @@
+{
+  "first": {
+    "rows": [
+      {
+        "ref": "r00000000000011",
+        "title": "Downloadable",
+        "author": "Synthetic",
+        "format": "pdf",
+        "source": "zlibrary",
+        "downloaded_at": "2001-01-02"
+      },
+      {
+        "title": "No hash",
+        "author": "Synthetic",
+        "source": "zlibrary",
+        "downloaded_at": "2001-01-03"
+      }
+    ],
+    "next_cursor": "c00000000000012"
+  },
+  "detail": {
+    "title": "Detail",
+    "author": "Synthetic",
+    "format": "pdf",
+    "publisher": "Synthetic",
+    "source": "zlibrary",
+    "ref": "r00000000000011",
+    "identifiers": {
+      "id": "101",
+      "hash": "hash-101"
+    },
+    "evidence": {
+      "detail": [
+        "title",
+        "publisher"
+      ],
+      "search": [
+        "id",
+        "hash",
+        "author",
+        "extension",
+        "downloaded_at",
+        "source"
+      ]
+    }
+  },
+  "download": {
+    "path": "/synthetic/history.pdf",
+    "bytes": 1,
+    "reused": false,
+    "transfer_skipped": false,
+    "verified": "sha256",
+    "record": "/synthetic/history.record.json"
+  },
+  "next": {
+    "rows": [
+      {
+        "ref": "r00000000000013",
+        "title": "Refill 1",
+        "source": "zlibrary",
+        "downloaded_at": "2001-01-04"
+      }
+    ]
+  },
+  "replay": {
+    "rows": [
+      {
+        "ref": "r00000000000014",
+        "title": "Refill 2",
+        "source": "zlibrary",
+        "downloaded_at": "2001-01-04"
+      }
+    ]
+  },
+  "unsupported": {
+    "error": {
+      "code": "unsupported_operation",
+      "source": "annas",
+      "operation": "get_history",
+      "message": "annas: Only zlibrary supports account history.",
+      "retry": "no",
+      "recovery": "Try another source or candidate; report persistent provider drift.",
+      "attempts": [],
+      "detail": {}
+    }
+  },
+  "wrongOperation": {
+    "error": {
+      "code": "invalid_argument",
+      "operation": "search",
+      "message": "Cursor belongs to another operation.",
+      "retry": "no",
+      "recovery": "Correct the arguments; see the 2.0 migration guide.",
+      "attempts": [],
+      "detail": {}
+    }
+  },
+  "missingCredentials": {
+    "error": {
+      "code": "credentials_missing",
+      "source": "zlibrary",
+      "operation": "get_history",
+      "message": "zlibrary: Source configuration is missing.",
+      "retry": "no",
+      "recovery": "Use get_limits; configure the named source or choose another source.",
+      "attempts": [
+        {
+          "source": "zlibrary",
+          "outcome": "skipped",
+          "code": "credentials_missing",
+          "reason": "configuration_error"
+        }
+      ],
+      "detail": {
+        "reason": "configuration_error",
+        "variables": [
+          "ZLIBRARY_EMAIL",
+          "ZLIBRARY_PASSWORD"
+        ]
+      }
+    }
+  },
+  "calls": [
+    {
+      "operation": "get_download_history",
+      "args": {
+        "count": 2,
+        "page": 1
+      }
+    },
+    {
+      "operation": "get_book_metadata_complete",
+      "args": {
+        "book_id": "101",
+        "book_hash": "hash-101"
+      }
+    },
+    {
+      "operation": "acquire_book",
+      "args": {
+        "book_details": {
+          "id": "101",
+          "hash": "hash-101",
+          "title": "Downloadable",
+          "author": "Synthetic",
+          "extension": "pdf",
+          "downloaded_at": "2001-01-02",
+          "source": "zlibrary"
+        },
+        "request": {
+          "ref": "r00000000000011"
+        }
+      }
+    },
+    {
+      "operation": "get_download_history",
+      "args": {
+        "count": 2,
+        "page": 2
+      }
+    },
+    {
+      "operation": "get_download_history",
+      "args": {
+        "count": 2,
+        "page": 2
+      }
+    }
+  ]
+}

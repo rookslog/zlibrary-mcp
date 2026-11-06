@@ -50,7 +50,7 @@ the outer Node budget must remain larger than the worst-case inner provider walk
 | `BOOK_SOURCE_DOWNLOAD_TIMEOUT_CEILING` | `3600` | Size-scaling ceiling in seconds; effective ceiling is at least the configured base, and both are clamped to the Node owner |
 | `BOOK_SOURCE_DOWNLOAD_RESUME_ATTEMPTS` | `2` | No-progress recovery requests allowed within one source transfer; attempts gaining at least 64 KiB beyond the previous furthest offset do not spend this budget; `0` disables recovery, values above `10` are capped at `10`, and empty, invalid or negative values use `2`. Recovery uses the same download deadline. |
 | `BOOK_SOURCE_PREFLIGHT` | `true` | Probe DNS and TCP before a provider request |
-| `BOOK_SOURCE_PREFLIGHT_TIMEOUT` | `5` | Budget per DNS or TCP probe phase, in seconds |
+| `BOOK_SOURCE_PREFLIGHT_TIMEOUT` | `5` | Aggregate budget for DNS and TCP connect together, in seconds |
 | `PYTHON_BRIDGE_TIMEOUT` | `240000` | Ordinary Python bridge wall-clock budget, in milliseconds |
 | `PYTHON_BRIDGE_LONG_TIMEOUT` | `3900000` | Acquisition bridge budget, in milliseconds |
 | `PYTHON_BRIDGE_KILL_GRACE` | `3000` | Grace between process-tree termination and forced kill, in milliseconds |

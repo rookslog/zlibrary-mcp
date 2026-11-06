@@ -571,7 +571,12 @@ class LibgenAdapter(SourceAdapter):
             try:
                 if multi_source:
                     await bounded_await(
-                        self._preflight(mirror),
+                        self._preflight(
+                            mirror,
+                            min(
+                                self.config.preflight_timeout, attempt.remaining() - 0.1
+                            ),
+                        ),
                         attempt.remaining(),
                         provider=PROVIDER,
                         host=host,
@@ -799,7 +804,7 @@ class LibgenAdapter(SourceAdapter):
             ),
         )
 
-    async def _preflight(self, mirror: str) -> None:
+    async def _preflight(self, mirror: str, timeout: Optional[float] = None) -> None:
         """Fail fast if a mirror is not reachable.
 
         This matters more for LibGen than for Anna's: once the third-party
@@ -810,16 +815,24 @@ class LibgenAdapter(SourceAdapter):
 
         Args:
             mirror: Mirror suffix, e.g. 'li'
+            timeout: Optional probe budget below a comparison mirror's backstop
 
         Raises:
             ProviderUnreachableError: If the mirror does not resolve or connect
         """
         if not self.config.preflight_enabled:
             return
+        budget = self.config.preflight_timeout if timeout is None else timeout
+        if budget <= 0:
+            raise ProviderTimeoutError(
+                PROVIDER, mirror_host(mirror), "Mirror slice has no probe headroom."
+            )
         await probe_host(
             PROVIDER,
             mirror_host(mirror),
-            timeout=self.config.preflight_timeout,
+            timeout=budget,
+            # A shortened comparison probe is not a reusable normal-budget verdict.
+            cache_result=budget >= self.config.preflight_timeout,
         )
 
     def _as_source_error(self, exc: BaseException, host: str) -> Exception:

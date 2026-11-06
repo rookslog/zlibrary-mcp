@@ -264,6 +264,7 @@ async def probe_host(
     timeout: float = 5.0,
     use_cache: bool = True,
     scheme: str = "https",
+    cache_result: bool = True,
 ) -> None:
     """Check that a host resolves and accepts a TCP connection.
 
@@ -288,6 +289,7 @@ async def probe_host(
         timeout: Aggregate budget in seconds for DNS and TCP connect together
         use_cache: Reuse a verdict already reached for this (host, port)
         scheme: URL scheme the real request will use, for proxy detection
+        cache_result: Store this probe's verdict; disable for shortened budgets
 
     Raises:
         ProviderUnreachableError: If DNS or the TCP connect fails or times out
@@ -309,7 +311,8 @@ async def probe_host(
         return
 
     error = await _probe_host_uncached(provider, host, port, timeout)
-    _probe_cache[key] = error
+    if cache_result:
+        _probe_cache[key] = error
     if error is not None:
         raise error
 

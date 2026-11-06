@@ -268,7 +268,7 @@ class SourceRouter:
             remaining_limit=_remaining_transfer_budget,
         )
 
-        for name in candidates:
+        for index, name in enumerate(candidates):
             provider_stream = None
             try:
                 adapter = self._adapter_for(name)
@@ -285,6 +285,7 @@ class SourceRouter:
                 async for result in provider_stream:
                     if result.quota_info and result.quota_info.downloads_left == 0:
                         raise QuotaExhaustedError(f"{name} quota exhausted")
+                    result.has_more_candidates |= index + 1 < len(candidates)
                     with deadline.suspended():
                         yield result
             except QuotaExhaustedError as exc:

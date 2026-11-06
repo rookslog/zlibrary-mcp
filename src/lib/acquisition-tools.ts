@@ -324,7 +324,8 @@ export class AcquisitionTools {
       if (options.signal?.aborted)
         throw new ToolFailure('cancelled', 'Call cancelled before any request.', { retry: 'safe' });
       if (name === 'get_limits') return await this.limits(args, options);
-      if (name === 'search' || name === 'get_history') return await this.page(name, args, options);
+      if (name === 'get_history') return await this.historyPage(args, options);
+      if (name === 'search') return await this.page('search', args, options);
       const selection = this.refs.get<Selection>(args.ref, 'r');
       if (name === 'get_book') return await this.details(args.ref, selection, options);
       // Configuration is checked inside the bridge, after disk reuse, so a receipt remains useful offline.
@@ -435,7 +436,77 @@ export class AcquisitionTools {
       },
     });
   }
-  private async page(operation: 'search' | 'get_history', args: any, options: CallOptions) {
+  /** Account history keeps its upstream continuation semantics independently of search. */
+  private async historyPage(args: any, options: CallOptions) {
+    let cursor: Cursor | undefined;
+    if (args.cursor !== undefined) {
+      cursor = this.refs.get<Cursor>(args.cursor, 'c');
+      if (cursor.operation !== 'get_history')
+        throw new ToolFailure('invalid_argument', 'Cursor belongs to another operation.');
+      args = cursor.args;
+    }
+    if (!cursor && args.source && args.source !== 'zlibrary')
+      throw new ToolFailure('unsupported_operation', 'Only zlibrary supports account history.', {
+        ...(allSources.includes(args.source) ? { source: args.source } : {}),
+      });
+    const source = 'zlibrary' as const;
+    const requested: Source[] = cursor?.requested ?? [source];
+    const count = args.limit ?? 10;
+    const page = cursor?.page ?? 1;
+    let fetched: any[];
+    try {
+      this.configured(source);
+      fetched = await this.invoke('get_download_history', { count, page }, options);
+      if (!Array.isArray(fetched))
+        throw new ToolFailure('provider_error', 'Provider returned an invalid page.', {
+          source,
+          retry: 'safe',
+          detail: { reason: 'protocol_error' },
+        });
+      if (fetched.some((book) => book.source && sourceName(book.source) !== source))
+        throw new ToolFailure('provider_error', 'Provider changed the selected source.', {
+          source,
+          retry: 'safe',
+          detail: { reason: 'protocol_error' },
+        });
+    } catch (error) {
+      const failure = classifyFailure(error, 'get_history', source);
+      throw new ToolFailure(failure.code, failure.message, {
+        ...failure.info,
+        attempts: [
+          {
+            source,
+            outcome:
+              failure.code === 'credentials_missing' || failure.code === 'unsupported_operation'
+                ? 'skipped'
+                : 'failed',
+            code: failure.code,
+            reason: failure.info.detail?.reason,
+          },
+        ],
+      });
+    }
+    const rows = fetched.slice(0, count).map((raw) => {
+      const book = { ...raw, source };
+      const downloadable = Boolean(book.id && (book.hash || book.book_hash));
+      return {
+        ...this.compact({ book, source, query: '' }, downloadable),
+        ...(book.downloaded_at ? { downloaded_at: book.downloaded_at } : {}),
+      };
+    });
+    const next: Cursor | undefined =
+      fetched.length >= count
+        ? {
+            operation: 'get_history',
+            args: { ...args, limit: count, sources: requested },
+            requested,
+            served: source,
+            page: page + 1,
+          }
+        : undefined;
+    return { rows, ...(next ? { next_cursor: this.refs.mintStable('c', next) } : {}) };
+  }
+  private async page(operation: 'search', args: any, options: CallOptions) {
     let cursor: Cursor | undefined;
     if (args.cursor !== undefined) {
       cursor = this.refs.get<Cursor>(args.cursor, 'c');
@@ -443,13 +514,7 @@ export class AcquisitionTools {
         throw new ToolFailure('invalid_argument', 'Cursor belongs to another operation.');
       args = cursor.args;
     }
-    if (operation === 'get_history' && !cursor && args.source && args.source !== 'zlibrary')
-      throw new ToolFailure('unsupported_operation', 'Only zlibrary supports account history.', {
-        ...(allSources.includes(args.source) ? { source: args.source } : {}),
-      });
-    const requested: Source[] =
-      cursor?.requested ??
-      (operation === 'get_history' ? ['zlibrary'] : (args.sources ?? this.defaultOrder));
+    const requested: Source[] = cursor?.requested ?? args.sources ?? this.defaultOrder;
     if (!requested)
       throw new ToolFailure('sources_required', 'Choose the sources to search.', {
         detail: {
@@ -524,8 +589,6 @@ export class AcquisitionTools {
         let fetched: any[];
         const page = cursor?.page ?? 1;
         if (cursor?.held) fetched = cursor.held;
-        else if (operation === 'get_history')
-          fetched = await this.invoke('get_download_history', { count, page }, options);
         else if (source === 'zlibrary')
           fetched = (
             await this.invoke(
@@ -694,10 +757,6 @@ export class AcquisitionTools {
     const rows = books.map((book) => {
       const actualSource = selected!;
       book = { ...book, source: actualSource };
-      const downloadable =
-        actualSource === 'zlibrary'
-          ? Boolean(book.id && (book.hash || book.book_hash))
-          : Boolean(book.md5);
       return {
         ...this.compact(
           {
@@ -705,7 +764,7 @@ export class AcquisitionTools {
             source: actualSource,
             query: [args.query, args.author].filter(Boolean).join(' '),
           },
-          operation !== 'get_history' || downloadable,
+          true,
         ),
         ...(book.downloaded_at ? { downloaded_at: book.downloaded_at } : {}),
       };

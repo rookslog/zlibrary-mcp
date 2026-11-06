@@ -1,0 +1,709 @@
+{
+  "definitions": [
+    {
+      "name": "search",
+      "description": "Metadata, not book text. Give query and/or author; exact covers both. sources is ordered: libgen needs no account/quota; zlibrary needs an account, downloads spend quota; annas searches without a key, downloads with one. Defaults: get_limits. Use refs. Refs last this process and 5,000 recent entries; on ref_unavailable search and choose again. Pass cursor alone: replay fetches the same position; pages are re-queried, not frozen.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "query": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 500
+          },
+          "author": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 200
+          },
+          "sources": {
+            "minItems": 1,
+            "maxItems": 3,
+            "type": "array",
+            "items": {
+              "type": "string",
+              "enum": [
+                "libgen",
+                "annas",
+                "zlibrary"
+              ]
+            },
+            "uniqueItems": true
+          },
+          "exact": {
+            "description": "Z-Library only: sent, not checked by this server; other sources are skipped.",
+            "type": "boolean"
+          },
+          "year_from": {
+            "description": "Inclusive minimum year; checked on every source. Unknown years are excluded and counted.",
+            "type": "integer",
+            "minimum": -9007199254740991,
+            "maximum": 9007199254740991
+          },
+          "year_to": {
+            "description": "Inclusive maximum year; checked on every source. Unknown years are excluded and counted.",
+            "type": "integer",
+            "minimum": -9007199254740991,
+            "maximum": 9007199254740991
+          },
+          "languages": {
+            "description": "OR of names/codes; checked on every source. Unknown metadata is excluded. Empty list adds no constraint.",
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "formats": {
+            "description": "OR of extensions, case-insensitive, one leading dot ignored; checked on every source. Empty list adds no constraint.",
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "limit": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 50
+          },
+          "cursor": {
+            "type": "string"
+          }
+        },
+        "additionalProperties": false
+      },
+      "outputSchema": {
+        "type": "object",
+        "oneOf": [
+          {
+            "required": [
+              "rows",
+              "routing"
+            ],
+            "properties": {
+              "rows": {
+                "type": "array",
+                "items": {
+                  "type": "object",
+                  "required": [
+                    "ref",
+                    "source"
+                  ]
+                }
+              },
+              "routing": {
+                "type": "object",
+                "required": [
+                  "requested",
+                  "attempts",
+                  "fell_back"
+                ]
+              },
+              "next_cursor": {
+                "type": "string"
+              },
+              "note": {
+                "type": "string"
+              }
+            },
+            "not": {
+              "required": [
+                "error"
+              ]
+            }
+          },
+          {
+            "required": [
+              "error"
+            ],
+            "properties": {
+              "error": {
+                "type": "object",
+                "required": [
+                  "code",
+                  "operation",
+                  "message",
+                  "retry",
+                  "recovery",
+                  "attempts",
+                  "detail"
+                ],
+                "properties": {
+                  "code": {
+                    "type": "string"
+                  },
+                  "retry": {
+                    "enum": [
+                      "safe",
+                      "may_spend_quota",
+                      "no"
+                    ]
+                  },
+                  "message": {
+                    "type": "string"
+                  },
+                  "attempts": {
+                    "type": "array",
+                    "items": {
+                      "type": "object"
+                    }
+                  },
+                  "detail": {
+                    "type": "object"
+                  }
+                }
+              }
+            }
+          }
+        ]
+      },
+      "annotations": {
+        "readOnlyHint": true,
+        "idempotentHint": true,
+        "openWorldHint": true
+      }
+    },
+    {
+      "name": "get_book",
+      "description": "Edition evidence for a ref. Zlibrary costs one detail call; others return held rows. Description capped at 1,000 characters.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "ref": {
+            "type": "string",
+            "minLength": 1
+          }
+        },
+        "required": [
+          "ref"
+        ],
+        "additionalProperties": false
+      },
+      "outputSchema": {
+        "type": "object",
+        "oneOf": [
+          {
+            "required": [
+              "ref",
+              "source",
+              "identifiers",
+              "evidence"
+            ],
+            "properties": {
+              "ref": {
+                "type": "string"
+              },
+              "identifiers": {
+                "type": "object"
+              },
+              "evidence": {
+                "type": "object"
+              },
+              "description": {
+                "type": "string",
+                "maxLength": 1000
+              }
+            },
+            "not": {
+              "required": [
+                "error"
+              ]
+            }
+          },
+          {
+            "required": [
+              "error"
+            ],
+            "properties": {
+              "error": {
+                "type": "object",
+                "required": [
+                  "code",
+                  "operation",
+                  "message",
+                  "retry",
+                  "recovery",
+                  "attempts",
+                  "detail"
+                ],
+                "properties": {
+                  "code": {
+                    "type": "string"
+                  },
+                  "retry": {
+                    "enum": [
+                      "safe",
+                      "may_spend_quota",
+                      "no"
+                    ]
+                  },
+                  "message": {
+                    "type": "string"
+                  },
+                  "attempts": {
+                    "type": "array",
+                    "items": {
+                      "type": "object"
+                    }
+                  },
+                  "detail": {
+                    "type": "object"
+                  }
+                }
+              }
+            }
+          }
+        ]
+      },
+      "annotations": {
+        "readOnlyHint": true,
+        "idempotentHint": true,
+        "openWorldHint": true
+      }
+    },
+    {
+      "name": "download",
+      "description": "Download a ref to server disk: path, bytes and record sidecar, not text. Repeats at the same destination re-hash sha256 and skip an intact copy without quota; different output_dir or filename transfers again. Local O_EXCL locks coalesce processes.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "ref": {
+            "type": "string",
+            "minLength": 1
+          },
+          "output_dir": {
+            "type": "string",
+            "minLength": 1
+          },
+          "filename": {
+            "type": "string",
+            "minLength": 1
+          }
+        },
+        "required": [
+          "ref"
+        ],
+        "additionalProperties": false
+      },
+      "outputSchema": {
+        "type": "object",
+        "oneOf": [
+          {
+            "required": [
+              "path",
+              "bytes",
+              "reused",
+              "transfer_skipped",
+              "verified",
+              "record"
+            ],
+            "properties": {
+              "path": {
+                "type": "string"
+              },
+              "bytes": {
+                "type": "integer",
+                "minimum": 0
+              },
+              "reused": {
+                "type": "boolean"
+              },
+              "transfer_skipped": {
+                "type": "boolean"
+              },
+              "verified": {
+                "const": "sha256"
+              },
+              "record": {
+                "type": "string"
+              },
+              "quota_estimate": {
+                "type": "object"
+              }
+            },
+            "not": {
+              "required": [
+                "error"
+              ]
+            }
+          },
+          {
+            "required": [
+              "error"
+            ],
+            "properties": {
+              "error": {
+                "type": "object",
+                "required": [
+                  "code",
+                  "operation",
+                  "message",
+                  "retry",
+                  "recovery",
+                  "attempts",
+                  "detail"
+                ],
+                "properties": {
+                  "code": {
+                    "type": "string"
+                  },
+                  "retry": {
+                    "enum": [
+                      "safe",
+                      "may_spend_quota",
+                      "no"
+                    ]
+                  },
+                  "message": {
+                    "type": "string"
+                  },
+                  "attempts": {
+                    "type": "array",
+                    "items": {
+                      "type": "object"
+                    }
+                  },
+                  "detail": {
+                    "type": "object"
+                  }
+                }
+              }
+            }
+          }
+        ]
+      },
+      "annotations": {
+        "readOnlyHint": false,
+        "destructiveHint": false,
+        "idempotentHint": true,
+        "openWorldHint": true
+      }
+    },
+    {
+      "name": "get_limits",
+      "description": "Capabilities and default source order. mode:local (default) costs no network. mode:live fetches account numbers for named sources; only zlibrary costs an account call. Other clients can change estimates; errors are per source.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "sources": {
+            "minItems": 1,
+            "maxItems": 3,
+            "type": "array",
+            "items": {
+              "type": "string",
+              "enum": [
+                "libgen",
+                "annas",
+                "zlibrary"
+              ]
+            },
+            "uniqueItems": true
+          },
+          "mode": {
+            "type": "string",
+            "enum": [
+              "local",
+              "live"
+            ]
+          }
+        },
+        "additionalProperties": false
+      },
+      "outputSchema": {
+        "type": "object",
+        "oneOf": [
+          {
+            "required": [
+              "sources"
+            ],
+            "properties": {
+              "sources": {
+                "type": "object"
+              },
+              "default_order": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                }
+              }
+            },
+            "not": {
+              "required": [
+                "error"
+              ]
+            }
+          },
+          {
+            "required": [
+              "error"
+            ],
+            "properties": {
+              "error": {
+                "type": "object",
+                "required": [
+                  "code",
+                  "operation",
+                  "message",
+                  "retry",
+                  "recovery",
+                  "attempts",
+                  "detail"
+                ],
+                "properties": {
+                  "code": {
+                    "type": "string"
+                  },
+                  "retry": {
+                    "enum": [
+                      "safe",
+                      "may_spend_quota",
+                      "no"
+                    ]
+                  },
+                  "message": {
+                    "type": "string"
+                  },
+                  "attempts": {
+                    "type": "array",
+                    "items": {
+                      "type": "object"
+                    }
+                  },
+                  "detail": {
+                    "type": "object"
+                  }
+                }
+              }
+            }
+          }
+        ]
+      },
+      "annotations": {
+        "readOnlyHint": true,
+        "idempotentHint": false,
+        "openWorldHint": true
+      }
+    },
+    {
+      "name": "get_history",
+      "description": "Zlibrary account history in source order. Not local files. Refs last this process and 5,000 entries; search again if unavailable. Pass cursor alone: replay fetches the same position; pages are not frozen.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "source": {
+            "type": "string",
+            "enum": [
+              "libgen",
+              "annas",
+              "zlibrary"
+            ]
+          },
+          "limit": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 50
+          },
+          "cursor": {
+            "type": "string"
+          }
+        },
+        "additionalProperties": false
+      },
+      "outputSchema": {
+        "type": "object",
+        "oneOf": [
+          {
+            "required": [
+              "rows"
+            ],
+            "properties": {
+              "rows": {
+                "type": "array",
+                "items": {
+                  "type": "object"
+                }
+              },
+              "next_cursor": {
+                "type": "string"
+              }
+            },
+            "not": {
+              "required": [
+                "error"
+              ]
+            }
+          },
+          {
+            "required": [
+              "error"
+            ],
+            "properties": {
+              "error": {
+                "type": "object",
+                "required": [
+                  "code",
+                  "operation",
+                  "message",
+                  "retry",
+                  "recovery",
+                  "attempts",
+                  "detail"
+                ],
+                "properties": {
+                  "code": {
+                    "type": "string"
+                  },
+                  "retry": {
+                    "enum": [
+                      "safe",
+                      "may_spend_quota",
+                      "no"
+                    ]
+                  },
+                  "message": {
+                    "type": "string"
+                  },
+                  "attempts": {
+                    "type": "array",
+                    "items": {
+                      "type": "object"
+                    }
+                  },
+                  "detail": {
+                    "type": "object"
+                  }
+                }
+              }
+            }
+          }
+        ]
+      },
+      "annotations": {
+        "readOnlyHint": true,
+        "idempotentHint": false,
+        "openWorldHint": true
+      }
+    }
+  ],
+  "limits": {
+    "default_order": [
+      "libgen"
+    ],
+    "sources": {
+      "libgen": {
+        "configured": true,
+        "filters": {
+          "year_from": "local",
+          "year_to": "local",
+          "languages": "local",
+          "formats": "local",
+          "exact": "unsupported"
+        },
+        "search_available": true,
+        "download_available": true,
+        "operations": [
+          "search",
+          "details",
+          "download"
+        ],
+        "limit": {
+          "kind": "none"
+        }
+      },
+      "zlibrary": {
+        "configured": false,
+        "filters": {
+          "year_from": "local",
+          "year_to": "local",
+          "languages": "local",
+          "formats": "local",
+          "exact": "native_only"
+        },
+        "search_available": false,
+        "download_available": false,
+        "operations": [
+          "search",
+          "details",
+          "download",
+          "history"
+        ],
+        "limit": {
+          "kind": "daily"
+        },
+        "note": "Set ZLIBRARY_EMAIL and ZLIBRARY_PASSWORD."
+      },
+      "annas": {
+        "configured": false,
+        "filters": {
+          "year_from": "local",
+          "year_to": "local",
+          "languages": "local",
+          "formats": "local",
+          "exact": "unsupported"
+        },
+        "search_available": true,
+        "download_available": false,
+        "operations": [
+          "search",
+          "details",
+          "download"
+        ],
+        "limit": {
+          "kind": "unknown"
+        },
+        "note": "Set ANNAS_SECRET_KEY for download; search needs no key."
+      }
+    }
+  },
+  "plain": {
+    "rows": [
+      {
+        "ref": "r00000000000011",
+        "title": "Legacy",
+        "author": "Synthetic",
+        "format": "pdf",
+        "source": "libgen"
+      }
+    ],
+    "routing": {
+      "requested": [
+        "libgen"
+      ],
+      "served_by": "libgen",
+      "fell_back": false,
+      "attempts": [
+        {
+          "source": "libgen",
+          "outcome": "rows"
+        }
+      ]
+    },
+    "note": "This server returns at most 50 libgen rows per query."
+  },
+  "exact": {
+    "error": {
+      "code": "unsupported_operation",
+      "source": "libgen",
+      "operation": "search",
+      "message": "libgen: Requested filters are unsupported on this source.",
+      "retry": "no",
+      "recovery": "Use zlibrary for exact, or drop exact with the caller’s agreement.",
+      "attempts": [
+        {
+          "source": "libgen",
+          "outcome": "skipped",
+          "code": "unsupported_operation",
+          "reason": "filter_unsupported",
+          "unsupported": [
+            "exact"
+          ]
+        }
+      ],
+      "detail": {
+        "reason": "filter_unsupported",
+        "unsupported": [
+          "exact"
+        ]
+      }
+    }
+  }
+}

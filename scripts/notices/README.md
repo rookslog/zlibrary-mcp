@@ -16,9 +16,9 @@ from hash-checked locked wheels. Pycares' bundled c-ares notice files are additi
 read from its hash-checked locked source archive, including its `LICENSES/` directory.
 The same table collects ujson's bundled double-conversion notices. Refresh rejects
 unknown files under wheel `*.libs/` directories and mappings without retained texts.
-Besides the refresh host, it checks the locked musllinux 1.1/1.2 wheels compatible
+Besides the refresh host, it checks the locked musllinux 1.x wheels up to 1.2, compatible
 with the Docker recipe's CPython version and linux/amd64 (x86_64), including older
-CPython abi3 tags. It excludes free-threaded builds and other architectures.
+CPython abi3 and ABI-independent Python 3 tags. It excludes free-threaded builds and other architectures.
 These wheel archives use the same hash-checked PyPI download/cache path as other
 refresh artifacts; their URLs, hashes and bundled file lists are retained in metadata.
 Other image architectures require separate wheel validation before distribution.

@@ -562,6 +562,12 @@ def test_bs4_metadata_from_locked_wheel_stays_raw_without_installed_distribution
     [
         ("cp314-cp314-musllinux_1_2_x86_64", True),
         ("cp310-abi3-musllinux_1_2_x86_64", True),
+        ("py3-none-musllinux_1_2_x86_64", True),
+        ("py310-none-musllinux_1_2_x86_64", True),
+        ("cp314-none-musllinux_1_2_x86_64", True),
+        ("py2-none-musllinux_1_2_x86_64", False),
+        ("cp314-cp314-musllinux_2_0_x86_64", False),
+        ("cp314-cp314-musllinux_0_9_x86_64", False),
         ("cp313-cp313-musllinux_1_2_x86_64", False),
         ("cp314-cp314t-musllinux_1_2_x86_64", False),
         ("cp314-cp314-musllinux_1_2_armv7l", False),

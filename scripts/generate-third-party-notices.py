@@ -228,7 +228,8 @@ def image_python(root):
 def image_wheels(package, python):
     """Locked wheels compatible with the regular CPython linux/amd64 image.
 
-    musllinux 1.1/1.2 and older abi3 CPython tags are compatible. Free-threaded,
+    musllinux 1.x through 1.2, older abi3 and ABI-independent Python 3 tags
+    are compatible. Free-threaded,
     debug, other-interpreter and other-architecture wheels are not selected.
     """
     target = "cp" + "".join(map(str, python))
@@ -240,9 +241,19 @@ def image_wheels(package, python):
         if len(parts) != 4:
             raise ValueError(f"Invalid locked wheel filename: {filename}")
         _, interpreters, abis, platforms = parts
-        compatible = target in interpreters.split(".") and target in abis.split(".")
-        if "abi3" in abis.split("."):
-            compatible = any(
+        abi_tags = set(abis.split("."))
+        compatible = target in interpreters.split(".") and bool(
+            {target, "none"} & abi_tags
+        )
+        if "none" in abi_tags:
+            compatible = compatible or any(
+                (match := re.fullmatch(r"py(\d)(\d*)", tag))
+                and int(match[1]) == python[0]
+                and (not match[2] or int(match[2]) <= python[1])
+                for tag in interpreters.split(".")
+            )
+        if "abi3" in abi_tags:
+            compatible = compatible or any(
                 (match := re.fullmatch(r"cp(3)(\d+)", tag))
                 and (int(match[1]), int(match[2])) <= python
                 for tag in interpreters.split(".")
@@ -251,7 +262,7 @@ def image_wheels(package, python):
             continue
         for platform in platforms.split("."):
             match = re.fullmatch(r"musllinux_(\d+)_(\d+)_x86_64", platform)
-            if match and tuple(map(int, match.groups())) <= (1, 2):
+            if match and int(match[1]) == 1 and int(match[2]) <= 2:
                 yield wheel
                 break
 

@@ -9,12 +9,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
-- Source downloads keep making Range progress without spending the no-progress
-  recovery budget, and preserve staged bytes through Range 500/502/503/504 replies.
+- Source downloads gaining at least 64 KiB beyond the furthest offset keep
+  recovering without spending the no-progress budget. Repeated prefixes, gzip
+  restarts and tiny ranges spend it; every retry is paced by 250 ms. Staged
+  bytes survive Range 500/502/503/504 replies.
 - LibGen retries a wholly unresolved mirror walk once under the same deadline.
 - Known source sizes can extend the transfer allowance at a configurable
-  40 KiB/s floor up to a 3600s ceiling; the long bridge default is now 3900s.
+  40 KiB/s floor up to a 3600s ceiling (or a higher configured base); the long
+  bridge default is now 3900s.
   MD5, destination leases, receipts and keyed-source quota semantics are retained.
+- The shared long timer also extends Z-Library's EAPI acquisition transfer window
+  from about 2235s to 3735s by default, even without size scaling. Its per-read
+  timeout remains 60s; shorter caller/owner limits and cancellation still apply.
 
 ### Filters — partial milestone for 2.0 (unreleased)
 

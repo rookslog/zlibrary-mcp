@@ -135,14 +135,17 @@ promising additional detail-page metadata. No direct ID input is accepted.
 
 Source transfers recover within the same call and deadline. Progressing drops
 can resume repeatedly; `BOOK_SOURCE_DOWNLOAD_RESUME_ATTEMPTS` (default 2) limits
-cumulative recovery requests with no new bytes, and `0` disables recovery.
-Range replies of 500/502/503/504 retain the staged prefix and retry after a
-250 ms delay when budget remains. LibGen alone gets one delayed second mirror
-resolution pass if no mirror yielded a candidate. Resuming Anna's transfer
+cumulative recovery requests gaining less than 64 KiB beyond the furthest
+offset reached, and `0` disables recovery. Resending a prefix or advancing by
+one-byte slices spends that budget. Every admitted retry waits 250 ms.
+Range replies of 500/502/503/504 retain the staged prefix when budget remains.
+LibGen alone gets one delayed second mirror resolution pass if no mirror yielded
+a candidate and the first pass did not stop on budget. Resuming Anna's transfer
 reuses its resolved keyed URL without a second keyed resolution or quota spend.
 
 Known selection size extends the 1500s base source-chain allowance using a
-40 KiB/s budgeting floor, capped at 3600s. Configure bytes/second with
+40 KiB/s budgeting floor. The default ceiling is 3600s and the effective ceiling
+is at least the configured base. Configure bytes/second with
 `BOOK_SOURCE_DOWNLOAD_FLOOR_SPEED` and seconds with
 `BOOK_SOURCE_DOWNLOAD_TIMEOUT_CEILING`. Unknown sizes retain the base; there is
 no extra size probe. Resolution, retries, validation and delays share that

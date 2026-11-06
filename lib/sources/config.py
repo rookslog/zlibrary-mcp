@@ -192,9 +192,9 @@ class SourceConfig:
     download_timeout_ceiling: float = DEFAULT_DOWNLOAD_TIMEOUT_CEILING
 
     def download_budget(self, size_bytes: float | None = None) -> float:
-        """Size may extend the base budget, never the ceiling or owning clock."""
+        """Extend the base up to max(base, ceiling), within the owning clock."""
         scaled = size_bytes / self.download_floor_speed if size_bytes else 0.0
-        return min(self.download_timeout_ceiling, max(self.download_timeout, scaled))
+        return max(self.download_timeout, min(self.download_timeout_ceiling, scaled))
 
     @property
     def has_annas_key(self) -> bool:
@@ -227,7 +227,10 @@ def worst_case_download_seconds(config: "SourceConfig") -> float:
     walk again would double-count. Lease wait and finalization are excluded;
     acquisition.acquire composes those phases under its shared outer clock.
     """
-    return config.download_timeout_ceiling + config.bridge_overhead
+    return (
+        max(config.download_timeout, config.download_timeout_ceiling)
+        + config.bridge_overhead
+    )
 
 
 def _positive_float(name: str, default: float) -> float:

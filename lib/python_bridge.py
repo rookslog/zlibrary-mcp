@@ -1264,6 +1264,7 @@ async def _download_url_to_file(
     bytes_received = 0
     resumes_tried = 0
     no_progress_attempts = 0
+    furthest = 0
     body_complete = False
 
     def progress_detail(detail: str) -> str:
@@ -1280,7 +1281,7 @@ async def _download_url_to_file(
 
     async def stream_to_disk() -> tuple[int, str]:
         nonlocal active_host, written, bytes_received, resumes_tried, body_complete
-        nonlocal no_progress_attempts
+        nonlocal no_progress_attempts, furthest
         try:
             # Keep the admitted source-specific UA and one client throughout
             # recovery. The caller owns the single deadline around this loop.
@@ -1291,7 +1292,7 @@ async def _download_url_to_file(
             ) as client:
                 while True:
                     offset = written
-                    received_before = bytes_received
+                    furthest_before = furthest
                     request_options = (
                         {"headers": {"Range": f"bytes={offset}-"}} if offset else {}
                     )
@@ -1332,14 +1333,14 @@ async def _download_url_to_file(
                                 attempt_path.write_bytes(b"")
                                 written = 0
                                 body_complete = False
+                                no_progress_attempts += 1
                                 if (
                                     no_progress_attempts
                                     < config.download_resume_attempts
                                 ):
-                                    no_progress_attempts += 1
                                     resumes_tried += 1
                                     observe_progress()
-                                    await asyncio.sleep(0)
+                                    await asyncio.sleep(0.25)
                                     continue
                             response.raise_for_status()
                             content_type = response.headers.get("content-type", "")
@@ -1415,6 +1416,7 @@ async def _download_url_to_file(
                                         written += len(chunk)
                                         received += len(chunk)
                                         bytes_received += len(chunk)
+                                        furthest = max(furthest, written)
                                         observe_progress()
                                 if (
                                     expected_length is not None
@@ -1492,10 +1494,10 @@ async def _download_url_to_file(
                             and not isinstance(exc, httpx.DecodingError)
                         ):
                             raise
-                        # Bytes actually received, even across a full restart,
-                        # are progress. Only empty recovery attempts spend the
-                        # configured budget; all requests retain the one timer.
-                        if resumes_tried and bytes_received == received_before:
+                        # Count useful net gain beyond the previous high-water
+                        # mark, even when an encoded restart resets written.
+                        # Repeated prefixes and tiny ranges spend the budget.
+                        if resumes_tried and furthest - furthest_before < 65536:
                             no_progress_attempts += 1
                         if no_progress_attempts >= config.download_resume_attempts:
                             raise
@@ -1503,7 +1505,7 @@ async def _download_url_to_file(
                         observe_progress()
                         # Release the response before waiting. Do not re-resolve
                         # a keyed URL or acquire another quota allocation.
-                        await asyncio.sleep(0.25 if retry_status else 0)
+                        await asyncio.sleep(0.25)
                         continue
                     break
 
@@ -1651,16 +1653,17 @@ def _source_size_bytes(book_details: dict) -> Optional[float]:
         if raw is None:
             continue
         if isinstance(raw, bool):
-            return None
+            continue
         match = re.fullmatch(
             r"\s*(\d+(?:\.\d+)?)\s*(B|[KMG]i?B)?\s*", str(raw), re.IGNORECASE
         )
         if match is None:
-            return None
+            continue
         unit = (match[2] or ("MB" if name == "size_mb" else "B")).upper()
         power = {"B": 0, "KB": 1, "KIB": 1, "MB": 2, "MIB": 2, "GB": 3, "GIB": 3}[unit]
         size = float(match[1]) * 1024**power
-        return size if math.isfinite(size) and size > 0 else None
+        if math.isfinite(size) and size > 0:
+            return size
     return None
 
 

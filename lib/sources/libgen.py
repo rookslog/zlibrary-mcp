@@ -983,6 +983,10 @@ class LibgenAdapter(SourceAdapter):
                         quota_info=None,  # LibGen has no quota
                         mirror=mirror_host(mirror),
                     )
+                else:
+                    continue
+                # An admission refusal ends the walk, including its retry pass.
+                break
 
         if failures:
             raise AllSourcesFailedError("download resolution", failures)

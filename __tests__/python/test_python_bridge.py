@@ -1993,8 +1993,6 @@ asyncio.run(python_bridge.main())
         """After a redirect, the failing request host owns the failure."""
         cdn_request = httpx.Request("GET", "https://cdn.example/file")
 
-        delivered_prefix = False
-
         class FakeResponse:
             url = cdn_request.url
             headers = {"content-type": "application/pdf"}
@@ -2003,10 +2001,7 @@ asyncio.run(python_bridge.main())
                 pass
 
             async def aiter_bytes(self, _chunk_size):
-                nonlocal delivered_prefix
-                if not delivered_prefix:
-                    delivered_prefix = True
-                    yield b"partial"
+                yield b"partial"
                 raise httpx.ReadTimeout("CDN body stalled", request=cdn_request)
 
         class FakeStream:
@@ -2062,7 +2057,7 @@ asyncio.run(python_bridge.main())
         failure_envelope = envelope["details"]["failures"][0]
         assert failure_envelope["host"] == "cdn.example"
         assert failure_envelope["reason"] == "partial_transfer"
-        assert "bytes_received=7" in failure_envelope["detail"]
+        assert "bytes_received=21" in failure_envelope["detail"]
         assert "resumes_tried=2" in failure_envelope["detail"]
         assert envelope["details"]["operation"] == "download"
         assert not (tmp_path / "0123456789abcdef0123456789abcdef.download").exists()
@@ -2592,6 +2587,16 @@ def content_range(start, total):
 class TestPartialTransferRecovery:
     """A transfer that dies mid-body resumes instead of restarting (#135)."""
 
+    @pytest.fixture(autouse=True)
+    def _advance_retry_wait_without_wall_time(self, monkeypatch):
+        """These cases test recovery/validation; separate loopback tests pin pacing."""
+        sleep = asyncio.sleep
+
+        async def step(delay):
+            await sleep(0 if delay == 0.25 else delay)
+
+        monkeypatch.setattr(asyncio, "sleep", step)
+
     @pytest.mark.asyncio
     @pytest.mark.parametrize("terminal", ["416", "206", "200", "budget"])
     async def test_wildcard_range_uses_digest_or_continues(
@@ -2718,12 +2723,12 @@ class TestPartialTransferRecovery:
                 config=config,
             )
 
-        assert caught.value.reason == ("integrity_mismatch")
-        assert transport.ranges == [
-            None,
-            f"bytes={RESUME_CUT}-",
-            f"bytes={len(corrupt)}-",
-        ]
+        assert caught.value.reason == (
+            "partial_transfer" if resume_attempts == 1 else "integrity_mismatch"
+        )
+        assert transport.ranges == [None, f"bytes={RESUME_CUT}-"] + (
+            [] if resume_attempts == 1 else [f"bytes={len(corrupt)}-"]
+        )
         assert not list(tmp_path.iterdir())
 
     @pytest.mark.asyncio
@@ -2904,7 +2909,7 @@ class TestPartialTransferRecovery:
 
         class CorruptGzip(httpx.AsyncByteStream):
             async def __aiter__(self):
-                if decoded_bytes and len(requests) == 1:
+                if decoded_bytes:
                     yield compressed[:-8]
                     yield b"\x00" * 8  # Invalid CRC after decoded bytes arrived.
                 else:
@@ -2967,7 +2972,7 @@ class TestPartialTransferRecovery:
 
     @pytest.mark.asyncio
     @pytest.mark.parametrize("attempts", [1, 2])
-    async def test_short_206_progress_continues_until_complete(
+    async def test_short_206_continues_until_complete_or_budget_ends(
         self, attempts, tmp_path, mocker
     ):
         """A valid 5000-5999/20000 slice is incomplete, not corrupt."""
@@ -2981,22 +2986,31 @@ class TestPartialTransferRecovery:
                 headers={"content-range": "bytes 5000-5999/20000"},
             ),
         ]
-        responses.append(
-            ScriptedResponse(
-                body=body[6000:],
-                status_code=206,
-                headers={"content-range": "bytes 6000-19999/20000"},
+        if attempts == 2:
+            responses.append(
+                ScriptedResponse(
+                    body=body[6000:],
+                    status_code=206,
+                    headers={"content-range": "bytes 6000-19999/20000"},
+                )
             )
-        )
         transport = ScriptedTransport(responses).install(mocker)
         config = python_bridge.get_source_config()
         config.download_resume_attempts = attempts
         operation = python_bridge._download_url_to_file(
             "https://mirror.example/get", str(tmp_path), digest, "libgen", config=config
         )
-        result = await operation
-        assert Path(result).read_bytes() == body
-        assert transport.ranges == [None, "bytes=5000-", "bytes=6000-"]
+        if attempts == 2:
+            result = await operation
+            assert Path(result).read_bytes() == body
+            assert transport.ranges == [None, "bytes=5000-", "bytes=6000-"]
+        else:
+            with pytest.raises(ProviderResponseError) as caught:
+                await operation
+            assert caught.value.reason == "partial_transfer"
+            assert "bytes_received=6000 resumes_tried=1" in caught.value.detail
+            assert transport.ranges == [None, "bytes=5000-"]
+            assert not list(tmp_path.iterdir())
 
     @pytest.mark.asyncio
     @pytest.mark.parametrize("outer", [False, True], ids=["direct", "provider-chain"])

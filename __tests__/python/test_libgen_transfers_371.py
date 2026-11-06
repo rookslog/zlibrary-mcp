@@ -39,7 +39,10 @@ async def loopback(handler):
             headers = dict(
                 line.lower().split(": ", 1) for line in lines[1:] if ": " in line
             )
-            status, extra, body, delay = handler(lines[0].split()[1], headers)
+            reply = handler(lines[0].split()[1], headers)
+            if asyncio.iscoroutine(reply):
+                reply = await reply
+            status, extra, body, delay = reply
             if delay:
                 await asyncio.sleep(delay)
             reply = {"Content-Length": str(len(body)), "Connection": "close", **extra}
@@ -66,6 +69,22 @@ async def loopback(handler):
         for task in pending:
             task.cancel()
         await asyncio.gather(*pending, return_exceptions=True)
+
+
+@pytest.fixture
+async def clock(monkeypatch):
+    """Advance the event-loop clock at fixture boundaries, never by CPU timing."""
+    loop = asyncio.get_running_loop()
+    now = [loop.time()]
+    sleep = asyncio.sleep
+    monkeypatch.setattr(loop, "time", lambda: now[0])
+
+    async def advance(seconds):
+        now[0] += seconds
+        for _ in range(4):
+            await sleep(0)
+
+    return SimpleNamespace(time=lambda: now[0], advance=advance, sleep=sleep)
 
 
 def route_to_loopback(monkeypatch, base):
@@ -210,61 +229,58 @@ async def test_mirror_resolution_gets_exactly_one_second_pass(monkeypatch, recov
 
 
 @pytest.mark.asyncio
-async def test_second_pass_delay_cannot_outlive_resolution_deadline(monkeypatch):
+async def test_second_pass_delay_cannot_outlive_resolution_deadline(monkeypatch, clock):
     hosts = []
 
-    def handler(_path, headers):
+    async def handler(_path, headers):
         hosts.append(headers["host"])
+        await clock.advance(1)
         return 503, {}, b"", 0
+
+    async def retry_delay(seconds):
+        if seconds:
+            await clock.advance(seconds)
+            await asyncio.Event().wait()  # The existing deadline must cancel this wait.
+        else:
+            await clock.sleep(0)
 
     adapter = LibgenAdapter(SourceConfig(preflight_enabled=False))
     monkeypatch.setattr(adapter, "_rate_limit", AsyncMock(return_value=None))
     async with loopback(handler) as base:
         route_to_loopback(monkeypatch, base)
-        deadline = WalkDeadline(1.15)
+        monkeypatch.setattr(asyncio, "sleep", retry_delay)
         with pytest.raises(AllSourcesFailedError):
-            await adapter.get_download_url(MD5, deadline=deadline)
+            await adapter.get_download_url(
+                MD5, deadline=WalkDeadline(4, clock=clock.time)
+            )
     assert hosts == ["libgen.li", "libgen.vg", "libgen.la"]
 
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("size, succeeds", [(None, False), ("4 MB", True)])
 async def test_known_size_extends_the_actual_chain_deadline(
-    tmp_path, monkeypatch, size, succeeds
+    tmp_path, monkeypatch, clock, size, succeeds
 ):
-    def handler(_path, _headers):
-        return 200, {"Content-Type": "application/pdf"}, BODY, 0.07
+    async def handler(_path, _headers):
+        await clock.advance(7)
+        return 200, {"Content-Type": "application/pdf"}, BODY, 0
 
-    config = SourceConfig(download_timeout=0.03)
-    config.download_floor_speed = 40 * 1024
-    config.download_timeout_ceiling = 0.25
+    config = SourceConfig(download_timeout=3, download_timeout_ceiling=25)
     async with loopback(handler) as url:
-
-        async def candidates(_md5, source):
-            yield DownloadResult(url=url, source=SourceType.LIBGEN)
-
-        monkeypatch.setattr(
-            bridge,
-            "get_source_router",
-            AsyncMock(
-                return_value=SimpleNamespace(
-                    config=config, iter_download_candidates=candidates
-                )
-            ),
-        )
+        candidates_for(monkeypatch, config, url)
         operation = bridge._fetch_from_source(
             {"md5": MD5, "source": "libgen", "size": size}, str(tmp_path)
         )
         if succeeds:
             assert Path(await operation).read_bytes() == BODY
         else:
-            with pytest.raises(ProviderTimeoutError) as caught:
+            with pytest.raises(ProviderTimeoutError) as error:
                 await operation
-            assert caught.value.reason == "read_timeout"
+            assert error.value.reason == "read_timeout"
 
 
 @pytest.mark.asyncio
-async def test_5xx_delay_is_inside_transfer_deadline(tmp_path):
+async def test_5xx_delay_is_inside_transfer_deadline(tmp_path, monkeypatch, clock):
     offsets = []
 
     def handler(_path, headers):
@@ -272,16 +288,25 @@ async def test_5xx_delay_is_inside_transfer_deadline(tmp_path):
         offsets.append(start)
         return (503, {}, b"", 0) if start else dropped(0)
 
+    async def retry_delay(seconds):
+        if seconds:
+            assert 0 < seconds <= 0.5
+            if len(offsets) == 2:
+                await clock.advance(11)
+                await asyncio.Event().wait()
+        await clock.sleep(0)
+
+    monkeypatch.setattr(asyncio, "sleep", retry_delay)
     async with loopback(handler) as url:
-        with pytest.raises(ProviderResponseError) as caught:
+        with pytest.raises(ProviderResponseError) as error:
             await bridge._download_url_to_file(
                 url,
                 str(tmp_path),
                 MD5,
                 "libgen",
-                config=SourceConfig(download_timeout=0.08),
+                config=SourceConfig(download_timeout=10),
             )
-    assert caught.value.reason == "partial_transfer"
+    assert error.value.reason == "partial_transfer"
     assert offsets == [0, 65536]
     assert not list(tmp_path.iterdir())
 
@@ -350,37 +375,30 @@ async def test_annas_range_recovery_spends_one_keyed_resolution(tmp_path, monkey
     "owner", [False, True], ids=["size-ceiling", "acquisition-owner"]
 )
 async def test_known_size_cannot_extend_ceiling_or_acquisition_owner(
-    tmp_path, monkeypatch, owner
+    tmp_path, monkeypatch, clock, owner
 ):
     from lib.acquisition import _acquisition_scope
 
-    def handler(_path, _headers):
-        return 200, {}, BODY, 0.3
+    async def handler(_path, _headers):
+        # 12 is below the 15s size ceiling but above the owner's 8.749s slice.
+        # Without the chain's owner clamp the owner variant succeeds and fails this test.
+        await clock.advance(12 if owner else 20)
+        return 200, {}, BODY, 0
 
-    config = SourceConfig(download_timeout=0.04, download_timeout_ceiling=0.15)
+    config = SourceConfig(download_timeout=4, download_timeout_ceiling=15)
     async with loopback(handler) as url:
-
-        async def candidates(_md5, source):
-            yield DownloadResult(url=url, source=SourceType.LIBGEN)
-
-        monkeypatch.setattr(
-            bridge,
-            "get_source_router",
-            AsyncMock(
-                return_value=SimpleNamespace(
-                    config=config, iter_download_candidates=candidates
-                )
-            ),
-        )
+        candidates_for(monkeypatch, config, url)
         token = (
-            _acquisition_scope.set({"deadline": WalkDeadline(0.1)}) if owner else None
+            _acquisition_scope.set({"deadline": WalkDeadline(10, clock=clock.time)})
+            if owner
+            else None
         )
         try:
-            with pytest.raises(ProviderTimeoutError) as caught:
+            with pytest.raises(ProviderTimeoutError) as error:
                 await bridge._fetch_from_source(
                     {"md5": MD5, "source": "libgen", "size": "400 MB"}, str(tmp_path)
                 )
-            assert caught.value.reason == "read_timeout"
+            assert error.value.reason == "read_timeout"
         finally:
             if token is not None:
                 _acquisition_scope.reset(token)
@@ -456,3 +474,236 @@ async def test_yielded_candidate_prevents_another_mirror_resolution_pass(monkeyp
     assert len(yielded) == 1
     assert hosts == ["libgen.li", "libgen.vg", "libgen.la"]
     assert [failure.reason for failure in caught.value.failures] == ["http_error"] * 2
+
+
+def candidates_for(monkeypatch, config, *urls):
+    async def candidates(_md5, source):
+        for url in urls:
+            yield DownloadResult(url=url, source=SourceType.LIBGEN)
+
+    monkeypatch.setattr(
+        bridge,
+        "get_source_router",
+        AsyncMock(
+            return_value=SimpleNamespace(
+                config=config, iter_download_candidates=candidates
+            )
+        ),
+    )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("mode", ["ignored-range", "gzip-restart", "one-byte-range"])
+async def test_useless_recovery_reaches_healthy_second_mirror(
+    tmp_path, monkeypatch, mode
+):
+    import gzip
+
+    bad_offsets, good_offsets = [], []
+
+    def bad(_path, headers):
+        start = int(headers.get("range", "bytes=0-")[6:-1])
+        bad_offsets.append(start)
+        # Bound the unfixed control without relying on elapsed wall time.
+        if len(bad_offsets) > 3:
+            return 400, {}, b"", 0
+        if mode == "gzip-restart":
+            compressed = gzip.compress(BODY)
+            return (
+                200,
+                {"Content-Encoding": "gzip", "Content-Length": str(len(compressed))},
+                compressed[: len(compressed) // 2],
+                0,
+            )
+        if mode == "one-byte-range" and start:
+            return (
+                206,
+                {"Content-Range": f"bytes {start}-{start}/{len(BODY)}"},
+                BODY[start : start + 1],
+                0,
+            )
+        return dropped(0)
+
+    def healthy(_path, headers):
+        good_offsets.append(headers.get("range"))
+        return 200, {"Content-Type": "application/pdf"}, BODY, 0
+
+    async with loopback(bad) as first, loopback(healthy) as second:
+        candidates_for(monkeypatch, SourceConfig(), first, second)
+        result = await bridge._fetch_from_source(
+            {"md5": MD5, "source": "libgen"}, str(tmp_path)
+        )
+    assert len(bad_offsets) == 3
+    assert good_offsets == [None]
+    assert Path(result).read_bytes() == BODY
+    assert not list(tmp_path.glob("*.part"))
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("status", [400, 401, 403, 404, 429, 501, 505])
+async def test_nonretry_range_statuses_stop_immediately(tmp_path, status):
+    offsets = []
+
+    def handler(_path, headers):
+        start = int(headers.get("range", "bytes=0-")[6:-1])
+        offsets.append(start)
+        return dropped(0) if not start else (status, {}, b"", 0)
+
+    async with loopback(handler) as url:
+        with pytest.raises(ProviderResponseError) as error:
+            await bridge._download_url_to_file(url, str(tmp_path), MD5, "libgen")
+    assert error.value.detail == f"HTTP {status}"
+    assert offsets == [0, 65536]
+    assert not list(tmp_path.iterdir())
+
+
+@pytest.mark.asyncio
+async def test_5xx_after_encoded_restart_at_zero_reaches_next_mirror(
+    tmp_path, monkeypatch
+):
+    import gzip
+
+    requests = []
+
+    def first(_path, headers):
+        requests.append(headers.get("range"))
+        if len(requests) == 1:
+            compressed = gzip.compress(BODY)
+            return (
+                200,
+                {"Content-Encoding": "gzip", "Content-Length": str(len(compressed))},
+                compressed[: len(compressed) // 2],
+                0,
+            )
+        return 503, {}, b"", 0
+
+    async with loopback(first) as bad, loopback(lambda *_: (200, {}, BODY, 0)) as good:
+        candidates_for(monkeypatch, SourceConfig(), bad, good)
+        result = await bridge._fetch_from_source(
+            {"md5": MD5, "source": "libgen"}, str(tmp_path)
+        )
+    assert requests == [None, None]
+    assert Path(result).read_bytes() == BODY
+
+
+@pytest.mark.asyncio
+async def test_budget_stopped_first_pass_does_not_wait_or_record_twice(monkeypatch):
+    from lib.sources import libgen
+
+    adapter = LibgenAdapter(SourceConfig(preflight_enabled=False))
+    monkeypatch.setattr(libgen, "_attempt_minimum", lambda *_: 3.0)
+    sleep = AsyncMock()
+    monkeypatch.setattr(libgen.asyncio, "sleep", sleep)
+    with pytest.raises(AllSourcesFailedError) as error:
+        await adapter.get_download_url(MD5, deadline=WalkDeadline(2.5))
+    assert [f.reason for f in error.value.failures] == ["walk_budget_exhausted"]
+    assert sleep.await_count == 0
+
+
+@pytest.mark.parametrize(
+    "book",
+    [
+        {"size_mb": "", "size": "80 MB"},
+        {"size_mb": False, "filesize": 83886080},
+        {"size_mb": -1, "filesize": "bad", "size": "80 MB"},
+        {"size_mb": "0", "size": "80 MB"},
+        {"size_mb": "9" * 5000, "size": "80 MB"},
+    ],
+)
+def test_unusable_size_fields_fall_through(book):
+    assert bridge._source_size_bytes(book) == 83886080
+
+
+def test_configured_base_is_not_cut_by_default_ceiling(monkeypatch):
+    monkeypatch.setenv("BOOK_SOURCE_DOWNLOAD_TIMEOUT", "5000")
+    monkeypatch.setenv("PYTHON_BRIDGE_LONG_TIMEOUT", "6000000")
+    config = get_source_config(for_download=True)
+    from lib.sources.config import worst_case_download_seconds
+
+    assert worst_case_download_seconds(config) == 5030
+    assert config.download_budget(None) == 5000
+    assert config.download_budget(400 * 1024 * 1024) == 5000
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("response", ["503", "416"])
+async def test_every_admitted_retry_is_paced_with_a_short_delay(
+    tmp_path, monkeypatch, response
+):
+    delays, offsets = [], []
+    sleep = asyncio.sleep
+
+    async def paced(seconds):
+        if seconds:
+            delays.append(seconds)
+        await sleep(0)
+
+    def handler(_path, headers):
+        start = int(headers.get("range", "bytes=0-")[6:-1])
+        offsets.append(start)
+        if len(offsets) == 1:
+            return dropped(0)
+        if len(offsets) == 2:
+            return int(response), {}, b"", 0
+        return dropped(start, len(BODY))
+
+    monkeypatch.setattr(asyncio, "sleep", paced)
+    async with loopback(handler) as url:
+        result = await bridge._download_url_to_file(url, str(tmp_path), MD5, "libgen")
+    assert len(delays) == 2
+    assert all(0 < delay <= 0.5 for delay in delays)
+    assert offsets == [0, 65536, 0 if response == "416" else 65536]
+    assert Path(result).read_bytes() == BODY
+
+
+@pytest.mark.asyncio
+async def test_completed_pass_with_insufficient_time_does_not_admit_retry_delay(
+    monkeypatch, clock
+):
+    hosts = []
+
+    async def handler(_path, headers):
+        hosts.append(headers["host"])
+        await clock.advance(1)
+        return 503, {}, b"", 0
+
+    async def no_retry_delay(seconds):
+        assert seconds == 0, "retry delay admitted with less than one second remaining"
+        await clock.sleep(0)
+
+    adapter = LibgenAdapter(SourceConfig(preflight_enabled=False))
+    monkeypatch.setattr(adapter, "_rate_limit", AsyncMock(return_value=None))
+    monkeypatch.setattr(asyncio, "sleep", no_retry_delay)
+    async with loopback(handler) as base:
+        route_to_loopback(monkeypatch, base)
+        with pytest.raises(AllSourcesFailedError) as error:
+            await adapter.get_download_url(
+                MD5, deadline=WalkDeadline(3.5, clock=clock.time)
+            )
+    assert [failure.reason for failure in error.value.failures] == ["http_error"] * 3
+    assert hosts == ["libgen.li", "libgen.vg", "libgen.la"]
+
+
+@pytest.mark.asyncio
+async def test_unsatisfied_range_spends_the_last_empty_attempt(tmp_path):
+    offsets = []
+
+    def handler(_path, headers):
+        start = int(headers.get("range", "bytes=0-")[6:-1])
+        offsets.append(start)
+        if len(offsets) == 1:
+            return dropped(0)
+        return (416 if len(offsets) == 2 else 400), {}, b"", 0
+
+    async with loopback(handler) as url:
+        with pytest.raises(ProviderResponseError) as error:
+            await bridge._download_url_to_file(
+                url,
+                str(tmp_path),
+                MD5,
+                "libgen",
+                config=SourceConfig(download_resume_attempts=1),
+            )
+    assert error.value.detail == "HTTP 416"
+    assert offsets == [0, 65536]
+    assert not list(tmp_path.iterdir())

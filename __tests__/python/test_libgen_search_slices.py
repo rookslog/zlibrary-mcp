@@ -271,3 +271,99 @@ async def test_unissued_search_does_not_stamp_last_request(monkeypatch):
         )
     worker.assert_not_awaited()
     assert adapter._last_request == 98.0
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("phase", ["preflight", "pacing"])
+async def test_g5_default_timeout_propagates_without_walking(monkeypatch, phase):
+    """P6/P7: the default route must not swallow either admission timeout."""
+    adapter = libgen.LibgenAdapter(SourceConfig(preflight_enabled=False))
+    monkeypatch.setattr(adapter, "_mirror_candidates", lambda: ["li", "vg"])
+    error = ProviderTimeoutError("libgen", "libgen.li", "synthetic timeout")
+    preflight = AsyncMock(side_effect=error if phase == "preflight" else None)
+    pacing = AsyncMock(side_effect=error if phase == "pacing" else None)
+    worker = AsyncMock()
+    monkeypatch.setattr(adapter, "_preflight", preflight)
+    monkeypatch.setattr(adapter, "_rate_limit", pacing)
+    monkeypatch.setattr(libgen, "run_bounded", worker)
+    with pytest.raises(ProviderTimeoutError) as caught:
+        await adapter.search("Solaris")
+    assert caught.value is error
+    assert preflight.await_count == 1
+    worker.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("branch", ["exhausted", "refused", "parent_pacing"])
+async def test_g5_comparison_admission_skips_only_current_mirror(monkeypatch, branch):
+    """P8/P9 continue; P5 must refuse pacing that cannot fit the child slice."""
+    clock = Clock()
+    adapter = libgen.LibgenAdapter(SourceConfig(preflight_enabled=False))
+    monkeypatch.setattr(adapter, "_mirror_candidates", lambda: ["li", "vg"])
+    monkeypatch.setattr(libgen.time, "time", clock.now)
+    current = {"mirror": None}
+    sleeps, calls = [], []
+
+    async def preflight(mirror):
+        current["mirror"] = mirror
+        if branch == "parent_pacing" and mirror == "li":
+            clock.spend(3.5)
+            adapter._last_request = clock.now()
+
+    async def sleep(delay):
+        sleeps.append(current["mirror"])
+        clock.spend(delay + 0.0001)
+
+    async def bounded(awaitable, timeout, **kwargs):
+        start = clock.now()
+        result = await awaitable
+        if current["mirror"] == "li" and kwargs["operation"] == "search pacing":
+            if branch == "exhausted":
+                clock.spend(timeout)
+            elif clock.now() - start > timeout:
+                clock.value = start + timeout
+                raise ProviderTimeoutError("libgen", kwargs["host"], "pacing elapsed")
+        return result
+
+    async def worker(func, timeout, **kwargs):
+        calls.append(kwargs["host"])
+        return [], None, 0
+
+    if branch == "refused":
+
+        async def pacing(*args, **kwargs):
+            return current["mirror"] != "li"
+
+        monkeypatch.setattr(adapter, "_rate_limit", pacing)
+    monkeypatch.setattr(adapter, "_preflight", preflight)
+    monkeypatch.setattr(libgen.asyncio, "sleep", sleep)
+    monkeypatch.setattr(libgen, "bounded_await", bounded)
+    monkeypatch.setattr(libgen, "run_bounded", worker)
+    assert (
+        await adapter.search(
+            "Solaris", deadline=WalkDeadline(12, clock=clock.now), multi_source=True
+        )
+        == []
+    )
+    assert calls == ["libgen.vg"]
+    assert "li" not in sleeps
+    assert clock.now() - 100 < 12
+
+
+@pytest.mark.asyncio
+async def test_g5_comparison_uses_short_minimum_before_preflight(monkeypatch):
+    """P10: a short remaining budget can still run a comparison mirror."""
+    adapter = libgen.LibgenAdapter(
+        SourceConfig(preflight_enabled=True, preflight_timeout=4)
+    )
+    monkeypatch.setattr(libgen, "proxy_in_use", lambda url: False)
+    monkeypatch.setattr(adapter, "_preflight", AsyncMock())
+    monkeypatch.setattr(adapter, "_rate_limit", AsyncMock(return_value=True))
+    worker = AsyncMock(return_value=([], None, 0))
+    monkeypatch.setattr(libgen, "run_bounded", worker)
+    assert (
+        await adapter.search("Solaris", deadline=WalkDeadline(2), multi_source=True)
+        == []
+    )
+    assert worker.await_count == 1
+    assert 0 < worker.call_args.args[1] <= 2

@@ -8,7 +8,7 @@ import { fileURLToPath } from 'node:url';
 import { createHash } from 'node:crypto';
 import { Rehearsal } from '../rehearsal/harness.js';
 import { snapshotSource } from '../rehearsal/source-identity.js';
-import { dataOf, rowsOf, identity } from './oracles.js';
+import { dataOf, selectableRows, identity } from './oracles.js';
 import { gitRead, pinnedInputs, verifyBuildArtifacts, artifactProofErrors } from './build-proof.js';
 export { gitRead, verifyBuildArtifacts } from './build-proof.js';
 import { verifyNodeRuntime, nodeProofErrors } from './node-runtime.js';
@@ -287,7 +287,7 @@ export class EvaluationServer {
         });
       }
       const data = dataOf(c.reply);
-      for (const r of rowsOf(data)) {
+      for (const r of selectableRows(data)) {
         this.observed.set(canonicalRow(r), r);
         this.rows.set(identity(r), r);
         if (r.ref) this.refRows.set(r.ref, r);

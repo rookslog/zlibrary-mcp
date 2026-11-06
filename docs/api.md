@@ -118,8 +118,8 @@ boundaries in the title, and the requested author phrase in the author field.
 Missing checked metadata is unknown and excluded unless another predicate
 already proves a mismatch. No title text is used to infer a year.
 
-Answered source lines carry `filtering.requested`, `applied`, `ignored: []`,
-`native_sent` when applicable, counts and scope. Native Z-Library
+Answered source lines carry `filtering.applied`, `native_sent` when applicable,
+counts and scope. Native Z-Library
 sending is evidence of transmission, separate from the local check. Counts
 obey `examined = matched + rejected + unknown`; they describe each bounded
 window, not a catalogue total. Every source supplies at most 50 candidate

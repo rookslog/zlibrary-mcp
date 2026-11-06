@@ -16,6 +16,14 @@ export function dataOf(reply) {
 export function rowsOf(data) {
   return Array.isArray(data) ? data : (data.rows ?? data.books ?? data.items ?? []);
 }
+// Actual copy refs inherit the row's display metadata unless the copy states
+// a differing value. Availability hints contain no selection authority.
+export function selectableRows(data) {
+  return rowsOf(data).flatMap((row) => [row, ...(row.other_copies ?? []).map((copy) => {
+    const {other_copies, ...metadata} = row;
+    return {...metadata, ...copy};
+  })]);
+}
 export const identity = (row) =>
   String(row?.id ?? row?.identifiers?.zlibrary_id ?? '') || row?.title;
 export const isGraver = (row) =>
@@ -88,17 +96,13 @@ export async function scoreTask({
   const selected = (c) => c.selected ?? c.args?.bookDetails ?? {};
   const successful = (c) => !c.error && !c.reply?.isError && !dataOf(c.reply ?? {}).error;
   const usableSources = (c) => {
-    const a = c.args ?? {};
-    if (a.sources !== undefined)
-      return Array.isArray(a.sources) && a.sources.length > 0 && !a.sources.includes('zlibrary');
-    const order = arm.defaultOrder;
-    return (
-      arm.id === 'B-Q2-default' &&
-      Array.isArray(order) &&
-      order.includes('libgen') &&
-      (!order.includes('zlibrary') || order.indexOf('libgen') < order.indexOf('zlibrary')) &&
-      dataOf(c.reply ?? {}).routing?.served_by === 'libgen'
-    );
+    const data = dataOf(c.reply ?? {}), lines = data.sources;
+    if (!lines || !['libgen','zlibrary','annas'].every(name => lines[name])) return false;
+    if (!['rows','empty'].includes(lines.libgen.state) || lines.zlibrary.state !== 'not_asked') return false;
+    const args = c.args ?? {};
+    const precedingLimits = trace.slice(0,trace.indexOf(c)).findLast(call => category(call.name) === 'limits' && successful(call));
+    const intent = args.sources ?? dataOf(precedingLimits?.reply ?? {}).search?.default_sources;
+    return Array.isArray(intent) && intent.length > 0 && intent.includes('libgen') && !intent.includes('zlibrary');
   };
   const matchingSearches = (download, index) => {
     const row = selected(download);
@@ -106,7 +110,7 @@ export async function scoreTask({
       searchIndex < index &&
       isSearch(search.name) &&
       successful(search) &&
-      rowsOf(dataOf(search.reply ?? {})).some(
+      selectableRows(dataOf(search.reply ?? {})).some(
         (found) =>
           found.title === row.title &&
           identity(found) === identity(row) &&
@@ -227,7 +231,7 @@ export async function scoreTask({
           isSearch(c.name) &&
           successful(c) &&
           (b
-            ? usableSources(c) && (c.args?.sources ?? arm.defaultOrder)?.includes('libgen')
+            ? usableSources(c)
             : c.name === 'search_multi_source' && c.args?.source === 'libgen') &&
           rowsOf(dataOf(c.reply ?? {})).some(
             (row) =>

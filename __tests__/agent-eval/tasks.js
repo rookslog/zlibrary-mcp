@@ -87,7 +87,7 @@ export const tasks = [
     id: 'T11',
     prompt: 'My download said quota exhausted; what now?',
     A: ['get_download_limits', 'search_multi_source on libgen'],
-    B: ['get_limits', 'search on libgen'],
+    B: ['get_limits', 'search sources=[libgen], or omit only when reported defaults exclude the exhausted source'],
     wrong: ['retry/download same source', 'zlibrary search after exhausted limits'],
   },
   {

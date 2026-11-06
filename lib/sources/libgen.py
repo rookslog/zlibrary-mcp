@@ -22,6 +22,7 @@ from .config import DEFAULT_LIBGEN_USER_AGENT, SourceConfig
 from .errors import (
     AllSourcesFailedError,
     ProviderResponseError,
+    ProviderTimeoutError,
     ProviderUnreachableError,
     SourceError,
 )
@@ -45,6 +46,8 @@ from libgen_api_enhanced.book import Book as _LgeBook
 logger = logging.getLogger("zlibrary.sources")
 
 PROVIDER = "libgen"
+# Private comparison-search policy; default/single-source calls keep full budgets.
+MULTI_SOURCE_MIRROR_SECONDS = 3.0
 
 # libgen.li serves its default-nginx stub (HTTP 200, ~640 bytes, no results
 # table) to blocklisted tool User-Agents while an admitted UA gets the real
@@ -489,6 +492,8 @@ class LibgenAdapter(SourceAdapter):
         self,
         query: str,
         deadline: Optional[WalkDeadline] = None,
+        *,
+        multi_source: bool = False,
         **kwargs,
     ) -> List[UnifiedBookResult]:
         """Search for books matching query, failing over between mirrors.
@@ -521,6 +526,8 @@ class LibgenAdapter(SourceAdapter):
             deadline: Wall-clock ceiling shared with the rest of the walk. A
                 private one is created when called directly, so an adapter
                 used outside the router is still bounded.
+            multi_source: Private opt-in for comparison searches. Each mirror's
+                preflight, pacing and blocking search share a short child clock.
             **kwargs: Ignored (for interface compatibility)
 
         Returns:
@@ -540,29 +547,85 @@ class LibgenAdapter(SourceAdapter):
             if (
                 deadline.reserve(
                     self.config.total_timeout,
-                    minimum=_attempt_minimum(self.config, mirror),
+                    minimum=1.0
+                    if multi_source
+                    else _attempt_minimum(self.config, mirror),
                 )
                 is None
             ):
                 failures.append(self._unattempted(mirrors[index:], deadline))
                 break
 
+            attempt = (
+                deadline.child(MULTI_SOURCE_MIRROR_SECONDS)
+                if multi_source
+                else deadline
+            )
             try:
-                await self._preflight(mirror)
-            except ProviderUnreachableError as exc:
+                if multi_source:
+                    await bounded_await(
+                        self._preflight(mirror),
+                        attempt.remaining(),
+                        provider=PROVIDER,
+                        host=host,
+                        operation="search preflight",
+                    )
+                else:
+                    await self._preflight(mirror)
+            except (ProviderUnreachableError, ProviderTimeoutError) as exc:
+                if not multi_source and not isinstance(exc, ProviderUnreachableError):
+                    raise
                 logger.warning("LibGen mirror %s unreachable: %s", mirror, exc)
                 failures.append(exc)
                 continue
 
-            if await self._rate_limit(deadline, minimum_after=1.0) is False:
+            try:
+                pacing = self._rate_limit(attempt, minimum_after=1.0)
+                ready = (
+                    await bounded_await(
+                        pacing,
+                        attempt.remaining(),
+                        provider=PROVIDER,
+                        host=host,
+                        operation="search pacing",
+                    )
+                    if multi_source
+                    else await pacing
+                )
+            except ProviderTimeoutError as exc:
+                if not multi_source:
+                    raise
+                failures.append(exc)
+                continue
+            if ready is False:
+                if multi_source:
+                    failures.append(
+                        ProviderTimeoutError(
+                            PROVIDER,
+                            host,
+                            "Mirror slice cannot accommodate pacing and search.",
+                            reason="search_timeout",
+                        )
+                    )
+                    continue
                 failures.append(self._unattempted(mirrors[index:], deadline))
                 break
 
             # Re-read after the preflight and the rate-limit sleep: both spend
             # wall clock, and the budget handed to the search has to be what is
             # left now, not what was left before them.
-            budget = deadline.reserve(self.config.total_timeout, minimum=1.0)
+            budget = attempt.reserve(self.config.total_timeout, minimum=1.0)
             if budget is None:
+                if multi_source:
+                    failures.append(
+                        ProviderTimeoutError(
+                            PROVIDER,
+                            host,
+                            "Mirror slice exhausted before search.",
+                            reason="search_timeout",
+                        )
+                    )
+                    continue
                 failures.append(self._unattempted(mirrors[index:], deadline))
                 break
 

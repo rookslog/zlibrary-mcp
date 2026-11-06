@@ -42,3 +42,9 @@ test('G4 equal predicate keys are valid regardless of insertion order', () => {
   b.filterResult.checks = Object.fromEntries(Object.entries(b.filterResult.checks).reverse());
   expect(mergeRows([a, b], request)).toHaveLength(1);
 });
+
+test.each([false, true])('H2 T4 equal key counts with different predicates are refused (reverse=%s)', reverse => {
+  const copies = [copy('year', { year: 1990 }, { year_from: 1900 }), copy('language', {}, { languages: ['fr'] })];
+  if (reverse) copies.reverse();
+  expect(() => mergeRows(copies, request)).toThrow(TypeError);
+});

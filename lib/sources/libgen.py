@@ -10,7 +10,7 @@ import logging
 import re
 import threading
 import time
-from typing import AsyncIterator, List, Optional
+from typing import AsyncIterator, Callable, List, Optional
 from urllib.parse import parse_qs, urljoin, urlparse
 
 import httpx
@@ -466,16 +466,18 @@ class LibgenAdapter(SourceAdapter):
         deadline: Optional[WalkDeadline] = None,
         *,
         minimum_after: float = 0.0,
-        record_request: bool = True,
+        admit: Optional[Callable[[], bool]] = None,
     ) -> bool:
         """Enforce rate limiting between requests.
 
         Returns false rather than sleeping when pacing would consume the
         deadline slice required for the actual resolution attempt.
         """
-        elapsed = time.time() - self._last_request
-        delay = max(0.0, self.MIN_REQUEST_INTERVAL - elapsed)
-        if delay:
+        while True:
+            elapsed = time.time() - self._last_request
+            delay = max(0.0, self.MIN_REQUEST_INTERVAL - elapsed)
+            if not delay:
+                break
             if (
                 deadline is not None
                 and deadline.reserve(
@@ -486,8 +488,11 @@ class LibgenAdapter(SourceAdapter):
             ):
                 return False
             await asyncio.sleep(delay)
-        if record_request:
-            self._last_request = time.time()
+        # Admission and stamping must stay in this task without an await.
+        # A peer may have stamped while we slept, hence the loop above.
+        if admit is not None and not admit():
+            return False
+        self._last_request = time.time()
         return True
 
     async def search(
@@ -577,13 +582,25 @@ class LibgenAdapter(SourceAdapter):
             except (ProviderUnreachableError, ProviderTimeoutError) as exc:
                 if not multi_source and not isinstance(exc, ProviderUnreachableError):
                     raise
-                logger.warning("LibGen mirror %s unreachable: %s", mirror, exc)
+                if isinstance(exc, ProviderTimeoutError):
+                    exc = SourceError(
+                        exc.provider,
+                        exc.host,
+                        exc.detail,
+                        reason="mirror_slice_exhausted",
+                    )
+                logger.warning("LibGen mirror %s preflight failed: %s", mirror, exc)
                 failures.append(exc)
                 continue
 
             try:
                 pacing = self._rate_limit(
-                    attempt, minimum_after=1.0, record_request=False
+                    attempt,
+                    minimum_after=1.0,
+                    admit=lambda: (
+                        attempt.reserve(self.config.total_timeout, minimum=1.0)
+                        is not None
+                    ),
                 )
                 ready = (
                     await bounded_await(
@@ -599,7 +616,14 @@ class LibgenAdapter(SourceAdapter):
             except ProviderTimeoutError as exc:
                 if not multi_source:
                     raise
-                failures.append(exc)
+                failures.append(
+                    SourceError(
+                        exc.provider,
+                        exc.host,
+                        exc.detail,
+                        reason="mirror_slice_exhausted",
+                    )
+                )
                 continue
             if ready is False:
                 if multi_source:
@@ -655,7 +679,6 @@ class LibgenAdapter(SourceAdapter):
                 )
 
             try:
-                self._last_request = time.time()
                 results, page, missing_edition_rows = await run_bounded(
                     _search_sync,
                     budget,

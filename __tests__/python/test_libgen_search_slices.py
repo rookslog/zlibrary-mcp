@@ -247,22 +247,16 @@ async def test_pacing_slack_reaches_healthy_second_mirror(
 async def test_unissued_search_does_not_stamp_last_request(monkeypatch):
     clock = Clock()
     adapter = libgen.LibgenAdapter(SourceConfig(preflight_enabled=False))
-    adapter._last_request = 98.0
+    adapter._last_request = clock.now()
     monkeypatch.setattr(libgen.time, "time", clock.now)
-    monkeypatch.setattr(adapter, "_mirror_candidates", lambda: ["li", "vg"])
+    monkeypatch.setattr(adapter, "_mirror_candidates", lambda: ["li"])
     monkeypatch.setattr(adapter, "_preflight", AsyncMock())
 
     async def sleep(delay):
-        clock.spend(delay)
-
-    async def exhausted(awaitable, timeout, **kwargs):
-        result = await awaitable
-        if kwargs["operation"] == "search pacing":
-            clock.spend(timeout)
-        return result
+        # Exhaust the slice inside pacing, before its atomic admission check.
+        clock.spend(delay + 5)
 
     monkeypatch.setattr(libgen.asyncio, "sleep", sleep)
-    monkeypatch.setattr(libgen, "bounded_await", exhausted)
     worker = AsyncMock()
     monkeypatch.setattr(libgen, "run_bounded", worker)
     with pytest.raises(libgen.AllSourcesFailedError):
@@ -270,7 +264,7 @@ async def test_unissued_search_does_not_stamp_last_request(monkeypatch):
             "Solaris", deadline=WalkDeadline(12, clock=clock.now), multi_source=True
         )
     worker.assert_not_awaited()
-    assert adapter._last_request == 98.0
+    assert adapter._last_request == 100.0
 
 
 @pytest.mark.asyncio
@@ -411,3 +405,129 @@ async def test_n2_issued_search_preserves_actual_search_timeout(monkeypatch):
         await adapter.search("Solaris", multi_source=True)
     assert worker.await_count == 1
     assert caught.value.failures[0].reason == "search_timeout"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("multi_source", [False, True])
+@pytest.mark.parametrize("warm", [False, True])
+async def test_h1_concurrent_callers_keep_one_admission_per_interval(
+    monkeypatch, multi_source, warm
+):
+    """Separate wait_for tasks and already-sleeping callers must not burst."""
+    import asyncio
+    import sys
+    import time
+
+    adapter = libgen.LibgenAdapter(SourceConfig(preflight_enabled=False))
+    monkeypatch.setattr(adapter, "_mirror_candidates", lambda: ["li", "vg"])
+    monkeypatch.setattr(adapter, "_preflight", AsyncMock())
+    monkeypatch.setattr(libgen.time, "time", time.monotonic)
+    if warm:
+        adapter._last_request = time.monotonic()
+    calls = []
+
+    async def worker(func, timeout, **kwargs):
+        calls.append(time.monotonic())
+        return [], None, 0
+
+    monkeypatch.setattr(libgen, "run_bounded", worker)
+    results = await asyncio.gather(
+        *[
+            adapter.search(
+                "Solaris", deadline=WalkDeadline(12), multi_source=multi_source
+            )
+            for _ in range(2)
+        ]
+    )
+    assert results == [[], []]
+    assert len(calls) == 2
+    gap = calls[1] - calls[0]
+    print(f"python={sys.version.split()[0]} {multi_source=} {warm=} gap_s={gap:.6f}")
+    assert gap >= 1.98
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("multi_source", [False, True])
+@pytest.mark.parametrize("scenario", ["failed_mirror", "sequential"])
+async def test_h2_searches_stamp_for_mirror_and_sequential_pacing(
+    monkeypatch, multi_source, scenario
+):
+    """S1/S2: successful admission must pace every search, including defaults."""
+    clock = Clock()
+    adapter = libgen.LibgenAdapter(SourceConfig(preflight_enabled=False))
+    monkeypatch.setattr(libgen.time, "time", clock.now)
+    monkeypatch.setattr(adapter, "_preflight", AsyncMock())
+    monkeypatch.setattr(
+        adapter,
+        "_mirror_candidates",
+        lambda: ["li", "vg"] if scenario == "failed_mirror" else ["li"],
+    )
+    calls = []
+
+    async def sleep(delay):
+        clock.spend(delay + 0.0001)
+
+    async def worker(func, timeout, **kwargs):
+        calls.append((kwargs["host"], clock.now()))
+        clock.spend(0.05)
+        if scenario == "failed_mirror" and kwargs["host"] == "libgen.li":
+            raise RuntimeError("synthetic first-mirror failure")
+        return [], None, 0
+
+    monkeypatch.setattr(libgen.asyncio, "sleep", sleep)
+    monkeypatch.setattr(libgen, "run_bounded", worker)
+    assert await adapter.search("Solaris", multi_source=multi_source) == []
+    if scenario == "sequential":
+        assert await adapter.search("Solaris", multi_source=multi_source) == []
+    assert [host for host, _ in calls] == (
+        ["libgen.li", "libgen.vg"]
+        if scenario == "failed_mirror"
+        else ["libgen.li", "libgen.li"]
+    )
+    assert calls[1][1] - calls[0][1] >= 2.0
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("phase", ["search preflight", "search pacing"])
+async def test_h3_unissued_phase_timeout_keeps_detail_and_uses_slice_reason(
+    monkeypatch, phase
+):
+    adapter = libgen.LibgenAdapter(SourceConfig(preflight_enabled=False))
+    monkeypatch.setattr(adapter, "_mirror_candidates", lambda: ["li"])
+    monkeypatch.setattr(adapter, "_preflight", AsyncMock())
+    detail = f"{phase} exceeded 5s"
+
+    async def bounded(awaitable, timeout, **kwargs):
+        if kwargs["operation"] == phase:
+            awaitable.close()
+            raise ProviderTimeoutError(
+                "libgen", "libgen.li", detail, reason="search_timeout"
+            )
+        return await awaitable
+
+    worker = AsyncMock()
+    monkeypatch.setattr(libgen, "bounded_await", bounded)
+    monkeypatch.setattr(libgen, "run_bounded", worker)
+    with pytest.raises(libgen.AllSourcesFailedError) as caught:
+        await adapter.search("Solaris", multi_source=True)
+    worker.assert_not_awaited()
+    assert len(caught.value.failures) == 1
+    failure = caught.value.failures[0]
+    assert failure.reason == "mirror_slice_exhausted"
+    assert failure.detail == detail
+    assert failure.to_dict()["host"] == "libgen.li"
+    assert "was not searched" in str(failure)
+
+
+@pytest.mark.asyncio
+async def test_h3_preflight_connection_failure_keeps_its_network_reason(monkeypatch):
+    adapter = libgen.LibgenAdapter(SourceConfig(preflight_enabled=False))
+    monkeypatch.setattr(adapter, "_mirror_candidates", lambda: ["li"])
+    failure = libgen.ProviderUnreachableError(
+        "libgen", "libgen.li", "synthetic refusal", reason="connect_refused"
+    )
+    monkeypatch.setattr(adapter, "_preflight", AsyncMock(side_effect=failure))
+    with pytest.raises(libgen.AllSourcesFailedError) as caught:
+        await adapter.search("Solaris", multi_source=True)
+    assert caught.value.failures == [failure]
+    assert caught.value.failures[0].reason == "connect_refused"

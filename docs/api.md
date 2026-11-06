@@ -142,8 +142,8 @@ spends that allowance. Dropped tails are staged without fixed-size buffering;
 encoded drops still restart from zero. With another candidate remaining,
 known-length recovery yields when the projected remainder plus its retry wait
 exceeds 1.5 times the chain time left. If later candidates all fail, acquisition
-returns once to the first guard-abandoned resolved URL with its guard disabled,
-starting a fresh stage at zero under the same deadline, without resolving or
+returns once to each guard-abandoned resolved URL in order with its guard
+disabled, starting a fresh stage at zero under the same deadline, without resolving or
 spending keyed quota again. Lone or last candidates and unknown totals retain
 the existing patience. Unknown totals can still prevent failover until the
 deadline. Every admitted retry waits 250 ms.

@@ -17,8 +17,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   staged bytes survive Range 500/502/503/504 replies.
 - With another candidate remaining, known-length source transfers yield when
   their projected remainder plus retry wait exceeds 1.5 times the chain time
-  left. If all later candidates fail, return once to the first guard-abandoned
-  resolved URL without its guard, re-resolution or another keyed quota spend.
+  left. If all later candidates fail, return once to each guard-abandoned
+  resolved URL in order without its guard, re-resolution or another keyed quota
+  spend.
   The return restarts its stage at zero under the original deadline and retains
   the original quota observation. Lone/last candidates and unknown totals keep
   the existing allowance; unknown totals can still hold the whole chain.

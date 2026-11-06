@@ -1739,8 +1739,7 @@ async def _fetch_from_source(book_details: dict, output_dir: str) -> str:
         abandoned = []
 
         def remember_abandoned(item, observed_at):
-            if not abandoned:
-                abandoned.append((item, observed_at))
+            abandoned.append((item, observed_at))
 
         async def candidates():
             stream = router.iter_download_candidates(md5, source=selection)
@@ -1757,7 +1756,7 @@ async def _fetch_from_source(book_details: dict, output_dir: str) -> str:
                 if close is not None:
                     await close()
             # A configured alternative may not resolve or be admitted. Return
-            # once to the first abandoned URL without spending another key.
+            # once to each abandoned URL without spending another key.
             for item, observed_at in abandoned:
                 yield item, False, observed_at
 
@@ -1819,11 +1818,6 @@ async def _fetch_from_source(book_details: dict, output_dir: str) -> str:
                 except SourceError as exc:
                     transfer_progress = (0, 0, False)
                     record(exc)
-        except AllSourcesFailedError as exc:
-            for failure in exc.failures:
-                record(failure)
-        except SourceError as exc:
-            record(exc)
         finally:
             close = getattr(candidate_stream, "aclose", None)
             if close is not None:

@@ -195,14 +195,18 @@ emits one stderr record containing only the net rate and time left.
 
 Candidates are resolved lazily; an untried alternative may fail resolution,
 preflight, admission or transfer. After all normal candidates are exhausted,
-the acquisition returns once to the first guard-abandoned result, with its guard
-disabled. It reuses that resolved URL and the original quota observation; it
+the acquisition returns once to each guard-abandoned result in order, with its
+guard disabled. It reuses that resolved URL and the original quota observation; it
 does not spend another key or resolve the URL again. Its discarded stage is not
 resumed: the return starts at zero in a new private stage. The original chain
-and acquisition deadline still bound this final attempt and all of its recovery.
+and acquisition deadline still bound these return attempts and their recovery.
+A late abandon deletes the stage, so the return starts from zero and, if the
+link speeds up after the drop, can fail where resuming the stage would have
+finished.
+
 If no guard abandoned a result, there is no extra attempt. LibGen's existing
 second resolution pass remains separate: if it eventually yields a result that
-is abandoned, exhausted later candidates lead to the same single URL return,
+is abandoned, exhausted later candidates lead to the same once-per-URL returns,
 without a third resolution pass.
 
 A lone or last candidate, and transfers without a known total, keep the existing

@@ -859,7 +859,9 @@ class LibgenAdapter(SourceAdapter):
 
         The returned URL is short-lived: the key expires in well under 2.5
         hours, after which `get.php` silently 307s back to `/ads.php` instead
-        of erroring. Resolve immediately before downloading; never cache.
+        of erroring. Resolve immediately before downloading; the URL may be
+        reused within one acquisition. An expired key that redirects to the
+        HTML page ends in `protocol_error`.
 
         Args:
             md5: MD5 hash identifying the book

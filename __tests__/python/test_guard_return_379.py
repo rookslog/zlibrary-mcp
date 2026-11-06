@@ -206,6 +206,8 @@ F1_ROWS = [
     "healthy",
     "annas-healthy",
     "two-abandoned",
+    "first-return-403",
+    "annas-first-return-403",
     "return-drop",
     "bad-transfers",
 ]
@@ -268,10 +270,17 @@ async def test_f1_abandoned_url_returns_once_after_candidates_exhausted(
             calls_to_li += 1
         if mode == "second-pass" and (mirror != "li" or calls_to_li == 1):
             return None, "no key"
-        if not keyed and mirror == "li":
+        if mirror == "li" and (not keyed or mode == "annas-first-return-403"):
             return "synthetic", "fixture"
         if (
-            mode in ("healthy", "annas-healthy", "two-abandoned", "lease")
+            mode
+            in (
+                "healthy",
+                "annas-healthy",
+                "two-abandoned",
+                "first-return-403",
+                "lease",
+            )
             and mirror == "vg"
         ) or (mode == "bad-transfers" and mirror in ("vg", "la")):
             return "synthetic", "fixture"
@@ -318,6 +327,12 @@ async def test_f1_abandoned_url_returns_once_after_candidates_exhausted(
                     clock, body[:cut], delay, mode not in ("lease", "slow-start")
                 ),
             )
+        if (
+            mode in ("first-return-403", "annas-first-return-403")
+            and host == first_host
+            and counts[host] == 2
+        ):
+            return httpx.Response(403)
         if mode == "return-drop" and host == first_host and counts[host] == 2:
             return httpx.Response(
                 200,
@@ -326,14 +341,19 @@ async def test_f1_abandoned_url_returns_once_after_candidates_exhausted(
             )
         if mode == "bad-transfers" and host != first_host:
             return httpx.Response(400)
-        if mode == "two-abandoned" and host == "libgen.vg":
+        second_host = "libgen.li" if keyed else "libgen.vg"
+        if (
+            mode in ("two-abandoned", "first-return-403", "annas-first-return-403")
+            and host == second_host
+        ):
             if counts[host] == 1:
                 return httpx.Response(
                     200,
                     headers={"Content-Length": str(len(body))},
                     stream=Stalled(clock, body[:100000], 0.02),
                 )
-            return httpx.Response(400)
+            if mode == "two-abandoned":
+                return httpx.Response(400)
         return httpx.Response(
             206 if start else 200,
             headers={
@@ -391,6 +411,21 @@ async def test_f1_abandoned_url_returns_once_after_candidates_exhausted(
             ("libgen.la", 0),
             (first_host, 0),
         ]
+    elif mode in ("first-return-403", "annas-first-return-403"):
+        second_host = "libgen.li" if keyed else "libgen.vg"
+        assert [(r[0], r[1]) for r in requests] == [
+            (first_host, 0),
+            (second_host, 0),
+            (first_host, 0),
+            (second_host, 0),
+        ]
+        assert requests[0][2] == requests[2][2]
+        assert requests[1][2] == requests[3][2]
+        assert resolved == ["li", "vg", "la"]
+        assert result.provenance["host"] == second_host
+        assert result.provenance["mirror"] == second_host
+        assert result.provenance["route"] == "mirror_download"
+        assert getattr(result, "quota_estimate", None) is None
     elif mode == "two-abandoned":
         assert [(r[0], r[1]) for r in requests] == [
             (first_host, 0),
@@ -406,7 +441,7 @@ async def test_f1_abandoned_url_returns_once_after_candidates_exhausted(
     if mode == "lease":
         assert resolved == ["li"], "under six seconds left cannot admit vg preflight"
         assert clock.time() - began < 105
-    if keyed and mode != "annas-healthy":
+    if keyed and mode not in ("annas-healthy", "annas-first-return-403"):
         assert result.quota_estimate["remaining"] == 5
         assert result.quota_estimate["as_of"] == "2000-01-01T00:00:00Z"
         assert result.provenance["route"] == "fast_download"
@@ -417,7 +452,11 @@ async def test_f1_abandoned_url_returns_once_after_candidates_exhausted(
         if "recovery feasibility guard" in line
     ]
     assert len(messages) == (
-        0 if mode == "large-prefix" else 2 if mode == "two-abandoned" else 1
+        0
+        if mode == "large-prefix"
+        else 2
+        if mode in ("two-abandoned", "first-return-403", "annas-first-return-403")
+        else 1
     )
     assert all("rate_bytes_per_second=" in m and "seconds_left=" in m for m in messages)
     assert all(
@@ -438,8 +477,10 @@ async def test_f2_margin_keeps_link_within_one_point_five_times_left(
 ):
     body = BODY[: 128 * 1024]
     digest = hashlib.md5(body).hexdigest()
+    # After the drop: 1 s remainder + 0.25 s wait, against 0.85 s left.
+    # The projection fits 1.5 * 0.85 but not 1.4 * 0.85.
     router, resolved = install_router(
-        monkeypatch, SourceConfig(download_timeout=2.1, preflight_enabled=False)
+        monkeypatch, SourceConfig(download_timeout=1.85, preflight_enabled=False)
     )
     calls = []
 
@@ -600,3 +641,58 @@ async def test_return_handles_direct_stream_error_and_closes_original(
     assert calls == ["https://libgen.li/file"] * 2
     assert closed == [True]
     assert Path(result).read_bytes() == body
+
+
+@pytest.mark.asyncio
+async def test_quiet_guard_does_not_cache_a_later_http_failure(
+    tmp_path, monkeypatch, clock, capsys
+):
+    # 512 KiB in one second leaves a 1.25 s estimate against 29 s remaining.
+    # The guard permits a resume, which then gets 403; this is not abandonment.
+    # Calling the observer on that quiet check would wrongly request li again.
+    body = BODY[: 1024 * 1024]
+    router, resolved = install_router(
+        monkeypatch,
+        SourceConfig(download_timeout=30, preflight_enabled=False),
+        ("li", "vg", "la"),
+    )
+    calls = []
+
+    async def resolve(_client, mirror, _md5):
+        resolved.append(mirror)
+        return ("synthetic", "fixture") if mirror == "li" else (None, "no key")
+
+    monkeypatch.setattr(router._libgen, "_resolve_key", resolve)
+
+    def handler(request):
+        start = int(request.headers.get("Range", "bytes=0-")[6:-1])
+        calls.append((request.url.host, start))
+        if len(calls) == 1:
+            return httpx.Response(
+                200,
+                headers={"Content-Length": str(len(body))},
+                stream=Drop(clock, body[: 512 * 1024], 1),
+            )
+        return httpx.Response(403)
+
+    install_http(monkeypatch, handler)
+    try:
+        with pytest.raises(AllSourcesFailedError) as error:
+            await bridge._fetch_from_source(
+                {"source": "libgen", "md5": hashlib.md5(body).hexdigest()},
+                str(tmp_path),
+            )
+    finally:
+        await router.close()
+    assert calls == [("libgen.li", 0), ("libgen.li", 512 * 1024)]
+    assert resolved == ["li", "vg", "la"]
+    assert [f.host for f in error.value.failures] == [
+        "libgen.li",
+        "libgen.vg",
+        "libgen.la",
+    ]
+    assert error.value.failures[0].reason == "http_error"
+    assert not list(tmp_path.iterdir())
+    captured = capsys.readouterr()
+    assert "recovery feasibility guard" not in captured.err
+    assert captured.out == ""

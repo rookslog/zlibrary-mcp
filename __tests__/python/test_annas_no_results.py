@@ -11,7 +11,7 @@ from test_annas_member import KEY, FakeSite
 pytest_plugins = ["test_annas_member"]
 
 SYNTHETIC = (
-    Path(__file__).parent / "fixtures/annas-browser/fu4/no-results-synthetic.html"
+    Path(__file__).parent / "fixtures/annas-search/no-results-synthetic.html"
 ).read_text()
 MARKER = '<div><span class="font-bold">No files found.</span></div>'
 FORM = '<form class="js-search-form" role="search">{}</form>'

@@ -118,6 +118,19 @@ Coverage thresholds are enforced -- CI will fail if coverage drops below the pro
 
 ### Test tiers and credentials
 
+The scheduled upstream workflow uses a dedicated CI test account, configured
+with repository secrets `ZLIBRARY_CI_EMAIL` and `ZLIBRARY_CI_PASSWORD`. These map
+to the existing `ZLIBRARY_EMAIL` and `ZLIBRARY_PASSWORD` test environment variables.
+The existing host check runs first. If either secret is absent after admission,
+the live step emits `status=no_account` and reports "live suite not run: no CI
+account configured" without collecting tests or logging in. This is no live
+coverage, not a pass or a recovery; it cannot itself create a drift issue.
+Reachability and offline checks continue independently.
+
+The live step uses short tracebacks and filters the configured literal values
+before uploading diagnostic files. If filtering fails, those files are not
+uploaded. This keeps test output out of uploaded files.
+
 | Tier | Command | Needs |
 |------|---------|-------|
 | Fast (PR gate) | `uv run pytest -m "not slow and not integration and not performance"` | Nothing extra |

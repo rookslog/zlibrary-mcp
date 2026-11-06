@@ -4,6 +4,7 @@ import importlib.util
 import json
 import os
 from pathlib import Path
+import shutil
 import subprocess
 import sys
 import xml.etree.ElementTree as ET
@@ -275,8 +276,8 @@ def test_workflow_live_step_classifies_and_retains_evidence(
     )
     contexts = {
         "secrets": {
-            "ZLIBRARY_EMAIL": "offline@example.test",
-            "ZLIBRARY_PASSWORD": "offline",
+            "ZLIBRARY_CI_EMAIL": "offline@example.test",
+            "ZLIBRARY_CI_PASSWORD": "offline",
         },
         "needs": {
             "reachability": {
@@ -448,6 +449,11 @@ def test_live_job_never_invokes_integration_without_explicit_unblocked(
     )
     fake_uv.chmod(0o755)
     live_output = tmp_path / "live-output"
+    (tmp_path / "scripts").mkdir()
+    shutil.copyfile(
+        ROOT / "scripts/filter_live_test_output.py",
+        tmp_path / "scripts/filter_live_test_output.py",
+    )
 
     def enabled(condition):
         result = subprocess.run(
@@ -458,7 +464,7 @@ def test_live_job_never_invokes_integration_without_explicit_unblocked(
                 # GitHub compares expression strings without case sensitivity.
                 "const lower=v=>typeof v==='string'?v.toLowerCase():"
                 "v&&typeof v==='object'?Object.fromEntries(Object.entries(v).map(([k,x])=>[k,lower(x)])):v;"
-                "console.log(new Function('needs','steps','return '+d.condition)(lower(d.needs),lower(d.steps)));",
+                "console.log(new Function('needs','steps','always','return '+d.condition)(lower(d.needs),lower(d.steps),()=>true));",
             ],
             input=json.dumps({"condition": condition, "needs": needs, "steps": steps}),
             capture_output=True,
@@ -474,8 +480,8 @@ def test_live_job_never_invokes_integration_without_explicit_unblocked(
         contexts = {
             "needs": needs,
             "secrets": {
-                "ZLIBRARY_EMAIL": "dummy@example.test",
-                "ZLIBRARY_PASSWORD": "dummy",
+                "ZLIBRARY_CI_EMAIL": "dummy@example.test",
+                "ZLIBRARY_CI_PASSWORD": "dummy",
             },
         }
         for key, expression in step.get("env", {}).items():
@@ -726,8 +732,8 @@ def test_live_job_validates_policy_before_diagnostics(workflow, tmp_path, state)
             "listed.invalid",
             "unknown",
         ),
-        ('DEFAULT_EAPI_DOMAINS = ["listed.invalid"]', "listed.invalid", "skipped"),
-        ('DEFAULT_EAPI_DOMAINS = ("listed.invalid",)', "listed.invalid", "skipped"),
+        ('DEFAULT_EAPI_DOMAINS = ["listed.invalid"]', "listed.invalid", "no_account"),
+        ('DEFAULT_EAPI_DOMAINS = ("listed.invalid",)', "listed.invalid", "no_account"),
     ],
 )
 def test_live_policy_accepts_only_one_valid_literal(
@@ -793,7 +799,7 @@ def test_live_policy_uses_isolated_interpreter(workflow, tmp_path, module_name):
     assert not marker.exists()
     assert (
         dict(line.split("=", 1) for line in output.read_text().splitlines())["status"]
-        == "skipped"
+        == "no_account"
     )
 
 
@@ -859,3 +865,100 @@ def test_workflow_retains_console_policy_on_interruption(workflow, tmp_path):
 
 def test_reachability_job_has_bounded_duration(workflow):
     assert workflow["jobs"]["reachability"]["timeout-minutes"] == 20
+
+
+@pytest.mark.parametrize(
+    "email,password,configured",
+    [
+        ("", "", False),
+        ("offline@example.test", "", False),
+        ("", "synthetic-password", False),
+        ("offline@example.test", "synthetic-password", True),
+    ],
+    ids=["no-account", "email-only", "password-only", "configured"],
+)
+def test_ci_account_configuration_controls_real_live_shell(
+    workflow, tmp_path, email, password, configured
+):
+    """Only provider-facing pytest is replaced; classify the recorded result."""
+    report = write_report(tmp_path).rename(tmp_path / "recorded.xml")
+    calls = tmp_path / "uv-calls"
+    fake_uv = tmp_path / "uv"
+    fake_uv.write_text(
+        f"#!{sys.executable}\nimport os,sys,json,shutil\nfrom pathlib import Path\n"
+        f"with Path({str(calls)!r}).open('a') as out:\n"
+        "    out.write(json.dumps(sys.argv[1:]) + '\\n')\n"
+        "if sys.argv[1:3] == ['run', 'pytest']:\n"
+        "    if '--collect-only' in sys.argv:\n        sys.exit(0)\n"
+        "    shutil.copyfile(os.environ['SYNTHETIC_REPORT'], 'live.xml')\n"
+        "    print('offline pytest log')\n    sys.exit(0)\n"
+        "assert sys.argv[1:3] == ['run', 'python']\n"
+        f"os.execv(sys.executable, [sys.executable, str(Path({str(ROOT)!r}) / sys.argv[3]), *sys.argv[4:]])\n"
+    )
+    fake_uv.chmod(0o755)
+    step = next(
+        s for s in workflow["jobs"]["live_tests"]["steps"] if s.get("id") == "live"
+    )
+    contexts = {
+        "secrets": {"ZLIBRARY_CI_EMAIL": email, "ZLIBRARY_CI_PASSWORD": password},
+        "needs": {
+            "reachability": {
+                "outputs": {"zlib_blocked": "false", "zlib_domain": "z-library.ec"}
+            }
+        },
+    }
+    step_env = {}
+    for key, expression in step["env"].items():
+        value = contexts
+        for part in expression.removeprefix("${{ ").removesuffix(" }}").split("."):
+            value = value.get(part, "") if isinstance(value, dict) else ""
+        step_env[key] = value
+    output, summary = tmp_path / "output", tmp_path / "summary"
+    run = subprocess.run(
+        ["bash", "-e", "-o", "pipefail", "-c", step["run"]],
+        cwd=tmp_path,
+        capture_output=True,
+        text=True,
+        env={
+            **os.environ,
+            **step_env,
+            "PATH": f"{tmp_path}:{os.environ['PATH']}",
+            "GITHUB_OUTPUT": str(output),
+            "GITHUB_STEP_SUMMARY": str(summary),
+            "SYNTHETIC_REPORT": str(report),
+        },
+    )
+    assert run.returncode == 0, run.stdout + run.stderr
+    values = dict(line.split("=", 1) for line in output.read_text().splitlines())
+    assert values == {
+        "status": "passed" if configured else "no_account",
+        "blocked": "false",
+    }
+    invocations = (
+        [json.loads(line) for line in calls.read_text().splitlines()]
+        if calls.exists()
+        else []
+    )
+    if configured:
+        assert len(invocations) == 3
+        assert (
+            invocations[0][:4]
+            == invocations[1][:4]
+            == ["run", "pytest", "-m", "integration"]
+        )
+        assert (
+            "--collect-only" in invocations[0]
+            and "--collect-only" not in invocations[1]
+        )
+        assert invocations[2][:3] == ["run", "python", "scripts/classify_live_tests.py"]
+        assert "Live suite: passed;" in summary.read_text()
+    else:
+        assert invocations == [], "No account must skip collection and execution"
+        message = "live suite not run: no CI account configured"
+        assert message in run.stdout
+        assert summary.read_text().strip() == message
+        assert "passed" not in summary.read_text().lower()
+        assert (
+            not (tmp_path / "live.log").exists()
+            and not (tmp_path / "live.xml").exists()
+        )

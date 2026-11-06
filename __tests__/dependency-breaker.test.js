@@ -1,3 +1,4 @@
+import './helpers/environment-login.js';
 import { jest, beforeEach, afterEach, expect, test } from '@jest/globals';
 
 // Real API/retry/breaker; only interpreter lookup and the process boundary are fake.

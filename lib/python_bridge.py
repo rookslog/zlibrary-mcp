@@ -61,6 +61,8 @@ from lib.auth_diagnostics import (
 
 # Import enhanced metadata extraction
 from lib import enhanced_metadata
+from lib.login_store import resolve as resolve_login, StoreError
+from lib.login_runtime import SavedLoginClient
 
 # Import multi-source router
 from lib.sources.router import SourceRouter
@@ -321,9 +323,11 @@ async def get_eapi_client() -> EAPIClient:
     return _eapi_client
 
 
-async def _validate_eapi_profile(client):
+async def _validate_eapi_profile(client, *, saved=False):
     profile = await client.get_profile()
     if isinstance(profile, dict) and profile.get("success") == 0:
+        if saved or isinstance(client, SavedLoginClient):
+            raise RuntimeError("Unexpected EAPI profile response; session retained")
         token = sanitized_auth_token(profile.get("error"))
         if any(
             secret and secret in token
@@ -349,14 +353,31 @@ async def _validate_eapi_profile(client):
 async def initialize_eapi_client() -> EAPIClient:
     """Use the parent generation, or log in only for a parent acquisition/per-call."""
     global _eapi_client, _session_input
-    email = os.environ.get("ZLIBRARY_EMAIL")
-    password = os.environ.get("ZLIBRARY_PASSWORD")
+    login = resolve_login()
+    if os.environ.get("ZLIBRARY_LOGIN_EXPECTED_ORIGIN") == "saved" and (
+        login.origin != "saved"
+        or login.identity != os.environ.get("ZLIBRARY_LOGIN_EXPECTED_IDENTITY")
+    ):
+        raise StoreError("Saved login changed; run zlibrary login and retry")
+    email = login.identity
+    password = login.password.reveal()
+    if login.origin == "saved":
+        if _session_input is not None and (
+            _session_input.get("identity") != email
+            or _session_input.get("action") not in ("login", "validate", "operation")
+        ):
+            raise ValueError("Invalid private session identity or action")
+        _eapi_client = SavedLoginClient(
+            login, os.environ.get("ZLIBRARY_EAPI_DOMAIN", "").strip() or None
+        )
+        _attach_eapi_session(_eapi_client)
+        return _eapi_client
     if not email or not password:
         from lib.acquisition import AcquisitionError
 
         error = AcquisitionError(
             "configuration_error",
-            "ZLIBRARY_EMAIL and ZLIBRARY_PASSWORD environment variables required",
+            "Run zlibrary login or configure ZLIBRARY_EMAIL and ZLIBRARY_PASSWORD",
             issued=False,
         )
         error._eapi_local_refusal = True
@@ -444,7 +465,9 @@ def _attach_eapi_session(client):
         )
         try:
             try:
-                await _validate_eapi_profile(replacement)
+                await _validate_eapi_profile(
+                    replacement, saved=isinstance(client, SavedLoginClient)
+                )
             except (
                 httpx.RequestError,
                 httpx.HTTPStatusError,
@@ -1784,8 +1807,9 @@ async def _fetch_from_source(book_details: dict, output_dir: str) -> str:
                         host_observer=lambda host: _set_active_host(host),
                         progress_observer=observe_progress,
                         config=config,
-                        abandon_observer=lambda item=result,
-                        stamp=observed_at: remember_abandoned(item, stamp),
+                        abandon_observer=lambda item=result, stamp=observed_at: (
+                            remember_abandoned(item, stamp)
+                        ),
                         seconds_left=(lambda: max(0.0, expires - loop.time()))
                         if guarded and getattr(result, "has_more_candidates", False)
                         else None,
@@ -2566,12 +2590,10 @@ async def _dispatch_bridge_function(function_name: str, args_dict: dict):
         async def authenticated_transfer(book, directory, **kwargs):
             source = str(book.get("source") or "zlibrary").lower()
             if source not in SOURCE_ALIASES:
-                if not os.environ.get("ZLIBRARY_EMAIL") or not os.environ.get(
-                    "ZLIBRARY_PASSWORD"
-                ):
+                if resolve_login().origin == "none":
                     raise AcquisitionError(
                         "configuration_error",
-                        "Configure ZLIBRARY_EMAIL and ZLIBRARY_PASSWORD",
+                        "Run zlibrary login or configure ZLIBRARY_EMAIL and ZLIBRARY_PASSWORD",
                     )
                 try:
                     await initialize_eapi_client()

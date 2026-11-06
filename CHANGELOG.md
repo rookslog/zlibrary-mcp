@@ -7,7 +7,29 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- `zlibrary login`, `status`, `logout`, and `mcp` commands, including hidden
+  credential prompts, `--password-stdin`, and secret-free JSON status. Both
+  the existing `zlibrary-mcp` bin and no-argument entrypoint still start MCP.
+- A Python-owned POSIX file login backend with private permissions, atomic
+  replacement, writer locking, and increasing generations. Saved logins take
+  precedence over environment credentials when usable, unless `ZLIBRARY_PREFER_ENV=1`.
+  Explicit refusal rereads a newer key for the same identity and retries once;
+  an in-flight saved session never switches to an environment password. Expiry
+  remains unknown. Keychain and Python environment relocation remain deferred.
+
 ### Fixed
+
+- Login and logout recover corrupt login JSON while preserving private-file
+  checks and generation history. Unsafe ownership, modes, links, and hardlinks
+  remain refused.
+- Symlinks at or above the state root are supported; no-follow checks remain on
+  the project-owned directories and files.
+- Unusable saved storage no longer prevents environment authentication or an
+  unconfigured account result. Closed notices report the problem in status;
+  absent storage stays silent. Saved-session renewal still stops on an unusable
+  store without switching to an environment password.
 
 - Source downloads persist decoded chunks without waiting for a full buffer,
   preserving partial tails. New high-water gain accumulates

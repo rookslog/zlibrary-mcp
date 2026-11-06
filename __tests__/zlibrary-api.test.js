@@ -1,3 +1,4 @@
+import './helpers/environment-login.js';
 import { jest, describe, beforeEach, test, expect, afterEach } from '@jest/globals';
 import * as fs from 'fs'; // Keep for potential use in download tests if needed, though likely removable
 import * as path from 'path'; // Keep for path assertions

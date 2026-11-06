@@ -1,3 +1,4 @@
+import { readLoginMetadata } from './login.js';
 import { z } from 'zod';
 import { RefStore } from './refs.js';
 import { checkRowFilters, FILTER_CAPABILITIES } from './row-filters.js';
@@ -194,6 +195,8 @@ export class AcquisitionTools {
     { source: Source; remaining: number; as_of: string; basis: 'observed' | 'decremented' }
   >();
   private defaultOrder?: Source[];
+  private loginConfigured = false;
+  private loginRefused = false;
   constructor(
     private invoke: Invoke,
     private env: Record<string, string | undefined> = process.env,
@@ -214,7 +217,7 @@ export class AcquisitionTools {
     const configured =
       source === 'libgen' ||
       (source === 'zlibrary'
-        ? Boolean(this.env.ZLIBRARY_EMAIL && this.env.ZLIBRARY_PASSWORD)
+        ? this.loginConfigured
         : Boolean(this.env.ANNAS_SECRET_KEY) && annasBaseTrusted);
     return {
       configured,
@@ -234,7 +237,9 @@ export class AcquisitionTools {
                   : !annasBaseTrusted
                     ? 'Anna’s Archive base is not trusted for the key; search is available. Set ANNAS_BASE_URL to a trusted host and ANNAS_SECRET_KEY for download.'
                     : 'Set ANNAS_SECRET_KEY for download; search needs no key.'
-                : 'Set ZLIBRARY_EMAIL and ZLIBRARY_PASSWORD.',
+                : this.loginRefused
+                  ? 'Login store refused; check setup and private permissions, then run zlibrary login.'
+                  : 'Run zlibrary login or set ZLIBRARY_EMAIL and ZLIBRARY_PASSWORD.',
           }
         : {}),
     };
@@ -314,6 +319,22 @@ export class AcquisitionTools {
         });
       if (options.signal?.aborted)
         throw new ToolFailure('cancelled', 'Call cancelled before any request.', { retry: 'safe' });
+      try {
+        const login = await readLoginMetadata(
+          {
+            ...process.env,
+            ...this.env,
+            ZLIBRARY_EMAIL: this.env.ZLIBRARY_EMAIL,
+            ZLIBRARY_PASSWORD: this.env.ZLIBRARY_PASSWORD,
+          },
+          { signal: options.signal, timeoutMs: options.timeoutMs },
+        );
+        this.loginConfigured = login.configured;
+        this.loginRefused = false;
+      } catch {
+        this.loginConfigured = false;
+        this.loginRefused = true;
+      }
       if (name === 'get_limits') return await this.limits(args, options);
       if (name === 'get_history') return await this.historyPage(args, options);
       if (name === 'search') return await this.page('search', args, options);

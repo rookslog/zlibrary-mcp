@@ -101,7 +101,7 @@ export async function protocolSmoke(
   expected,
   version,
   journey,
-  { legacy = false } = {},
+  { legacy = false, saved = false } = {},
 ) {
   // Spawn the npm-created executable link itself, not node <source>/dist/index.js.
   await access(bin);
@@ -202,7 +202,7 @@ export async function protocolSmoke(
     } else {
       const data = await call('get_limits', { mode: 'local' });
       assert.equal(data.sources.libgen.download_available, true);
-      assert.equal(data.sources.zlibrary.configured, Boolean(env.ZLIBRARY_EMAIL));
+      assert.equal(data.sources.zlibrary.configured, Boolean(env.ZLIBRARY_EMAIL) || saved);
       process.stdout.write(
         `Installed bin: initialize, tools/list (${surface.length} tools), get_limits local passed.\n`,
       );
@@ -461,6 +461,54 @@ export async function main(args = process.argv.slice(2)) {
         );
         assert.equal(await readFile(trap, 'utf8'), '', 'Journey attempted non-loopback egress');
       }
+      await fake.mode({ mode: 'healthy', reset: true, remaining: 7 });
+      const savedEnvironment = {
+        ...runtime,
+        ...fake.providerEnvironment(),
+        ZLIBRARY_OUTPUT_ROOT: path.join(home, 'outputs', 'saved'),
+        RETRY_MAX_RETRIES: '0',
+      };
+      await mkdir(savedEnvironment.ZLIBRARY_OUTPUT_ROOT, { recursive: true });
+      await run(
+        python,
+        [
+          '-c',
+          "import asyncio, os, sys; sys.path.insert(0, sys.argv[1] + '/lib'); from python_bridge import _login_eapi_client; from lib.login_store import save\nasync def main():\n client = await _login_eapi_client(os.environ['ZLIBRARY_EMAIL'], os.environ['ZLIBRARY_PASSWORD'])\n try: save(identity=os.environ['ZLIBRARY_EMAIL'], user_id=client.remix_userid, user_key=client.remix_userkey, domain=client.domain)\n finally: await client.close()\nasyncio.run(main())",
+          installed,
+        ],
+        { cwd: installed, env: savedEnvironment },
+      );
+      delete savedEnvironment.ZLIBRARY_EMAIL;
+      delete savedEnvironment.ZLIBRARY_PASSWORD;
+      const alias = path.join(prefix, 'node_modules/.bin/zlibrary');
+      assert.equal(await realpath(alias), path.join(installed, manifest.bin.zlibrary));
+      const status = JSON.parse(
+        await run(alias, ['status', '--json'], { cwd: home, env: savedEnvironment }),
+      );
+      assert.equal(status.origin, 'saved');
+      assert.equal(status.backend, 'file');
+      assert.equal(status.works, 'working');
+      assert.equal(status.expiry, 'unknown');
+      assert(!Object.hasOwn(status, 'user_key'));
+      await protocolSmoke(
+        alias,
+        home,
+        savedEnvironment,
+        expected,
+        manifest.version,
+        (call) =>
+          acquisitionJourney(call, fake, 'zlibrary', savedEnvironment.ZLIBRARY_OUTPUT_ROOT, false),
+        { saved: true },
+      );
+      const removed = JSON.parse(
+        await run(alias, ['logout', '--json'], { cwd: home, env: savedEnvironment }),
+      );
+      assert(removed.message.includes('not cancelled'));
+      const absent = JSON.parse(
+        await run(alias, ['status', '--json'], { cwd: home, env: savedEnvironment }),
+      );
+      assert.equal(absent.origin, 'none');
+      assert.equal(absent.works, 'not_configured');
     } finally {
       try {
         process.stdout.write(`Final fake counters: ${JSON.stringify(await fake.stats())}\n`);

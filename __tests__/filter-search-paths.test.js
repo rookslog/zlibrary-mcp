@@ -1,3 +1,4 @@
+import './helpers/environment-login.js';
 import { afterEach, expect, jest, test } from '@jest/globals';
 const run = jest.fn(async () => [JSON.stringify({ content: [{ type: 'text', text: JSON.stringify({ books: [] }) }] })]);
 jest.unstable_mockModule('../lib/venv-manager.js', () => ({ getManagedPythonPath: async () => '/offline/python' }));

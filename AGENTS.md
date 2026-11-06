@@ -79,6 +79,8 @@ production.
 - `src/lib/zlibrary-api.ts` — bridge to Python via PythonShell
 - `src/lib/venv-manager.ts` — uv environment lifecycle
 - `lib/python_bridge.py` — core Z-Library operations
+- `lib/login_store.py`, `lib/login_runtime.py`, `lib/login_cli.py` — saved login authority and commands
+- `src/lib/login.ts` — Python metadata queries and CLI dispatch; never reads saved keys
 - `lib/sources/` — source adapters
 - `zlibrary/` — vendored fork of sertraline/zlibrary with custom download logic
 
@@ -161,12 +163,19 @@ CodeRabbit was retired 2026-08-11; its comments on older PRs are historical.
 **Branches**: `feature/`, `fix/`, `chore/`, `docs/`. A branch older than two weeks is a
 defect with a clock on it, and `npm run audit:release` will say so.
 
-**Secrets** live in the environment, never in code or committed files. `ZLIBRARY_EMAIL`
-and `ZLIBRARY_PASSWORD` are **required for Z-Library operations only**, not for the server
-as a whole: `src/index.ts::start` deliberately warns and continues when they
-are absent, because LibGen search and download need no account. A credential-free LibGen
-setup is supported — do not turn that warning into fatal startup validation.
-`ZLIBRARY_MIRROR` is optional.
+**Secrets** live in the environment or the private per-user login store, never in
+code or committed files. An environment account (`ZLIBRARY_EMAIL` and
+`ZLIBRARY_PASSWORD`) or a saved `zlibrary login` is **required for Z-Library
+operations only**, not for the server as a whole. `src/index.ts::start` deliberately
+warns and continues when neither is configured, because LibGen search and download
+need no account. A credential-free LibGen setup is supported — do not turn that
+warning into fatal startup validation.
+`ZLIBRARY_MIRROR` is optional. Python's login resolver returns environment
+credentials or an unconfigured account with a closed notice when saved storage
+is unusable; strict `load()` still refuses that storage. Login/logout may recover
+content corruption after safety checks. Canonicalize the caller-owned state root;
+no-follow and private-permission checks apply to project-owned entries. A refused
+saved session never switches to an environment password during renewal.
 
 ## Parked text-processing work
 

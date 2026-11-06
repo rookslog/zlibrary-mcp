@@ -1,4 +1,5 @@
 """Synthetic transfer boundary over the real acquisition/receipt implementation."""
+
 import asyncio
 import json
 from pathlib import Path
@@ -17,13 +18,17 @@ async def transfer(book, directory, *, filename, publication_hook):
     with (root / "transfers").open("a") as stream:
         stream.write(book["source"] + "\n")
     if mode == "issued":
-        raise AcquisitionError("provider_error", "Synthetic transfer failure", issued=True)
+        raise AcquisitionError(
+            "provider_error", "Synthetic transfer failure", issued=True
+        )
     stage = Path(directory) / ".synthetic-stage"
     stage.write_bytes(payload)
     target = Path(directory) / destination_name(book, filename)
     publication_hook(stage, target)
     if mode == "checkpoint":
-        raise AcquisitionError("provider_error", "Synthetic publication failure", issued=True)
+        raise AcquisitionError(
+            "provider_error", "Synthetic publication failure", issued=True
+        )
     stage.replace(target)
     return {"file_path": str(target), "publication_reused": False}
 
@@ -32,10 +37,14 @@ async def main():
     try:
         result = await acquire(**args, transfer=transfer)
         if mode == "lost":
-            raise AcquisitionError("outcome_unknown", "Synthetic lost reply", issued=True)
+            raise AcquisitionError(
+                "outcome_unknown", "Synthetic lost reply", issued=True
+            )
         return result
     except AcquisitionError as error:
-        return {"synthetic_error": {"reason": error.reason, "request_issued": error.issued}}
+        return {
+            "synthetic_error": {"reason": error.reason, "request_issued": error.issued}
+        }
 
 
 print(json.dumps(asyncio.run(main())))

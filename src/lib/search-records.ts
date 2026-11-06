@@ -24,6 +24,8 @@ interface RecordState {
   id: number;
   plan: SearchPlan;
   refill?: RefillWindow;
+  dispatched: readonly string[];
+  refusals: readonly Extract<CollectedSource, { state: 'not_asked' }>[];
   aliases: Set<string>;
   windows: Map<number, Window>;
   pages: Map<string, SearchReply>;
@@ -154,6 +156,31 @@ export class SearchRecords {
       id: ++this.serial,
       plan,
       refill: options.refill,
+      dispatched: immutable(
+        Object.entries(prepared.sources)
+          .filter(([, line]) => line.state !== 'not_asked')
+          .map(([name]) => name),
+      ),
+      refusals: immutable(
+        input.flatMap((result) =>
+          result.state === 'not_asked'
+            ? [
+                {
+                  ...result,
+                  ...(result.failure
+                    ? {
+                        failure: new ToolFailure(
+                          result.failure.code,
+                          result.failure.message,
+                          structuredClone(result.failure.info),
+                        ),
+                      }
+                    : {}),
+                },
+              ]
+            : [],
+        ),
+      ),
       aliases: new Set(),
       windows: new Map(),
       pages: new Map(),
@@ -178,8 +205,8 @@ export class SearchRecords {
     const limit = record.plan.request.limit ?? 10;
     let next: { window: number; offset: number } | undefined;
     if (offset + limit < prepared.rows.length) next = { window: number, offset: offset + limit };
-    else if (record.plan.intent.length === 1 && record.refill) {
-      const line = prepared.sources[record.plan.intent[0]!]!;
+    else if (record.dispatched.length === 1 && record.refill) {
+      const line = prepared.sources[record.dispatched[0]!]!;
       if ('more' in line && line.more) next = { window: number + 1, offset: 0 };
     }
     let cursor: string | undefined;
@@ -207,9 +234,9 @@ export class SearchRecords {
         );
         const result = await Promise.race([record.refill!(number, controller.signal), stopped]);
         this.touch(record); // Fence eviction before any aliases or pages are allocated.
-        if (result.source !== record.plan.intent[0])
+        if (result.source !== record.dispatched[0])
           throw new ToolFailure('invalid_argument', 'Refill changed source.');
-        const prepared = this.prepare(record.plan, [result]);
+        const prepared = this.prepare(record.plan, [result, ...record.refusals]);
         if (prepared.error)
           throw new ToolFailure(prepared.error.code, prepared.error.message, prepared.error);
         const window = this.retainWindow(record, prepared);

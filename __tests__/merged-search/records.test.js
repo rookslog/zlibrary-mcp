@@ -1,4 +1,5 @@
 import { expect, jest, test } from '@jest/globals';
+import { ToolFailure } from '../../dist/lib/tool-errors.js';
 import { RefStore } from '../../dist/lib/refs.js';
 import { SearchRecords } from '../../dist/lib/search-records.js';
 import { planSearch } from '../../dist/lib/search-assembly.js';
@@ -51,4 +52,19 @@ test('failed refill can retry explicitly; wrong kind and invalid capacity are re
 
 test('retiring a stable alias releases it permanently without rewinding allocation',()=>{
  const refs=new RefStore({nonce:1n});const a=refs.mintStable('r',{id:'a'});refs.discard(a);refs.discard(a);expect(()=>refs.get(a,'r')).toThrow(expect.objectContaining({code:'ref_unavailable',info:expect.objectContaining({detail:expect.objectContaining({reason:'expired'})})}));const b=refs.mintStable('r',{id:'a'});expect(b).not.toBe(a);expect(refs.get(b,'r')).toEqual({id:'a'});
+});
+
+for(const mode of ['named','operator']) for(const source of ['libgen','zlibrary']) {
+ test(`R4-01 ${mode} intent retains refusals while the sole dispatched ${source} refills and replays`,async()=>{
+  const blocked=source==='libgen'?'zlibrary':'libgen';const input={query:'Solaris',limit:1,...(mode==='named'?{sources:[blocked,source]}:{})};const settings={waitMs:12000,...(mode==='operator'?{operatorSources:[blocked,source]}:{})};const p=planSearch(input,views,settings);const s=store(2),pending=deferred(),refill=jest.fn(()=>pending.promise);const refusal={source:blocked,state:'not_asked',reason:'breaker_open',retry_after_s:10};
+  const first=s.retain(p,[window(source,['a','b'],true),refusal],{refill});const local=await s.page(first.next_cursor);expect(refill).not.toHaveBeenCalled();expect(local.next_cursor).toBeDefined();refusal.reason='changed after retention';
+  const a=s.page(local.next_cursor),b=s.page(local.next_cursor),paired=Promise.all([a,b]);await Promise.resolve();expect(refill).toHaveBeenCalledTimes(1);expect(refill.mock.calls[0][0]).toBe(2);pending.resolve(window(source,['c']));const [,next]=await paired;expect(await s.page(local.next_cursor)).toEqual(next);expect(refill).toHaveBeenCalledTimes(1);
+  for(const page of [first,local,next]){expect(page.sources[blocked]).toEqual({state:'not_asked',reason:'breaker_open',retry_after_s:10});expect(page.all_answered).toBe(false);expect(page.note).toContain(`${blocked}: not_asked (breaker_open)`);expect(page.rows[0].source).toBe(source);}expect(s.select(next.rows[0].ref).copy.id).toBe('c');expect(p.intent).toEqual(['libgen','zlibrary']);
+ });
+}
+test.each(['late','failed'])('R4-01 a dispatched %s peer still prevents single-source refill',state=>{
+ const s=store(2),refill=jest.fn();const peer=state==='late'?{source:'libgen',state,ms:12000}:{source:'libgen',state,ms:1,failure:new ToolFailure('provider_error','Failed.',{retry:'safe'})};const first=s.retain(plan(['libgen','zlibrary']),[peer,window('zlibrary',['a'],true)],{refill});expect(first.next_cursor).toBeUndefined();expect(refill).not.toHaveBeenCalled();
+});
+test('R4-01 empty refill with an unfulfilled intended source remains partial_failure',async()=>{
+ const s=store(2),refill=jest.fn(async()=>window('zlibrary',[]));const first=s.retain(plan(['libgen','zlibrary']),[{source:'libgen',state:'not_asked',reason:'auth_backoff',retry_after_s:4},window('zlibrary',['a'],true)],{refill});expect(first.next_cursor).toBeDefined();await expect(s.page(first.next_cursor)).rejects.toMatchObject({code:'partial_failure',info:{attempts:expect.arrayContaining([expect.objectContaining({source:'libgen',state:'not_asked',reason:'auth_backoff'})])}});expect(refill).toHaveBeenCalledTimes(1);
 });

@@ -126,6 +126,9 @@ the live step emits `status=no_account` and reports "live suite not run: no CI
 account configured" without collecting tests or logging in. This is no live
 coverage, not a pass or a recovery; it cannot itself create a drift issue.
 Reachability and offline checks continue independently.
+Scheduled runs also publish an attempt-bound [versioned source-health report](docs/schemas/source-health-v1.md)
+after both jobs, preserving missing or untested coverage rather than treating
+job success as a healthy source.
 
 The live step uses short tracebacks and filters the configured literal values
 before uploading diagnostic files. If filtering fails, those files are not

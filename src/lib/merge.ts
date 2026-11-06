@@ -1,5 +1,5 @@
 import { createHash } from 'node:crypto';
-import type { FilterStatus } from './row-filters.js';
+import type { FilterStatus, RowFilterResult } from './row-filters.js';
 
 export interface MergeMetadata {
   title?: string;
@@ -20,6 +20,8 @@ export interface MergeCopy {
   rank: number;
   md5?: string;
   metadata: MergeMetadata;
+  /** Complete predicate evidence from checkMergedRowFilters. */
+  filterResult?: Pick<RowFilterResult, 'status' | 'checks'>;
   filterStatus?: FilterStatus;
   downloadAvailable?: boolean;
   quotaRemaining?: number;
@@ -38,6 +40,13 @@ export interface CopyRef {
   ref: string;
   source: string;
   download_available?: false;
+  filter?: FilterStatus;
+  unknown?: string[];
+  year?: number;
+  language?: string;
+  format?: string;
+  title?: string;
+  author?: string;
 }
 export interface MergedRow extends MergeMetadata, CopyRef {
   match: MatchClass;
@@ -433,10 +442,53 @@ export function mergeRows(
     group.push(copy);
     groups.set(key, group);
   }
+  const filterFields = (copy: MergeCopy, status?: FilterStatus): string[] => {
+    const names = new Set<string>();
+    for (const [key, check] of Object.entries(copy.filterResult?.checks ?? {})) {
+      if (!check || (status && check.status !== status)) continue;
+      if (key === 'exact') {
+        for (const [field, wanted] of [
+          ['title', request.query],
+          ['author', request.author],
+        ] as const) {
+          if (!normalizeText(wanted)) continue;
+          const actual = normalizeText(copy.metadata[field]);
+          const outcome = !actual
+            ? 'unknown'
+            : phrase(actual, normalizeText(wanted))
+              ? 'pass'
+              : 'fail';
+          if (!status || outcome === status) names.add(field);
+        }
+      } else names.add(key === 'formats' ? 'format' : key === 'languages' ? 'language' : 'year');
+    }
+    return [...names];
+  };
+  const activeFields = new Set(
+    options.filtersActive ? copies.flatMap((copy) => filterFields(copy)) : [],
+  );
+  const alternate = (copy: MergeCopy): CopyRef => {
+    const ref = copyRef(copy);
+    if (!options.filtersActive) return ref;
+    const status = copy.filterResult?.status ?? copy.filterStatus ?? 'unknown';
+    return {
+      ...ref,
+      filter: status,
+      ...(status === 'fail'
+        ? Object.fromEntries(
+            filterFields(copy, 'fail').map((field) => [
+              field,
+              copy.metadata[field as keyof MergeMetadata],
+            ]),
+          )
+        : {}),
+      ...(status === 'unknown' ? { unknown: filterFields(copy, 'unknown') } : {}),
+    };
+  };
   const ranked: Ranked[] = [];
   for (const group of groups.values()) {
     const passing = options.filtersActive
-      ? group.filter((copy) => copy.filterStatus === 'pass')
+      ? group.filter((copy) => (copy.filterResult?.status ?? copy.filterStatus) === 'pass')
       : group;
     if (!passing.length) continue;
     const usableCopies = passing.filter(usable);
@@ -462,7 +514,7 @@ export function mergeRows(
         .filter((field) => known(recommended.metadata[field]))
         .map((field) => [field, recommended.metadata[field]]),
     );
-    const match = [...group]
+    const match = [...passing]
       .map((copy) => matchClass(copy, request))
       .sort((a, b) => classes[a] - classes[b])[0]!;
     const row: MergedRow = { ...metadata, ...copyRef(recommended), match };
@@ -470,7 +522,7 @@ export function mergeRows(
       .filter((copy) => copy !== recommended)
       .sort((a, b) => compare(a.source, b.source) || compare(a.id, b.id) || compare(a.ref, b.ref));
     if (others.length) {
-      row.other_copies = others.map(copyRef);
+      row.other_copies = others.map(alternate);
       row.route_basis =
         usableCopies.length === 1
           ? 'only_usable'
@@ -479,6 +531,7 @@ export function mergeRows(
             : 'stable_tie';
       const differs = fields.filter(
         (field) =>
+          !activeFields.has(field) &&
           new Set(
             group
               .map((copy) => copy.metadata[field])
@@ -491,7 +544,7 @@ export function mergeRows(
     ranked.push({
       row,
       fit: classes[match],
-      rank: Math.min(...group.map((copy) => copy.rank)),
+      rank: Math.min(...passing.map((copy) => copy.rank)),
       tie: hash(normalizeText(request.query), md5 ?? [recommended.source, recommended.id]),
       md5,
     });

@@ -54,7 +54,7 @@ test('F25 any passing copy admits a file, all copies remain reachable, and only 
   const before = JSON.stringify([a, b]);
   const [row] = merge([a, b], {}, { filtersActive: true, routeOrder: ['annas', 'libgen'] });
   expect(row.ref).toBe(a.ref);
-  expect(row.other_copies).toEqual([{ ref: b.ref, source: 'annas' }]);
+  expect(row.other_copies).toEqual([{ ref: b.ref, source: 'annas', filter: 'unknown', unknown: [] }]);
   expect(JSON.stringify([a, b])).toBe(before);
   expect(merge([b], {}, { filtersActive: true })).toEqual([]);
   expect(merge([copy('annas', 'f', { filterStatus: 'fail' })], {}, { filtersActive: true })).toEqual([]);

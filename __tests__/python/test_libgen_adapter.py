@@ -456,9 +456,9 @@ class TestLibgenAdapterDownload:
             "cdn-li.booksdl.test",
             "cdn-vg.booksdl.test",
             "cdn-la.booksdl.test",
-        ]
+        ] * 2
         assert {failure.reason for failure in excinfo.value.failures} == {"http_error"}
-        assert len(streams) == 3
+        assert len(streams) == 6
         assert all(stream.closed for stream in streams)
 
     @pytest.mark.asyncio
@@ -485,7 +485,7 @@ class TestLibgenAdapterDownload:
             "cdn-li.booksdl.test",
             "cdn-vg.booksdl.test",
             "cdn-la.booksdl.test",
-        ]
+        ] * 2
         assert {failure.reason for failure in excinfo.value.failures} == {
             "connect_timeout"
         }
@@ -507,7 +507,7 @@ class TestLibgenAdapterDownload:
             "libgen.li",
             "libgen.vg",
             "libgen.la",
-        ]
+        ] * 2
         assert {failure.reason for failure in excinfo.value.failures} == {
             "connect_timeout"
         }
@@ -585,7 +585,7 @@ class TestLibgenAdapterDownload:
             "libgen.li",
             "libgen.vg",
             "libgen.la",
-        ]
+        ] * 2
         assert {failure.reason for failure in excinfo.value.failures} == {
             "connect_timeout"
         }
@@ -614,7 +614,7 @@ class TestLibgenAdapterDownload:
             patch.object(adapter, "_serves_bytes", side_effect=trickle),
         ):
             with pytest.raises(AllSourcesFailedError, match="every source"):
-                await asyncio.wait_for(adapter.get_download_url(MD5), timeout=0.2)
+                await asyncio.wait_for(adapter.get_download_url(MD5), timeout=2.0)
 
 
 class TestLibgenAdapterRateLimiting:

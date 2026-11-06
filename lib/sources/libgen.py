@@ -849,7 +849,8 @@ class LibgenAdapter(SourceAdapter):
         """Yield one working clearnet candidate per unique mirror.
 
         Walks `_mirror_candidates()` and yields each mirror that resolves and
-        serves probe bytes, resuming at the next mirror when the consumer asks
+        serves probe bytes. If none resolves, retry once after a bounded delay
+        under the same deadline. Resume at the next mirror when the consumer asks
         again. The previous implementation looked the book up with
         `search_title(md5)`, but LibGen's title index contains no md5 strings,
         so that returned nothing and this method raised for every input — it
@@ -882,86 +883,110 @@ class LibgenAdapter(SourceAdapter):
             follow_redirects=True,
             headers={"User-Agent": get_user_agent(self.config)},
         ) as client:
-            for index, mirror in enumerate(mirrors):
-                # The walk is bounded by the clock, not by a mirror cap: every
-                # configured fallback stays a candidate, and `la` is reachable
-                # even when an operator has set a custom LIBGEN_MIRROR ahead of
-                # it — which capping the list took away (Codex on #153).
-                if (
-                    deadline.reserve(
-                        self.config.total_timeout,
-                        minimum=_attempt_minimum(self.config, mirror),
-                    )
-                    is None
-                ):
-                    failures.append(self._unattempted(mirrors[index:], deadline))
-                    break
-
-                try:
-                    await self._preflight(mirror)
-                except ProviderUnreachableError as exc:
-                    failures.append(exc)
-                    logger.warning(f"LibGen mirror {mirror} unreachable: {exc}")
-                    continue
-
-                if await self._rate_limit(deadline, minimum_after=1.0) is False:
-                    failures.append(self._unattempted(mirrors[index:], deadline))
-                    break
-
-                budget = deadline.reserve(self.config.total_timeout, minimum=1.0)
-                if budget is None:
-                    failures.append(self._unattempted(mirrors[index:], deadline))
-                    break
-
-                async def resolve_attempt() -> tuple[Optional[str], str]:
-                    """Resolve and validate one mirror under one total budget."""
-                    key, key_detail = await self._resolve_key(client, mirror, md5)
-                    if not key:
-                        return None, key_detail
-
-                    candidate = f"https://libgen.{mirror}/get.php?md5={md5}&key={key}"
-                    ok, detail = await self._serves_bytes(client, candidate)
-                    return (candidate if ok else None), detail
-
-                try:
-                    url, detail = await bounded_await(
-                        resolve_attempt(),
-                        budget,
-                        provider=PROVIDER,
-                        host=mirror_host(mirror),
-                        operation="download resolution",
-                    )
-                except Exception as exc:  # network, TLS, HTTP error
-                    failure = self._as_source_error(exc, mirror_host(mirror))
-                    failures.append(failure)
-                    logger.warning(
-                        f"LibGen mirror {mirror} failed for {md5}: {failure}"
-                    )
-                    continue
-
-                if not url:
-                    failures.append(
-                        ProviderResponseError(
-                            PROVIDER,
-                            mirror_host(mirror),
-                            detail,
-                            reason="protocol_error",
+            yielded = False
+            for pass_index in range(2):
+                if pass_index:
+                    # Only a wholly unresolved walk earns another pass. Never
+                    # repeat a candidate after its consumer tried a transfer.
+                    if yielded or deadline.remaining() < 1.0:
+                        break
+                    try:
+                        await bounded_await(
+                            asyncio.sleep(1.0),
+                            deadline.remaining(),
+                            provider=PROVIDER,
+                            operation="download resolution retry delay",
                         )
-                    )
-                    logger.warning(
-                        f"LibGen mirror {mirror} could not serve {md5}: {detail}"
-                    )
-                    continue
+                    except SourceError:
+                        failures.append(self._unattempted(mirrors, deadline))
+                        break
+                for index, mirror in enumerate(mirrors):
+                    # The walk is bounded by the clock, not by a mirror cap: every
+                    # configured fallback stays a candidate, and `la` is reachable
+                    # even when an operator has set a custom LIBGEN_MIRROR ahead of
+                    # it — which capping the list took away (Codex on #153).
+                    if (
+                        deadline.reserve(
+                            self.config.total_timeout,
+                            minimum=_attempt_minimum(self.config, mirror),
+                        )
+                        is None
+                    ):
+                        failures.append(self._unattempted(mirrors[index:], deadline))
+                        break
 
-                logger.info(
-                    f"LibGen download resolved on mirror {mirror} via {detail} for {md5}"
-                )
-                yield DownloadResult(
-                    url=url,
-                    source=SourceType.LIBGEN,
-                    quota_info=None,  # LibGen has no quota
-                    mirror=mirror_host(mirror),
-                )
+                    try:
+                        await self._preflight(mirror)
+                    except ProviderUnreachableError as exc:
+                        failures.append(exc)
+                        logger.warning(f"LibGen mirror {mirror} unreachable: {exc}")
+                        continue
+
+                    if await self._rate_limit(deadline, minimum_after=1.0) is False:
+                        failures.append(self._unattempted(mirrors[index:], deadline))
+                        break
+
+                    budget = deadline.reserve(self.config.total_timeout, minimum=1.0)
+                    if budget is None:
+                        failures.append(self._unattempted(mirrors[index:], deadline))
+                        break
+
+                    async def resolve_attempt() -> tuple[Optional[str], str]:
+                        """Resolve and validate one mirror under one total budget."""
+                        key, key_detail = await self._resolve_key(client, mirror, md5)
+                        if not key:
+                            return None, key_detail
+
+                        candidate = (
+                            f"https://libgen.{mirror}/get.php?md5={md5}&key={key}"
+                        )
+                        ok, detail = await self._serves_bytes(client, candidate)
+                        return (candidate if ok else None), detail
+
+                    try:
+                        url, detail = await bounded_await(
+                            resolve_attempt(),
+                            budget,
+                            provider=PROVIDER,
+                            host=mirror_host(mirror),
+                            operation="download resolution",
+                        )
+                    except Exception as exc:  # network, TLS, HTTP error
+                        failure = self._as_source_error(exc, mirror_host(mirror))
+                        failures.append(failure)
+                        logger.warning(
+                            f"LibGen mirror {mirror} failed for {md5}: {failure}"
+                        )
+                        continue
+
+                    if not url:
+                        failures.append(
+                            ProviderResponseError(
+                                PROVIDER,
+                                mirror_host(mirror),
+                                detail,
+                                reason="protocol_error",
+                            )
+                        )
+                        logger.warning(
+                            f"LibGen mirror {mirror} could not serve {md5}: {detail}"
+                        )
+                        continue
+
+                    logger.info(
+                        f"LibGen download resolved on mirror {mirror} via {detail} for {md5}"
+                    )
+                    yielded = True
+                    yield DownloadResult(
+                        url=url,
+                        source=SourceType.LIBGEN,
+                        quota_info=None,  # LibGen has no quota
+                        mirror=mirror_host(mirror),
+                    )
+                else:
+                    continue
+                # An admission refusal ends the walk, including its retry pass.
+                break
 
         if failures:
             raise AllSourcesFailedError("download resolution", failures)

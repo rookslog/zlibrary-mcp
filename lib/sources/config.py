@@ -9,8 +9,10 @@ Environment variables:
     BOOK_SOURCE_CONNECT_TIMEOUT: TCP/TLS connect budget, seconds (default: 10)
     BOOK_SOURCE_READ_TIMEOUT: Response-read budget, seconds (default: 30)
     BOOK_SOURCE_TOTAL_TIMEOUT: Per-provider wall-clock budget, seconds (default: 45)
-    BOOK_SOURCE_DOWNLOAD_TIMEOUT: Full source-file transfer budget, seconds (default: 1500)
-    BOOK_SOURCE_DOWNLOAD_RESUME_ATTEMPTS: Extra same-call transfer attempts (default: 2, max: 10)
+    BOOK_SOURCE_DOWNLOAD_TIMEOUT: Base source-file chain budget, seconds (default: 1500)
+    BOOK_SOURCE_DOWNLOAD_FLOOR_SPEED: Size budgeting floor, bytes/second (default: 40960)
+    BOOK_SOURCE_DOWNLOAD_TIMEOUT_CEILING: Maximum chain budget, seconds (default: 3600)
+    BOOK_SOURCE_DOWNLOAD_RESUME_ATTEMPTS: No-progress recovery attempts (default: 2, max: 10)
     BOOK_SOURCE_PREFLIGHT: Probe host reachability before searching (default: true)
     BOOK_SOURCE_PREFLIGHT_TIMEOUT: Budget per probe phase, seconds (default: 5)
 """
@@ -52,12 +54,14 @@ DEFAULT_TOTAL_TIMEOUT = 45.0
 # WalkDeadline across lease wait and this chain, reserving finalization time.
 # Once publication commits, receipts finish under the Node hard stop (#280).
 DEFAULT_DOWNLOAD_TIMEOUT = 1500.0
+DEFAULT_DOWNLOAD_FLOOR_SPEED = 40 * 1024.0
+DEFAULT_DOWNLOAD_TIMEOUT_CEILING = 3600.0
 DEFAULT_PREFLIGHT_TIMEOUT = 5.0
 
 # The ceiling on a whole search or download-resolution walk, however many
 # providers and mirrors it spans. By default search allocates 165s + 30s
-# overhead under its 240s owner; download resolution runs INSIDE the 1500s
-# provider-chain timeout under its 2400s owner. The acquisition clock, not this
+# overhead under its 240s owner; download resolution runs INSIDE the scaled
+# provider-chain timeout (1500s base, 3600s ceiling) under its 3900s owner. The acquisition clock, not this
 # inner walk, governs admission until commit; Node bounds committed finalization.
 # Tests compare the owner defaults to live TypeScript constants.
 # This is also, deliberately, the same
@@ -72,7 +76,7 @@ DEFAULT_WALK_BUDGET = 165.0
 WALK_OVERHEAD_ALLOWANCE = 30.0
 MIN_SOURCE_OWNER_SECONDS = 10.0
 DEFAULT_NODE_BRIDGE_TIMEOUT_SECONDS = 240.0
-DEFAULT_NODE_LONG_TIMEOUT_SECONDS = 2400.0
+DEFAULT_NODE_LONG_TIMEOUT_SECONDS = 3900.0
 MAX_NODE_TIMER_DELAY_MS = 2_147_483_647
 WALK_BUDGET_SAFETY_MARGIN = 0.001
 _ECMASCRIPT_TRIM_CHARS = (
@@ -159,7 +163,9 @@ class SourceConfig:
         read_timeout: Seconds allowed to read a response
         total_timeout: Seconds allowed for a whole provider operation
         download_timeout: Seconds allowed for a complete source-file transfer
-        download_resume_attempts: Extra same-call transfer attempts after partial progress
+        download_resume_attempts: No-progress recovery attempts; zero disables recovery
+        download_floor_speed: Bytes/second used to budget a known-size transfer
+        download_timeout_ceiling: Maximum chain duration, also clamped to the owner
         preflight_enabled: Probe host reachability before the real request
         preflight_timeout: Seconds allowed for each probe phase
         walk_budget: Seconds allowed for a WHOLE walk, across every
@@ -182,6 +188,13 @@ class SourceConfig:
     walk_budget: float = DEFAULT_WALK_BUDGET
     bridge_overhead: float = WALK_OVERHEAD_ALLOWANCE
     download_resume_attempts: int = 2
+    download_floor_speed: float = DEFAULT_DOWNLOAD_FLOOR_SPEED
+    download_timeout_ceiling: float = DEFAULT_DOWNLOAD_TIMEOUT_CEILING
+
+    def download_budget(self, size_bytes: float | None = None) -> float:
+        """Extend the base up to max(base, ceiling), within the owning clock."""
+        scaled = size_bytes / self.download_floor_speed if size_bytes else 0.0
+        return max(self.download_timeout, min(self.download_timeout_ceiling, scaled))
 
     @property
     def has_annas_key(self) -> bool:
@@ -210,11 +223,14 @@ def worst_case_search_seconds(config: "SourceConfig") -> float:
 def worst_case_download_seconds(config: "SourceConfig") -> float:
     """Provider download chain plus overhead, NOT a whole acquisition (#280).
 
-    Candidate resolution already runs inside download_timeout, so adding its
+    Candidate resolution already runs inside the size-scaled chain, so adding its
     walk again would double-count. Lease wait and finalization are excluded;
     acquisition.acquire composes those phases under its shared outer clock.
     """
-    return config.download_timeout + config.bridge_overhead
+    return (
+        max(config.download_timeout, config.download_timeout_ceiling)
+        + config.bridge_overhead
+    )
 
 
 def _positive_float(name: str, default: float) -> float:
@@ -235,7 +251,7 @@ def _positive_float(name: str, default: float) -> float:
 
 
 def _resume_attempts() -> int:
-    """Zero disables recovery; invalid budgets default to two, capped at ten."""
+    """No-progress attempts; zero disables recovery, invalid uses two, max ten."""
     try:
         value = int(os.environ.get("BOOK_SOURCE_DOWNLOAD_RESUME_ATTEMPTS", "2"))
     except ValueError:
@@ -328,6 +344,19 @@ def get_source_config(*, for_download: bool = False) -> SourceConfig:
             min(download_timeout, available) if for_download else download_timeout
         ),
         download_resume_attempts=_resume_attempts(),
+        download_floor_speed=_positive_float(
+            "BOOK_SOURCE_DOWNLOAD_FLOOR_SPEED", DEFAULT_DOWNLOAD_FLOOR_SPEED
+        ),
+        download_timeout_ceiling=min(
+            _positive_float(
+                "BOOK_SOURCE_DOWNLOAD_TIMEOUT_CEILING", DEFAULT_DOWNLOAD_TIMEOUT_CEILING
+            ),
+            available,
+        )
+        if for_download
+        else _positive_float(
+            "BOOK_SOURCE_DOWNLOAD_TIMEOUT_CEILING", DEFAULT_DOWNLOAD_TIMEOUT_CEILING
+        ),
         preflight_enabled=os.environ.get("BOOK_SOURCE_PREFLIGHT", "true").lower()
         == "true",
         preflight_timeout=get_preflight_timeout(),

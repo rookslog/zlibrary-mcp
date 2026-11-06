@@ -397,7 +397,9 @@ class TestProfileEndpoints:
         assert result["daily_remaining"] == "unknown"
 
     @pytest.mark.asyncio
-    async def test_get_download_limits_cap_only_is_not_remaining(self, patch_eapi_client):
+    async def test_get_download_limits_cap_only_is_not_remaining(
+        self, patch_eapi_client
+    ):
         patch_eapi_client.get_profile = AsyncMock(
             return_value={"user": {"downloads_limit": 10}}
         )
@@ -2585,6 +2587,16 @@ def content_range(start, total):
 class TestPartialTransferRecovery:
     """A transfer that dies mid-body resumes instead of restarting (#135)."""
 
+    @pytest.fixture(autouse=True)
+    def _advance_retry_wait_without_wall_time(self, monkeypatch):
+        """These cases test recovery/validation; separate loopback tests pin pacing."""
+        sleep = asyncio.sleep
+
+        async def step(delay):
+            await sleep(0 if delay == 0.25 else delay)
+
+        monkeypatch.setattr(asyncio, "sleep", step)
+
     @pytest.mark.asyncio
     @pytest.mark.parametrize("terminal", ["416", "206", "200", "budget"])
     async def test_wildcard_range_uses_digest_or_continues(
@@ -2946,6 +2958,7 @@ class TestPartialTransferRecovery:
             [
                 ScriptedResponse(body=RESUME_BODY, fail_after=5000),
                 ScriptedResponse(status_code=503),
+                ScriptedResponse(status_code=503),
             ]
         ).install(mocker)
         with pytest.raises(ProviderResponseError) as caught:
@@ -2954,7 +2967,7 @@ class TestPartialTransferRecovery:
             )
         assert caught.value.reason == "http_error"
         assert caught.value.detail == "HTTP 503"
-        assert transport.ranges == [None, "bytes=5000-"]
+        assert transport.ranges == [None, "bytes=5000-", "bytes=5000-"]
         assert not list(tmp_path.iterdir())
 
     @pytest.mark.asyncio
@@ -3138,6 +3151,12 @@ class TestPartialTransferRecovery:
             ("cdn.example", "bytes=65536-"),
         ]
         if resume_status == 503:
+            expected_requests.extend(
+                [
+                    ("mirror.example", "bytes=65536-"),
+                    ("cdn.example", "bytes=65536-"),
+                ]
+            )
             with pytest.raises(ProviderResponseError) as caught:
                 await operation
             assert caught.value.detail == "HTTP 503"

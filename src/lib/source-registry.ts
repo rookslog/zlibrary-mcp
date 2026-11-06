@@ -1,4 +1,4 @@
-import type { MergedFilterRequest } from './row-filters.js';
+import type { MergedFilterRequest, RowFilterResult } from './row-filters.js';
 import { ToolFailure } from './tool-errors.js';
 
 export type Env = Readonly<Record<string, string | undefined>>;
@@ -16,10 +16,17 @@ export interface WindowRequest extends MergedFilterRequest {
   page?: number;
   multiSource: boolean;
 }
-/** Adapters return accepted rows; keep rejected same-file copies separately in
- * the S4 orchestration when preparing inputs to mergeRows. */
+/** One returned catalogue record, with its original pre-filter position. */
+export interface WindowRecord {
+  readonly [field: string]: unknown;
+  readonly rank: number;
+  readonly filterResult: Pick<RowFilterResult, 'status' | 'checks'>;
+}
+/** Every returned record, including rejected/unknown alternatives, belongs to
+ * this one snapshot. accepted counts pass records, never the raw window size. */
 export interface SearchWindow {
-  rows: readonly unknown[];
+  rows: readonly WindowRecord[];
+  accepted: number;
   more?: true;
   filtering?: Readonly<Record<string, unknown>>;
 }
@@ -29,7 +36,8 @@ export interface SourceSpec {
   defaultSearch(env: Env): { on: boolean; reason?: string };
   /** Withdraw this waiter on abort before issuing work. Issued work retains its
    * owner through runner TERM/grace/KILL, even if this promise settles first.
-   * Return raw records; refs and cursors are built only from the final snapshot.
+   * Return all records with rank and filter evidence in one window; refs and
+   * cursors are built only from the final frozen snapshot.
    */
   searchWindow(req: WindowRequest, signal: AbortSignal): Promise<SearchWindow>;
   md5(book: unknown): string | undefined;

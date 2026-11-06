@@ -1,3 +1,4 @@
+import { windowFixture } from './window-fixture.js';
 import { afterEach, beforeEach, expect, jest, test } from '@jest/globals';
 import { CircuitBreaker } from '../../dist/lib/circuit-breaker.js';
 import { isTransientDependencyError } from '../../dist/lib/retry-manager.js';
@@ -19,7 +20,7 @@ function fixture(plans) {
       calls.push({ name, request, at: Date.now() });
       signals.set(name, signal);
       const invoke = () => new Promise((resolve, reject) => {
-        const timer = setTimeout(() => plan.error ? reject(plan.error) : resolve({ rows: plan.rows ?? [{ id: name }], ...plan.window }), plan.after_ms);
+        const timer = setTimeout(() => plan.error ? reject(plan.error) : resolve(windowFixture(plan.rows ?? [{ id: name }], plan.window)), plan.after_ms);
         signal.addEventListener('abort', () => {
           clearTimeout(timer);
           if (!plan.ignoreAbort) reject(signal.reason);

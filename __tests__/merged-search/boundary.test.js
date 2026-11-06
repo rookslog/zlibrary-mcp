@@ -1,3 +1,4 @@
+import { windowFixture } from './window-fixture.js';
 import { afterEach, beforeEach, expect, jest, test } from '@jest/globals';
 import { fanOut } from '../../dist/lib/fan-out.js';
 import { SourceRegistry } from '../../dist/lib/source-registry.js';
@@ -6,11 +7,11 @@ let now;
 beforeEach(() => { jest.useFakeTimers({ now: 0 }); now = 0; });
 afterEach(() => { jest.clearAllTimers(); jest.useRealTimers(); });
 const deferred = () => { let resolve; const promise = new Promise(r => { resolve = r; }); return { promise, resolve }; };
-function setup(window = { rows: [{ id: 'slow' }] }) {
+function setup(window = windowFixture([{ id: 'slow' }])) {
   const slow = deferred(); const signals = {};
   const spec = (name, work) => ({ name, capabilities: () => ({ configured: true, search_available: true, download_available: true }), defaultSearch: () => ({ on: true }), md5: () => undefined,
     searchWindow: (_request, signal) => { signals[name] = signal; return work; } });
-  return { registry: new SourceRegistry([spec('first', Promise.resolve({ rows: [{ id: 'first' }] })), spec('second', slow.promise)]), slow, signals, window };
+  return { registry: new SourceRegistry([spec('first', Promise.resolve(windowFixture([{ id: 'first' }]))), spec('second', slow.promise)]), slow, signals, window };
 }
 test.each([11999, 12000, 12001])('M06 result observed at %i uses a strict monotonic cut before the deadline timer fires', async observed => {
   const f = setup(); const promise = fanOut(f.registry, {}, { now: () => now });
@@ -37,7 +38,7 @@ test('M06 wall-clock jumps cannot change observation membership or elapsed milli
   expect(result.sources.second).toEqual({ state: 'rows', rows: 1, ms: 5 });
 });
 test('M06 freeze copies nested terminal data and fences late results from refs and retained state', async () => {
-  const f = setup(); const data = { rows: [{ id: 'owned', nested: { title: 'original' } }], filtering: { matched: 1 } };
+  const f = setup(); const data = windowFixture([{ id: 'owned', nested: { title: 'original' } }], { filtering: { matched: 1 } });
   const first = f.registry.sources[0];
   f.registry = new SourceRegistry([{ ...first, searchWindow: () => Promise.resolve(data) }, f.registry.sources[1]]);
   const promise = fanOut(f.registry, {}, { now: () => now }); await jest.advanceTimersByTimeAsync(0);
@@ -64,8 +65,8 @@ test('M06 caller cancellation already observed at the cut stays cancelled; compl
 test('M06 a synchronous stall past the cut cannot issue the next source', async () => {
   const f = setup(); let issued = 0;
   const sources = new SourceRegistry([
-    { ...f.registry.sources[0], searchWindow: () => { now = 12000; return Promise.resolve({ rows: [{ id: 'late' }] }); } },
-    { ...f.registry.sources[1], searchWindow: async () => { issued++; return { rows: [] }; } },
+    { ...f.registry.sources[0], searchWindow: () => { now = 12000; return Promise.resolve(windowFixture([{ id: 'late' }])); } },
+    { ...f.registry.sources[1], searchWindow: async () => { issued++; return windowFixture([]); } },
   ]);
   const result = await fanOut(sources, {}, { now: () => now });
   expect(issued).toBe(0);

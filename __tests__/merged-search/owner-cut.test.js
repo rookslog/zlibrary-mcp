@@ -1,3 +1,4 @@
+import { windowFixture } from './window-fixture.js';
 import { afterEach, beforeEach, expect, jest, test } from '@jest/globals';
 import { EapiSessionOwner } from '../../dist/lib/eapi-session.js';
 import { CircuitBreaker } from '../../dist/lib/circuit-breaker.js';
@@ -20,7 +21,7 @@ const healthy = owner => async input => { if (input.action === 'login') owner.co
 const pending = (_input, signal) => new Promise((_resolve, reject) => signal.addEventListener('abort', () => reject(Object.assign(new Error('aborted'), { context: { reason: 'aborted' } })), { once: true }));
 const registryFor = work => new SourceRegistry(['fast', 'owner'].map(name => ({
   name, capabilities: () => ({ configured: true, search_available: true, download_available: true }), defaultSearch: () => ({ on: true }), md5: () => undefined,
-  searchWindow: (_request, signal) => name === 'fast' ? Promise.resolve({ rows: [] }) : work(signal),
+  searchWindow: async (_request, signal) => { const result = name === 'fast' ? { rows: [] } : await work(signal); return windowFixture(result.rows, result); },
 })));
 
 test.each(['search_cut', Object.assign(new Error('comparison'), { name: 'TimeoutError', reason: 'search_cut' })])('M04 comparison origin %p cancels cold login without poisoning admission', async reason => {

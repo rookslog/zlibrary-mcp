@@ -1,3 +1,4 @@
+import { windowFixture } from './window-fixture.js';
 import { afterEach, beforeEach, expect, jest, test } from '@jest/globals';
 import fs from 'node:fs';
 import os from 'node:os';
@@ -37,7 +38,7 @@ afterEach(async () => {
   jest.clearAllTimers(); jest.useRealTimers(); fs.rmSync(dir, { recursive: true, force: true });
 });
 const spec = (name, work) => ({ name, capabilities: () => ({ configured: true, search_available: true, download_available: true }), defaultSearch: () => ({ on: true }), md5: () => undefined, searchWindow: work });
-const registry = work => new SourceRegistry([spec('fast', async () => ({ rows: [{ id: 'fast' }] })), spec('owned', work)]);
+const registry = work => new SourceRegistry([spec('fast', async () => windowFixture([{ id: 'fast' }])), spec('owned', work)]);
 function script(privateMode = false) {
   const ready = path.join(dir, 'ready'); const release = path.join(dir, 'release');
   const gap = path.join(dir, 'readiness-gap'); const publish = path.join(dir, 'publish-ready');
@@ -82,7 +83,7 @@ native('M01 real private login child and descendant remain owned after reply; la
     controls++;
     await runPythonBridge('native.py', options(), { signal: childSignal, timeoutMs: 60000, sessionInput: input,
       onSession: update => owner.consume(update, 'synthetic', input.generation) });
-    return { rows: [{ id: 'late' }] };
+    return windowFixture([{ id: 'late' }]);
   });
   const response = fanOut(registry((_request, childSignal) => { signal = childSignal; return owner.run('synthetic', backend, { signal: childSignal, timeoutMs: 60000 }); }), {}, { waitMs: 100, now: () => now });
   await ready(f); const pids = f.pids(); expect(pids.every(alive)).toBe(true);
@@ -114,7 +115,7 @@ native.each(['caller', 'comparison'])('M02 source-owned lock outlives %s cancell
     const release = await acquire(signal); const number = ++issued;
     try {
       if (number === 1) await runPythonBridge('native.py', options(), { signal, timeoutMs: 60000 });
-      return { rows: [{ id: `issued-${number}` }] };
+      return windowFixture([{ id: `issued-${number}` }]);
     } finally {
       // The adapter owns this lease through runner rejection and native cleanup.
       if (number === 1) await until(() => f.pids().every(pid => !alive(pid)) && liveChildCount() === 0);

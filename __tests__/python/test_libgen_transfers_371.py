@@ -406,26 +406,35 @@ async def test_known_size_cannot_extend_ceiling_or_acquisition_owner(
 
 
 @pytest.mark.asyncio
-async def test_no_progress_budget_is_cumulative_across_progress(tmp_path):
+async def test_no_progress_budget_resets_after_credited_progress(tmp_path, monkeypatch):
     offsets = []
+    sleep = asyncio.sleep
+
+    async def step(_seconds):
+        await sleep(0)
+
+    monkeypatch.setattr(asyncio, "sleep", step)
 
     def handler(_path, headers):
         start = int(headers.get("range", "bytes=0-")[6:-1])
         offsets.append(start)
-        return dropped(start, 65536 if len(offsets) in (1, 3) else 0)
+        return dropped(
+            start,
+            len(BODY) if len(offsets) == 5 else 65536 if len(offsets) in (1, 3) else 0,
+        )
 
+    # A genuinely new 64 KiB earns a fresh empty-attempt allowance. Keeping
+    # lifetime penalties would reject a useful transfer after scattered stalls.
     async with loopback(handler) as url:
-        with pytest.raises(ProviderResponseError) as caught:
-            await bridge._download_url_to_file(
-                url,
-                str(tmp_path),
-                MD5,
-                "libgen",
-                config=SourceConfig(download_resume_attempts=2),
-            )
-    assert caught.value.reason == "partial_transfer"
-    assert offsets == [0, 65536, 65536, 131072]
-    assert not list(tmp_path.iterdir())
+        result = await bridge._download_url_to_file(
+            url,
+            str(tmp_path),
+            MD5,
+            "libgen",
+            config=SourceConfig(download_resume_attempts=2),
+        )
+    assert offsets == [0, 65536, 65536, 131072, 131072]
+    assert Path(result).read_bytes() == BODY
 
 
 @pytest.mark.parametrize(

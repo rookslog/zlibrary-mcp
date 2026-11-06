@@ -265,9 +265,33 @@ The published Docker image is still 1.4.0 until 2.0 is released.
 | `ZLIBRARY_UNRESTRICTED_OUTPUT` | `1` allows outside absolute paths; `0` or unset keeps containment; other values fail startup |
 | `ZLIBRARY_EAPI_DOMAIN` | Optional pinned EAPI domain |
 | `LOG_LEVEL` | `silent`, `error`, `warn`, `info` (default), `debug`; diagnostics use stderr |
-| `PYTHON_BRIDGE_TIMEOUT` | Ordinary bridge deadline in milliseconds |
-| `PYTHON_BRIDGE_LONG_TIMEOUT` | Acquisition deadline in milliseconds |
+| `BOOK_SOURCE_WALK_BUDGET` | Search or download-resolution walk budget in seconds; default `165` |
+| `BOOK_SOURCE_PREFLIGHT_TIMEOUT` | Aggregate DNS + TCP preflight budget in seconds; default `5` |
+| `BOOK_SOURCE_DOWNLOAD_TIMEOUT` | Source resolution + transfer chain base in seconds; default `1500` |
+| `BOOK_SOURCE_DOWNLOAD_FLOOR_SPEED` | Known-size allowance calculation in bytes/second; default `40960` (40 KiB/s), not a minimum-speed cutoff |
+| `BOOK_SOURCE_DOWNLOAD_TIMEOUT_CEILING` | Size-scaled chain ceiling in seconds; default `3600`, effective ceiling at least the configured base |
+| `PYTHON_BRIDGE_TIMEOUT` | Ordinary bridge deadline in milliseconds; default `240000` |
+| `PYTHON_BRIDGE_LONG_TIMEOUT` | Acquisition deadline in milliseconds; default `3900000` |
 | `ZLIBRARY_SESSION_MODE` | `memory` (default) or `per-call`; unknown modes fail at startup |
+
+Each source walk shares one deadline across its configured mirror attempts;
+fallback mirrors remain candidates rather than being capped in number. DNS and
+TCP preflight share one aggregate budget. A mirror skipped for lack of walk time
+is attributed with `walk_budget_exhausted`, which indicates a local budget limit,
+not evidence that the host failed. Increase `BOOK_SOURCE_WALK_BUDGET` if needed;
+if it is already clamped to the bridge owner, increase the corresponding owner.
+LibGen and Anna's searches each run in their own bridge child; the walk budget
+does not impose a deadline on the whole public `search` call.
+
+For downloads, the resolution walk runs inside the source transfer-chain
+allowance. Known size can extend that allowance from the base to the ceiling;
+do not add the resolution walk again. Walk and transfer allowances are clamped
+below their bridge owner with overhead reserved, and acquisition also reserves
+finalization time. When used as source-walk owners, valid positive
+`PYTHON_BRIDGE_TIMEOUT` / `PYTHON_BRIDGE_LONG_TIMEOUT` settings below `10000` ms
+are rejected before provider contact. Invalid timer values fall back to defaults;
+see [timeout configuration](docs/RETRY_CONFIGURATION.md#multi-source-timeout-configuration)
+for parsing, clamping and acquisition deadline details.
 
 In memory mode, reads and fresh Z-Library acquisitions share the same in-memory
 session owner, cold-login coordination and bounded refresh/backoff. Acquisition

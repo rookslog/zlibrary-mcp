@@ -51,8 +51,8 @@ Add the server to your MCP client configuration:
 No credentials are needed for Library Genesis. The server starts without a
 Z-Library account; it warns on stderr and keeps the other sources available.
 For Z-Library, add `ZLIBRARY_EMAIL` and `ZLIBRARY_PASSWORD` in the client's `env`.
-For Anna's Archive downloads, add `ANNAS_SECRET_KEY`. Its search needs no key, but the
-site's browser check often refuses it ([#139](https://github.com/rookslog/zlibrary-mcp/issues/139)).
+For Anna's Archive, `ANNAS_SECRET_KEY` enables member sign-in for search and is
+required for downloads. Anonymous search remains available, but the site's browser check often refuses it ([#139](https://github.com/rookslog/zlibrary-mcp/issues/139)).
 
 ## Available MCP Tools
 
@@ -121,7 +121,7 @@ Other sources expose one upstream page, sliced locally, with a stated row cap.
 |---|---|---|---|---|
 | `libgen` | None | Yes | Yes | No daily limit |
 | `zlibrary` | Account email and password | With account | With account | Provider daily quota |
-| `annas` | Key required only for download | Often refused by the site's browser check ([#139](https://github.com/rookslog/zlibrary-mcp/issues/139)) | With membership API key | Membership-dependent |
+| `annas` | Optional member sign-in; key required for download | Anonymous search often refused by the site's browser check ([#139](https://github.com/rookslog/zlibrary-mcp/issues/139)) | With membership API key | Membership-dependent |
 
 `get_limits` defaults to `mode: "local"`: no network, no account call. It reports
 configuration, search/download availability and supported operations for each
@@ -129,6 +129,18 @@ source. Supported operations stay the same when configuration changes; use the
 availability fields to plan calls. Anna's search requires a usable HTTP(S)
 `ANNAS_BASE_URL` (default `https://annas-archive.gl`); download and `configured`
 additionally require a trusted host and `ANNAS_SECRET_KEY`.
+Anna's entries also report `member_key_configured` (boolean) and `member_session`
+(`none`, `active`, or `rejected`), without provider contact. State is last observed
+in this server process; `active` does not attest current provider acceptance.
+With a key, the first Anna search lazily POSTs it as form data to `/account/`
+on the same trusted hosts as fast download. The cookie stays in an Anna-only
+resident Python worker's memory and is reused across searches until expiry or
+refusal. One shared refresh is allowed per refused session; failed/rejected
+sign-ins back off for 60 seconds. Anonymous HTTP search remains the fallback,
+and a browser-check page is reported as an error, never empty results. Transport
+debug logging is suppressed while a member adapter is alive to avoid cookie
+header leakage. Restarting the server discards the session. No browser challenge
+is solved by this route. Member access with a real key remains untested here.
 `mode: "live"` adds Z-Library account numbers; remaining quota is omitted when
 spend is unknown. For Z-Library, use the daily limit (`per_day`) as the quota
 signal: `premium` can stay true after a plan lapses even when the daily limit
@@ -259,7 +271,7 @@ The published Docker image is still 1.4.0 until 2.0 is released.
 | Variable | Meaning |
 |---|---|
 | `ZLIBRARY_EMAIL`, `ZLIBRARY_PASSWORD` | Z-Library account; not required for other sources |
-| `ANNAS_SECRET_KEY` | Anna's Archive membership key, required for its downloads only |
+| `ANNAS_SECRET_KEY` | Anna's Archive membership key; optional member sign-in for search, required for downloads |
 | `BOOK_SOURCE_DEFAULT_ORDER` | Optional comma-separated order, e.g. `libgen,zlibrary`; no repeats |
 | `ZLIBRARY_OUTPUT_ROOT` | Absolute output root; defaults to the platform data directory described above |
 | `ZLIBRARY_UNRESTRICTED_OUTPUT` | `1` allows outside absolute paths; `0` or unset keeps containment; other values fail startup |

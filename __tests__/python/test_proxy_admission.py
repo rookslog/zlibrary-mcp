@@ -134,7 +134,11 @@ async def test_annas_admission_follows_proxy_route(
         bypass=("annas-archive.gl",) if mode == "bypassed" else (),
     )
     adapter = annas.AnnasArchiveAdapter(
-        SourceConfig(preflight_enabled=mode != "disabled", annas_secret_key="synthetic")
+        SourceConfig(
+            preflight_enabled=mode != "disabled",
+            # This case measures anonymous search admission, not member sign-in.
+            annas_secret_key="synthetic" if operation == "get_download_url" else "",
+        )
     )
     requests = []
 

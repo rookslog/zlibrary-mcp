@@ -244,7 +244,25 @@ permits search without a key, including on an untrusted host. Download and
 `configured` additionally require `ANNAS_SECRET_KEY` and a trusted host
 (`annas-archive.gl`, `.pk`, or `.gd`). An unusable base makes both availability
 fields false; the note distinguishes this from a base not trusted for the key.
-This local report makes no provider request.
+This local report makes no provider request. Anna's entries additionally include
+`member_key_configured: boolean` and `member_session: "none" | "active" | "rejected"`.
+These fields occur only for Anna's and never expose any credential or cookie.
+`none` means no observed session, `active` means the last search obtained a
+session cookie, and `rejected` covers failed/rejected sign-in or a persistently
+refused session. State is process-local and last observed, not a live acceptance
+check. Local limits never start the resident worker or initiate sign-in.
+
+When configured, `ANNAS_SECRET_KEY` is lazily POSTed in form field `key` to
+`{ANNAS_BASE_URL}/account/`, with redirects disabled and the existing fast-download
+host guard. A response setting `aa_account_id2` activates the memory-only session.
+Search reuses it across MCP calls; one shared re-sign-in follows a refusal,
+with no retry loop. Rejected/failed sign-ins use a 60-second cooldown and fall
+back to ordinary HTTP search. Challenge HTML is an attributed error. Anna's
+`get_book` continues to return the held search row; it performs no detail-page
+request. No key is needed for anonymous search, and no new download route is added.
+Transport debug logs are suppressed during the member adapter's lifetime because
+HTTP response headers can contain cookies. Real membership acceptance and
+challenge avoidance have not been tested.
 
 Live Z-Library mode adds `per_day`, `used_today`, `remaining`, `premium`, `as_of`
 when available. Use `per_day` as the quota signal: `premium` can stay true after a

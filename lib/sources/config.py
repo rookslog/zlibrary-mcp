@@ -1,7 +1,7 @@
 """Configuration for multi-source book search system.
 
 Environment variables:
-    ANNAS_SECRET_KEY: API key for Anna's Archive fast downloads
+    ANNAS_SECRET_KEY: Member key for optional search sign-in and fast downloads
     ANNAS_BASE_URL: Anna's Archive base URL (default: https://annas-archive.gl)
     LIBGEN_MIRROR: LibGen mirror to use (default: li)
     BOOK_SOURCE_DEFAULT: Default source selection (auto|annas|libgen)

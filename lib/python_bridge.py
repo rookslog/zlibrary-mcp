@@ -1214,6 +1214,7 @@ async def _download_url_to_file(
     progress_observer=None,
     config: Optional[SourceConfig] = None,
     seconds_left=None,
+    abandon_observer=None,
 ) -> str:
     """Stream a resolved source URL to disk and return the raw path.
 
@@ -1291,7 +1292,17 @@ async def _download_url_to_file(
             if seconds_left is None or not known_total or furthest < 65536:
                 return False
             elapsed = max(loop.time() - started, 0.001)
-            return (known_total - written) * elapsed / furthest + 0.25 > seconds_left()
+            rate, left = furthest / elapsed, seconds_left()
+            if (known_total - written) / rate + 0.25 <= 1.5 * left:
+                return False
+            # The auth logger accepts only closed authentication diagnostics.
+            sys.stderr.write(
+                "Source recovery feasibility guard: "
+                f"rate_bytes_per_second={rate:.1f} seconds_left={left:.3f}\n"
+            )
+            if abandon_observer is not None:
+                abandon_observer()
+            return True
 
         try:
             # Keep the admitted source-specific UA and one client throughout
@@ -1725,9 +1736,34 @@ async def _fetch_from_source(book_details: dict, output_dir: str) -> str:
     async def acquire() -> str:
         nonlocal active_host, transfer_progress
 
-        candidate_stream = router.iter_download_candidates(md5, source=selection)
+        abandoned = []
+
+        def remember_abandoned(item, observed_at):
+            if not abandoned:
+                abandoned.append((item, observed_at))
+
+        async def candidates():
+            stream = router.iter_download_candidates(md5, source=selection)
+            try:
+                async for item in stream:
+                    yield item, True, None
+            except AllSourcesFailedError as exc:
+                for failure in exc.failures:
+                    record(failure)
+            except SourceError as exc:
+                record(exc)
+            finally:
+                close = getattr(stream, "aclose", None)
+                if close is not None:
+                    await close()
+            # A configured alternative may not resolve or be admitted. Return
+            # once to the first abandoned URL without spending another key.
+            for item, observed_at in abandoned:
+                yield item, False, observed_at
+
+        candidate_stream = candidates()
         try:
-            async for result in candidate_stream:
+            async for result, guarded, observed_at in candidate_stream:
                 provider = getattr(result.source, "value", result.source) or selection
                 if provider == "annas_archive":
                     provider = "annas"
@@ -1736,7 +1772,7 @@ async def _fetch_from_source(book_details: dict, output_dir: str) -> str:
                     quota = getattr(result, "quota_info", None)
                     from datetime import datetime, timezone
 
-                    observed_at = (
+                    observed_at = observed_at or (
                         datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
                     )
                     transfer_progress = (0, 0, False)
@@ -1749,8 +1785,10 @@ async def _fetch_from_source(book_details: dict, output_dir: str) -> str:
                         host_observer=lambda host: _set_active_host(host),
                         progress_observer=observe_progress,
                         config=config,
+                        abandon_observer=lambda item=result,
+                        stamp=observed_at: remember_abandoned(item, stamp),
                         seconds_left=(lambda: max(0.0, expires - loop.time()))
-                        if getattr(result, "has_more_candidates", False)
+                        if guarded and getattr(result, "has_more_candidates", False)
                         else None,
                     )
                     if not isinstance(downloaded, _DownloadedPath):

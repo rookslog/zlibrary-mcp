@@ -140,9 +140,13 @@ accumulate across attempts, and each credit resets the no-progress count;
 `0` disables recovery. Resending a prefix or advancing by one-byte slices
 spends that allowance. Dropped tails are staged without fixed-size buffering;
 encoded drops still restart from zero. With another candidate remaining,
-known-length recovery stops when the observed rate cannot finish within the
-chain time left. Lone or last candidates and unknown totals retain the existing
-patience. Every admitted retry waits 250 ms.
+known-length recovery yields when the projected remainder plus its retry wait
+exceeds 1.5 times the chain time left. If later candidates all fail, acquisition
+returns once to the first guard-abandoned resolved URL with its guard disabled,
+starting a fresh stage at zero under the same deadline, without resolving or
+spending keyed quota again. Lone or last candidates and unknown totals retain
+the existing patience. Unknown totals can still prevent failover until the
+deadline. Every admitted retry waits 250 ms.
 Range replies of 500/502/503/504 retain the staged prefix when budget remains.
 LibGen alone gets one delayed second mirror resolution pass if no mirror yielded
 a candidate and the first pass did not stop on budget. Resuming Anna's transfer

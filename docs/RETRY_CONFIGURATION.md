@@ -189,19 +189,35 @@ offsets cannot address encoded bytes. `0` continues to disable recovery.
 When an untried mirror or provider remains, recovery also checks feasibility
 once at least 64 KiB has been observed. For a known decoded total, it estimates
 the time to receive the remaining bytes at the net high-water rate so far,
-including the next retry wait. If that exceeds the chain time left, it abandons
-this mirror and proceeds to the next candidate. Candidates are resolved lazily;
-an untried alternative may itself fail resolution. A lone or last candidate,
-and transfers without a known total, keep the existing patience up to the same
-deadline. This check runs before retries; it does not interrupt a connection
-that keeps streaming without a retry.
+including the next retry wait. If that exceeds 1.5 times the chain time left,
+it abandons this mirror and proceeds to the next candidate. Each guard decision
+emits one stderr record containing only the net rate and time left.
+
+Candidates are resolved lazily; an untried alternative may fail resolution,
+preflight, admission or transfer. After all normal candidates are exhausted,
+the acquisition returns once to the first guard-abandoned result, with its guard
+disabled. It reuses that resolved URL and the original quota observation; it
+does not spend another key or resolve the URL again. Its discarded stage is not
+resumed: the return starts at zero in a new private stage. The original chain
+and acquisition deadline still bound this final attempt and all of its recovery.
+If no guard abandoned a result, there is no extra attempt. LibGen's existing
+second resolution pass remains separate: if it eventually yields a result that
+is abandoned, exhausted later candidates lead to the same single URL return,
+without a third resolution pass.
+
+A lone or last candidate, and transfers without a known total, keep the existing
+patience up to the same deadline. A transfer with an unknown or misleading total
+can still use the whole deadline and prevent failover; no metadata-size estimate
+is introduced here. This check runs before retries; it does not interrupt a
+connection that keeps streaming without a retry.
 Every admitted retry waits 250 ms, including read/protocol drops and 416
 restarts. A Range reply of 500, 502, 503 or 504 preserves its prefix for another allowed request.
 An exhausted HTTP error keeps its `HTTP NNN` detail.
 Other HTTP statuses retain their existing handling, including 416 recovery.
 All waits and retries stay inside the original chain deadline and acquisition
 owner. Retrying a transfer never re-resolves Anna's keyed fast-download URL or
-counts another quota spend; there is no new whole-download automatic retry.
+counts another quota spend. The guard-specific final URL return stays inside
+that same call; the outer acquisition call is not automatically retried.
 
 If every LibGen mirror fails resolution, the adapter waits at most one second
 inside the remaining resolution deadline and walks the mirrors once more.

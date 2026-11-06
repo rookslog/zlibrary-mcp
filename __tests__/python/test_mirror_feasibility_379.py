@@ -132,6 +132,8 @@ BAD_ROWS = [
 @pytest.mark.parametrize("mode", BAD_ROWS)
 @pytest.mark.asyncio
 async def test_gate_bad_mirror_rows_reach_fallback(tmp_path, monkeypatch, clock, mode):
+    # The 1.5x margin permits six fast 65,537-byte replies here rather
+    # than four. The same 5 s chain must still reach the healthy mirror.
     requests = []
     budget = 10 if mode.startswith("ten-") else 2
     config = SourceConfig(
@@ -204,7 +206,9 @@ async def test_gate_bad_mirror_rows_reach_fallback(tmp_path, monkeypatch, clock,
             await router.close()
     assert resolved == ["li", "vg"]
     assert clock.time() - began < 5
-    assert len(requests) <= (10 if mode == "ten-7kib" else 4)
+    assert len(requests) <= (
+        10 if mode == "ten-7kib" else 6 if mode == "65537-fast" else 4
+    )
     if mode == "new-wiping-416":
         assert len(requests) == 2
     assert Path(result).read_bytes() == BODY
@@ -391,9 +395,11 @@ async def test_guard_uses_chain_time_left_after_resolution(
     )
     resolve = router._libgen._resolve_key
 
+    # Six seconds of resolution leaves 6.5 s after the first 2.5 s read;
+    # the 10.85 s projection exceeds 1.5 * 6.5, not a fresh 15 s budget.
     async def delayed(client, mirror, md5):
         if mirror == "li":
-            await clock.advance(5)
+            await clock.advance(6)
         return await resolve(client, mirror, md5)
 
     monkeypatch.setattr(router._libgen, "_resolve_key", delayed)
@@ -441,10 +447,12 @@ async def test_repeated_short_drop_reports_partial_transfer_after_recovery(tmp_p
 
 @pytest.mark.asyncio
 async def test_guard_reserves_the_next_retry_wait(tmp_path, monkeypatch, clock):
+    # After 1 s, 1.5 * 0.75 s = 1.125 s fits the 1 s remainder but
+    # not its required 250 ms retry wait.
     body = BODY[: 128 * 1024]
     digest = hashlib.md5(body).hexdigest()
     router, resolved = install_router(
-        monkeypatch, SourceConfig(download_timeout=2.1, preflight_enabled=False)
+        monkeypatch, SourceConfig(download_timeout=1.75, preflight_enabled=False)
     )
     calls = []
 

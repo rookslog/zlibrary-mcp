@@ -15,9 +15,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   prefixes, gzip restarts and tiny ranges cannot repeatedly earn credit;
   every retry is paced by 250 ms. Encoded drops still restart from zero, and
   staged bytes survive Range 500/502/503/504 replies.
-- With another candidate remaining, known-length source transfers stop recovery
-  when their observed net rate cannot finish within the chain time left. Lone
-  or last candidates and unknown totals keep the existing deadline allowance.
+- With another candidate remaining, known-length source transfers yield when
+  their projected remainder plus retry wait exceeds 1.5 times the chain time
+  left. If all later candidates fail, return once to the first guard-abandoned
+  resolved URL without its guard, re-resolution or another keyed quota spend.
+  The return restarts its stage at zero under the original deadline and retains
+  the original quota observation. Lone/last candidates and unknown totals keep
+  the existing allowance; unknown totals can still hold the whole chain.
+- Guard decisions emit one numeric stderr record with net rate and time left.
 - A lone response repeatedly dropping after 5,000 bytes now reports
   `partial_transfer` after three requests by default, rather than `protocol_error`
   after one. The breaker treats `partial_transfer` as transient.

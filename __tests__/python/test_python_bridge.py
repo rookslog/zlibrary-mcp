@@ -3588,11 +3588,12 @@ class TestPartialTransferRecovery:
             responses.append(
                 ScriptedResponse(
                     body=RESUME_BODY[offset:],
-                    fail_after=0,
+                    fail_after=10,
                     status_code=206,
                     headers={"content-range": content_range(offset, len(RESUME_BODY))},
                 )
             )
+            offset += 10
         transport = ScriptedTransport(responses).install(mocker)
 
         async def candidates(_md5, source):
@@ -3632,7 +3633,7 @@ class TestPartialTransferRecovery:
                         "content-range": content_range(RESUME_CUT, len(RESUME_BODY))
                     },
                     body=RESUME_BODY[RESUME_CUT:],
-                    fail_after=0,
+                    fail_after=10,
                 ),
                 ScriptedResponse(body=RESUME_BODY),
                 ScriptedResponse(body=RESUME_BODY),

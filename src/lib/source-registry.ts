@@ -47,9 +47,7 @@ export interface SourceSpec {
   acquire?(args: Readonly<Record<string, any>>, options: CallOptions): Promise<any>;
 }
 
-/** Fixed insertion order is accounting order, never source preference.
- * Production adapter registration is deferred to search integration.
- */
+/** Fixed insertion order is accounting order, never source preference. */
 export class SourceRegistry {
   readonly sources: readonly SourceSpec[];
   constructor(sources: readonly SourceSpec[]) {

@@ -95,11 +95,11 @@ export const OLD_TOOLS: Record<string, string> = {
     'Search again and call get_book with the row ref; bookId, bookHash and include are removed.',
   search_by_term: 'Removed; use search with the term as query and explicit sources.',
   search_by_author:
-    'Use search with author, sources and optionally exact; count becomes limit; exact covers the whole combined query.',
+    'Use search with author, sources and optionally exact; count becomes limit; exact checks title-query and author phrases separately on every source.',
   fetch_booklist: 'Removed; use search with catalogue metadata and explicit sources.',
   search_advanced: 'Removed; call search with exact:true and then exact:false if needed.',
   search_multi_source:
-    'Use search with sources in the desired order and limit instead of count; auto needs operator defaults.',
+    'Use search with a source set and limit instead of count; omit sources for the reported default set.',
   ['process_document_for_' + 'r' + 'ag']:
     'Text processing was removed in 2.0; use a separate 1.4.x installation.',
 };

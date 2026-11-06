@@ -19,9 +19,9 @@ const descriptions: Record<ToolName, string> = {
   search:
     'Metadata, not book text. Give query and/or author; exact checks each field locally. sources is a set asked together; defaults: get_limits. Rows group only equal catalogue MD5; ref selects the recommended source copy, other_copies remain selectable. Check sources, all_answered and note for incomplete windows. Search refs/cursors share a process-local 128-search LRU, up to 20 windows each; on ref_unavailable search again. Pass cursor alone: pages are retained snapshots; the first sole-source refill may issue one request, then replays are local.',
   get_book:
-    'Edition evidence for a ref. Zlibrary costs one detail call; others return held rows. Description capped at 1,000 characters.',
+    'Edition evidence for any copy ref; bounded other_copies, disagreements and likely_editions retain the search filters. Zlibrary costs one detail call; others return held rows. Optional relationship evidence can expire before the ref. Description capped at 1,000 characters.',
   download:
-    'Download a ref to server disk: path, bytes and record sidecar, not text. Repeats at the same destination re-hash sha256 and skip an intact copy without quota; different output_dir or filename transfers again. Local O_EXCL locks coalesce processes.',
+    'Download the selected source copy to server disk: path, bytes, source and record sidecar, not text. Failure may offer other_copies; never substitutes. Repeats at the same destination re-hash sha256 and skip an intact copy without quota; different output_dir or filename transfers again. Local destination locks coalesce processes.',
   get_limits:
     'Capabilities, resolved search set, wait policy and local admission state. mode:local (default) costs no network. mode:live fetches account numbers for named sources; only zlibrary costs an account call. Other clients can change estimates; errors are per source.',
   get_history:

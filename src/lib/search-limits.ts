@@ -51,8 +51,8 @@ export class RecentSearches {
   }
 }
 
-/** Pure future limits projection. No registry methods, owner methods or live
- * account calls; public get_limits and startup do not import this model. */
+/** Pure limits projection over captured capabilities and read-only local state;
+ * never calls a registry, session owner or live account itself. */
 export function projectSearchLimits(
   views: readonly SourceView[],
   settings: SearchSettings,

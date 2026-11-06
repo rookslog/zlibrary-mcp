@@ -17,16 +17,29 @@
           "minLength": 1
         }
       },
-      "required": ["ref"],
+      "required": [
+        "ref"
+      ],
       "additionalProperties": false
     },
     "outputSchema": {
       "type": "object",
       "oneOf": [
         {
-          "required": ["path", "bytes", "reused", "transfer_skipped", "verified", "record"],
+          "required": [
+            "path",
+            "bytes",
+            "reused",
+            "transfer_skipped",
+            "verified",
+            "record",
+            "source"
+          ],
           "properties": {
             "path": {
+              "type": "string"
+            },
+            "source": {
               "type": "string"
             },
             "bytes": {
@@ -50,11 +63,15 @@
             }
           },
           "not": {
-            "required": ["error"]
+            "required": [
+              "error"
+            ]
           }
         },
         {
-          "required": ["error"],
+          "required": [
+            "error"
+          ],
           "properties": {
             "error": {
               "type": "object",
@@ -72,7 +89,11 @@
                   "type": "string"
                 },
                 "retry": {
-                  "enum": ["safe", "may_spend_quota", "no"]
+                  "enum": [
+                    "safe",
+                    "may_spend_quota",
+                    "no"
+                  ]
                 },
                 "message": {
                   "type": "string"
@@ -103,14 +124,21 @@
           "minLength": 1
         }
       },
-      "required": ["ref"],
+      "required": [
+        "ref"
+      ],
       "additionalProperties": false
     },
     "outputSchema": {
       "type": "object",
       "oneOf": [
         {
-          "required": ["ref", "source", "identifiers", "evidence"],
+          "required": [
+            "ref",
+            "source",
+            "identifiers",
+            "evidence"
+          ],
           "properties": {
             "ref": {
               "type": "string"
@@ -127,11 +155,15 @@
             }
           },
           "not": {
-            "required": ["error"]
+            "required": [
+              "error"
+            ]
           }
         },
         {
-          "required": ["error"],
+          "required": [
+            "error"
+          ],
           "properties": {
             "error": {
               "type": "object",
@@ -149,7 +181,11 @@
                   "type": "string"
                 },
                 "retry": {
-                  "enum": ["safe", "may_spend_quota", "no"]
+                  "enum": [
+                    "safe",
+                    "may_spend_quota",
+                    "no"
+                  ]
                 },
                 "message": {
                   "type": "string"
@@ -177,7 +213,11 @@
       "properties": {
         "source": {
           "type": "string",
-          "enum": ["libgen", "annas", "zlibrary"]
+          "enum": [
+            "libgen",
+            "zlibrary",
+            "annas"
+          ]
         },
         "limit": {
           "type": "integer",
@@ -194,7 +234,9 @@
       "type": "object",
       "oneOf": [
         {
-          "required": ["rows"],
+          "required": [
+            "rows"
+          ],
           "properties": {
             "rows": {
               "type": "array",
@@ -207,11 +249,15 @@
             }
           },
           "not": {
-            "required": ["error"]
+            "required": [
+              "error"
+            ]
           }
         },
         {
-          "required": ["error"],
+          "required": [
+            "error"
+          ],
           "properties": {
             "error": {
               "type": "object",
@@ -229,7 +275,11 @@
                   "type": "string"
                 },
                 "retry": {
-                  "enum": ["safe", "may_spend_quota", "no"]
+                  "enum": [
+                    "safe",
+                    "may_spend_quota",
+                    "no"
+                  ]
                 },
                 "message": {
                   "type": "string"
@@ -261,13 +311,20 @@
           "type": "array",
           "items": {
             "type": "string",
-            "enum": ["libgen", "annas", "zlibrary"]
+            "enum": [
+              "libgen",
+              "zlibrary",
+              "annas"
+            ]
           },
           "uniqueItems": true
         },
         "mode": {
           "type": "string",
-          "enum": ["local", "live"]
+          "enum": [
+            "local",
+            "live"
+          ]
         }
       },
       "additionalProperties": false
@@ -276,24 +333,33 @@
       "type": "object",
       "oneOf": [
         {
-          "required": ["sources"],
+          "required": [
+            "sources",
+            "search"
+          ],
           "properties": {
             "sources": {
               "type": "object"
             },
-            "default_order": {
-              "type": "array",
-              "items": {
-                "type": "string"
-              }
+            "search": {
+              "type": "object",
+              "required": [
+                "default_sources",
+                "wait_ms",
+                "ordering"
+              ]
             }
           },
           "not": {
-            "required": ["error"]
+            "required": [
+              "error"
+            ]
           }
         },
         {
-          "required": ["error"],
+          "required": [
+            "error"
+          ],
           "properties": {
             "error": {
               "type": "object",
@@ -311,7 +377,11 @@
                   "type": "string"
                 },
                 "retry": {
-                  "enum": ["safe", "may_spend_quota", "no"]
+                  "enum": [
+                    "safe",
+                    "may_spend_quota",
+                    "no"
+                  ]
                 },
                 "message": {
                   "type": "string"
@@ -353,12 +423,16 @@
           "type": "array",
           "items": {
             "type": "string",
-            "enum": ["libgen", "annas", "zlibrary"]
+            "enum": [
+              "libgen",
+              "zlibrary",
+              "annas"
+            ]
           },
           "uniqueItems": true
         },
         "exact": {
-          "description": "Z-Library only: sent, not checked by this server; other sources are skipped.",
+          "description": "Local per-field phrase check on every source; also sent to Z-Library.",
           "type": "boolean"
         },
         "year_from": {
@@ -402,32 +476,235 @@
       "type": "object",
       "oneOf": [
         {
-          "required": ["rows", "routing"],
+          "required": [
+            "rows",
+            "sources",
+            "all_answered",
+            "ordering",
+            "note"
+          ],
           "properties": {
             "rows": {
               "type": "array",
               "items": {
                 "type": "object",
-                "required": ["ref", "source"]
+                "required": [
+                  "ref",
+                  "source",
+                  "match"
+                ],
+                "properties": {
+                  "ref": {
+                    "type": "string"
+                  },
+                  "source": {
+                    "type": "string"
+                  },
+                  "match": {
+                    "enum": [
+                      "exact_title",
+                      "all_terms",
+                      "source_only"
+                    ]
+                  },
+                  "other_copies": {
+                    "type": "array",
+                    "minItems": 1,
+                    "items": {
+                      "type": "object",
+                      "required": [
+                        "ref",
+                        "source"
+                      ],
+                      "properties": {
+                        "ref": {
+                          "type": "string"
+                        },
+                        "source": {
+                          "type": "string"
+                        },
+                        "filter": {
+                          "enum": [
+                            "pass",
+                            "fail",
+                            "unknown"
+                          ]
+                        },
+                        "unknown": {
+                          "type": "array",
+                          "items": {
+                            "type": "string"
+                          }
+                        }
+                      }
+                    }
+                  },
+                  "route_basis": {
+                    "enum": [
+                      "only_usable",
+                      "operator_order",
+                      "stable_tie"
+                    ]
+                  },
+                  "differs": {
+                    "type": "array",
+                    "items": {
+                      "type": "string"
+                    }
+                  },
+                  "likely_group": {
+                    "type": "string"
+                  },
+                  "likely_same_file_as": {
+                    "type": "string"
+                  },
+                  "download_available": {
+                    "const": false
+                  }
+                },
+                "if": {
+                  "required": [
+                    "other_copies"
+                  ]
+                },
+                "then": {
+                  "required": [
+                    "route_basis"
+                  ]
+                }
               }
             },
-            "routing": {
+            "sources": {
               "type": "object",
-              "required": ["requested", "attempts", "fell_back"]
+              "minProperties": 1,
+              "additionalProperties": {
+                "oneOf": [
+                  {
+                    "type": "object",
+                    "required": [
+                      "state",
+                      "rows",
+                      "ms"
+                    ],
+                    "properties": {
+                      "state": {
+                        "const": "rows"
+                      },
+                      "rows": {
+                        "type": "integer",
+                        "minimum": 1
+                      },
+                      "ms": {
+                        "type": "integer",
+                        "minimum": 0
+                      }
+                    }
+                  },
+                  {
+                    "type": "object",
+                    "required": [
+                      "state",
+                      "rows",
+                      "ms"
+                    ],
+                    "properties": {
+                      "state": {
+                        "const": "empty"
+                      },
+                      "rows": {
+                        "const": 0
+                      },
+                      "ms": {
+                        "type": "integer",
+                        "minimum": 0
+                      }
+                    }
+                  },
+                  {
+                    "type": "object",
+                    "required": [
+                      "state",
+                      "ms"
+                    ],
+                    "properties": {
+                      "state": {
+                        "const": "late"
+                      },
+                      "ms": {
+                        "type": "integer",
+                        "minimum": 0
+                      }
+                    }
+                  },
+                  {
+                    "type": "object",
+                    "required": [
+                      "state",
+                      "code",
+                      "reason",
+                      "ms"
+                    ],
+                    "properties": {
+                      "state": {
+                        "const": "failed"
+                      },
+                      "code": {
+                        "type": "string"
+                      },
+                      "reason": {
+                        "type": "string"
+                      },
+                      "ms": {
+                        "type": "integer",
+                        "minimum": 0
+                      }
+                    }
+                  },
+                  {
+                    "type": "object",
+                    "required": [
+                      "state",
+                      "reason"
+                    ],
+                    "properties": {
+                      "state": {
+                        "const": "not_asked"
+                      },
+                      "reason": {
+                        "type": "string"
+                      },
+                      "retry_after_s": {
+                        "type": "number",
+                        "minimum": 0
+                      }
+                    }
+                  }
+                ]
+              }
             },
-            "next_cursor": {
-              "type": "string"
+            "all_answered": {
+              "type": "boolean"
+            },
+            "ordering": {
+              "const": "fit-v1"
             },
             "note": {
+              "type": "string"
+            },
+            "next_cursor": {
               "type": "string"
             }
           },
           "not": {
-            "required": ["error"]
+            "required": [
+              "error"
+            ]
           }
         },
         {
-          "required": ["error"],
+          "required": [
+            "error"
+          ],
           "properties": {
             "error": {
               "type": "object",
@@ -445,7 +722,11 @@
                   "type": "string"
                 },
                 "retry": {
-                  "enum": ["safe", "may_spend_quota", "no"]
+                  "enum": [
+                    "safe",
+                    "may_spend_quota",
+                    "no"
+                  ]
                 },
                 "message": {
                   "type": "string"

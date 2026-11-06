@@ -35,6 +35,32 @@ The Z-Library MCP server implements comprehensive retry logic with exponential b
 | `CIRCUIT_BREAKER_THRESHOLD` | `5` | Number of failed logical dependency calls before opening circuit |
 | `CIRCUIT_BREAKER_TIMEOUT` | `60000` | Time in ms before attempting to close circuit (1 minute) |
 
+### Merged-search comparison wait
+
+`BOOK_SOURCE_SEARCH_WAIT_MS` is a positive whole decimal millisecond value
+(default `12000`, maximum `2147483647`); invalid or blank values refuse startup.
+When multiple source jobs are dispatched, one monotonic deadline starts before
+local planning. Only results observed strictly before it enter the frozen
+reply. If all jobs settle sooner, it returns sooner. A sole dispatched job
+retains its ordinary bridge budget. Shorter explicit caller budgets still win.
+
+The comparison cut is `search_cut`, a neutral cancellation, distinct from a
+real auth/provider deadline and caller cancellation. It does not charge the
+breaker or create authentication backoff. Queued waiters withdraw; issued work
+remains owned through TERM/grace/KILL and late output is discarded. A `late`
+line says the reply stopped waiting for a dispatched job, not whether a request
+was issued or cleanup completed. Locks and worker capacity stay with their
+owners until cleanup actually finishes. Cancelling a retained refill withdraws
+one subscriber; last withdrawal aborts it, with the position fenced until its
+owner settles before an explicit retry can issue.
+
+LibGen and Anna's mirror searches use a private 3-second per-mirror allowance,
+clamped by the remaining walk. Preflight, pacing and the search itself share
+that allowance, so a slow preflight or rate wait leaves less for the request.
+Other mirrors remain candidates. This short search allowance changes neither
+download resolution nor transfer budgets. The whole comparison wait is
+separate from these source-local budgets.
+
 ### Multi-Source Timeout Configuration
 
 Nothing in the multi-source path may run unbounded. Two layers cooperate, and

@@ -173,8 +173,8 @@ function modelError(
   sources: Readonly<Record<string, SourceLine>>,
   ownSource?: string,
 ): SearchError['error'] {
-  // The public validator remains unchanged until activation; this internal model
-  // can account for any registered source without widening the live schema.
+  // Aggregate attempts account for every registered source; preserve the
+  // selected owner separately from the failure detail copied below.
   const info = { ...failure.info };
   delete info.source;
   const result = errorEnvelope(

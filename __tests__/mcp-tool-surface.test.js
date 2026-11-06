@@ -22,11 +22,11 @@ beforeEach(async () => {
 });
 afterEach(async () => { await client.close(); await server.close(); process.env = previous; });
 const call = async (name, args = {}) => (await client.callTool({ name, arguments: args })).structuredContent;
-test('tools/list stays under 7100 characters with success/error output schemas', async () => {
+test('tools/list stays under 9200 characters with success/error output schemas', async () => {
   const list = await client.listTools();
-  expect(JSON.stringify(list).length).toBeLessThan(7100);
-  expect(JSON.stringify(list).length).toBe(7050);
-  expect(ERROR_CODES).toHaveLength(19);
+  expect(JSON.stringify(list).length).toBeLessThan(9200);
+  expect(JSON.stringify(list).length).toBe(9078);
+  expect(ERROR_CODES).toHaveLength(18);
   expect(list.tools.map(t => t.name)).toEqual(['search', 'get_book', 'download', 'get_limits', 'get_history']);
   for (const t of list.tools) expect(t.outputSchema.oneOf).toHaveLength(2);
 });
@@ -136,7 +136,7 @@ test('every advertised input field is exercised through SDK calls with literal b
   run.mockImplementation(async (_script, options) => {
     switch (options.args[0]) {
       case 'search':
-        return encode({ books: [book] });
+        return encode({ books: Array.from({length:50}, (_,i)=>({...book,id:String(i+1)})) });
       case 'get_book_metadata_complete':
         return encode({ description: 'Details' });
       case 'acquire_book':
@@ -164,8 +164,8 @@ test('every advertised input field is exercised through SDK calls with literal b
     return reply.structuredContent;
   };
   const searchArgs = {
-    query: 'title',
-    author: 'Writer',
+    query: 'Book',
+    author: 'Author',
     sources: ['zlibrary'],
     exact: true,
     year_from: 1900,
@@ -175,19 +175,24 @@ test('every advertised input field is exercised through SDK calls with literal b
     limit: 1,
   };
   const searchPayload = {
-    query: 'title',
-    author: 'Writer',
+    query: 'Book',
+    author: 'Author',
     exact: true,
     from_year: 1900,
     to_year: 2000,
     languages: ['english'],
     extensions: ['pdf'],
-    count: 1,
+    count: 50,
     page: 1,
   };
   const first = await exercise('search', searchArgs, 'search', searchPayload);
   expect(first.next_cursor).toEqual(expect.any(String));
-  await exercise('search', { cursor: first.next_cursor }, 'search', { ...searchPayload, page: 2 });
+  const beforeSlice = run.mock.calls.length;
+  const slice = await call('search', { cursor: first.next_cursor });
+  expect(slice.rows).toHaveLength(1);
+  expect(run.mock.calls).toHaveLength(beforeSlice);
+  expect(await call('search', { cursor: first.next_cursor })).toEqual(slice);
+  fixtures.push({ name: 'search', args: { cursor: first.next_cursor } });
   const ref = first.rows[0].ref;
   const details = await exercise('get_book', { ref }, 'get_book_metadata_complete', {
     book_id: '1',
@@ -202,11 +207,11 @@ test('every advertised input field is exercised through SDK calls with literal b
       book_details: book,
       output_dir: '/offline',
       filename: 'chosen.epub',
-      request: { ref, query: 'title Writer' },
+      request: { ref, query: 'Book Author' },
     },
     2400000,
   );
-  expect(receipt).toEqual(downloadReply);
+  expect(receipt).toEqual({...downloadReply,source:'zlibrary'});
   const limits = await exercise(
     'get_limits',
     { mode: 'live', sources: ['zlibrary'] },
@@ -267,10 +272,10 @@ test('cancelling an in-flight SDK request aborts that runner signal and leaves t
   ).toHaveLength(1);
   expect(run.mock.calls.at(-1)[2].signal.aborted).toBe(false);
 });
-test('search forwards all normalized filters, author, limit and page through the real facade', async () => {
+test('search forwards all normalized filters, author, candidate-window count and page through the real facade', async () => {
   run.mockResolvedValue(encode({ books: [book] }));
-  const result = await call('search', { query: 'title', author: 'Writer', sources: ['zlibrary'], exact: true, year_from: 1900, year_to: 2000, languages: ['english'], formats: ['pdf'], limit: 3 });
-  expect(JSON.parse(run.mock.calls[0][1].args[1])).toEqual({ query: 'title', author: 'Writer', exact: true, from_year: 1900, to_year: 2000, languages: ['english'], extensions: ['pdf'], count: 3, page: 1 });
+  const result = await call('search', { query: 'Book', author: 'Author', sources: ['zlibrary'], exact: true, year_from: 1900, year_to: 2000, languages: ['english'], formats: ['pdf'], limit: 3 });
+  expect(JSON.parse(run.mock.calls[0][1].args[1])).toEqual({ query: 'Book', author: 'Author', exact: true, from_year: 1900, to_year: 2000, languages: ['english'], extensions: ['pdf'], count: 50, page: 1 });
   expect(result.rows[0]).toMatchObject({ title: 'Book', source: 'zlibrary' });
   expect(result.rows[0].id).toBeUndefined();
 });
@@ -333,15 +338,16 @@ test('get_book subprocess failure retains selected source and sanitized timeout 
   expect(run.mock.calls.at(-1)[1].args[0]).toBe('get_book_metadata_complete');
 });
 
-test.each(['search', 'get_history'])('%s rejects empty cursor through RefStore before configuration or bridge work', async name => {
+test.each(['search', 'get_history'])('%s rejects empty cursor through its handle owner before configuration or bridge work', async name => {
   run.mockResolvedValue(encode([]));
   const configured = jest.spyOn(server.tools, 'configured');
-  const resolve = jest.spyOn(server.tools.refs, 'get');
+  const resolve = name === 'search' ? jest.spyOn(server.tools.searches, 'page') : jest.spyOn(server.tools.refs, 'get');
   try {
     const reply = await client.callTool({ name, arguments: { cursor: '' } });
     expect(run.mock.calls.length).toBe(0);
     expect(configured).not.toHaveBeenCalled();
-    expect(resolve).toHaveBeenCalledWith('', 'c');
+    if(name === 'search') expect(resolve).toHaveBeenCalledWith('', expect.any(Object));
+    else expect(resolve).toHaveBeenCalledWith('', 'c');
     expect(reply.isError).toBe(true);
     expect(reply.structuredContent.error).toMatchObject({
       code: 'invalid_argument', operation: name, message: 'Reference has the wrong kind.', retry: 'no',
@@ -374,23 +380,21 @@ test.each(['search', 'get_history'])('%s still rejects empty or nonempty cursor 
   expect(run.mock.calls.length).toBe(0);
 });
 
-test.each(['search', 'get_history'])('%s retains valid cursor-only page forwarding and exact lost-reply replay', async name => {
+test.each(['search', 'get_history'])('%s retains its cursor-only page and lost-reply contract', async name => {
   run.mockImplementation(async (_script, options) => {
     const { page } = JSON.parse(options.args[1]);
     const row = { ...book, id: String(page), title: `Page ${page}` };
-    return encode(name === 'search' ? { books: [row] } : [row]);
+    return encode(name === 'search' ? { books: page === 1 ? Array.from({length:50},(_,i)=>({...row,id:`first-${i}`})) : [row] } : [row]);
   });
-  const first = await call(name, name === 'search' ? { query: 'Book', sources: ['zlibrary'], limit: 1 } : { limit: 1 });
+  const first = await call(name, name === 'search' ? { query: 'Book', sources: ['zlibrary'], limit: 50 } : { limit: 1 });
   expect(first.next_cursor).toBeDefined();
   const lost = await call(name, { cursor: first.next_cursor });
   const replay = await call(name, { cursor: first.next_cursor });
   expect(lost.rows[0].title).toBe('Page 2');
   expect(replay).toEqual(lost);
-  expect(run.mock.calls.map(c => [c[1].args[0], JSON.parse(c[1].args[1]).page])).toEqual([
-    [name === 'search' ? 'search' : 'get_download_history', 1],
-    [name === 'search' ? 'search' : 'get_download_history', 2],
-    [name === 'search' ? 'search' : 'get_download_history', 2],
-  ]);
+  const expected = [[name === 'search' ? 'search' : 'get_download_history', 1], [name === 'search' ? 'search' : 'get_download_history', 2]];
+  if(name === 'get_history') expected.push(['get_download_history',2]);
+  expect(run.mock.calls.map(c => [c[1].args[0], JSON.parse(c[1].args[1]).page])).toEqual(expected);
 });
 
 test.each([true, false])('download lease contention issued=%s has bounded retry/estimate semantics and no automatic retry', async issued => {

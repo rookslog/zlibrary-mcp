@@ -440,6 +440,7 @@ function filterActivation(copies: readonly MergeCopy[], asserted?: boolean): boo
     throw new TypeError('Every merge copy requires complete filterResult evidence.');
   };
   let active = false;
+  let predicateKeys: string | undefined;
   for (const copy of copies) {
     const result = copy.filterResult;
     if (
@@ -462,6 +463,9 @@ function filterActivation(copies: readonly MergeCopy[], asserted?: boolean): boo
       )
     )
       invalid();
+    const keys = JSON.stringify(entries.map(([key]) => key).sort());
+    if (predicateKeys !== undefined && predicateKeys !== keys) invalid();
+    predicateKeys = keys;
     const derived = entries.some(([, check]) => check.status === 'fail')
       ? 'fail'
       : entries.some(([, check]) => check.status === 'unknown')

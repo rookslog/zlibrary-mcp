@@ -28,3 +28,17 @@ test('F5 an empty window has no contradictory evidence and still supports an act
 test.each([true,false])('F5 a matching explicit activation flag %s preserves derived copy labels',active=>{
  const filters=active?request:{},a=copy('a',{},filters),b=copy('b',{},filters);const [row]=mergeRows([a,b],request,{filtersActive:active,routeOrder:['a','b']});expect(row.ref).toBe(a.ref);expect(row.other_copies[0].filter).toBe(active?'pass':undefined);
 });
+
+test.each(['empty', 'different'])(
+  'G4 rejects %s evidence beside copies checked against other keys in either order', kind => {
+    const rejected = copy('rejected', { language: 'English' });
+    const incomplete = copy('unchecked', {}, kind === 'empty' ? {} : { year_from: 1900 });
+    for (const copies of [[incomplete, rejected], [rejected, incomplete]])
+      expect(() => mergeRows(copies, request)).toThrow(TypeError);
+  },
+);
+test('G4 equal predicate keys are valid regardless of insertion order', () => {
+  const a = copy('a'), b = copy('b');
+  b.filterResult.checks = Object.fromEntries(Object.entries(b.filterResult.checks).reverse());
+  expect(mergeRows([a, b], request)).toHaveLength(1);
+});

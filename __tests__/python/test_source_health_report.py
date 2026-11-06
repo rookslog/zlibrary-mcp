@@ -261,6 +261,8 @@ def test_inconsistent_execution_flags_cannot_claim_a_skip_or_pass(inputs, status
         inputs["env"]["LIVE_STARTED"] = ""
     auth = produce(inputs)["sources"]["zlibrary"]["authenticated"]
     assert auth["status"] == "failed" and auth["coverage_complete"] is False
+    if status == "passed":
+        assert auth["ran"] is None
 
 
 @pytest.mark.parametrize("job", ["failure", "cancelled", "skipped", "success"])
@@ -581,3 +583,13 @@ def test_unknown_probe_job_outcome_cannot_present_a_healthy_source(inputs, job):
     assert all(
         row["reachability"]["status"] == "not_run" for row in report["sources"].values()
     )
+
+
+def test_missing_execution_marker_and_lost_junit_are_unknown_not_a_claim_of_no_run(
+    inputs,
+):
+    inputs["env"]["LIVE_STARTED"] = ""
+    inputs["xml"] = None
+    auth = produce(inputs)["sources"]["zlibrary"]["authenticated"]
+    assert auth["status"] == "failed" and auth["ran"] is None
+    assert auth["counts"] is None and auth["coverage_complete"] is False

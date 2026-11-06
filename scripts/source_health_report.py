@@ -260,6 +260,8 @@ def live_input(path):
 def authenticated(evidence, problem, status, job, outcome, started, exit_code):
     marked = started == "true"
     ran = True if marked and evidence else None if marked else False
+    if not marked and (evidence or status in ("passed", "failed", "skipped")):
+        ran = None
     if job == "cancelled" and outcome != "skipped" and not marked:
         ran = None
     counts = evidence["counts"] if evidence else None

@@ -133,13 +133,24 @@ Anna's entries also report `member_key_configured` (boolean) and `member_session
 (`none`, `active`, or `rejected`), without provider contact. State is last observed
 in this server process; `active` does not attest current provider acceptance.
 With a key, the first Anna search lazily POSTs it as form data to `/account/`
-on the same trusted hosts as fast download. The cookie stays in an Anna-only
+over HTTPS on the same trusted hosts as fast download. The cookie stays in an Anna-only
 resident Python worker's memory and is reused across searches until expiry or
 refusal. One shared refresh is allowed per refused session; failed/rejected
-sign-ins back off for 60 seconds. Anonymous HTTP search remains the fallback,
-and a browser-check page is reported as an error, never empty results. Transport
+sign-ins back off for 60 seconds, including across worker restarts in the same
+Node process. Anonymous HTTP search remains the fallback. Result anchors take
+priority over challenge words in book titles. No positive empty-results marker
+has been captured from a real page: rowless pages without one report
+“Unrecognised page” rather than empty results, including for anonymous users.
+Member page redirects are limited to five hops within the configured HTTPS
+origin. `none` also covers an unattempted, cancelled or transport-failed sign-in;
+`rejected` means the provider refused sign-in/session access, not necessarily
+that the key is invalid. Transport
 debug logging is suppressed while a member adapter is alive to avoid cookie
-header leakage. Restarting the server discards the session. No browser challenge
+header leakage. The child excludes Z-Library email/password from its environment.
+Resident searches reset preflight verdicts and use bounded DNS resolution;
+a genuinely hung libc lookup can retain a daemon thread until worker exit.
+Individual waits are bounded, but retained DNS threads are not globally capped.
+Restarting the server discards the session and process-local cooldown. No browser challenge
 is solved by this route. Member access with a real key remains untested here.
 `mode: "live"` adds Z-Library account numbers; remaining quota is omitted when
 spend is unknown. For Z-Library, use the daily limit (`per_day`) as the quota

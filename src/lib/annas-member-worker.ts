@@ -18,6 +18,7 @@ export class AnnasMemberWorker {
   private starting?: Promise<void>;
   private pending = new Map<number, Pending>();
   private sequence = 0;
+  private retryAt = 0;
   private state: SessionState = 'none';
   private buffer = '';
   private readonly onExit = () => {
@@ -25,11 +26,19 @@ export class AnnasMemberWorker {
   };
 
   constructor(
-    private readonly launch: Launch = async () =>
-      spawn(await getManagedPythonPath(), ['-u', getPythonScriptPath('annas_member_worker.py')], {
-        stdio: ['pipe', 'pipe', 'pipe'],
-        env: process.env,
-      }),
+    private readonly launch: Launch = async () => {
+      const env = { ...process.env };
+      delete env.ZLIBRARY_EMAIL;
+      delete env.ZLIBRARY_PASSWORD;
+      return spawn(
+        await getManagedPythonPath(),
+        ['-u', getPythonScriptPath('annas_member_worker.py')],
+        {
+          stdio: ['pipe', 'pipe', 'pipe'],
+          env,
+        },
+      );
+    },
   ) {}
 
   status(): SessionState {
@@ -87,6 +96,9 @@ export class AnnasMemberWorker {
             const message = JSON.parse(line);
             if (!['none', 'active', 'rejected'].includes(message.member_session)) throw Error();
             this.state = message.member_session;
+            if (Number.isFinite(message.retry_at) && message.retry_at >= 0)
+              this.retryAt = message.retry_at;
+            if (message.status_only) continue;
             const entry = this.pending.get(message.id);
             if (!entry) continue;
             this.pending.delete(message.id);
@@ -154,7 +166,7 @@ export class AnnasMemberWorker {
         },
       });
       options.signal?.addEventListener('abort', cancel, { once: true });
-      this.child!.stdin.write(JSON.stringify({ id, args }) + '\n');
+      this.child!.stdin.write(JSON.stringify({ id, args, retry_at: this.retryAt }) + '\n');
       if (options.signal?.aborted) cancel();
     });
   }

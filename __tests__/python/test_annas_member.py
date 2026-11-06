@@ -122,15 +122,19 @@ async def test_lazy_success_and_session_reuse(make_adapter):
     assert adapter.member_status()["member_session"] == "none"
 
 
-@pytest.mark.parametrize("mode", ["reject", "error", "redirect"])
-async def test_rejected_or_failed_login_backs_off_and_falls_back(make_adapter, mode):
+@pytest.mark.parametrize(
+    "mode,expected", [("reject", "rejected"), ("error", "none"), ("redirect", "none")]
+)
+async def test_rejected_or_failed_login_backs_off_and_falls_back(
+    make_adapter, mode, expected
+):
     site = FakeSite(login=mode)
     adapter = make_adapter(site)
     for _ in range(3):
         assert (await adapter.search("books"))[0].title == "A book"
     assert site.posts == 1
     assert site.foreign == 0
-    assert adapter.member_status()["member_session"] == "rejected"
+    assert adapter.member_status()["member_session"] == expected
     assert not any(site.cookies)
 
 
@@ -263,7 +267,7 @@ async def test_cookie_for_wrong_domain_is_not_an_active_session(make_adapter):
     site = FakeSite(login="wrong-cookie-domain")
     adapter = make_adapter(site)
     await adapter.search("books")
-    assert adapter.member_status()["member_session"] == "rejected"
+    assert adapter.member_status()["member_session"] == "none"
     await adapter.search("books")
     assert site.posts == 1
 
@@ -283,7 +287,7 @@ async def test_timed_out_signin_backs_off_before_next_search(make_adapter):
         await adapter.search("books")
     assert (await adapter.search("books"))[0].title == "A book"
     assert site.posts == 1
-    assert adapter.member_status()["member_session"] == "rejected"
+    assert adapter.member_status()["member_session"] == "none"
 
 
 async def test_canaries_absent_from_real_acquisition_receipts(

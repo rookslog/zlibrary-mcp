@@ -174,9 +174,9 @@ class TestAnnasArchiveSearch:
             mock_client.get.return_value = mock_response
             mock_get_client.return_value = mock_client
 
-            results = await adapter.search("nonexistent_book_xyz123")
-
-        assert results == []
+            # No real positive-empty marker has been established (S2).
+            with pytest.raises(ProviderResponseError, match="Unrecognised page"):
+                await adapter.search("nonexistent_book_xyz123")
 
         await adapter.close()
 

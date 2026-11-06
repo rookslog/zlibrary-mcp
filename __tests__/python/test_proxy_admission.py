@@ -145,7 +145,7 @@ async def test_annas_admission_follows_proxy_route(
     def respond(request):
         requests.append(request.url.path)
         if operation == "search":
-            return httpx.Response(200, text="<html></html>")
+            return httpx.Response(200, text='<a href="/md5/abc">Synthetic</a>')
         return httpx.Response(
             200, json={"download_url": "https://download.invalid/book.pdf"}
         )
@@ -157,7 +157,7 @@ async def test_annas_admission_follows_proxy_route(
                 "a" * 32, deadline=WalkDeadline(left, clock=lambda: 0)
             )
             if operation == "search":
-                assert result == []
+                assert [row.title for row in result] == ["Synthetic"]
             else:
                 assert result.url == "https://download.invalid/book.pdf"
         else:
@@ -184,13 +184,15 @@ async def test_annas_proxy_admission_uses_configured_scheme_and_port(proxy_route
         SourceConfig(annas_base_url="http://mirror.invalid:8080")
     )
     adapter._client = httpx.AsyncClient(
-        transport=httpx.MockTransport(lambda request: httpx.Response(200, text=""))
+        transport=httpx.MockTransport(
+            lambda request: httpx.Response(200, text='<a href="/md5/abc">Synthetic</a>')
+        )
     )
     try:
-        assert (
-            await adapter.search("fixture", deadline=WalkDeadline(2, clock=lambda: 0))
-            == []
+        rows = await adapter.search(
+            "fixture", deadline=WalkDeadline(2, clock=lambda: 0)
         )
+        assert [row.title for row in rows] == ["Synthetic"]
     finally:
         await adapter.close()
     assert probes == []

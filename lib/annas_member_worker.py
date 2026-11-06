@@ -2,6 +2,8 @@
 
 import asyncio
 import json
+import math
+import time
 import sys
 from pathlib import Path
 
@@ -10,18 +12,38 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from lib.sources.annas import AnnasArchiveAdapter
 from lib.sources.config import get_source_config
 from lib.sources.errors import SourceError
-from lib.sources.net import WalkDeadline
+from lib.sources.net import WalkDeadline, bounded_resolver, reset_probe_cache
 
 
 async def serve(adapter):
+    sys.stdin.reconfigure(encoding="utf-8")
+    async with bounded_resolver(adapter.config.connect_timeout):
+        await _serve(adapter)
+
+
+async def _serve(adapter):
     tasks = {}
 
     def send(value):
         print(json.dumps(value), flush=True)
 
+    def status():
+        delay = max(0.0, adapter._member_retry_at - time.monotonic())
+        return {
+            **adapter.member_status(),
+            "retry_at": round((time.time() + delay) * 1000) if delay else 0,
+        }
+
     async def search(request):
         request_id = request["id"]
         try:
+            reset_probe_cache()
+            retry_at = request.get("retry_at", 0)
+            if type(retry_at) in (int, float) and math.isfinite(retry_at):
+                adapter._member_retry_at = max(
+                    adapter._member_retry_at,
+                    time.monotonic() + max(0, retry_at / 1000 - time.time()),
+                )
             args = request["args"]
             count = args.get("count", 10)
             if type(count) is not int or not 1 <= count <= 50:
@@ -50,17 +72,17 @@ async def serve(adapter):
                         "books": books,
                         "sources_used": ["annas_archive"] if books else [],
                     },
-                    **adapter.member_status(),
+                    **status(),
                 }
             )
         except asyncio.CancelledError:
-            pass
+            send({"id": request_id, "status_only": True, **status()})
         except SourceError as error:
             send(
                 {
                     "id": request_id,
                     "error": {"message": str(error), "details": error.to_dict()},
-                    **adapter.member_status(),
+                    **status(),
                 }
             )
         except Exception:
@@ -72,7 +94,7 @@ async def serve(adapter):
                         "message": "Anna member search failed",
                         "details": {"provider": "annas", "reason": "protocol_error"},
                     },
-                    **adapter.member_status(),
+                    **status(),
                 }
             )
         finally:
@@ -87,6 +109,20 @@ async def serve(adapter):
                     tasks[request_id].cancel()
             elif request_id not in tasks and len(tasks) < 64:
                 tasks[request_id] = asyncio.create_task(search(request))
+            else:
+                send(
+                    {
+                        "id": request_id,
+                        "error": {
+                            "message": "Anna member worker busy",
+                            "details": {
+                                "provider": "annas",
+                                "reason": "protocol_error",
+                            },
+                        },
+                        **status(),
+                    }
+                )
     finally:
         pending = list(tasks.values())
         for task in pending:

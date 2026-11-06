@@ -57,10 +57,14 @@ verification.
 
 **Member HTTP search session**:
 With `ANNAS_SECRET_KEY`, the adapter lazily signs in via a form POST to `/account/`
-on a host accepted by the fast-download guard. Its `aa_account_id2` cookie stays
+over HTTPS on a host accepted by the fast-download guard. Its `aa_account_id2` cookie stays
 in a resident Python worker's memory; search reuses it across tool calls. A
 refused session gets at most one shared refresh, and rejected/failed sign-in
-backs off for 60 seconds while ordinary HTTP search remains available. This
+backs off for 60 seconds, preserved by Node across worker restarts, while
+ordinary HTTP search remains available. Guard skips, transport failures and
+cancelled sign-ins report `none`; `rejected` denotes provider refusal of a
+sign-in or session. A no-row page without a real captured positive-empty marker
+reports “Unrecognised page”, including on anonymous search. This
 adds no download route and solves no browser challenge. Local `get_limits`
 reports only configured/none/active/rejected state, with no account request.
 Fake HTTP tests cover the mechanism; actual member acceptance and avoidance of

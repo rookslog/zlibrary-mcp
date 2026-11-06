@@ -9,6 +9,22 @@ const owner = (mode = 'ok') => new AnnasMemberWorker(async () => spawn(
   { stdio: ['pipe', 'pipe', 'pipe'] },
 ));
 
+test('S1 resident preflight recovers after transient DNS failure and rechecks cached success', async () => {
+  const worker = owner('preflight');
+  try {
+    await expect(worker.search({ query: 'books' })).rejects.toMatchObject({ context: { details: { reason: 'dns_failure' } } });
+    expect((await worker.search({ query: 'books' })).books[0].title).toBe('Sign-ins 1 DNS 2');
+    expect((await worker.search({ query: 'books' })).books[0].title).toBe('Sign-ins 1 DNS 3');
+  } finally { await worker.close(); }
+});
+
+test('S1 resident HTTP DNS uses the bounded daemon resolver', async () => {
+  const worker = owner('dns-hang');
+  try {
+    await expect(worker.search({ query: 'dns-hang' })).rejects.toMatchObject({ context: { details: { reason: 'dns_timeout' } } });
+  } finally { await worker.close(); }
+});
+
 test('resident member searches share one sign-in across calls and local limits expose only coarse state', async () => {
   const worker = owner();
   const tools = new AcquisitionTools(() => { throw Error('Unexpected bridge'); }, { ANNAS_SECRET_KEY: 'worker-key-canary' }, () => worker.status());
@@ -97,4 +113,79 @@ test('malformed worker output is never relayed as an error or retained as sessio
     expect(JSON.stringify(error)).not.toMatch(/worker-key-canary|worker-cookie-canary/);
     expect(worker.status()).toBe('none');
   } finally { await worker.close(); }
+});
+
+test('S7 generic worker exception never crosses pipes with canaries', async () => {
+  const worker = owner('generic');
+  try {
+    const error = await worker.search({ query: 'generic-canary' }).catch(e => e);
+    expect(error.message).toBe('Anna member search failed');
+    expect(JSON.stringify(error)).not.toMatch(/worker-key-canary|worker-cookie-canary/);
+    expect(error.context.details.reason).toBe('protocol_error');
+  } finally { await worker.close(); }
+});
+
+test('S8 stdin is UTF-8 even under a legacy Python stdio encoding', async () => {
+  const worker = new AnnasMemberWorker(async () => spawn('.venv/bin/python', ['__tests__/fixtures/annas-member-worker.py', 'unicode'], { stdio: ['pipe', 'pipe', 'pipe'], env: { ...process.env, PYTHONIOENCODING: 'cp1252' } }));
+  try {
+    for (const query of ['Müller', 'Ángel']) {
+      expect((await worker.search({ query })).books[0].title).toBe(`Sign-ins 1 Query ${query}`);
+    }
+  } finally { await worker.close(); }
+});
+
+test('S9 rejection cooldown survives a worker crash in the Node owner', async () => {
+  let child;
+  const worker = new AnnasMemberWorker(async () => {
+    child = spawn('.venv/bin/python', ['__tests__/fixtures/annas-member-worker.py', 'reject'], { stdio: ['pipe', 'pipe', 'pipe'] });
+    return child;
+  });
+  try {
+    expect((await worker.search({ query: 'books' })).books[0].title).toBe('Sign-ins 1');
+    await new Promise(resolve => { child.once('close', resolve); child.kill('SIGKILL'); });
+    expect((await worker.search({ query: 'books' })).books[0].title).toBe('Sign-ins 0');
+  } finally { await worker.close(); }
+});
+
+test('S10 cancelled refresh publishes none and retains cooldown', async () => {
+  let started, status;
+  const signinStarted = new Promise(resolve => { started = resolve; });
+  const statusSeen = new Promise(resolve => { status = resolve; });
+  const worker = new AnnasMemberWorker(async () => {
+    const child = spawn('.venv/bin/python', ['__tests__/fixtures/annas-member-worker.py', 'refresh-slow'], { stdio: ['pipe', 'pipe', 'pipe'] });
+    child.stderr.on('data', chunk => { if (chunk.toString().includes('SIGNIN_STARTED')) started(); });
+    let buffer = '';
+    child.stdout.on('data', chunk => {
+      buffer += chunk.toString();
+      for (let end; (end = buffer.indexOf('\n')) >= 0;) {
+        const message = JSON.parse(buffer.slice(0, end)); buffer = buffer.slice(end + 1);
+        if (message.status_only) status();
+      }
+    });
+    return child;
+  });
+  let timer;
+  try {
+    await worker.search({ query: 'books' });
+    expect(worker.status()).toBe('active');
+    const controller = new AbortController();
+    const pending = worker.search({ query: 'refresh' }, { signal: controller.signal }).catch(e => e);
+    await signinStarted;
+    controller.abort();
+    expect((await pending).code).toBe('TIMEOUT');
+    await Promise.race([statusSeen, new Promise((_, reject) => { timer = setTimeout(() => reject(Error('No cancellation status')), 1500); })]);
+    expect(worker.status()).toBe('none');
+    expect((await worker.search({ query: 'books' })).books[0].title).toBe('Sign-ins 2');
+  } finally { clearTimeout(timer); await worker.close(); }
+});
+
+test('N1 overload returns immediately instead of dropping request 65', async () => {
+  const worker = owner();
+  const controllers = Array.from({ length: 64 }, () => new AbortController());
+  let pending = [];
+  try {
+    await worker.search({ query: 'books' });
+    pending = controllers.map(c => worker.search({ query: 'wait' }, { signal: c.signal }).catch(e => e));
+    await expect(worker.search({ query: 'books' }, { timeoutMs: 2000 })).rejects.toMatchObject({ code: 'PYTHON_ERROR', message: 'Anna member worker busy' });
+  } finally { controllers.forEach(c => c.abort()); await Promise.all(pending); await worker.close(); }
 });

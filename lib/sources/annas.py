@@ -256,9 +256,9 @@ class AnnasArchiveAdapter(SourceAdapter):
             "member_session": self._member_state,
         }
 
-    def _reject_member(self, client) -> None:
+    def _reject_member(self, client, state="rejected") -> None:
         client.cookies = httpx.Cookies()
-        self._member_state = "rejected"
+        self._member_state = state
         # Same fixed-cooldown style as the provider circuit breaker.
         self._member_retry_at = time.monotonic() + 60.0
 
@@ -277,6 +277,11 @@ class AnnasArchiveAdapter(SourceAdapter):
                 return
             try:
                 self._guard_key_host()
+                if self.scheme != "https":
+                    return
+            except ProviderConfigurationError:
+                return
+            try:
                 response = await client.post(
                     f"{self.base_url}/account/",
                     data={"key": self.secret_key},
@@ -290,6 +295,9 @@ class AnnasArchiveAdapter(SourceAdapter):
                     location
                     and httpx.URL(str(response.url)).join(location).host != self.host
                 )
+                rejected = response.status_code in (401, 403) or (
+                    response.status_code == 200 and not self._is_check(response)
+                )
                 accepted = (
                     200 <= response.status_code < 400
                     and not foreign
@@ -302,18 +310,18 @@ class AnnasArchiveAdapter(SourceAdapter):
             except asyncio.CancelledError:
                 # A timed-out/cancelled sign-in must not become a per-search retry.
                 self._member_generation += 1
-                self._reject_member(client)
+                self._reject_member(client, "none")
                 raise
             except Exception:
                 # Do not log, chain or retain the failed keyed request/body.
-                accepted = False
+                accepted = rejected = False
             self._member_generation += 1
             if accepted:
                 self._member_state = "active"
                 self._had_member_session = True
                 self._member_retry_at = 0.0
             else:
-                self._reject_member(client)
+                self._reject_member(client, "rejected" if rejected else "none")
 
     @staticmethod
     def _is_check(response) -> bool:
@@ -322,16 +330,9 @@ class AnnasArchiveAdapter(SourceAdapter):
             return False
         soup = BeautifulSoup(text, "html.parser")
         title = soup.title.get_text(" ", strip=True) if soup.title else ""
-        for script in soup(["script", "style"]):
-            script.decompose()
-        return bool(
-            re.search(r"ddos[- ]guard", title, re.I)
-            or re.search(
-                r"checking your browser|browser verification",
-                soup.get_text(" ", strip=True),
-                re.I,
-            )
-        )
+        if soup.select_one("a[href^='/md5/']"):
+            return False
+        return bool(re.fullmatch(r"ddos[- ]guard", title, re.I))
 
     async def _search_page(self, client, url):
         await self._signin(client)
@@ -343,27 +344,6 @@ class AnnasArchiveAdapter(SourceAdapter):
                 response = await self._fetch(client, url)
                 refusal = self._is_check(response)
                 if not refusal:
-                    if self._had_member_session:
-                        secrets = [self.secret_key] + [
-                            c.value for c in client.cookies.jar
-                        ]
-                        if any(
-                            token and token in response.text
-                            for secret in secrets
-                            for token in (
-                                secret,
-                                quote(secret, safe=""),
-                                quote_plus(secret, safe=""),
-                            )
-                        ):
-                            _raise_keyed_error(
-                                ProviderResponseError(
-                                    PROVIDER,
-                                    self.host,
-                                    "Credential echo omitted",
-                                    reason="protocol_error",
-                                )
-                            )
                     return response
             except httpx.HTTPStatusError as exc:
                 if not active or exc.response.status_code not in (401, 403):
@@ -453,8 +433,26 @@ class AnnasArchiveAdapter(SourceAdapter):
         than after it.
         """
         if self._member_state == "active" and not params:
-            # A session cookie must never leave this origin via a redirect.
-            response = await client.get(url, follow_redirects=False)
+            origin = httpx.URL(self.base_url)
+            for hop in range(6):
+                response = await client.get(url, follow_redirects=False)
+                if not response.is_redirect:
+                    break
+                target = response.url.join(response.headers.get("location", ""))
+                if hop == 5 or (target.scheme, target.host, target.port) != (
+                    origin.scheme,
+                    origin.host,
+                    origin.port,
+                ):
+                    _raise_keyed_error(
+                        ProviderResponseError(
+                            PROVIDER,
+                            self.host,
+                            "Page redirect refused",
+                            reason="http_error",
+                        )
+                    )
+                url = str(target)
         else:
             response = (
                 await client.get(url, params=params)
@@ -509,9 +507,7 @@ class AnnasArchiveAdapter(SourceAdapter):
             diagnostic = str(exc)
             request = getattr(exc, "_request", None)
             if request is not None:
-                diagnostic += (
-                    str(request.url) + repr(request.headers) + repr(request.content)
-                )
+                diagnostic += str(request.url) + repr(request.headers)
             echoes_key = bool(self.secret_key) and any(
                 token in diagnostic
                 for token in (
@@ -520,7 +516,7 @@ class AnnasArchiveAdapter(SourceAdapter):
                     quote_plus(self.secret_key, safe=""),
                 )
             )
-            if self._had_member_session or isinstance(exc, SourceError) or echoes_key:
+            if self._had_member_session or echoes_key:
                 attributed = self._as_source_error(exc)
                 _raise_keyed_error(
                     type(attributed)(
@@ -560,8 +556,18 @@ class AnnasArchiveAdapter(SourceAdapter):
         if self.secret_key:
             secrets = [self.secret_key]
             if self._had_member_session:
-                secrets.extend(c.value for c in client.cookies.jar)
-            if any(secret and secret in repr(results) for secret in secrets):
+                secrets.extend(
+                    c.value for c in client.cookies.jar if c.name == "aa_account_id2"
+                )
+            if any(
+                token and token in repr(results)
+                for secret in secrets
+                for token in (
+                    secret,
+                    quote(secret, safe=""),
+                    quote_plus(secret, safe=""),
+                )
+            ):
                 _raise_keyed_error(
                     ProviderResponseError(
                         PROVIDER,
@@ -570,6 +576,15 @@ class AnnasArchiveAdapter(SourceAdapter):
                         reason="protocol_error",
                     )
                 )
+        if not results:
+            _raise_keyed_error(
+                ProviderResponseError(
+                    PROVIDER,
+                    self.host,
+                    "Unrecognised page: no result rows or captured empty-results marker",
+                    reason="protocol_error",
+                )
+            )
         return results
 
     def _build_result(self, link: Tag, md5: str, title: str) -> UnifiedBookResult:

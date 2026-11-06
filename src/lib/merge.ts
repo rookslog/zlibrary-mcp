@@ -1,3 +1,4 @@
+import { languageKey } from './filter-languages.js';
 import { createHash } from 'node:crypto';
 import type { FilterStatus, RowFilterResult } from './row-filters.js';
 
@@ -407,6 +408,15 @@ const fields = [
   'also_available_on',
 ] as const;
 const known = (value: unknown): boolean => value !== undefined && value !== null && value !== '';
+/** Comparison never rewrites the raw metadata selected for display. */
+const comparisonValue = (field: (typeof fields)[number], value: unknown): string =>
+  JSON.stringify(
+    typeof value === 'string'
+      ? field === 'language' && value.trim()
+        ? languageKey(value)
+        : normalizeText(value)
+      : value,
+  );
 const usable = (copy: MergeCopy): boolean =>
   copy.downloadAvailable !== false && copy.quotaRemaining !== 0;
 const copyRef = (copy: MergeCopy): CopyRef => ({
@@ -532,7 +542,7 @@ export function mergeRows(
             group
               .map((copy) => copy.metadata[field])
               .filter(known)
-              .map((value) => JSON.stringify(value)),
+              .map((value) => comparisonValue(field, value)),
           ).size > 1,
       );
       if (differs.length) row.differs = differs;

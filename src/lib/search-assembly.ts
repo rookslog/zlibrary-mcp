@@ -417,10 +417,13 @@ export function renderSearchPage(
           !view.defaultSearch.on)
       );
     })
-    .map(
-      ([source, line]) =>
-        `${source}: ${line.state}${line.state === 'not_asked' ? ` (${line.reason})` : ''}`,
-    );
+    .map(([source, line]) => {
+      const view = prepared.plan.sources.find((view) => view.name === source)!;
+      const reason = !prepared.plan.intent.includes(source)
+        ? (view.capabilities.off_reason ?? view.defaultSearch.reason)
+        : undefined;
+      return `${source}: ${line.state}${line.state === 'not_asked' ? ` (${reason ?? line.reason})` : ''}`;
+    });
   const note =
     `${rows.length} file rows shown from ${acceptedRecords} accepted records, grouped by file.` +
     (incomplete.length ? ` ${incomplete.join('; ')}.` : '') +

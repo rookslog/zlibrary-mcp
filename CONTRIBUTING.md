@@ -284,7 +284,7 @@ Include:
 
 ## CI test account and uploaded output
 
-CI only ever uses a dedicated test account with nothing else on it. Creating that
+CI may only use a dedicated test account with nothing else on it. Creating that
 account and configuring it are repository-owner tasks. Without an account, the
 live suite reports `no_account` and skips authentication.
 

@@ -146,7 +146,7 @@ jobs:
   live_tests:
     name: Live integration suite
     runs-on: ubuntu-latest
-    # A dedicated CI test account lives in repository secrets. Setups without it
+    # A dedicated CI test account, once configured, lives in repository secrets. Setups without it
     # skip cleanly rather than reporting a false failure. Depends on the
     # reachability probe so a network-level block skips the suite instead of
     # burning login attempts (~10/hour/IP) against a wall.

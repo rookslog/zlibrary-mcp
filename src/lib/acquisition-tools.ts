@@ -1,9 +1,11 @@
 import { z } from 'zod';
+import { filterFields, type MergeCopy } from './merge.js';
+import type { MergedFilterRequest } from './row-filters.js';
 import { RefStore } from './refs.js';
 import { checkRowFilters, checkMergedRowFilters, FILTER_CAPABILITIES } from './row-filters.js';
 import { SourceRegistry, type WindowRequest, type SearchWindow } from './source-registry.js';
 import { fanOut } from './fan-out.js';
-import { SearchRecords } from './search-records.js';
+import { SearchRecords, type RetainedSelection } from './search-records.js';
 import { planSearch, type SearchPlan, type CollectedSource } from './search-assembly.js';
 import { parseSearchSettings, type SearchSettings } from './search-settings.js';
 import { RecentSearches, projectSearchLimits, type LocalSearchState } from './search-limits.js';
@@ -106,6 +108,7 @@ export interface Selection {
   book: Record<string, any>;
   source: Source;
   query?: string;
+  search?: RetainedSelection;
 }
 interface Cursor {
   operation: 'search' | 'get_history';
@@ -193,6 +196,7 @@ export interface SearchRuntime {
   nonce?: bigint;
   recordCapacity?: number;
   maxWindows?: number;
+  relationshipCapacity?: number;
 }
 export class AcquisitionTools {
   readonly refs = new RefStore();
@@ -227,6 +231,7 @@ export class AcquisitionTools {
     this.searches = new SearchRecords({
       capacity: runtime.recordCapacity ?? 128,
       maxWindows: runtime.maxWindows ?? 20,
+      relationshipCapacity: runtime.relationshipCapacity ?? 128,
       nonce: runtime.nonce,
     });
     this.recent = new RecentSearches(names);
@@ -311,9 +316,77 @@ export class AcquisitionTools {
     });
   }
   private identifiers(b: any, source: Source) {
-    return source === 'zlibrary'
-      ? nonempty({ id: b.id == null ? undefined : String(b.id), hash: b.hash ?? b.book_hash })
-      : nonempty({ md5: b.md5 });
+    return nonempty({
+      ...(source === 'zlibrary'
+        ? { id: b.id == null ? undefined : String(b.id), hash: b.hash ?? b.book_hash }
+        : {}),
+      md5: b.md5,
+      sha256: b.sha256,
+    });
+  }
+  private filterEvidence(copy: MergeCopy, request: MergedFilterRequest) {
+    if (!Object.keys(copy.filterResult.checks).length) return {};
+    return {
+      filter: copy.filterResult.status,
+      ...(copy.filterResult.status === 'unknown'
+        ? { unknown: filterFields(copy, request, 'unknown') }
+        : {}),
+    };
+  }
+  private copyView(copy: MergeCopy, request: MergedFilterRequest) {
+    return nonempty({
+      ...copy.metadata,
+      ref: copy.ref,
+      source: copy.source,
+      identifiers: this.identifiers((copy as any).book ?? {}, copy.source),
+      ...this.filterEvidence(copy, request),
+    });
+  }
+  private relationships(ref: string) {
+    if (!this.searches.owns(ref)) return {};
+    let context: ReturnType<SearchRecords['related']>;
+    try {
+      context = this.searches.related(ref);
+    } catch (error) {
+      if (error instanceof ToolFailure && error.code === 'ref_unavailable') return {};
+      throw error;
+    }
+    if (!context) return {};
+    const selected = this.searches.select(ref),
+      row = context.rows.find(
+        (row) => row.ref === ref || row.other_copies?.some((copy) => copy.ref === ref),
+      );
+    if (!row) return {};
+    const group = new Set([row.ref, ...(row.other_copies ?? []).map((copy) => copy.ref)]);
+    const copies = context.copies.filter((copy) => group.has(copy.ref));
+    const others = copies
+      .filter((copy) => copy.ref !== ref)
+      .map((copy) => this.copyView(copy, selected.request));
+    const disagreements = (row.differs ?? []).map((field) => ({
+      field,
+      values: copies.flatMap((copy) => {
+        const value = copy.metadata[field as keyof typeof copy.metadata];
+        return value === undefined || value === null || value === ''
+          ? []
+          : [{ source: copy.source, value }];
+      }),
+    }));
+    const editions = row.likely_group
+      ? context.rows
+          .filter((other) => other.likely_group === row.likely_group && other.ref !== row.ref)
+          .slice(0, 10)
+          .map((other) =>
+            this.copyView(
+              context.copies.find((copy) => copy.ref === other.ref)!,
+              selected.request,
+            ),
+          )
+      : [];
+    return {
+      ...(others.length ? { other_copies: others } : {}),
+      ...(disagreements.length ? { disagreements } : {}),
+      ...(editions.length ? { likely_editions: editions } : {}),
+    };
   }
   async call(name: string, raw: unknown = {}, options: CallOptions = {}): Promise<any> {
     try {
@@ -379,7 +452,11 @@ export class AcquisitionTools {
           estimate.remaining = Math.max(0, estimate.remaining - 1);
           estimate.basis = 'decremented';
         }
-        return { ...result, ...(estimate ? { quota_estimate: { ...estimate } } : {}) };
+        return {
+          ...result,
+          source: selection.source,
+          ...(estimate ? { quota_estimate: { ...estimate } } : {}),
+        };
       } catch (e) {
         const failure = classifyFailure(e, 'download', selection.source);
         if (
@@ -388,6 +465,9 @@ export class AcquisitionTools {
           failure.info.detail?.request_issued === true
         )
           this.estimates.delete(selection.source);
+        const alternatives = this.relationships(args.ref).other_copies;
+        if (alternatives?.length)
+          failure.info.detail = { ...failure.info.detail, other_copies: alternatives };
         throw failure;
       }
     } catch (error) {
@@ -452,7 +532,7 @@ export class AcquisitionTools {
     }
     const merged = { ...b, ...nonempty(detail) };
     const description = merged.description;
-    return nonempty({
+    const result = nonempty({
       ...this.compact({ ...selection, book: merged }, false),
       ref,
       isbn: merged.isbn ?? merged.isbn_13 ?? merged.isbn_10,
@@ -472,6 +552,21 @@ export class AcquisitionTools {
         ),
       },
     });
+    const retained = selection.search;
+    if (!retained) return result;
+    const copy = {
+      ...retained.copy,
+      metadata: result,
+      filterResult: checkMergedRowFilters(
+        { ...result, extension: result.format },
+        retained.request,
+      ),
+    };
+    return {
+      ...result,
+      ...this.filterEvidence(copy, retained.request),
+      ...this.relationships(ref),
+    };
   }
   /** Account history keeps its upstream continuation semantics independently of search. */
   private async historyPage(args: any, options: CallOptions) {
@@ -549,6 +644,7 @@ export class AcquisitionTools {
       source: selection.copy.source,
       book: { ...selection.copy.book, source: selection.copy.source },
       query: [selection.request.query, selection.request.author].filter(Boolean).join(' '),
+      search: selection,
     };
   }
   private views() {

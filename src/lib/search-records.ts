@@ -10,11 +10,11 @@ import {
   type CollectedSource,
   type CatalogueCopy,
 } from './search-assembly.js';
-import type { MergedRow } from './merge.js';
+import type { MergedRow, MergeCopy } from './merge.js';
 
 export type RefillWindow = (page: number, signal: AbortSignal) => Promise<CollectedSource>;
 export interface RetainedSelection {
-  copy: CatalogueCopy;
+  copy: CatalogueCopy & Pick<MergeCopy, 'rank' | 'filterResult'>;
   request: SearchPlan['request'];
 }
 interface Window {
@@ -35,9 +35,11 @@ interface RecordState {
     { promise: Promise<Window>; controller: AbortController; subscribers: Set<symbol> }
   >;
   md5s: Set<string>;
+  contexts: Set<number>;
 }
 type Alias = { record: RecordState } & (
-  { kind: 'r'; selection: RetainedSelection } | { kind: 'c'; window: number; offset: number }
+  | { kind: 'r'; selection: RetainedSelection; context: number }
+  | { kind: 'c'; window: number; offset: number }
 );
 const unavailable = (): ToolFailure =>
   new ToolFailure('ref_unavailable', 'Retained search expired.', { detail: { reason: 'expired' } });
@@ -52,12 +54,29 @@ export class SearchRecords {
   private readonly refs: RefStore;
   private readonly records = new Map<number, RecordState>();
   private serial = 0;
-  constructor(private readonly options: { capacity: number; nonce?: bigint; maxWindows?: number }) {
+  private contextSerial = 0;
+  private readonly contexts = new Map<
+    number,
+    Readonly<{ copies: readonly MergeCopy[]; rows: readonly MergedRow[] }>
+  >();
+  constructor(
+    private readonly options: {
+      capacity: number;
+      nonce?: bigint;
+      maxWindows?: number;
+      relationshipCapacity?: number;
+    },
+  ) {
     if (!Number.isSafeInteger(options.capacity) || options.capacity < 1)
       throw new RangeError('Retained search capacity must be a positive integer.');
     this.refs = new RefStore({ nonce: options.nonce, capacity: Number.MAX_SAFE_INTEGER });
     if (!Number.isSafeInteger(options.maxWindows ?? 20) || (options.maxWindows ?? 20) < 1)
       throw new RangeError('Retained window bound must be a positive integer.');
+    if (
+      !Number.isSafeInteger(options.relationshipCapacity ?? 128) ||
+      (options.relationshipCapacity ?? 128) < 1
+    )
+      throw new RangeError('Relationship capacity must be a positive integer.');
   }
   owns(ref: string): boolean {
     return ref.slice(1, 14) === this.refs.nonce;
@@ -69,6 +88,7 @@ export class SearchRecords {
   }
   private evict(record: RecordState): void {
     this.records.delete(record.id);
+    for (const context of record.contexts) this.contexts.delete(context);
     for (const ref of record.aliases) this.refs.discard(ref);
     for (const pending of record.pending.values()) pending.controller.abort('search_evicted');
   }
@@ -86,6 +106,16 @@ export class SearchRecords {
     const alias = this.lookup(ref, 'r');
     if (alias.kind !== 'r') throw unavailable();
     return alias.selection;
+  }
+  related(ref: string) {
+    const alias = this.lookup(ref, 'r');
+    if (alias.kind !== 'r') throw unavailable();
+    const context = this.contexts.get(alias.context);
+    if (context) {
+      this.contexts.delete(alias.context);
+      this.contexts.set(alias.context, context);
+    }
+    return context;
   }
   private prepare(plan: SearchPlan, input: readonly CollectedSource[]): PreparedSearch {
     // Placeholder identities make allocation independent of completion order. No
@@ -120,13 +150,15 @@ export class SearchRecords {
       kept.flatMap((row) => [row.ref, ...(row.other_copies ?? []).map((copy) => copy.ref)]),
     );
     const mapping = new Map<string, string>();
+    const context = ++this.contextSerial;
+    record.contexts.add(context);
     for (const copy of prepared.copies)
       if (visible.has(copy.ref)) {
-        const selection = {
-          copy: structuredClone(copy as CatalogueCopy),
+        const selection: RetainedSelection = {
+          copy: structuredClone(copy) as RetainedSelection['copy'],
           request: record.plan.request,
         };
-        const ref = this.alias({ kind: 'r', record, selection });
+        const ref = this.alias({ kind: 'r', record, selection, context });
         selection.copy.ref = ref;
         immutable(selection);
         mapping.set(copy.ref, ref);
@@ -151,6 +183,17 @@ export class SearchRecords {
           : {}),
       };
     });
+    this.contexts.set(
+      context,
+      immutable({
+        rows,
+        copies: prepared.copies
+          .filter((copy) => visible.has(copy.ref))
+          .map((copy) => ({ ...copy, ref: mapping.get(copy.ref)! })),
+      }),
+    );
+    while (this.contexts.size > (this.options.relationshipCapacity ?? 128))
+      this.contexts.delete(this.contexts.keys().next().value!);
     return { prepared: immutable({ ...prepared, rows }) };
   }
   retain(
@@ -195,6 +238,7 @@ export class SearchRecords {
       cursors: new Map(),
       pending: new Map(),
       md5s: new Set(),
+      contexts: new Set(),
     };
     this.records.set(record.id, record);
     while (this.records.size > this.options.capacity)

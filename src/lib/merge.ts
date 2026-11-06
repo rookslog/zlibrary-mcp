@@ -479,6 +479,33 @@ function filterActivation(copies: readonly MergeCopy[], asserted?: boolean): boo
  * filterResult records every applied predicate; rejected copies remain
  * reachable only when a copy with the same valid MD5 passed.
  */
+export function filterFields(
+  copy: MergeCopy,
+  request: MergeRequest,
+  status?: FilterStatus,
+): string[] {
+  const names = new Set<string>();
+  for (const [key, check] of Object.entries(copy.filterResult.checks)) {
+    if (!check || (status && check.status !== status)) continue;
+    if (key === 'exact') {
+      for (const [field, wanted] of [
+        ['title', request.query],
+        ['author', request.author],
+      ] as const) {
+        if (!normalizeText(wanted)) continue;
+        const actual = normalizeText(copy.metadata[field]);
+        const outcome = !actual
+          ? 'unknown'
+          : phrase(actual, normalizeText(wanted))
+            ? 'pass'
+            : 'fail';
+        if (!status || outcome === status) names.add(field);
+      }
+    } else names.add(key === 'formats' ? 'format' : key === 'languages' ? 'language' : 'year');
+  }
+  return [...names];
+}
+
 export function mergeRows(
   copies: readonly MergeCopy[],
   request: MergeRequest,
@@ -494,28 +521,6 @@ export function mergeRows(
     group.push(copy);
     groups.set(key, group);
   }
-  const filterFields = (copy: MergeCopy, status?: FilterStatus): string[] => {
-    const names = new Set<string>();
-    for (const [key, check] of Object.entries(copy.filterResult.checks)) {
-      if (!check || (status && check.status !== status)) continue;
-      if (key === 'exact') {
-        for (const [field, wanted] of [
-          ['title', request.query],
-          ['author', request.author],
-        ] as const) {
-          if (!normalizeText(wanted)) continue;
-          const actual = normalizeText(copy.metadata[field]);
-          const outcome = !actual
-            ? 'unknown'
-            : phrase(actual, normalizeText(wanted))
-              ? 'pass'
-              : 'fail';
-          if (!status || outcome === status) names.add(field);
-        }
-      } else names.add(key === 'formats' ? 'format' : key === 'languages' ? 'language' : 'year');
-    }
-    return [...names];
-  };
   const alternate = (copy: MergeCopy): CopyRef => {
     const ref = copyRef(copy);
     if (!filtersActive) return ref;
@@ -525,13 +530,13 @@ export function mergeRows(
       filter: status,
       ...(status === 'fail'
         ? Object.fromEntries(
-            filterFields(copy, 'fail').map((field) => [
+            filterFields(copy, request, 'fail').map((field) => [
               field,
               copy.metadata[field as keyof MergeMetadata],
             ]),
           )
         : {}),
-      ...(status === 'unknown' ? { unknown: filterFields(copy, 'unknown') } : {}),
+      ...(status === 'unknown' ? { unknown: filterFields(copy, request, 'unknown') } : {}),
     };
   };
   const ranked: Ranked[] = [];

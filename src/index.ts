@@ -56,9 +56,10 @@ const successShapes: Record<ToolName, Record<string, any>> = {
     },
   },
   download: {
-    required: ['path', 'bytes', 'reused', 'transfer_skipped', 'verified', 'record'],
+    required: ['path', 'bytes', 'reused', 'transfer_skipped', 'verified', 'record', 'source'],
     properties: {
       path: { type: 'string' },
+      source: { type: 'string' },
       bytes: { type: 'integer', minimum: 0 },
       reused: { type: 'boolean' },
       transfer_skipped: { type: 'boolean' },

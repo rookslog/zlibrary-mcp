@@ -18,6 +18,14 @@ weigh a known gap, but not an unknown one.
 - [ ] `uv run pytest -m "not slow and not integration and not performance"`
 - [ ] Tests added or updated for the change
 
+## Risk
+
+<!-- What could this break, and for which source or client? "None" is a fine answer for a docs fix. -->
+
+## How to undo it
+
+<!-- Usually "revert this PR". Say so if it's harder: saved state, a migration, a published artifact. -->
+
 ## Notes for reviewers
 
 <!--

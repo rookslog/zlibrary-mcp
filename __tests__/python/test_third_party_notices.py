@@ -91,7 +91,7 @@ def test_committed_notices_match_locks_and_preserved_licences():
     assert result.returncode == 0, result.stdout + result.stderr
 
 
-def test_notice_output_and_lock_drift_are_rejected(tmp_path):
+def test_notice_whitespace_passes_but_runtime_lock_drift_is_rejected(tmp_path):
     mod = module()
     for name in ["package-lock.json", "uv.lock", "THIRD-PARTY-NOTICES.md"]:
         shutil.copyfile(ROOT / name, tmp_path / name)
@@ -108,7 +108,15 @@ def test_notice_output_and_lock_drift_are_rejected(tmp_path):
     )
     assert mod.render(tmp_path) == (tmp_path / "THIRD-PARTY-NOTICES.md").read_bytes()
     (tmp_path / "uv.lock").write_bytes((tmp_path / "uv.lock").read_bytes() + b"\n")
-    with pytest.raises(ValueError, match="lock"):
+    assert mod.render(tmp_path) == (tmp_path / "THIRD-PARTY-NOTICES.md").read_bytes()
+    lock = (tmp_path / "uv.lock").read_text()
+    (tmp_path / "uv.lock").write_text(
+        lock.replace("sha256:", "sha256:changed", 1)
+    )
+    with pytest.raises(
+        ValueError,
+        match="lock drift.*npm ci.*uv sync.*--refresh.*scripts/notices/README.md",
+    ):
         mod.render(tmp_path)
 
 
@@ -182,7 +190,10 @@ def test_bundled_cares_notices_include_nested_spdx_text_and_check_hash():
             info.size = len(raw)
             archive.addfile(info, io.BytesIO(raw))
     raw = stream.getvalue()
-    package = {"sdist": {"hash": "sha256:" + hashlib.sha256(raw).hexdigest()}}
+    package = {
+        "name": "pycares",
+        "sdist": {"hash": "sha256:" + hashlib.sha256(raw).hexdigest()},
+    }
     assert mod.source_notices(raw, package) == {
         "sdist/pycares/deps/c-ares/LICENSE.md": "c-ares copyright\nPermission\n",
         "sdist/pycares/deps/c-ares/LICENSES/BSD-2-Clause.txt": "Original BSD notice\r\n",
@@ -200,6 +211,7 @@ def test_licence_freeze_rejects_each_protected_surface(tmp_path, filename):
     baseline = ROOT / "scripts/notices/license-freeze.json"
     frozen = json.loads(baseline.read_bytes())
     for name in list(frozen["files"]) + [
+        "README.md",
         "package.json",
         "pyproject.toml",
         "scripts/notices/license-freeze.json",
@@ -216,6 +228,8 @@ def test_licence_freeze_rejects_each_protected_surface(tmp_path, filename):
         raw = raw.replace(
             b'license = { text = "MIT" }', b'license = { text = "Changed" }'
         )
+    elif filename == "README.md":
+        raw = raw.replace(b"MIT", b"Changed")
     else:
         raw += b"\nchanged\n"
     target.write_bytes(raw)
@@ -248,3 +262,292 @@ def test_named_lxml_resource_attribution_is_preserved(filename):
     header = re.search(r"<!--[\s\S]*?-->", original).group()
     assert header in mod.resource_notices(original)
     assert header.encode() in mod.render(ROOT)
+
+
+@pytest.fixture
+def frozen_checkout(tmp_path):
+    frozen = json.loads((ROOT / "scripts/notices/license-freeze.json").read_bytes())
+    for name in set(frozen["files"]) | {
+        "README.md",
+        "package.json",
+        "pyproject.toml",
+        "scripts/notices/license-freeze.json",
+    }:
+        target = tmp_path / name
+        target.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copyfile(ROOT / name, target)
+    return tmp_path
+
+
+def test_unrelated_readme_and_doc_edits_pass_freeze(frozen_checkout):
+    mod = module()
+    for filename in ["README.md", "docs/api.md"]:
+        path = frozen_checkout / filename
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(
+            (path.read_bytes() if path.exists() else b"")
+            + b"\nRoutine contributor explanation.\n"
+        )
+    mod.check_freeze(frozen_checkout)
+
+
+@pytest.mark.parametrize("filename", ["package.json", "pyproject.toml"])
+def test_missing_licence_fields_fail_clearly(frozen_checkout, filename):
+    import re
+
+    path = frozen_checkout / filename
+    pattern = (
+        rb'"license"\s*:\s*"[^"]*",?'
+        if filename.endswith("json")
+        else rb"^license\s*=.*$"
+    )
+    path.write_bytes(re.sub(pattern, b"", path.read_bytes(), flags=re.M))
+    with pytest.raises(ValueError, match="Protected licence field missing"):
+        module().check_freeze(frozen_checkout)
+
+
+def test_new_project_licence_classifier_is_rejected(frozen_checkout):
+    path = frozen_checkout / "pyproject.toml"
+    path.write_text(
+        path.read_text().replace(
+            'license = { text = "MIT" }',
+            'license = { text = "MIT" }\nclassifiers = ["License :: OSI Approved :: MIT License"]',
+            1,
+        )
+    )
+    with pytest.raises(ValueError, match="Protected licence classifiers"):
+        module().check_freeze(frozen_checkout)
+
+
+def notice_checkout(tmp_path):
+    for name in [
+        "package-lock.json",
+        "uv.lock",
+        "zlibrary/setup.cfg",
+        "scripts/notices/metadata.json",
+        "scripts/notices/supplements.json",
+    ]:
+        target = tmp_path / name
+        target.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copyfile(ROOT / name, target)
+    return tmp_path
+
+
+def test_dev_bumps_root_versions_and_setup_prose_do_not_stale_notices(tmp_path):
+    mod = module()
+    root = notice_checkout(tmp_path)
+    expected = mod.render(root)
+    lock = json.loads((root / "package-lock.json").read_bytes())
+    lock["version"] = lock["packages"][""]["version"] = "99.0.0"
+    lock["packages"]["node_modules/prettier"]["version"] = "99.0.0"
+    lock["packages"]["node_modules/prettier"]["integrity"] = "dev-only"
+    (root / "package-lock.json").write_text(json.dumps(lock))
+    path = root / "uv.lock"
+    path.write_text(
+        path.read_text().replace(
+            'name = "pytest"\nversion = "', 'name = "pytest"\nversion = "99.', 1
+        )
+    )
+    path = root / "zlibrary/setup.cfg"
+    path.write_text(
+        path.read_text().replace(
+            "description = Unofficial Z-Library API",
+            "description = Updated description",
+        )
+    )
+    assert mod.render(root) == expected
+
+
+@pytest.mark.parametrize(
+    "target", ["node-integrity", "python-hash", "vendor-classifier"]
+)
+def test_production_notice_input_changes_need_actionable_refresh(tmp_path, target):
+    mod = module()
+    root = notice_checkout(tmp_path)
+    if target == "node-integrity":
+        path = root / "package-lock.json"
+        lock = json.loads(path.read_bytes())
+        lock["packages"]["node_modules/python-shell"]["integrity"] = "changed"
+        path.write_text(json.dumps(lock))
+    elif target == "python-hash":
+        path = root / "uv.lock"
+        path.write_text(path.read_text().replace("sha256:", "sha256:changed", 1))
+    else:
+        path = root / "zlibrary/setup.cfg"
+        path.write_text(path.read_text().replace("(GPLv3)", "(Changed)"))
+    with pytest.raises(
+        ValueError,
+        match="lock drift.*npm ci.*uv sync.*--refresh.*scripts/notices/README.md",
+    ):
+        mod.render(root)
+
+
+def test_extras_requested_after_first_visit_are_traversed_and_cycles_terminate():
+    lock = {
+        "package": [
+            {
+                "name": "zlibrary-mcp",
+                "dependencies": [{"name": "requester"}, {"name": "dep"}],
+            },
+            {
+                "name": "requester",
+                "version": "1",
+                "dependencies": [{"name": "dep", "extra": ["socks"]}],
+            },
+            {
+                "name": "dep",
+                "version": "1",
+                "optional-dependencies": {
+                    "socks": [{"name": "socksio", "extra": ["nested"]}],
+                    "unused": [{"name": "unused"}],
+                },
+            },
+            {
+                "name": "socksio",
+                "version": "1",
+                "optional-dependencies": {
+                    "nested": [{"name": "dep", "extra": ["socks"]}]
+                },
+            },
+            {"name": "unused", "version": "1"},
+        ]
+    }
+    assert [p["name"] for p in module().runtime_records(lock)] == [
+        "dep",
+        "requester",
+        "socksio",
+    ]
+
+
+def test_ujson_bundled_double_conversion_source_is_retained():
+    import io
+    import tarfile
+
+    mod = module()
+    stream = io.BytesIO()
+    with tarfile.open(fileobj=stream, mode="w:gz") as archive:
+        raw = b"V8 project authors\r\nOriginal permission\r\n"
+        info = tarfile.TarInfo("ujson/src/ujson/deps/double-conversion/LICENSE")
+        info.size = len(raw)
+        archive.addfile(info, io.BytesIO(raw))
+    raw = stream.getvalue()
+    assert mod.source_notices(
+        raw, {"name": "ujson", "sdist": {"hash": "sha256:" + mod.sha(raw)}}
+    ) == {
+        "sdist/ujson/src/ujson/deps/double-conversion/LICENSE": "V8 project authors\r\nOriginal permission\r\n"
+    }
+
+
+def test_unmapped_native_libraries_fail_refresh(monkeypatch, tmp_path):
+    import importlib.metadata
+
+    distribution = importlib.metadata.distribution("ujson")
+
+    class WithUnknownLibrary:
+        metadata = distribution.metadata
+        version = distribution.version
+        files = [*distribution.files, Path("ujson.libs/libunknown.so.1")]
+        locate_file = distribution.locate_file
+        read_text = distribution.read_text
+
+    monkeypatch.setattr(
+        importlib.metadata, "distributions", lambda: [WithUnknownLibrary()]
+    )
+    lock = {
+        "package": [
+            {"name": "zlibrary-mcp", "dependencies": [{"name": "ujson"}]},
+            {"name": "ujson", "version": distribution.version},
+        ]
+    }
+    with pytest.raises(ValueError, match="Unmapped bundled native library.*libunknown"):
+        module().collect_python(ROOT, lock)
+
+
+def test_bs4_metadata_is_raw_upstream_text():
+    import importlib.metadata
+
+    distribution = importlib.metadata.distribution("bs4")
+    lock = {
+        "package": [
+            {"name": "zlibrary-mcp", "dependencies": [{"name": "bs4"}]},
+            {"name": "bs4", "version": distribution.version},
+        ]
+    }
+    records = module().collect_python(ROOT, lock)
+    assert list(records[0]["notices"].values()) == [distribution.read_text("METADATA")]
+
+
+def test_vendored_declaration_uses_setup_classifier():
+    lock = {
+        "package": [
+            {"name": "zlibrary-mcp", "dependencies": [{"name": "zlibrary"}]},
+            {"name": "zlibrary", "source": {"editable": "zlibrary"}},
+        ]
+    }
+    records = module().collect_python(ROOT, lock)
+    assert (
+        records[0]["license"]
+        == "License :: OSI Approved :: GNU General Public License v3 (GPLv3)"
+    )
+
+
+@pytest.mark.parametrize(
+    "library", ["libstdc++-5d72f927.so.6.0.33", "libgcc_s-0cd532bd.so.1"]
+)
+def test_bundled_gcc_libraries_require_both_original_texts(library):
+    mod = module()
+    supplements = json.loads((ROOT / "scripts/notices/supplements.json").read_bytes())
+    path = "ujson.libs/" + library
+    mod.validate_native_notices([path], supplements)
+    for missing in ["GCC runtime GPLv3", "GCC runtime exception"]:
+        with pytest.raises(ValueError, match="Missing mapped native notice"):
+            mod.validate_native_notices(
+                [path], [s for s in supplements if s["component"] != missing]
+            )
+
+
+def test_native_supplements_are_rendered_without_text_changes():
+    output = module().render(ROOT)
+    supplements = json.loads((ROOT / "scripts/notices/supplements.json").read_bytes())
+    by_name = {s["component"]: s for s in supplements}
+    for name in [
+        "libffi bundled in cffi",
+        "GCC runtime GPLv3",
+        "GCC runtime exception",
+        "zlib bundled in lxml",
+    ]:
+        assert by_name[name]["text"].encode() in output
+
+
+def test_bs4_metadata_from_locked_wheel_stays_raw_without_installed_distribution(
+    monkeypatch, tmp_path
+):
+    import importlib.metadata
+    import zipfile
+
+    mod = module()
+    cache = tmp_path / "notice-wheels"
+    cache.mkdir()
+    wheel = cache / "bs4.whl"
+    raw = b"Metadata-Version: 2.1\r\nName: bs4\r\nVersion: 1\r\n\r\nUpstream description.\r\n"
+    with zipfile.ZipFile(wheel, "w") as archive:
+        archive.writestr("bs4-1.dist-info/METADATA", raw)
+    monkeypatch.setattr(importlib.metadata, "distributions", lambda: [])
+    monkeypatch.setattr(mod.tempfile, "gettempdir", lambda: str(tmp_path))
+    lock = {
+        "package": [
+            {"name": "zlibrary-mcp", "dependencies": [{"name": "bs4"}]},
+            {
+                "name": "bs4",
+                "version": "1",
+                "wheels": [
+                    {
+                        "url": "https://unit.invalid/bs4.whl",
+                        "hash": "sha256:" + mod.sha(wheel.read_bytes()),
+                    }
+                ],
+            },
+        ]
+    }
+    records = mod.collect_python(ROOT, lock)
+    assert list(records[0]["notices"].values()) == [raw.decode()]

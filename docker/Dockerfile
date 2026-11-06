@@ -43,6 +43,9 @@ COPY zlibrary/ ./zlibrary/
 COPY tsconfig.json ./
 COPY scripts/ ./scripts/
 
+# Checkout modes may be owner-only; runtime users must read all Python sources.
+RUN chmod -R a+rX /app/lib /app/zlibrary
+
 # Only acquisition dependencies ship in the runtime image.
 RUN uv sync --frozen --no-dev
 

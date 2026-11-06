@@ -8,6 +8,8 @@ and --check are offline and use the retained metadata in scripts/notices/.
 
 import argparse
 from email.parser import BytesParser
+import configparser
+import fnmatch
 import hashlib
 import importlib.metadata
 import json
@@ -36,15 +38,24 @@ def sha(data):
 
 def runtime_records(lock):
     packages = [dict(p, version=p.get("version", "editable")) for p in lock["package"]]
-    pending = [p for p in packages if p["name"] == "zlibrary-mcp"]
+    pending = [(p, ()) for p in packages if p["name"] == "zlibrary-mcp"]
+    visited = set()
     found = {}
     while pending:
-        package = pending.pop()
+        package, extras = pending.pop()
         key = package["name"], package["version"]
-        if key in found:
+        state = (*key, tuple(sorted(extras)))
+        if state in visited:
             continue
+        visited.add(state)
         found[key] = package
-        for dependency in package.get("dependencies", []):
+        dependencies = list(package.get("dependencies", []))
+        for extra in extras:
+            optional = package.get("optional-dependencies", {})
+            if extra not in optional:
+                raise ValueError(f"Unresolved lock extra: {key} [{extra}]")
+            dependencies.extend(optional[extra])
+        for dependency in dependencies:
             matches = [
                 p
                 for p in packages
@@ -56,7 +67,7 @@ def runtime_records(lock):
             ]
             if not matches:
                 raise ValueError(f"Unresolved lock dependency: {dependency}")
-            pending.extend(matches)
+            pending.extend((p, dependency.get("extra", ())) for p in matches)
     return [p for key, p in sorted(found.items()) if key[0] != "zlibrary-mcp"]
 
 
@@ -71,6 +82,85 @@ def is_notice(path):
 
 def read_text(path):
     return path.read_bytes().decode("utf-8")
+
+
+# Bundled sources whose notices are absent from wheel metadata.
+BUNDLED_SOURCES = {
+    "pycares": "deps/c-ares/",
+    "ujson": "src/ujson/deps/double-conversion/",
+}
+# Auditwheel libraries need explicitly retained terms. Unknown libraries fail
+# refresh rather than silently inheriting the wrapper package's declaration.
+BUNDLED_LIBRARIES = {
+    "ujson.libs/libstdc++*.so*": ("GCC runtime GPLv3", "GCC runtime exception"),
+    "ujson.libs/libgcc_s*.so*": ("GCC runtime GPLv3", "GCC runtime exception"),
+}
+
+
+def validate_native_notices(paths, supplements):
+    available = {s["component"] for s in supplements}
+    for path in paths:
+        name = str(path)
+        if not any(part.endswith(".libs") for part in Path(name).parts[:-1]):
+            continue
+        required = next(
+            (
+                texts
+                for pattern, texts in BUNDLED_LIBRARIES.items()
+                if fnmatch.fnmatchcase(name, pattern)
+            ),
+            None,
+        )
+        if required is None:
+            raise ValueError(f"Unmapped bundled native library: {name}")
+        if not set(required) <= available:
+            raise ValueError(f"Missing mapped native notice: {name}")
+
+
+def vendor_notice_fields(root):
+    config = configparser.ConfigParser(interpolation=None)
+    config.read(root / "zlibrary/setup.cfg", encoding="utf-8")
+    metadata = config["metadata"]
+    return {
+        "name": metadata["name"],
+        "version": metadata["version"],
+        "classifiers": [
+            line.strip()
+            for line in metadata.get("classifiers", "").splitlines()
+            if line.strip().startswith("License ::")
+        ],
+    }
+
+
+def lock_digests(root):
+    node = json.loads((root / "package-lock.json").read_bytes())
+    python = runtime_records(tomllib.loads(read_text(root / "uv.lock")))
+    records = {
+        "package-lock.json": [
+            (path, p["version"], p.get("integrity"))
+            for path, p in sorted(node["packages"].items())
+            if path and not p.get("dev")
+        ],
+        "uv.lock": [
+            (
+                p["name"],
+                p["version"],
+                sorted(
+                    a["hash"]
+                    for a in [
+                        *p.get("wheels", []),
+                        *([p["sdist"]] if p.get("sdist") else []),
+                    ]
+                ),
+            )
+            for p in python
+        ],
+        "zlibrary/setup.cfg": vendor_notice_fields(root),
+    }
+    return {
+        name: sha(json.dumps(value, sort_keys=True).encode())
+        for name, value in records.items()
+    }
 
 
 def collect_node(root, lock):
@@ -138,16 +228,25 @@ def locked_wheel(package):
     if "sha256:" + sha(dest.read_bytes()) != wheel["hash"]:
         raise ValueError(f"Wheel hash mismatch: {dest.name}")
     with zipfile.ZipFile(dest) as archive:
-        metadata = BytesParser().parsebytes(
-            archive.read(
-                next(n for n in archive.namelist() if n.endswith(".dist-info/METADATA"))
-            )
+        validate_native_notices(
+            [n for n in archive.namelist() if not n.endswith("/")],
+            json.loads((ROOT / "scripts/notices/supplements.json").read_bytes()),
         )
+        raw_metadata = archive.read(
+            next(n for n in archive.namelist() if n.endswith(".dist-info/METADATA"))
+        )
+        metadata = BytesParser().parsebytes(raw_metadata)
         notices = {
             n: archive.read(n).decode("utf-8")
             for n in sorted(archive.namelist())
             if not n.endswith("/") and is_notice(n)
         }
+        if not notices and package["name"] == "bs4":
+            notices = {
+                "METADATA (no separate notice supplied upstream)": raw_metadata.decode(
+                    "utf-8"
+                )
+            }
     return metadata, notices, {"url": wheel["url"], "sha256": wheel["hash"]}
 
 
@@ -165,26 +264,30 @@ def resource_notices(text):
 
 
 def source_notices(raw, package):
-    """Retain native c-ares notices from its hash-pinned parent sdist."""
+    """Retain mapped native notices from a hash-pinned parent sdist."""
+    prefix = BUNDLED_SOURCES[package["name"]]
     if "sha256:" + sha(raw) != package["sdist"]["hash"]:
         raise ValueError("Native source archive hash mismatch")
     notices = {}
     with tarfile.open(fileobj=io.BytesIO(raw)) as archive:
         for member in archive:
             path = Path(member.name)
-            if not member.isfile() or "deps/c-ares/" not in member.name:
+            if not member.isfile() or prefix not in member.name:
                 continue
             if is_notice(path) or any(is_notice(part) for part in path.parts[:-1]):
                 notices["sdist/" + member.name] = (
                     archive.extractfile(member).read().decode("utf-8")
                 )
     if not notices:
-        raise ValueError("Missing bundled c-ares notices in locked source archive")
+        raise ValueError(
+            f"Missing bundled {package['name']} notices in locked source archive"
+        )
     return notices
 
 
 def collect_python(root, lock):
     records = []
+    supplements = json.loads((root / "scripts/notices/supplements.json").read_bytes())
     installed = {
         re.sub(r"[-_.]+", "-", d.metadata["Name"]).lower(): d
         for d in importlib.metadata.distributions()
@@ -208,6 +311,7 @@ def collect_python(root, lock):
                 "sha256": sha((root / "zlibrary/LICENSE").read_bytes()),
             }
         elif distribution and distribution.version == version:
+            validate_native_notices(distribution.files or [], supplements)
             metadata = distribution.metadata
             notices = {
                 str(p): read_text(Path(distribution.locate_file(p)))
@@ -234,7 +338,7 @@ def collect_python(root, lock):
                             ] = comment
         else:
             metadata, notices, origin = locked_wheel(package)
-        if name == "pycares":
+        if name in BUNDLED_SOURCES:
             source = package["sdist"]
             cache = Path(tempfile.gettempdir()) / (name + "-" + version + ".tar.gz")
             if not cache.exists():
@@ -249,7 +353,11 @@ def collect_python(root, lock):
             # Retain the entire metadata rather than inventing upstream text.
             if name != "bs4":
                 raise ValueError(f"Missing full notice: {name}")
-            notices = {"METADATA (no separate notice supplied upstream)": str(metadata)}
+            notices = {
+                "METADATA (no separate notice supplied upstream)": distribution.read_text(
+                    "METADATA"
+                )
+            }
         license_name = (
             metadata.get("License-Expression")
             or metadata.get("License")
@@ -260,6 +368,10 @@ def collect_python(root, lock):
             )
             or "UNDECLARED"
         )
+        if name == "zlibrary":
+            license_name = (
+                "; ".join(vendor_notice_fields(root)["classifiers"]) or "UNDECLARED"
+            )
         records.append(
             {
                 "kind": "Python",
@@ -277,10 +389,13 @@ def collect_python(root, lock):
 
 def render(root):
     data = json.loads((root / INPUT).read_bytes())
+    current = lock_digests(root)
     for name, digest in data["locks"].items():
-        if sha((root / name).read_bytes()) != digest:
+        if current[name] != digest:
             raise ValueError(
-                f"{name} lock drift: refresh metadata and regenerate notices"
+                f"{name} lock drift: run `npm ci`, `uv sync --frozen --group dev`, "
+                "then `uv run --frozen python scripts/generate-third-party-notices.py --refresh`; "
+                "see scripts/notices/README.md"
             )
     node = json.loads((root / "package-lock.json").read_bytes())
     want_node = {
@@ -303,7 +418,9 @@ def render(root):
         "Generated by `scripts/generate-third-party-notices.py`. Third-party components only.\n\n",
         "Scope: the locked production Node closure and runtime Python version union. "
         "npm installs dependency ranges separately; Python dependencies are installed separately. "
-        "OS packages, the Node/Python interpreters and inherited container tools retain their own notices in the image. "
+        "The measured Alpine image records OS package licence identifiers, but does not include their licence texts. "
+        "The managed CPython licence file does not include the texts for its embedded libraries; adding those texts remains open. "
+        "Node and inherited container tools retain their own notice files. "
         "Metadata and original notice text are retained in `scripts/notices/metadata.json`; "
         "platform-specific native contents require the corresponding artifact inventory. "
         "The bs4 alias wheel supplies metadata but no separate full notice file.\n\n",
@@ -345,11 +462,27 @@ def check_freeze(root):
     for name, digest in frozen["files"].items():
         if sha((root / name).read_bytes()) != digest:
             raise ValueError(f"Protected licence/document changed: {name}")
+    readme_lines = b"\n".join(
+        line
+        for line in (root / "README.md").read_bytes().splitlines()
+        if re.search(rb"licen[cs]e", line, re.I)
+    )
+    if sha(readme_lines) != frozen["readme_licence_lines"]:
+        raise ValueError("Protected licence lines changed: README.md")
+    project = tomllib.loads(read_text(root / "pyproject.toml"))["project"]
+    classifiers = [
+        c for c in project.get("classifiers", []) if c.startswith("License ::")
+    ]
+    if sha(json.dumps(classifiers).encode()) != frozen["project_licence_classifiers"]:
+        raise ValueError("Protected licence classifiers changed: pyproject.toml")
     for name, pattern in [
         ("package.json", rb'"license"\s*:\s*"[^"]*"'),
         ("pyproject.toml", rb"^license\s*=.*$"),
     ]:
-        field = re.search(pattern, (root / name).read_bytes(), re.M).group()
+        match = re.search(pattern, (root / name).read_bytes(), re.M)
+        if match is None:
+            raise ValueError(f"Protected licence field missing: {name}")
+        field = match.group()
         if sha(field) != frozen["fields"][name]:
             raise ValueError(f"Protected licence field changed: {name}")
 
@@ -362,10 +495,7 @@ def main():
     check_freeze(ROOT)
     if args.refresh:
         data = {
-            "locks": {
-                name: sha((ROOT / name).read_bytes())
-                for name in ["package-lock.json", "uv.lock", "zlibrary/setup.cfg"]
-            },
+            "locks": lock_digests(ROOT),
             "components": collect_node(
                 ROOT, json.loads((ROOT / "package-lock.json").read_bytes())
             )

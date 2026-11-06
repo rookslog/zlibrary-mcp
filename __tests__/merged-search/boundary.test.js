@@ -84,3 +84,23 @@ test('M06 late terminal data is discarded without inspecting provider records', 
   let reads = 0; f.slow.resolve({ get rows() { reads++; return [{ id: 'late' }]; } });
   await jest.advanceTimersByTimeAsync(0); expect(reads).toBe(0);
 });
+
+test('F3 E7 reverse arrival still freezes windows in registry order', async () => {
+  const first=deferred(),second=deferred();const base=setup().registry.sources;
+  const result=fanOut(new SourceRegistry([{...base[0],searchWindow:()=>first.promise},{...base[1],searchWindow:()=>second.promise}]),{},{now:()=>now});
+  second.resolve(windowFixture([{id:'second'}]));await jest.advanceTimersByTimeAsync(0);first.resolve(windowFixture([{id:'first'}]));await jest.advanceTimersByTimeAsync(0);
+  expect([...(await result).windows.keys()]).toEqual(['first','second']);
+});
+test('F3 O3 caller cancellation never gives the child search_cut origin', async () => {
+  const f=setup(),controller=new AbortController();const result=fanOut(f.registry,{},{signal:controller.signal,now:()=>now}).catch(e=>e);await jest.advanceTimersByTimeAsync(0);controller.abort();expect((await result).code).toBe('cancelled');expect(f.signals.second.aborted).toBe(true);expect(f.signals.second.reason).not.toBe('search_cut');
+});
+test('F3 E8 source accounting container is frozen in the snapshot', async () => {
+  const f=setup(),result=fanOut(f.registry,{},{now:()=>now});f.slow.resolve(f.window);await jest.advanceTimersByTimeAsync(0);expect(Object.isFrozen((await result).sources)).toBe(true);
+});
+test('F3 D3 capabilities stall at equality cuts before arming a timer or issuing work', async () => {
+  let issued=0;const base=setup().registry.sources;
+  const registry=new SourceRegistry(base.map((source,index)=>({...source,capabilities:()=>{if(index===0)now=12000;return {configured:true,search_available:true,download_available:true};},searchWindow:async()=>{issued++;return windowFixture([]);}})));
+  const timer=jest.spyOn(globalThis,'setTimeout');
+  try {const result=await fanOut(registry,{},{now:()=>now});expect(issued).toBe(0);expect([...result.windows.keys()]).toEqual([]);expect(Object.values(result.sources).every(line=>line.state==='late'&&line.ms===12000)).toBe(true);expect(timer).not.toHaveBeenCalled();}
+  finally {timer.mockRestore();}
+});

@@ -176,6 +176,16 @@ completes, including when a source alerts. No
 source artifact is available if the previous-issue read or probe fails before
 writing reports; the artifact step warns in that case. Source blocked and
 Source changed have separate issue headings. A block from the runner does not establish a worldwide outage.
+
+Scheduled live tests use a dedicated CI test account: repository secrets
+`ZLIBRARY_CI_EMAIL` and `ZLIBRARY_CI_PASSWORD` map to the existing test environment
+variables `ZLIBRARY_EMAIL` and `ZLIBRARY_PASSWORD`. After the existing host check,
+either secret missing yields `status=no_account` and `blocked=false`: "live suite
+not run: no CI account configured" appears in the log, step summary and any
+updated drift report. No collection or login runs. This is neither a pass nor
+recovery and cannot itself file a drift issue. Independent probe failures still
+alert; reachability and offline checks are unchanged.
+
 The credentialed live suite, including collection, requires an explicit
 `zlib_blocked=false` from the reachability probe. A true value reports `blocked`;
 missing, empty or any other value reports `unknown` and skips logins. A failed

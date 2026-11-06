@@ -146,7 +146,7 @@ jobs:
   live_tests:
     name: Live integration suite
     runs-on: ubuntu-latest
-    # Credentials live in repository secrets. Forks and credential-less setups
+    # A dedicated CI test account lives in repository secrets. Setups without it
     # skip cleanly rather than reporting a false failure. Depends on the
     # reachability probe so a network-level block skips the suite instead of
     # burning login attempts (~10/hour/IP) against a wall.
@@ -164,8 +164,8 @@ jobs:
       - name: Run integration-marked tests against live Z-Library
         id: live
         env:
-          ZLIBRARY_EMAIL: ${{ secrets.ZLIBRARY_EMAIL }}
-          ZLIBRARY_PASSWORD: ${{ secrets.ZLIBRARY_PASSWORD }}
+          ZLIBRARY_EMAIL: ${{ secrets.ZLIBRARY_CI_EMAIL }}
+          ZLIBRARY_PASSWORD: ${{ secrets.ZLIBRARY_CI_PASSWORD }}
           ZLIB_BLOCKED: ${{ needs.reachability.outputs.zlib_blocked }}
           ZLIB_PROBE_DOMAIN: ${{ needs.reachability.outputs.zlib_domain }}
           ZLIBRARY_EAPI_DOMAIN: ${{ needs.reachability.outputs.zlib_domain }}
@@ -203,8 +203,12 @@ jobs:
             exit 0
           fi
           if [ -z "$ZLIBRARY_EMAIL" ] || [ -z "$ZLIBRARY_PASSWORD" ]; then
-            echo "::warning::ZLIBRARY_EMAIL/ZLIBRARY_PASSWORD secrets are not set — live suite skipped."
-            echo "status=skipped" >> "$GITHUB_OUTPUT"
+            echo "live suite not run: no CI account configured"
+            echo "status=no_account" >> "$GITHUB_OUTPUT"
+            echo "blocked=false" >> "$GITHUB_OUTPUT"
+            if [ -n "${GITHUB_STEP_SUMMARY:-}" ]; then
+              echo "live suite not run: no CI account configured" >> "$GITHUB_STEP_SUMMARY"
+            fi
             exit 0
           fi
           # Use the same literal-false gate for collection and execution.
@@ -255,6 +259,8 @@ jobs:
           script: |
             const title = 'Upstream contract check failing';
             const runUrl = `${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}`;
+            const noAccount = process.env.LIVE_STATUS === 'no_account';
+            if (noAccount) core.info('live suite not run: no CI account configured');
             const failed = process.env.PROBE_FAILED === 'true' ||
               process.env.REACHABILITY_RESULT === 'failure' || process.env.LIVE_RESULT === 'failure';
             const recovered = process.env.PROBE_FAILED === 'false' &&
@@ -331,6 +337,7 @@ jobs:
               '',
               `- reachability job: **${process.env.REACHABILITY_RESULT}**`,
               `- live integration job: **${process.env.LIVE_STATUS || process.env.LIVE_RESULT}**`,
+              ...(noAccount ? ['- live suite not run: no CI account configured'] : []),
               ...(process.env.ZLIB_BLOCKED === 'true'
                 ? [`- Z-Library reachability probe reported an anti-bot wall on ${process.env.ZLIB_PROBE_DOMAIN}; live suite skipped.`]
                 : []),

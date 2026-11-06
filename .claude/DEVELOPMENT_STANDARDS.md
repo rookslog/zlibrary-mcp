@@ -120,8 +120,9 @@ See the documentation-guidelines paragraph in [AGENTS.md](../AGENTS.md) for the 
 ### Acquisition budgets
 
 Use the source and runner timeout contracts in [retry configuration](../docs/RETRY_CONFIGURATION.md).
-Processing budgets in `test_files/performance_budgets.json` are historical and
-belong to the preserved text implementation.
+Processing budgets belong to the preserved text implementation at
+`parked-text-processing-2026-10:test_files/performance_budgets.json`; that file
+is absent from this checkout. See the [migration guide](../docs/text-processing-migration.md).
 
 ### Optimization Principles
 

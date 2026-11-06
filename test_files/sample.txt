@@ -1,2 +1,0 @@
-This is a simple text file for testing.
-It has multiple lines.

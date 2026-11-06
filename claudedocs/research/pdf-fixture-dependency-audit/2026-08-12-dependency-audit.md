@@ -1,5 +1,20 @@
 # Full-book PDF dependency audit and action plan
 
+> Historical processing record. Its processing paths, examples, dependency
+> relationships and measurements describe the earlier text implementation, not
+> this acquisition checkout. Retired processing fixtures have been removed from
+> this tip; use Git history for the old paths. See [migration](../../../docs/text-processing-migration.md).
+
+## Current dependency disposition
+
+The processing consumers described below (recall-baseline tests, schema checks,
+PDF extraction and baseline generators) are absent from this acquisition tree.
+Its retained `test_files` consumers are the Anna's metadata parser regression,
+LibGen book/article parser regression, and offline article-probe regression.
+They use the two retained HTML files. The retired processing payloads and
+companion records have been removed; the historical measurements below are
+unchanged and must not be used as current checkout sizes or dependencies.
+
 **Date:** 2026-08-12
 **Scope:** issue [#105](https://github.com/rookslog/zlibrary-mcp/issues/105), current
 `docs/105-pdf-fixture-audit` checkout only. This is an audit and plan, not a

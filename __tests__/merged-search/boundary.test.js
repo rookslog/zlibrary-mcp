@@ -104,3 +104,7 @@ test('F3 D3 capabilities stall at equality cuts before arming a timer or issuing
   try {const result=await fanOut(registry,{},{now:()=>now});expect(issued).toBe(0);expect([...result.windows.keys()]).toEqual([]);expect(Object.values(result.sources).every(line=>line.state==='late'&&line.ms===12000)).toBe(true);expect(timer).not.toHaveBeenCalled();}
   finally {timer.mockRestore();}
 });
+
+test('N2 E7b E8b reverse arrival preserves canonical source keys and frozen individual lines',async()=>{
+ const first=deferred(),second=deferred(),base=setup().registry.sources;const outcome=fanOut(new SourceRegistry([{...base[0],searchWindow:()=>first.promise},{...base[1],searchWindow:()=>second.promise}]),{},{now:()=>now});second.resolve(windowFixture([{id:'second'}]));await jest.advanceTimersByTimeAsync(0);first.resolve(windowFixture([{id:'first'}]));await jest.advanceTimersByTimeAsync(0);const result=await outcome;expect(Object.keys(result.sources)).toEqual(['first','second']);expect(Object.isFrozen(result.sources.first)).toBe(true);expect(Object.isFrozen(result.sources.second)).toBe(true);
+});

@@ -1,6 +1,10 @@
 import { classifyFailure, ToolFailure } from './tool-errors.js';
 import type { ErrorCode } from './tool-errors.js';
-import type { MergedFilterRequest, FilterCheck } from './row-filters.js';
+import {
+  checkMergedRowFilters,
+  type MergedFilterRequest,
+  type FilterCheck,
+} from './row-filters.js';
 import type { Env, SearchWindow, SourceRegistry } from './source-registry.js';
 
 export interface NotAsked {
@@ -61,12 +65,16 @@ function readonlyWindows(windows: Map<string, SearchWindow>): ReadonlyMap<string
   return view;
 }
 /** Check the single all-record window contract before retaining it. */
-function validWindow(window: SearchWindow): boolean {
+function validWindow(window: SearchWindow, request: MergedFilterRequest): boolean {
   if (!Array.isArray(window.rows) || window.rows.length > 50) return false;
+  const expected = Object.keys(checkMergedRowFilters({}, request).checks);
   for (const [index, row] of window.rows.entries()) {
     if (!row || row.rank !== index + 1 || !row.filterResult) return false;
     const { checks, status } = row.filterResult;
     if (!checks || typeof checks !== 'object' || Array.isArray(checks)) return false;
+    const keys = Object.keys(checks);
+    if (keys.length !== expected.length || keys.some((key) => !expected.includes(key)))
+      return false;
     const values = Object.entries(checks) as [string, FilterCheck][];
     if (
       values.some(
@@ -249,7 +257,7 @@ export async function fanOut(
       if (window) {
         try {
           window = freeze(structuredClone(window));
-          if (!validWindow(window)) throw new Error('Invalid window contract.');
+          if (!validWindow(window, request)) throw new Error('Invalid window contract.');
         } catch {
           window = undefined;
           error = new ToolFailure('provider_error', 'Provider returned an invalid window.', {

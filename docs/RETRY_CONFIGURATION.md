@@ -48,7 +48,7 @@ the outer Node budget must remain larger than the worst-case inner provider walk
 | `BOOK_SOURCE_DOWNLOAD_TIMEOUT` | `1500` | Base wall-clock budget for resolution plus full-transfer attempts, in seconds; known size can extend it up to the ceiling |
 | `BOOK_SOURCE_DOWNLOAD_FLOOR_SPEED` | `40960` | Budgeting floor in bytes/second (40 KiB/s); this is an allowance calculation, not a minimum-speed cutoff |
 | `BOOK_SOURCE_DOWNLOAD_TIMEOUT_CEILING` | `3600` | Size-scaling ceiling in seconds; effective ceiling is at least the configured base, and both are clamped to the Node owner |
-| `BOOK_SOURCE_DOWNLOAD_RESUME_ATTEMPTS` | `2` | No-progress recovery requests allowed within one source transfer; attempts gaining at least 64 KiB beyond the previous furthest offset do not spend this budget; `0` disables recovery, values above `10` are capped at `10`, and empty, invalid or negative values use `2`. Recovery uses the same download deadline. |
+| `BOOK_SOURCE_DOWNLOAD_RESUME_ATTEMPTS` | `2` | No-progress recovery requests allowed within one source transfer; new high-water gain accumulates across attempts and each 64 KiB credit resets the count; `0` disables recovery, values above `10` are capped at `10`, and empty, invalid or negative values use `2`. Recovery uses the same download deadline. |
 | `BOOK_SOURCE_PREFLIGHT` | `true` | Probe DNS and TCP before a provider request |
 | `BOOK_SOURCE_PREFLIGHT_TIMEOUT` | `5` | Aggregate budget for DNS and TCP connect together, in seconds |
 | `PYTHON_BRIDGE_TIMEOUT` | `240000` | Ordinary Python bridge wall-clock budget, in milliseconds |
@@ -177,18 +177,51 @@ On download, `walk_budget_exhausted` maps to `outcome_unknown` when a request wa
 issued, and to `provider_timeout` before issuance. Local budget exhaustion is
 not evidence of a provider failure and does not trip its circuit breaker.
 
-Recovery uses the already resolved URL and one staged file. A recovery attempt
-must gain at least 64 KiB beyond the furthest offset previously reached to avoid
-spending the cumulative no-progress budget. Resending a prefix, restarting gzip
-at the same prefix, and tiny valid ranges spend that budget. Progress does not
-refund earlier empty attempts; `0` continues to disable recovery. Every admitted
-retry waits 250 ms, including read/protocol drops and 416 restarts. A Range reply
-of 500, 502, 503 or 504 preserves its prefix for another allowed request.
+Recovery uses the already resolved URL and one staged file. New high-water bytes
+are credited across attempts. At least 64 KiB beyond the last credited offset
+resets the no-progress count; smaller gains accumulate toward
+that next credit while spending the allowance. The initial attempt retains its
+existing recovery allowance. Resending a prefix, restarting gzip at the same
+prefix, and tiny valid ranges cannot earn repeated credit. Decoded chunks are
+written as they arrive, including partial tails; a dropped encoded
+response still clears its stage and restarts without Range because decoded
+offsets cannot address encoded bytes. `0` continues to disable recovery.
+When an untried mirror or provider remains, recovery also checks feasibility
+once at least 64 KiB has been observed. For a known decoded total, it estimates
+the time to receive the remaining bytes at the net high-water rate so far,
+including the next retry wait. If that exceeds 1.5 times the chain time left,
+it abandons this mirror and proceeds to the next candidate. Each guard decision
+emits one stderr record containing only the net rate and time left.
+
+Candidates are resolved lazily; an untried alternative may fail resolution,
+preflight, admission or transfer. After all normal candidates are exhausted,
+the acquisition returns once to each guard-abandoned result in order, with its
+guard disabled. It reuses that resolved URL and the original quota observation; it
+does not spend another key or resolve the URL again. Its discarded stage is not
+resumed: the return starts at zero in a new private stage. The original chain
+and acquisition deadline still bound these return attempts and their recovery.
+A late abandon deletes the stage, so the return starts from zero and, if the
+link speeds up after the drop, can fail where resuming the stage would have
+finished.
+
+If no guard abandoned a result, there is no extra attempt. LibGen's existing
+second resolution pass remains separate: if it eventually yields a result that
+is abandoned, exhausted later candidates lead to the same once-per-URL returns,
+without a third resolution pass.
+
+A lone or last candidate, and transfers without a known total, keep the existing
+patience up to the same deadline. A transfer with an unknown or misleading total
+can still use the whole deadline and prevent failover; no metadata-size estimate
+is introduced here. This check runs before retries; it does not interrupt a
+connection that keeps streaming without a retry.
+Every admitted retry waits 250 ms, including read/protocol drops and 416
+restarts. A Range reply of 500, 502, 503 or 504 preserves its prefix for another allowed request.
 An exhausted HTTP error keeps its `HTTP NNN` detail.
 Other HTTP statuses retain their existing handling, including 416 recovery.
 All waits and retries stay inside the original chain deadline and acquisition
 owner. Retrying a transfer never re-resolves Anna's keyed fast-download URL or
-counts another quota spend; there is no new whole-download automatic retry.
+counts another quota spend. The guard-specific final URL return stays inside
+that same call; the outer acquisition call is not automatically retried.
 
 If every LibGen mirror fails resolution, the adapter waits at most one second
 inside the remaining resolution deadline and walks the mirrors once more.

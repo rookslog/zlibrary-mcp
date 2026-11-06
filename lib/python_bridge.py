@@ -1213,6 +1213,8 @@ async def _download_url_to_file(
     host_observer=None,
     progress_observer=None,
     config: Optional[SourceConfig] = None,
+    seconds_left=None,
+    abandon_observer=None,
 ) -> str:
     """Stream a resolved source URL to disk and return the raw path.
 
@@ -1265,6 +1267,7 @@ async def _download_url_to_file(
     resumes_tried = 0
     no_progress_attempts = 0
     furthest = 0
+    credited = 0
     body_complete = False
 
     def progress_detail(detail: str) -> str:
@@ -1281,7 +1284,26 @@ async def _download_url_to_file(
 
     async def stream_to_disk() -> tuple[int, str]:
         nonlocal active_host, written, bytes_received, resumes_tried, body_complete
-        nonlocal no_progress_attempts, furthest
+        nonlocal no_progress_attempts, furthest, credited
+        loop = asyncio.get_running_loop()
+        started, known_total = loop.time(), None
+
+        def retry_is_infeasible():
+            if seconds_left is None or not known_total or furthest < 65536:
+                return False
+            elapsed = max(loop.time() - started, 0.001)
+            rate, left = furthest / elapsed, seconds_left()
+            if (known_total - written) / rate + 0.25 <= 1.5 * left:
+                return False
+            # The auth logger accepts only closed authentication diagnostics.
+            sys.stderr.write(
+                "Source recovery feasibility guard: "
+                f"rate_bytes_per_second={rate:.1f} seconds_left={left:.3f}\n"
+            )
+            if abandon_observer is not None:
+                abandon_observer()
+            return True
+
         try:
             # Keep the admitted source-specific UA and one client throughout
             # recovery. The caller owns the single deadline around this loop.
@@ -1292,7 +1314,6 @@ async def _download_url_to_file(
             ) as client:
                 while True:
                     offset = written
-                    furthest_before = furthest
                     request_options = (
                         {"headers": {"Range": f"bytes={offset}-"}} if offset else {}
                     )
@@ -1337,6 +1358,7 @@ async def _download_url_to_file(
                                 if (
                                     no_progress_attempts
                                     < config.download_resume_attempts
+                                    and not retry_is_infeasible()
                                 ):
                                     resumes_tried += 1
                                     observe_progress()
@@ -1406,12 +1428,17 @@ async def _download_url_to_file(
                                         reason="protocol_error",
                                     )
                                 expected_length = declared_length
+                            if status == 200 or expected_total is not None:
+                                known_total = expected_total or expected_length
                             received = 0
                             try:
                                 with open(
                                     attempt_path, "ab" if written else "wb"
                                 ) as handle:
-                                    async for chunk in response.aiter_bytes(65536):
+                                    # A fixed chunk size hides the last partial
+                                    # chunk if the stream raises before flush.
+                                    # Persist each decoded piece as it arrives.
+                                    async for chunk in response.aiter_bytes(None):
                                         handle.write(chunk)
                                         written += len(chunk)
                                         received += len(chunk)
@@ -1450,7 +1477,7 @@ async def _download_url_to_file(
 
                         # A valid 206 may cover only part of the remainder.
                         # Close it before requesting the next staged offset;
-                        # progress does not spend the no-progress budget.
+                        # credited progress does not spend the no-progress budget.
                         if status == 206 and expected_total is None:
                             # A fully delivered wildcard slice may already
                             # complete the file. Only its expected digest can
@@ -1494,12 +1521,18 @@ async def _download_url_to_file(
                             and not isinstance(exc, httpx.DecodingError)
                         ):
                             raise
-                        # Count useful net gain beyond the previous high-water
-                        # mark, even when an encoded restart resets written.
-                        # Repeated prefixes and tiny ranges spend the budget.
-                        if resumes_tried and furthest - furthest_before < 65536:
+                        # Credit net high-water gain across attempts, even if
+                        # a restart resets written. A useful block earns a new
+                        # allowance; repeated prefixes cannot earn it twice.
+                        if furthest - credited >= 65536:
+                            credited = furthest
+                            no_progress_attempts = 0
+                        elif resumes_tried:
                             no_progress_attempts += 1
-                        if no_progress_attempts >= config.download_resume_attempts:
+                        if (
+                            no_progress_attempts >= config.download_resume_attempts
+                            or retry_is_infeasible()
+                        ):
                             raise
                         resumes_tried += 1
                         observe_progress()
@@ -1703,9 +1736,33 @@ async def _fetch_from_source(book_details: dict, output_dir: str) -> str:
     async def acquire() -> str:
         nonlocal active_host, transfer_progress
 
-        candidate_stream = router.iter_download_candidates(md5, source=selection)
+        abandoned = []
+
+        def remember_abandoned(item, observed_at):
+            abandoned.append((item, observed_at))
+
+        async def candidates():
+            stream = router.iter_download_candidates(md5, source=selection)
+            try:
+                async for item in stream:
+                    yield item, True, None
+            except AllSourcesFailedError as exc:
+                for failure in exc.failures:
+                    record(failure)
+            except SourceError as exc:
+                record(exc)
+            finally:
+                close = getattr(stream, "aclose", None)
+                if close is not None:
+                    await close()
+            # A configured alternative may not resolve or be admitted. Return
+            # once to each abandoned URL without spending another key.
+            for item, observed_at in abandoned:
+                yield item, False, observed_at
+
+        candidate_stream = candidates()
         try:
-            async for result in candidate_stream:
+            async for result, guarded, observed_at in candidate_stream:
                 provider = getattr(result.source, "value", result.source) or selection
                 if provider == "annas_archive":
                     provider = "annas"
@@ -1714,7 +1771,7 @@ async def _fetch_from_source(book_details: dict, output_dir: str) -> str:
                     quota = getattr(result, "quota_info", None)
                     from datetime import datetime, timezone
 
-                    observed_at = (
+                    observed_at = observed_at or (
                         datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
                     )
                     transfer_progress = (0, 0, False)
@@ -1727,6 +1784,11 @@ async def _fetch_from_source(book_details: dict, output_dir: str) -> str:
                         host_observer=lambda host: _set_active_host(host),
                         progress_observer=observe_progress,
                         config=config,
+                        abandon_observer=lambda item=result,
+                        stamp=observed_at: remember_abandoned(item, stamp),
+                        seconds_left=(lambda: max(0.0, expires - loop.time()))
+                        if guarded and getattr(result, "has_more_candidates", False)
+                        else None,
                     )
                     if not isinstance(downloaded, _DownloadedPath):
                         downloaded = _DownloadedPath(str(downloaded))
@@ -1756,11 +1818,6 @@ async def _fetch_from_source(book_details: dict, output_dir: str) -> str:
                 except SourceError as exc:
                     transfer_progress = (0, 0, False)
                     record(exc)
-        except AllSourcesFailedError as exc:
-            for failure in exc.failures:
-                record(failure)
-        except SourceError as exc:
-            record(exc)
         finally:
             close = getattr(candidate_stream, "aclose", None)
             if close is not None:
@@ -1775,11 +1832,14 @@ async def _fetch_from_source(book_details: dict, output_dir: str) -> str:
     try:
         from lib.acquisition import _remaining_transfer_budget
 
+        budget = _remaining_transfer_budget(
+            config.download_budget(_source_size_bytes(book_details))
+        )
+        loop = asyncio.get_running_loop()
+        expires = loop.time() + budget
         return await bounded_await(
             acquire(),
-            _remaining_transfer_budget(
-                config.download_budget(_source_size_bytes(book_details))
-            ),
+            budget,
             provider=selection,
             host=active_host,
             operation="download",

@@ -138,3 +138,14 @@ test.each(['default', 'named'])('N1 note still lists off sources under %s intent
   expect(reply.note).toContain('zlibrary: not_asked');
   expect(reply.note).toContain('annas: not_asked');
 });
+
+test('H2 T8 note includes unavailable sources whose default-search switch is still on', () => {
+  const v = views();
+  v[1].capabilities.search_available = false;
+  v[1].capabilities.off_reason = 'credentials_missing';
+  expect(v[1].defaultSearch.on).toBe(true);
+  const { reply } = build({}, [answer('libgen'), answer('annas')], v);
+  expect(reply.all_answered).toBe(true);
+  expect(reply.sources.zlibrary).toEqual({ state: 'not_asked', reason: 'credentials_missing' });
+  expect(reply.note).toContain('zlibrary: not_asked (credentials_missing)');
+});

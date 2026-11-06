@@ -444,3 +444,44 @@ async def test_h1_concurrent_callers_keep_one_admission_per_interval(
     gap = calls[1] - calls[0]
     print(f"python={sys.version.split()[0]} {multi_source=} {warm=} gap_s={gap:.6f}")
     assert gap >= 1.98
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("multi_source", [False, True])
+@pytest.mark.parametrize("scenario", ["failed_mirror", "sequential"])
+async def test_h2_searches_stamp_for_mirror_and_sequential_pacing(
+    monkeypatch, multi_source, scenario
+):
+    """S1/S2: successful admission must pace every search, including defaults."""
+    clock = Clock()
+    adapter = libgen.LibgenAdapter(SourceConfig(preflight_enabled=False))
+    monkeypatch.setattr(libgen.time, "time", clock.now)
+    monkeypatch.setattr(adapter, "_preflight", AsyncMock())
+    monkeypatch.setattr(
+        adapter,
+        "_mirror_candidates",
+        lambda: ["li", "vg"] if scenario == "failed_mirror" else ["li"],
+    )
+    calls = []
+
+    async def sleep(delay):
+        clock.spend(delay + 0.0001)
+
+    async def worker(func, timeout, **kwargs):
+        calls.append((kwargs["host"], clock.now()))
+        clock.spend(0.05)
+        if scenario == "failed_mirror" and kwargs["host"] == "libgen.li":
+            raise RuntimeError("synthetic first-mirror failure")
+        return [], None, 0
+
+    monkeypatch.setattr(libgen.asyncio, "sleep", sleep)
+    monkeypatch.setattr(libgen, "run_bounded", worker)
+    assert await adapter.search("Solaris", multi_source=multi_source) == []
+    if scenario == "sequential":
+        assert await adapter.search("Solaris", multi_source=multi_source) == []
+    assert [host for host, _ in calls] == (
+        ["libgen.li", "libgen.vg"]
+        if scenario == "failed_mirror"
+        else ["libgen.li", "libgen.li"]
+    )
+    assert calls[1][1] - calls[0][1] >= 2.0

@@ -226,3 +226,14 @@ export function normalizeLanguages(values: readonly string[]): {
     unrecognized,
   };
 }
+
+/** Catalogue-row key shared by filtering and metadata disagreement checks.
+ * Request normalization alone deliberately broadens Norwegian codes. */
+export const languageKey = (value: string): string => {
+  const text = value.normalize('NFC').trim().toLowerCase();
+  // Preserve row-code precision; request nb/nn have already normalized to broad Norwegian.
+  if (text === 'nb' || text === 'nob') return 'norwegian_bokmal';
+  if (text === 'nn' || text === 'nno') return 'norwegian_nynorsk';
+  const key = normalizeLanguages([value]).values[0]!.normalize('NFC').trim().toLowerCase();
+  return key === 'moldavian' ? 'romanian' : key;
+};

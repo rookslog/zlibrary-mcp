@@ -1,5 +1,5 @@
 import { normalizeText } from './merge.js';
-import { normalizeLanguages } from './filter-languages.js';
+import { normalizeLanguages, languageKey } from './filter-languages.js';
 
 export type FilterStatus = 'pass' | 'fail' | 'unknown';
 export type FilterKey = 'year_from' | 'year_to' | 'languages' | 'formats' | 'exact';
@@ -66,14 +66,6 @@ function parseYear(raw: unknown): { year: number | null; reason: string } {
 
 const normalizeFormat = (value: string): string =>
   value.normalize('NFC').trim().toLowerCase().replace(/^\./u, '');
-const languageKey = (value: string): string => {
-  const text = value.normalize('NFC').trim().toLowerCase();
-  // Preserve row-code precision; request nb/nn have already normalized to broad Norwegian.
-  if (text === 'nb' || text === 'nob') return 'norwegian_bokmal';
-  if (text === 'nn' || text === 'nno') return 'norwegian_nynorsk';
-  const key = normalizeLanguages([value]).values[0]!.normalize('NFC').trim().toLowerCase();
-  return key === 'moldavian' ? 'romanian' : key;
-};
 
 /** Evaluate catalogue metadata only; callers decide what to do with unknown rows.
  * Empty lists and blank entries add no check. Known failure outranks unknown in the AND result.

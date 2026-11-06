@@ -203,6 +203,7 @@ export function safeEapiFailureEnvelope(value: any): Record<string, any> | undef
       'connect_error',
       'tls_error',
       'search_timeout',
+      'mirror_slice_exhausted',
       'quota_exhausted',
       'unknown',
     ];

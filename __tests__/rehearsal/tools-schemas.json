@@ -279,7 +279,28 @@
           "required": ["sources"],
           "properties": {
             "sources": {
-              "type": "object"
+              "type": "object",
+              "properties": {
+                "annas": {
+                  "type": "object",
+                  "required": [
+                    "member_key_configured",
+                    "member_session"
+                  ],
+                  "properties": {
+                    "member_key_configured": {
+                      "type": "boolean"
+                    },
+                    "member_session": {
+                      "enum": [
+                        "none",
+                        "active",
+                        "rejected"
+                      ]
+                    }
+                  }
+                }
+              }
             },
             "default_order": {
               "type": "array",

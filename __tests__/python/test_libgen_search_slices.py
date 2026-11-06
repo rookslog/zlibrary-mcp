@@ -51,7 +51,7 @@ async def test_comparison_mirror_slice_covers_every_phase_and_reaches_second(
 
     async def sleep(delay):
         sleeps.append(delay)
-        clock.spend(delay)
+        clock.spend(delay + 0.0001)
 
     async def bounded(awaitable, timeout, **kwargs):
         start = clock.now()
@@ -113,17 +113,17 @@ async def test_comparison_mirror_slice_covers_every_phase_and_reaches_second(
     )
     assert rows[0].title == "Solaris"
     assert probes == ["li", "vg"]
-    assert clock.now() - 100 < 6.1
+    assert clock.now() - 100 < 10.1
     assert calls[-1][0] == "libgen.vg"
-    assert all(0 < budget <= 3 for _, budget in calls)
+    assert all(0 < budget <= 5 for _, budget in calls)
     assert bounds, "preflight and pacing must be explicitly bounded"
     if phase == "preflight":
         assert len(calls) == 1
     elif phase == "pacing":
         assert sleeps
-        assert calls[0][1] == pytest.approx(1)
+        assert calls[0][1] == pytest.approx(3, abs=0.001)
     elif phase == "search":
-        assert calls[0][1] == pytest.approx(2.8)
+        assert calls[0][1] == pytest.approx(4.8)
     elif phase == "slow_pacing":
         assert len(calls) == 1
 
@@ -173,3 +173,101 @@ async def test_bridge_forwards_opt_in_without_reinterpreting_router_source(monke
     router.search.assert_awaited_once_with(
         "Solaris", source="libgen", multi_source=True
     )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("scenario", ["warm", "starved"])
+@pytest.mark.parametrize("real_clock", [False, True])
+async def test_pacing_slack_reaches_healthy_second_mirror(
+    monkeypatch, scenario, real_clock
+):
+    """A warm wait or quick first failure must leave 1.8 s for mirror two."""
+    import asyncio
+    import time
+
+    clock = Clock()
+    now = time.monotonic if real_clock else clock.now
+    sleep = asyncio.sleep
+    started = now()
+    calls = []
+    adapter = libgen.LibgenAdapter(SourceConfig(preflight_enabled=False))
+    monkeypatch.setattr(adapter, "_mirror_candidates", lambda: ["li", "vg"])
+    monkeypatch.setattr(adapter, "_preflight", AsyncMock())
+    monkeypatch.setattr(libgen.time, "time", now)
+    if scenario == "warm":
+        adapter._last_request = now()
+
+    async def overshooting_sleep(delay):
+        if real_clock:
+            await sleep(delay + 0.02)
+        else:
+            clock.spend(delay + 0.02)
+
+    monkeypatch.setattr(libgen.asyncio, "sleep", overshooting_sleep)
+
+    class Search:
+        def __init__(self, mirror):
+            self.mirror = mirror
+
+        def search_default(self, query):
+            calls.append((self.mirror, now() - started))
+            cost = 0.2 if self.mirror == "li" else 1.8
+            if real_clock:
+                time.sleep(cost)
+            else:
+                clock.spend(cost)
+            if self.mirror == "li":
+                raise RuntimeError("synthetic first-mirror failure")
+            return []
+
+    monkeypatch.setattr(libgen, "LibgenSearch", Search)
+    if not real_clock:
+
+        async def worker(func, timeout, **kwargs):
+            before = now()
+            result = func()
+            if now() - before > timeout:
+                raise ProviderTimeoutError("libgen", kwargs["host"], "elapsed")
+            return result
+
+        monkeypatch.setattr(libgen, "run_bounded", worker)
+    rows = await adapter.search(
+        "Solaris", deadline=WalkDeadline(12, clock=now), multi_source=True
+    )
+    assert rows == []
+    assert [mirror for mirror, _ in calls] == ["li", "vg"]
+    assert calls[1][1] < 12
+    assert now() - started < 12
+    print(
+        f"{scenario=} {real_clock=} mirror_two_s={calls[1][1]:.4f} total_s={now() - started:.4f}"
+    )
+
+
+@pytest.mark.asyncio
+async def test_unissued_search_does_not_stamp_last_request(monkeypatch):
+    clock = Clock()
+    adapter = libgen.LibgenAdapter(SourceConfig(preflight_enabled=False))
+    adapter._last_request = 98.0
+    monkeypatch.setattr(libgen.time, "time", clock.now)
+    monkeypatch.setattr(adapter, "_mirror_candidates", lambda: ["li", "vg"])
+    monkeypatch.setattr(adapter, "_preflight", AsyncMock())
+
+    async def sleep(delay):
+        clock.spend(delay)
+
+    async def exhausted(awaitable, timeout, **kwargs):
+        result = await awaitable
+        if kwargs["operation"] == "search pacing":
+            clock.spend(timeout)
+        return result
+
+    monkeypatch.setattr(libgen.asyncio, "sleep", sleep)
+    monkeypatch.setattr(libgen, "bounded_await", exhausted)
+    worker = AsyncMock()
+    monkeypatch.setattr(libgen, "run_bounded", worker)
+    with pytest.raises(libgen.AllSourcesFailedError):
+        await adapter.search(
+            "Solaris", deadline=WalkDeadline(12, clock=clock.now), multi_source=True
+        )
+    worker.assert_not_awaited()
+    assert adapter._last_request == 98.0

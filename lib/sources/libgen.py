@@ -47,7 +47,7 @@ logger = logging.getLogger("zlibrary.sources")
 
 PROVIDER = "libgen"
 # Private comparison-search policy; default/single-source calls keep full budgets.
-MULTI_SOURCE_MIRROR_SECONDS = 3.0
+MULTI_SOURCE_MIRROR_SECONDS = 5.0
 
 # libgen.li serves its default-nginx stub (HTTP 200, ~640 bytes, no results
 # table) to blocklisted tool User-Agents while an admitted UA gets the real
@@ -466,6 +466,7 @@ class LibgenAdapter(SourceAdapter):
         deadline: Optional[WalkDeadline] = None,
         *,
         minimum_after: float = 0.0,
+        record_request: bool = True,
     ) -> bool:
         """Enforce rate limiting between requests.
 
@@ -485,7 +486,8 @@ class LibgenAdapter(SourceAdapter):
             ):
                 return False
             await asyncio.sleep(delay)
-        self._last_request = time.time()
+        if record_request:
+            self._last_request = time.time()
         return True
 
     async def search(
@@ -580,7 +582,9 @@ class LibgenAdapter(SourceAdapter):
                 continue
 
             try:
-                pacing = self._rate_limit(attempt, minimum_after=1.0)
+                pacing = self._rate_limit(
+                    attempt, minimum_after=1.0, record_request=False
+                )
                 ready = (
                     await bounded_await(
                         pacing,
@@ -651,6 +655,7 @@ class LibgenAdapter(SourceAdapter):
                 )
 
             try:
+                self._last_request = time.time()
                 results, page, missing_edition_rows = await run_bounded(
                     _search_sync,
                     budget,

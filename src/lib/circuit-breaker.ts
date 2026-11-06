@@ -187,6 +187,11 @@ export class CircuitBreaker {
     };
   }
 
+  /** Return the same owner refusal without taking a probe or changing state. */
+  refusal(): CircuitBreakerOpenError | undefined {
+    return this.snapshot().breakerBlocked ? this.openError() : undefined;
+  }
+
   /**
    * Get current failure count
    */

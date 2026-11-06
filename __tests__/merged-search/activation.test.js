@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, expect, jest, test } from '@jest/globals';
 import os from 'node:os';
+import { assertAccounting } from './model-assertions.js';
 import { AcquisitionTools } from '../../dist/lib/acquisition-tools.js';
 import { createServer, TOOL_DEFINITIONS } from '../../dist/index.js';
 import { RefStore } from '../../dist/lib/refs.js';
@@ -19,17 +20,17 @@ const collected=(id,more=true)=>[{source:'zlibrary',state:'answered',ms:1,copies
 test('F01 F05 F07 F35 public default search agrees with local limits and exact applies to LibGen',async()=>{
  const calls=[];const tools=new AcquisitionTools(async(op,args)=>{calls.push([op,args]);return {books:[book('one')]};},{});
  const limits=await tools.call('get_limits');expect(limits.search).toMatchObject({default_sources:['libgen'],wait_ms:12000,ordering:'fit-v1'});expect(limits.sources.annas).toMatchObject({default_search:false,off_reason:'route_off'});expect(calls).toEqual([]);
- const reply=await tools.call('search',{query:'Solaris',exact:true});expect(reply.rows).toHaveLength(1);expect(reply.rows[0].match).toBe('exact_title');expect(reply.all_answered).toBe(true);expect(Object.keys(reply.sources)).toEqual(['libgen','zlibrary','annas']);expect(reply.sources.zlibrary.reason).toBe('credentials_missing');expect(reply.sources.libgen.filtering.applied).toEqual(['exact']);expect(reply).not.toHaveProperty('routing');expect(calls).toEqual([['search_multi_source',{query:'Solaris',source:'libgen',count:50,multi_source:false}]]);
+ const reply=await tools.call('search',{query:'Solaris',exact:true});assertAccounting(reply,['libgen','zlibrary','annas'],['libgen']);expect(reply.rows).toHaveLength(1);expect(reply.rows[0].match).toBe('exact_title');expect(reply.all_answered).toBe(true);expect(Object.keys(reply.sources)).toEqual(['libgen','zlibrary','annas']);expect(reply.sources.zlibrary.reason).toBe('credentials_missing');expect(reply.sources.libgen.filtering.applied).toEqual(['exact']);expect(reply).not.toHaveProperty('routing');expect(calls).toEqual([['search_multi_source',{query:'Solaris',source:'libgen',count:50,multi_source:false}]]);
 });
 test('F02 F12 public source sets dispatch together and retain one frozen page in canonical order',async()=>{
  const outputs=[];for(const sources of [['libgen','zlibrary'],['zlibrary','libgen']]){
   const calls=[];let release;const slow=new Promise(r=>release=r);const tools=make(async(op,args)=>{calls.push([op,args]);return op==='search'?slow:{books:[book('libgen',{md5:'a'.repeat(32)})]};},{BOOK_SOURCE_DEFAULT_ORDER:'libgen,zlibrary'},{now:()=>0,nonce:1n});
-  const pending=tools.call('search',{query:'Solaris',sources});await jest.advanceTimersByTimeAsync(0);expect(calls).toHaveLength(2);release({books:[book('zlib',{md5:'A'.repeat(32),hash:'opaque'})]});const reply=await pending;expect(reply.rows).toHaveLength(1);expect(reply.rows[0].other_copies).toHaveLength(1);expect(reply.sources.zlibrary.rows).toBe(1);expect(calls.find(c=>c[0]==='search')[1].count).toBe(50);expect(calls.find(c=>c[0]==='search_multi_source')[1].multi_source).toBe(true);outputs.push(reply);
+  const pending=tools.call('search',{query:'Solaris',sources});await jest.advanceTimersByTimeAsync(0);expect(calls).toHaveLength(2);release({books:[book('zlib',{md5:'A'.repeat(32),hash:'opaque'})]});const reply=await pending;assertAccounting(reply,['libgen','zlibrary','annas'],sources);expect(reply.rows).toHaveLength(1);expect(reply.rows[0].other_copies).toHaveLength(1);expect(reply.sources.zlibrary.rows).toBe(1);expect(calls.find(c=>c[0]==='search')[1].count).toBe(50);expect(calls.find(c=>c[0]==='search_multi_source')[1].multi_source).toBe(true);outputs.push(reply);
  }expect(outputs[0]).toEqual(outputs[1]);
 });
 test('F11 F14 public cut is terminal and fences late output before refs or cursor publication',async()=>{
  let resolve,child;let now=0;const tools=make(async(op,args,options)=>{if(op==='search'){child=options.signal;return new Promise(r=>resolve=r);}return {books:[book('fast')]};},{BOOK_SOURCE_SEARCH_WAIT_MS:'100'},{now:()=>now});
- const pending=tools.call('search',{query:'Solaris'});await jest.advanceTimersByTimeAsync(0);now=100;await jest.advanceTimersByTimeAsync(100);const reply=await pending;expect(reply.sources.zlibrary).toMatchObject({state:'late',ms:100});expect(child.reason).toBe('search_cut');expect(reply.all_answered).toBe(false);const before=JSON.stringify(reply);resolve({books:[book('late')]});await jest.advanceTimersByTimeAsync(0);expect(JSON.stringify(reply)).toBe(before);expect(reply.rows).toHaveLength(1);expect(reply.note).toMatch(/zlibrary: late/);expect((await tools.call('get_limits')).sources.zlibrary.recent).toEqual({searches:1,late:1,failed:0});
+ const pending=tools.call('search',{query:'Solaris'});await jest.advanceTimersByTimeAsync(0);now=100;await jest.advanceTimersByTimeAsync(100);const reply=await pending;assertAccounting(reply,['libgen','zlibrary','annas'],['libgen','zlibrary']);expect(reply.sources.zlibrary).toMatchObject({state:'late',ms:100});expect(child.reason).toBe('search_cut');expect(reply.all_answered).toBe(false);const before=JSON.stringify(reply);resolve({books:[book('late')]});await jest.advanceTimersByTimeAsync(0);expect(JSON.stringify(reply)).toBe(before);expect(reply.rows).toHaveLength(1);expect(reply.note).toMatch(/zlibrary: late/);expect((await tools.call('get_limits')).sources.zlibrary.recent).toEqual({searches:1,late:1,failed:0});
 });
 test('F13 a single dispatched public source retains its full wait',async()=>{
  let resolve,signal;const tools=make(async(_op,_args,options)=>{signal=options.signal;return new Promise(r=>resolve=r);},{BOOK_SOURCE_SEARCH_WAIT_MS:'100'});const pending=tools.call('search',{query:'Solaris',sources:['zlibrary']});await jest.advanceTimersByTimeAsync(30000);expect(signal.aborted).toBe(false);resolve({books:[book('slow')]});expect((await pending).sources.zlibrary.state).toBe('rows');
@@ -64,7 +65,7 @@ test('last refill subscriber withdraws ownership and late completion cannot mate
 
 test('A5 public wire schema accepts merged replies and refuses malformed state evidence',async()=>{
  const {default:Ajv}=await import('ajv');const validate=new Ajv({strict:false}).compile(TOOL_DEFINITIONS.find(t=>t.name==='search').outputSchema);
- const reply=await new AcquisitionTools(async()=>({books:[book('one')]}),{}).call('search',{query:'Solaris'});expect(validate(reply)).toBe(true);
+ const reply=await new AcquisitionTools(async()=>({books:[book('one')]}),{}).call('search',{query:'Solaris'});expect(validate(reply)).toBe(true);assertAccounting(reply,['libgen','zlibrary','annas'],['libgen']);
  for(const line of [{state:'late'},{state:'rows',rows:0,ms:1},{state:'failed',ms:1}]){const bad=structuredClone(reply);bad.sources.libgen=line;expect(validate(bad)).toBe(false);}
  const bad=structuredClone(reply);bad.rows[0].other_copies=[{ref:'r-other',source:'libgen'}];delete bad.rows[0].route_basis;expect(validate(bad)).toBe(false);
 });
@@ -86,7 +87,7 @@ test('public dispatch retains an explicit bridge budget while owning the child s
 test('A6 public admission uses each frozen capability snapshot once',async()=>{
  const {SourceRegistry}=await import('../../dist/lib/source-registry.js');const {windowFixture}=await import('./window-fixture.js');const reads={first:0,second:0};let issued=0;
  const registry=new SourceRegistry(['first','second'].map(name=>({name,capabilities:()=>({configured:true,search_available:++reads[name]===1,download_available:true}),defaultSearch:()=>({on:true}),md5:()=>undefined,searchWindow:async()=>{issued++;return windowFixture([{id:name,metadata:{title:name}}]);}})));
- const tools=new AcquisitionTools(async()=>{throw new Error('No provider call');},{},{registry});const reply=await tools.call('search',{query:'Synthetic'});expect(reply.rows).toHaveLength(2);expect(reads).toEqual({first:1,second:1});expect(issued).toBe(2);
+ const tools=new AcquisitionTools(async()=>{throw new Error('No provider call');},{},{registry});const reply=await tools.call('search',{query:'Synthetic'});assertAccounting(reply,['first','second'],['first','second']);expect(reply.rows).toHaveLength(2);expect(reads).toEqual({first:1,second:1});expect(issued).toBe(2);
 });
 test('M06 public planning stall consumes the comparison deadline before any issue',async()=>{
  const {SourceRegistry}=await import('../../dist/lib/source-registry.js');let now=0,issued=0;

@@ -74,8 +74,10 @@ export class SearchRecords {
     if (!Number.isSafeInteger(options.maxWindows ?? 20) || (options.maxWindows ?? 20) < 1)
       throw new RangeError('Retained window bound must be a positive integer.');
     if (
-      !Number.isSafeInteger(options.relationshipCapacity ?? 128) ||
-      (options.relationshipCapacity ?? 128) < 1
+      !Number.isSafeInteger(
+        options.relationshipCapacity ?? options.capacity * (options.maxWindows ?? 20),
+      ) ||
+      (options.relationshipCapacity ?? options.capacity * (options.maxWindows ?? 20)) < 1
     )
       throw new RangeError('Relationship capacity must be a positive integer.');
   }
@@ -193,7 +195,10 @@ export class SearchRecords {
           .map((copy) => ({ ...copy, ref: mapping.get(copy.ref)! })),
       }),
     );
-    while (this.contexts.size > (this.options.relationshipCapacity ?? 128))
+    while (
+      this.contexts.size >
+      (this.options.relationshipCapacity ?? this.options.capacity * (this.options.maxWindows ?? 20))
+    )
       this.contexts.delete(this.contexts.keys().next().value!);
     record.acceptedRecords += prepared.acceptedRecords;
     return { prepared: immutable({ ...prepared, rows }) };
@@ -347,7 +352,6 @@ export class SearchRecords {
       const promise = this.expand(alias.record, alias.window);
       const pending = alias.record.pending.get(alias.window)!;
       const subscriber = Symbol();
-      pending.subscribers.add(subscriber);
       const waitingAt = performance.now();
       const waitFailure = (
         code: 'cancelled' | 'provider_timeout',
@@ -361,7 +365,14 @@ export class SearchRecords {
           attempts: alias.record.plan.sources.map((view) => {
             const refusal = alias.record.refusals.find((line) => line.source === view.name);
             return refusal
-              ? { ...refusal }
+              ? {
+                  source: refusal.source,
+                  state: refusal.state,
+                  reason: refusal.reason,
+                  ...(refusal.retry_after_s !== undefined
+                    ? { retry_after_s: refusal.retry_after_s }
+                    : {}),
+                }
               : {
                   source: view.name,
                   state: 'failed',
@@ -371,6 +382,13 @@ export class SearchRecords {
                 };
           }),
         });
+      if (pending.controller.signal.aborted)
+        throw waitFailure(
+          'provider_timeout',
+          'refill_draining',
+          'Previous refill is still draining; retry this cursor.',
+        );
+      pending.subscribers.add(subscriber);
       await new Promise<void>((resolve, reject) => {
         let timer: ReturnType<typeof setTimeout> | undefined;
         let finished = false;

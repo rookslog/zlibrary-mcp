@@ -83,6 +83,9 @@ export function getSearchState(env: Record<string, string | undefined> = process
       source,
       {
         ...dependencyBreakers[source === 'zlibrary' ? 'eapi' : source]!.snapshot(),
+        refusal:
+          (source === 'zlibrary' ? eapiSessions.refusal(env.ZLIBRARY_EMAIL ?? '') : undefined) ??
+          dependencyBreakers[source === 'zlibrary' ? 'eapi' : source]!.refusal(),
         ...(source === 'zlibrary'
           ? eapiSessions.admission(env.ZLIBRARY_EMAIL ?? '')
           : { admission: 'open' as const }),

@@ -161,11 +161,11 @@ function refusal(source: string, reason: string, retry_after_s?: number): ToolFa
         : reason === 'queue_wait'
           ? 'provider_timeout'
           : 'provider_error';
-  return new ToolFailure(code, 'Source did not answer.', {
+  return new ToolFailure(code, 'Source request was not issued.', {
     source,
     retry: ['credentials_missing', 'unsupported_operation'].includes(code) ? 'no' : 'safe',
-    ...(retry_after_s !== undefined ? { retry_after_s } : {}),
-    detail: { reason },
+    ...(retry_after_s !== undefined ? { retry_after_s: Math.ceil(retry_after_s) } : {}),
+    detail: { reason, request_issued: false },
   });
 }
 function modelError(

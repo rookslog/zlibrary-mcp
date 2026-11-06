@@ -3,6 +3,8 @@ import type { SearchSettings } from './search-settings.js';
 import { ToolFailure } from './tool-errors.js';
 
 export interface LocalSearchState {
+  /** Private owner error; limits project only the fields below. */
+  refusal?: unknown;
   breaker?: 'closed' | 'open' | 'half_open';
   breakerBlocked?: boolean;
   breakerRetryAfterS?: number;
@@ -20,7 +22,8 @@ const invalid = (): never => {
 };
 
 /** The denominator is dispatched source jobs, not network requests. A new
- * instance after restart is empty; admission refusals do not consume a slot. */
+ * instance after restart is empty; admission refusals and caller withdrawals
+ * do not consume a slot. */
 export class RecentSearches {
   private readonly outcomes = new Map<string, JobState[]>();
   constructor(names: readonly string[]) {
@@ -102,7 +105,7 @@ export function projectSearchLimits(
           ...(!plan.intent.includes(view.name) ? { off_reason: plan.excluded[view.name] } : {}),
           breaker,
           admission,
-          ...(waits.length ? { retry_after_s: Math.max(...waits) } : {}),
+          ...(waits.length ? { retry_after_s: Math.ceil(Math.max(...waits)) } : {}),
           recent: count,
         },
       ];

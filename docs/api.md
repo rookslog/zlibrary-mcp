@@ -37,8 +37,11 @@ hint, not another selectable copy or proof of a current route.
 
 ### Source lines and incomplete answers
 
-Every registered source has a line, including sources outside the requested
-set. Intent is resolved once, before local admission checks. An explicit
+The shipped server registers LibGen, Z-Library and Anna’s Archive. Embedded
+`AcquisitionTools` callers can supply a custom registry for search, details and
+acquisition without quota estimates; the shipped server and quota-estimate
+schema support the three built-in sources only. Every registered source has a
+line, including sources outside the requested set. Intent is resolved once, before local admission checks. An explicit
 `sources` set or operator list stays in intent even if credentials are missing
 or a breaker is open. Without either, install-disabled sources are excluded;
 Anna's stays outside this unset default until its route is on. A key alone does
@@ -164,8 +167,9 @@ filter evidence. `disagreements` exposes actual differing values, and
 `likely_editions` lists up to ten related file rows. The selected copy's detail
 is fresh where its source supports detail calls; its filters are rechecked
 against those fields. Sibling metadata remains the frozen search evidence.
-Optional relationship indexes retain 128 window contexts and may expire before
-the ref; their absence does not invalidate the selected ref or its own detail.
+The default relationship index holds all windows of the retained searches
+(128 searches × 20 windows). Embedded callers may set a smaller relationship
+capacity; then optional relationship evidence can expire before the selected ref.
 
 ## download
 
@@ -297,7 +301,9 @@ or `backoff`, with `retry_after_s` where applicable. These are read-only local
 snapshots: inspecting them never resets health, claims a probe or logs in.
 `recent` counts `searches`, `late`, `failed` over the last 20 dispatched source
 jobs in this process. The denominator is jobs, not network requests; refusals
-before dispatch consume no slot. Restart clears these counters.
+before dispatch and caller cancellation or subscriber timeout consume no slot.
+Comparison cuts still count as `late`; actual source failures count as `failed`.
+Restart clears these counters.
 
 `operations` lists what the source supports, independent of configuration:
 `search`, `details`, `download` for all three sources, plus `history` for
@@ -350,13 +356,14 @@ Replays re-slice the same snapshot and issue no request. Once a sole dispatched
 source's retained tail is exhausted, the first continuation issues one upstream
 refill, single-flight per position, and memoizes the resulting window. Concurrent
 callers and lost-reply replays see the same page. Each caller can cancel its own
-subscription without cancelling peers. An explicit `timeoutMs` call option also
-bounds only that subscriber's wait; expiry returns `provider_timeout` with
+subscription without cancelling peers. For embedded callers only, an explicit
+`timeoutMs` call option also bounds only that subscriber's wait; expiry returns `provider_timeout` with
 `detail.reason: "caller_timeout"` and does not charge provider health. A peer
 with a longer budget can continue. Last-subscriber withdrawal aborts the job
 waiter; the position stays fenced until its adapter promise settles. Failed/abandoned
-refills can be explicitly retried after that drain, never overlapped. An
-answered refill producing `partial_failure` is memoized even with `more: true`.
+refills can be explicitly retried after that drain, never overlapped. A new
+caller during the drain gets retryable `provider_timeout` with
+`detail.reason: "refill_draining"`; it has not cancelled. An answered refill producing `partial_failure` is memoized even with `more: true`.
 That error arm supplies no new continuation; restart with explicit sole-source
 intent to continue beyond it.
 

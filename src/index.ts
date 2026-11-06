@@ -17,7 +17,7 @@ import { searchSuccessShape } from './lib/search-wire.js';
 
 const descriptions: Record<ToolName, string> = {
   search:
-    'Metadata, not book text. Give query and/or author; exact checks each field locally. sources is a set asked together; defaults: get_limits. Rows group only equal catalogue MD5; ref selects the recommended source copy, other_copies remain selectable. Check sources, all_answered and note for incomplete windows. Search refs/cursors share a process-local 128-search LRU, up to 20 windows each; on ref_unavailable search again. Pass cursor alone: pages are retained snapshots; the first sole-source refill may issue one request, then replays are local.',
+    'Metadata, not book text. Give query and/or author; exact checks each field locally. sources is a set asked together; defaults: get_limits. Rows group only equal catalogue MD5; ref selects the recommended source copy, other_copies remain selectable. Check sources, all_answered and note for incomplete windows. On ref_unavailable, search again. Pass cursor alone: pages are retained snapshots; continuing beyond held results may issue one source request, then replays are local.',
   get_book:
     'Edition evidence for any copy ref; bounded other_copies, disagreements and likely_editions retain the search filters. Zlibrary costs one detail call; others return held rows. Optional relationship evidence can expire before the ref. Description capped at 1,000 characters.',
   download:

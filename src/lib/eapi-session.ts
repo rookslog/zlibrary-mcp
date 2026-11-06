@@ -111,6 +111,12 @@ export class EapiSessionOwner {
       : { admission: 'open' };
   }
 
+  /** Observe this identity's refusal without selecting a session generation. */
+  refusal(identity: string): PythonBridgeError | undefined {
+    const failure = this.loginFailures.get(identity);
+    return failure && failure.retryAt > Date.now() ? this.backoffError(failure) : undefined;
+  }
+
   generationFor(identity: string): number {
     if (identity !== this.identity) {
       this.acquisition?.controller.abort();
@@ -207,7 +213,12 @@ export class EapiSessionOwner {
     const remaining = Math.max(0, state.retryAt - Date.now());
     return new PythonBridgeError(
       `${state.cause}; next attempt allowed in ${Math.ceil(remaining / 1000)} s`,
-      { reason: 'auth_backoff', retryAfterMs: remaining, diagnostics: state.diagnostics },
+      {
+        reason: 'auth_backoff',
+        retryAfterMs: remaining,
+        diagnostics: state.diagnostics,
+        details: { reason: 'auth_backoff', request_issued: false },
+      },
       false,
     );
   }

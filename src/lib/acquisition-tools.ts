@@ -231,7 +231,7 @@ export class AcquisitionTools {
     this.searches = new SearchRecords({
       capacity: runtime.recordCapacity ?? 128,
       maxWindows: runtime.maxWindows ?? 20,
-      relationshipCapacity: runtime.relationshipCapacity ?? 128,
+      relationshipCapacity: runtime.relationshipCapacity,
       nonce: runtime.nonce,
     });
     this.recent = new RecentSearches(names);
@@ -284,6 +284,7 @@ export class AcquisitionTools {
         source,
         detail: {
           reason: 'configuration_error',
+          request_issued: false,
           variables:
             source === 'zlibrary'
               ? ['ZLIBRARY_EMAIL', 'ZLIBRARY_PASSWORD']
@@ -401,7 +402,7 @@ export class AcquisitionTools {
         const operationRecovery =
           name === 'download'
             ? 'Pass ref, optional output_dir and filename only; text processing was removed in 2.0.'
-            : 'Use snake_case arguments; count becomes limit and source order is sources.';
+            : 'Use snake_case arguments; count becomes limit and sources is a set.';
         const limitRecovery =
           'Set limit to an integer from 1 to 50 (default 10); use paging with next_cursor passed as cursor for more.';
         const hasLimitIssue = parsed.error.issues.some((i) => i.path[0] === 'limit');
@@ -785,9 +786,8 @@ export class AcquisitionTools {
                 name,
                 {
                   reason: state.admission === 'backoff' ? 'auth_backoff' : 'breaker_open',
-                  retry_after_s: Math.max(
-                    state.admissionRetryAfterS ?? 0,
-                    state.breakerRetryAfterS ?? 0,
+                  retry_after_s: Math.ceil(
+                    Math.max(state.admissionRetryAfterS ?? 0, state.breakerRetryAfterS ?? 0),
                   ),
                 },
               ],
@@ -829,8 +829,6 @@ export class AcquisitionTools {
         },
       );
     } catch (error) {
-      if (error instanceof ToolFailure && error.code === 'cancelled')
-        for (const line of error.info.attempts ?? []) this.recent.record(line.source, line);
       // A refill's subscribers can leave immediately, but its position stays
       // leased until the actual adapter promises settle. Physical cleanup and
       // source-lock release remain with the adapter/runner, never this cache.
@@ -863,7 +861,20 @@ export class AcquisitionTools {
       if (line.state === 'failed')
         return { source, state: 'failed', ms: line.ms, failure: snapshot.failures.get(source)! };
       if (line.state === 'late') return { source, state: 'late', ms: line.ms };
-      if (line.state === 'not_asked') return { source, ...line };
+      if (line.state === 'not_asked') {
+        let failure: ToolFailure | undefined;
+        const owner = states[source]?.refusal;
+        if (owner) failure = classifyFailure(owner, 'search', source);
+        else if (['credentials_missing', 'route_off'].includes(line.reason)) {
+          try {
+            this.configured(source);
+          } catch (error) {
+            if (error instanceof ToolFailure) failure = error;
+            else throw error;
+          }
+        }
+        return { source, ...line, ...(failure ? { failure } : {}) };
+      }
       throw new ToolFailure('internal', 'Invalid terminal source state.');
     });
   }

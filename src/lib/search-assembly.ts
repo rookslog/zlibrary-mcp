@@ -395,6 +395,7 @@ export function renderSearchPage(
   prepared: PreparedSearch,
   offset = 0,
   limit = prepared.plan.request.limit ?? 10,
+  acceptedRecords = prepared.acceptedRecords,
 ): SearchReply {
   if (
     !Number.isInteger(offset) ||
@@ -407,13 +408,21 @@ export function renderSearchPage(
   if (prepared.error) return immutable({ error: prepared.error });
   const rows = prepared.rows.slice(offset, offset + limit);
   const incomplete = Object.entries(prepared.sources)
-    .filter(([, line]) => !['rows', 'empty'].includes(line.state))
+    .filter(([source, line]) => {
+      const view = prepared.plan.sources.find((view) => view.name === source)!;
+      return (
+        !['rows', 'empty'].includes(line.state) &&
+        (prepared.plan.intent.includes(source) ||
+          !view.capabilities.search_available ||
+          !view.defaultSearch.on)
+      );
+    })
     .map(
       ([source, line]) =>
         `${source}: ${line.state}${line.state === 'not_asked' ? ` (${line.reason})` : ''}`,
     );
   const note =
-    `${rows.length} file rows shown from ${prepared.acceptedRecords} accepted records, grouped by file.` +
+    `${rows.length} file rows shown from ${acceptedRecords} accepted records, grouped by file.` +
     (incomplete.length ? ` ${incomplete.join('; ')}.` : '') +
     ' These are bounded source windows (up to 50 records per source), not everything.';
   return immutable({

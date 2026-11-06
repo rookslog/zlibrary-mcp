@@ -25,6 +25,7 @@ REASON_TEXT = {
     "tls_error": "accepted the connection but the TLS handshake failed",
     "read_timeout": "accepted the connection but sent no response before the deadline",
     "search_timeout": "did not finish the search before the deadline",
+    "mirror_slice_exhausted": "was not searched because its mirror slice could not admit a search",
     "http_error": "returned an HTTP error",
     "quota_exhausted": "has no downloads left on this account today",
     "protocol_error": "returned a malformed response",

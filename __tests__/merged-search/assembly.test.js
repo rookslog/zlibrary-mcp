@@ -119,3 +119,22 @@ test('N1 S4b adapter evidence survives the request guard and preserves all copy 
   const reply=renderSearchPage(prepared);expect(reply.rows).toHaveLength(1);expect(reply.rows[0].ref).toBe('r-pass');
   expect(reply.rows[0].other_copies.map(c=>[c.ref,c.filter])).toEqual([['r-fail','fail'],['r-unknown','unknown']]);
 });
+
+test('N1 note omits healthy unrequested sources and keeps intended refusals', () => {
+  const single = build({ sources: ['libgen'] }, [answer('libgen')]).reply;
+  expect(single.note).not.toContain('zlibrary:');
+  expect(single.note).not.toContain('annas:');
+  const partial = build({ sources: ['libgen', 'annas'] }, [answer('libgen'), { source: 'annas', state: 'not_asked', reason: 'breaker_open' }]).reply;
+  expect(partial.note).toContain('annas: not_asked (breaker_open)');
+  expect(partial.note).not.toContain('zlibrary:');
+});
+test.each(['default', 'named'])('N1 note still lists off sources under %s intent', mode => {
+  const v = views();
+  v[1].capabilities.search_available = false;
+  v[1].capabilities.off_reason = 'credentials_missing';
+  v[1].defaultSearch = { on: false, reason: 'credentials_missing' };
+  v[2].defaultSearch = { on: false, reason: 'route_off' };
+  const { reply } = build(mode === 'named' ? { sources: ['libgen'] } : {}, [answer('libgen')], v);
+  expect(reply.note).toContain('zlibrary: not_asked');
+  expect(reply.note).toContain('annas: not_asked');
+});

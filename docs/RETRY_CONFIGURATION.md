@@ -60,12 +60,15 @@ health. The bridge operation keeps its ordinary owner budget; the subscriber
 does not install its shorter timer on shared work. Adapter settlement does not
 claim physical cleanup or lock release.
 
-LibGen and Anna's mirror searches use a private 3-second per-mirror allowance,
+LibGen comparison searches use a private 5-second per-mirror allowance,
 clamped by the remaining walk. Preflight, pacing and the search itself share
 that allowance, so a slow preflight or rate wait leaves less for the request.
 Other mirrors remain candidates. This short search allowance changes neither
 download resolution nor transfer budgets. The whole comparison wait is
-separate from these source-local budgets.
+separate from these source-local budgets. Pacing refusal or slice exhaustion
+before issuing a search uses `mirror_slice_exhausted`; an issued search that
+times out retains `search_timeout`. Anna's retains its ordinary source budget
+under the outer comparison wait.
 
 ### Multi-Source Timeout Configuration
 

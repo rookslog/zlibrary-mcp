@@ -264,8 +264,8 @@ is attributed with `walk_budget_exhausted`, which indicates a local budget limit
 not evidence that the host failed. Increase `BOOK_SOURCE_WALK_BUDGET` if needed;
 if it is already clamped to the bridge owner, increase the corresponding owner.
 LibGen and Anna's searches each run in their own bridge child; the walk budget
-is separate from the multi-source comparison wait. Within each mirror search,
-preflight, pacing and search share one short 3-second attempt allowance, clamped
+is separate from the multi-source comparison wait. Within each LibGen mirror in a comparison search,
+preflight, pacing and search share one 5-second attempt allowance, clamped
 by the remaining walk; this does not change download budgets.
 
 For downloads, the resolution walk runs inside the source transfer-chain

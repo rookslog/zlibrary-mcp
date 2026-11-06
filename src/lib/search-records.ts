@@ -36,6 +36,7 @@ interface RecordState {
   >;
   md5s: Set<string>;
   contexts: Set<number>;
+  acceptedRecords: number;
 }
 type Alias = { record: RecordState } & (
   | { kind: 'r'; selection: RetainedSelection; context: number }
@@ -194,6 +195,7 @@ export class SearchRecords {
     );
     while (this.contexts.size > (this.options.relationshipCapacity ?? 128))
       this.contexts.delete(this.contexts.keys().next().value!);
+    record.acceptedRecords += prepared.acceptedRecords;
     return { prepared: immutable({ ...prepared, rows }) };
   }
   retain(
@@ -239,6 +241,7 @@ export class SearchRecords {
       pending: new Map(),
       md5s: new Set(),
       contexts: new Set(),
+      acceptedRecords: 0,
     };
     this.records.set(record.id, record);
     while (this.records.size > this.options.capacity)
@@ -252,9 +255,9 @@ export class SearchRecords {
       existing = record.pages.get(key);
     if (existing) return existing;
     const prepared = record.windows.get(number)!.prepared;
-    const reply = renderSearchPage(prepared, offset);
-    if ('error' in reply) return reply;
     const limit = record.plan.request.limit ?? 10;
+    const reply = renderSearchPage(prepared, offset, limit, record.acceptedRecords);
+    if ('error' in reply) throw new ToolFailure(reply.error.code, reply.error.message, reply.error);
     let next: { window: number; offset: number } | undefined;
     if (offset + limit < prepared.rows.length) next = { window: number, offset: offset + limit };
     else if (
@@ -316,7 +319,7 @@ export class SearchRecords {
         if (result.source !== record.dispatched[0])
           throw new ToolFailure('invalid_argument', 'Refill changed source.');
         const prepared = this.prepare(record.plan, [result, ...record.refusals]);
-        if (prepared.error)
+        if (prepared.error && result.state !== 'answered')
           throw new ToolFailure(prepared.error.code, prepared.error.message, prepared.error);
         const window = this.retainWindow(record, prepared);
         record.windows.set(number, window);

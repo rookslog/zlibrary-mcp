@@ -60,7 +60,10 @@ reasons include `not_requested`, `not_in_default_order`, `credentials_missing`,
 An answered source with zero accepted records may contribute a failing copy to
 a group whose other copy passes. Late, failed and unasked sources contribute
 no copies. `all_answered` is true exactly when every source in intent reached
-`rows` or `empty`; sources outside intent do not make it false.
+`rows` or `empty`; sources outside intent do not make it false. With an empty custom resolved
+intent, it is true without any source call: inspect the empty
+`get_limits.search.default_sources`, the source lines and off-source note. The
+current public LibGen registration remains locally searchable.
 
 | No public rows | Result |
 |---|---|
@@ -343,7 +346,10 @@ bounds only that subscriber's wait; expiry returns `provider_timeout` with
 `detail.reason: "caller_timeout"` and does not charge provider health. A peer
 with a longer budget can continue. Last-subscriber withdrawal aborts the job
 waiter; the position stays fenced until its adapter promise settles. Failed/abandoned
-refills can be explicitly retried after that drain, never overlapped.
+refills can be explicitly retried after that drain, never overlapped. An
+answered refill producing `partial_failure` is memoized even with `more: true`.
+That error arm supplies no new continuation; restart with explicit sole-source
+intent to continue beyond it.
 
 History retains its separate 5,000-entry handle LRU with 5,000 recent expired
 handle tombstones. Its immutable cursor re-queries the same upstream position:
@@ -408,7 +414,7 @@ consumers do not install the bridge's filters.
 | `quota_exhausted` | Anna's keyed-download router reports quota metadata with zero remaining. Z-Library EAPI download daily-limit failures currently surface as `provider_error` or `internal`, not this code |
 | `not_found` | Maps an explicit structured `not_found` reason; no current source adapter emits it. Z-Library EAPI download absence currently surfaces as `provider_error` or `internal`; empty search is not absence |
 | `provider_unreachable` | DNS, connect or TLS failure |
-| `provider_timeout` | Provider operation exceeded its budget |
+| `provider_timeout` | Provider or local search-wait budget exhausted; inspect the reason to distinguish an unissued mirror slice or caller wait |
 | `provider_error` | Bad status/body, block page, HTML instead of file |
 | `integrity_mismatch` | Download digest differs |
 | `breaker_open` | Dependency/destination paused or authentication backoff |

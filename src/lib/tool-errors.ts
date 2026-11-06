@@ -126,6 +126,7 @@ export function classifyFailure(error: any, operation: string, source?: string):
     'read_timeout',
     'search_timeout',
     'walk_budget_exhausted',
+    'mirror_slice_exhausted',
     'integrity_mismatch',
     'http_error',
     'protocol_error',
@@ -219,7 +220,11 @@ export function classifyFailure(error: any, operation: string, source?: string):
     ].includes(reason)
   )
     code = 'provider_unreachable';
-  else if (['read_timeout', 'search_timeout', 'walk_budget_exhausted'].includes(reason))
+  else if (
+    ['read_timeout', 'search_timeout', 'walk_budget_exhausted', 'mirror_slice_exhausted'].includes(
+      reason,
+    )
+  )
     code = 'provider_timeout';
   else if (reason === 'integrity_mismatch') code = 'integrity_mismatch';
   else if (['http_error', 'protocol_error', 'partial_transfer'].includes(reason))

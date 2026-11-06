@@ -25,7 +25,7 @@ test('M05 alternatives show their own pass/fail/unknown evidence and all real co
   expect(row.language).toBe('French');
   expect(row.format).toBe('pdf');
   expect(mergeRows([b, c], request, { filtersActive: true })).toEqual([]);
-  expect(mergeRows([a, b], request)[0].other_copies[0]).not.toHaveProperty('filter');
+  expect(mergeRows([a, b], request)[0].other_copies[0]).toMatchObject({ filter: 'fail', language: 'English' });
 });
 
 test('M05 unavailable passing copies still recommend before contradictory usable alternatives', () => {

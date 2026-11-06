@@ -24,7 +24,7 @@ export interface SearchPlan {
   mode: 'named' | 'operator' | 'default';
   excluded: Readonly<Record<string, string>>;
 }
-export interface CatalogueCopy extends Omit<MergeCopy, 'rank' | 'filterResult' | 'filterStatus'> {
+export interface CatalogueCopy extends Omit<MergeCopy, 'rank' | 'filterResult'> {
   book?: Readonly<Record<string, unknown>>;
 }
 export type CollectedSource =

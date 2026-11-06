@@ -1,6 +1,6 @@
 import { languageKey } from './filter-languages.js';
 import { createHash } from 'node:crypto';
-import type { FilterStatus, RowFilterResult } from './row-filters.js';
+import type { FilterStatus, RowFilterResult, FilterCheck } from './row-filters.js';
 
 export interface MergeMetadata {
   title?: string;
@@ -22,8 +22,7 @@ export interface MergeCopy {
   md5?: string;
   metadata: MergeMetadata;
   /** Complete predicate evidence from checkMergedRowFilters. */
-  filterResult?: Pick<RowFilterResult, 'status' | 'checks'>;
-  filterStatus?: FilterStatus;
+  filterResult: Pick<RowFilterResult, 'status' | 'checks'>;
   downloadAvailable?: boolean;
   quotaRemaining?: number;
 }
@@ -32,6 +31,7 @@ export interface MergeRequest {
   author?: string;
 }
 export interface MergeOptions {
+  /** Optional consistency assertion; activation is derived from predicate evidence. */
   filtersActive?: boolean;
   routeOrder?: readonly string[];
   formatPreference?: readonly string[];
@@ -434,8 +434,49 @@ interface Ranked {
 const compareRanked = (a: Ranked, b: Ranked): number =>
   a.fit - b.fit || a.rank - b.rank || compare(a.tie, b.tie) || compare(a.row.ref, b.row.ref);
 
+/** Validate complete evidence before any group can produce a row. */
+function filterActivation(copies: readonly MergeCopy[], asserted?: boolean): boolean {
+  const invalid = (): never => {
+    throw new TypeError('Every merge copy requires complete filterResult evidence.');
+  };
+  let active = false;
+  for (const copy of copies) {
+    const result = copy.filterResult;
+    if (
+      !result ||
+      typeof result !== 'object' ||
+      Array.isArray(result) ||
+      !result.checks ||
+      typeof result.checks !== 'object' ||
+      Array.isArray(result.checks)
+    )
+      invalid();
+    const entries = Object.entries(result.checks) as [string, FilterCheck][];
+    if (
+      entries.some(
+        ([key, check]) =>
+          !['year_from', 'year_to', 'languages', 'formats', 'exact'].includes(key) ||
+          !check ||
+          !['pass', 'fail', 'unknown'].includes(check.status) ||
+          typeof check.reason !== 'string',
+      )
+    )
+      invalid();
+    const derived = entries.some(([, check]) => check.status === 'fail')
+      ? 'fail'
+      : entries.some(([, check]) => check.status === 'unknown')
+        ? 'unknown'
+        : 'pass';
+    if (result.status !== derived) invalid();
+    if (entries.length) active = true;
+  }
+  if (copies.length && asserted !== undefined && asserted !== active)
+    throw new RangeError('filtersActive disagrees with predicate evidence.');
+  return active;
+}
+
 /** Pure, deterministic merge. S4 owns filtering counts, ref storage and paging.
- * filterStatus records each copy's independent result; rejected copies remain
+ * filterResult records every applied predicate; rejected copies remain
  * reachable only when a copy with the same valid MD5 passed.
  */
 export function mergeRows(
@@ -443,6 +484,7 @@ export function mergeRows(
   request: MergeRequest,
   options: MergeOptions = {},
 ): MergedRow[] {
+  const filtersActive = filterActivation(copies, options.filtersActive);
   const groups = new Map<string, MergeCopy[]>();
   for (const copy of copies) {
     const md5 = md5Of(copy);
@@ -454,7 +496,7 @@ export function mergeRows(
   }
   const filterFields = (copy: MergeCopy, status?: FilterStatus): string[] => {
     const names = new Set<string>();
-    for (const [key, check] of Object.entries(copy.filterResult?.checks ?? {})) {
+    for (const [key, check] of Object.entries(copy.filterResult.checks)) {
       if (!check || (status && check.status !== status)) continue;
       if (key === 'exact') {
         for (const [field, wanted] of [
@@ -476,8 +518,8 @@ export function mergeRows(
   };
   const alternate = (copy: MergeCopy): CopyRef => {
     const ref = copyRef(copy);
-    if (!options.filtersActive) return ref;
-    const status = copy.filterResult?.status ?? copy.filterStatus ?? 'unknown';
+    if (!filtersActive) return ref;
+    const status = copy.filterResult.status;
     return {
       ...ref,
       filter: status,
@@ -494,8 +536,8 @@ export function mergeRows(
   };
   const ranked: Ranked[] = [];
   for (const group of groups.values()) {
-    const passing = options.filtersActive
-      ? group.filter((copy) => (copy.filterResult?.status ?? copy.filterStatus) === 'pass')
+    const passing = filtersActive
+      ? group.filter((copy) => copy.filterResult.status === 'pass')
       : group;
     if (!passing.length) continue;
     const usableCopies = passing.filter(usable);

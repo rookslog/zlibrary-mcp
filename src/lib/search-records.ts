@@ -201,7 +201,8 @@ export class SearchRecords {
     if (existing) return existing;
     const prepared = record.windows.get(number)!.prepared;
     const reply = renderSearchPage(prepared, offset);
-    if ('error' in reply) return reply;
+    if ('error' in reply)
+      throw new ToolFailure(reply.error.code, reply.error.message, reply.error);
     const limit = record.plan.request.limit ?? 10;
     let next: { window: number; offset: number } | undefined;
     if (offset + limit < prepared.rows.length) next = { window: number, offset: offset + limit };
@@ -237,7 +238,7 @@ export class SearchRecords {
         if (result.source !== record.dispatched[0])
           throw new ToolFailure('invalid_argument', 'Refill changed source.');
         const prepared = this.prepare(record.plan, [result, ...record.refusals]);
-        if (prepared.error)
+        if (prepared.error && result.state !== 'answered')
           throw new ToolFailure(prepared.error.code, prepared.error.message, prepared.error);
         const window = this.retainWindow(record, prepared);
         record.windows.set(number, window);

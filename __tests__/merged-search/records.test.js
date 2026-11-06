@@ -68,3 +68,37 @@ test.each(['late','failed'])('R4-01 a dispatched %s peer still prevents single-s
 test('R4-01 empty refill with an unfulfilled intended source remains partial_failure',async()=>{
  const s=store(2),refill=jest.fn(async()=>window('zlibrary',[]));const first=s.retain(plan(['libgen','zlibrary']),[{source:'libgen',state:'not_asked',reason:'auth_backoff',retry_after_s:4},window('zlibrary',['a'],true)],{refill});expect(first.next_cursor).toBeDefined();await expect(s.page(first.next_cursor)).rejects.toMatchObject({code:'partial_failure',info:{attempts:expect.arrayContaining([expect.objectContaining({source:'libgen',state:'not_asked',reason:'auth_backoff'})])}});expect(refill).toHaveBeenCalledTimes(1);
 });
+
+test('G2 answered partial_failure is retained for concurrent callers and repeated cursor replays', async () => {
+  const s = store(2), pending = deferred(), refill = jest.fn(() => pending.promise);
+  const first = s.retain(plan(['libgen', 'zlibrary']), [
+    { source: 'libgen', state: 'not_asked', reason: 'auth_backoff', retry_after_s: 4 },
+    window('zlibrary', ['a'], true),
+  ], { refill });
+  const replies = Promise.allSettled([s.page(first.next_cursor), s.page(first.next_cursor)]);
+  pending.resolve(window('zlibrary', []));
+  const outcomes = await replies;
+  for (const outcome of outcomes) {
+    expect(outcome.status).toBe('rejected');
+    expect(outcome.reason).toMatchObject({ code: 'partial_failure' });
+  }
+  for (let replay = 0; replay < 3; replay++)
+    await expect(s.page(first.next_cursor)).rejects.toMatchObject({
+      code: 'partial_failure', info: outcomes[0].reason.info,
+    });
+  expect(refill).toHaveBeenCalledTimes(1);
+});
+
+test.each(['late', 'failed'])('G2 genuinely %s refill remains retryable', async state => {
+  const s = store(2);
+  const failure = state === 'late' ? { source: 'zlibrary', state, ms: 12000 } : {
+    source: 'zlibrary', state, ms: 1, failure: new ToolFailure('provider_error', 'Unavailable.', { retry: 'safe' }),
+  };
+  const refill = jest.fn().mockResolvedValueOnce(failure).mockResolvedValue(window('zlibrary', ['b']));
+  const first = s.retain(plan(), [window('zlibrary', ['a'], true)], { refill });
+  await expect(s.page(first.next_cursor)).rejects.toMatchObject({ code: state === 'late' ? 'provider_timeout' : 'provider_error' });
+  const next = await s.page(first.next_cursor);
+  expect(s.select(next.rows[0].ref).copy.id).toBe('b');
+  expect(await s.page(first.next_cursor)).toBe(next);
+  expect(refill).toHaveBeenCalledTimes(2);
+});

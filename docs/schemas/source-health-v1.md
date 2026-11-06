@@ -25,6 +25,7 @@ to an older report as current or interpret workflow success as source health.
 | `run.head_sha` | Full lowercase 40-hex commit SHA. |
 | `run.event` | `schedule` for the published report; the offline CLI also accepts `workflow_dispatch`, which scheduled readers must ignore. |
 | `jobs` | `reachability`, `reachability_step`, `live_tests`, `live_step`, each `success`, `failure`, `cancelled`, `skipped` or `unknown`. |
+| `job_attempts` | `reachability` and `live_tests`: positive job-output attempt integers or null. Mismatched/unavailable attempts invalidate that job's retained outputs; its `jobs` entries become `unknown`. |
 | `inputs` | `probe_artifact` and `live_artifact`: exact attempt-specific names used for this run. |
 | `expected_sources` | The complete ordered three-source ID list above. |
 | `sources` | An object containing every expected source, including untested sources. |
@@ -102,7 +103,7 @@ authenticated pass. Missing/invalid counts after an execution marker is `failed`
 an explicitly skipped live step without execution evidence is `not_run`.
 If the live step fails before emitting a marker or status, without counts evidence,
 the report is `failed` / `live_collection_error`, even if its job was cancelled
-or skipped. `ran=false` refers to suite execution, not preliminary collection.
+or skipped. `ran=null` preserves uncertainty about suite execution after preliminary collection fails.
 A missing marker alone never establishes a skip. Without positive skip or
 cancellation evidence or an admission status, unknown/completed step outcomes
 are `failed` / `execution_not_recorded`, `ran=null`. For an unmarked live step,
@@ -123,8 +124,18 @@ The workflow preserves additional immutable input artifacts named
 `upstream-source-health-probe-<run_attempt>` and
 `upstream-source-health-live-<run_attempt>`. Downloads use those exact names in
 the current workflow run. A publisher-only rerun has no fallback to a previous
-attempt's inputs: absent evidence is explicit rather than newly timestamped
-as current. The final artifact is also attempt-specific.
+attempt's inputs or retained job outputs. Each upstream job exports its own
+`github.run_attempt`. Missing, invalid, earlier or later output attempts yield
+`not_run` / `earlier_attempt_outputs`, `ran=null`, null counts and incomplete
+evidence for that job; retained admission statuses cannot establish a current
+`no_account` or block. The final artifact is also attempt-specific.
+
+For partial reruns: rerunning only the publisher invalidates both retained job
+outputs. Rerunning live tests and the publisher can retain current authenticated
+evidence while reachability remains unqualified. Rerunning reachability and the
+publisher has the inverse effect. Only jobs with the publisher's attempt can
+establish current outcomes; rerun both producers for a fully attributable report.
+Input uploads are best effort and cannot change existing source-alert outcomes.
 
 The authenticated input is `live-counts.json`, a closed version-1 envelope
 containing counts and fixed authentication/error flags, without case identifiers
@@ -141,6 +152,81 @@ identifiers, credentials or parameterized JUnit case names. The authenticated di
 Counts preparation runs independently and contains no test text.
 
 The schema and offline tests qualify the producer, not a live source or the
-private reader. A real completed scheduled artifact still requires the change
-to reach the workflow and that run to complete. No reader or briefing schedule
-is installed by this change.
+reader. A completed scheduled artifact requires the change to reach the
+workflow and that run to finish. This change does not install a reader.
+
+
+## Reason classes and reader behaviour
+
+`observed` describes a probe, suite or collection observation; `evidence` means
+required evidence is missing, invalid, contradictory or insufficient;
+`not_run` means no completed claim for that scope. A reason class is separate
+from outcome state and never overrides `ran`, counts or completeness flags.
+For example, collection failure is observed while execution can remain unknown,
+and cancellation can leave valid case counts with `ran=true`.
+
+An unknown reason code is an **evidence failure** for that scope. Preserve the
+unknown code for diagnosis, withhold pass/recovery and do not guess its meaning
+from a prefix or an otherwise successful job. Unknown fields may be ignored;
+unsupported versions, missing required fields or invalid types require evidence
+failure. This table is the complete version-1 vocabulary.
+
+| Reason | Class | Meaning |
+|---|---|---|
+| `probe_passed` | `observed` | The named unauthenticated check passed. |
+| `probe_refused` | `observed` | The probe observed a refusal; no global-outage inference. |
+| `probe_timeout` | `observed` | A typed timeout interrupted the probe. |
+| `probe_tls_failure` | `observed` | A typed TLS cause interrupted the probe. |
+| `probe_dns_failure` | `observed` | A typed resolver cause interrupted the probe. |
+| `probe_connection_failed` | `observed` | A typed connection, transport or protocol failure interrupted the probe. |
+| `probe_server_error` | `observed` | A probe received an HTTP 5xx response. |
+| `probe_http_failure` | `observed` | A probe received another unsuccessful HTTP response. |
+| `probe_contract_failed` | `observed` | The expected response or parser contract failed. |
+| `live_suite_failed` | `observed` | Executed tests or their pytest exit reported failure. |
+| `live_suite_passed` | `observed` | The observed suite and required authentication check passed without skips. |
+| `live_suite_partially_covered` | `observed` | The required check passed but other cases were skipped. |
+| `live_collection_error` | `observed` | A collection/report error or a failed preliminary live step was observed; execution may be unknown. |
+| `invalid_probe_report` | `evidence` | Probe input or a required row is malformed or contradicts alert policy. |
+| `contradictory_probe_evidence` | `evidence` | Probe step failed without a failed relied-on row to explain that outcome. |
+| `missing_probe_report` | `evidence` | An attempted probe has no readable report. |
+| `probe_execution_not_recorded` | `evidence` | Probe input lacks a completed step outcome. |
+| `missing_probe_check` | `evidence` | An expected probe row is missing. |
+| `duplicate_probe_check` | `evidence` | An expected probe row appears more than once. |
+| `unexpected_probe_check` | `evidence` | A source has an unexpected check identifier. |
+| `probe_error_unknown` | `evidence` | Exception metadata is malformed or lacks a supported classification. |
+| `invalid_alert_policy` | `evidence` | Alert-policy source identifiers are invalid. |
+| `invalid_live_status` | `evidence` | Completed-suite classification is unsupported or absent. |
+| `execution_not_recorded` | `evidence` | Execution markers or corroborating outcomes do not establish test execution. |
+| `contradictory_live_evidence` | `evidence` | Admission status, test evidence or step outcome disagree. |
+| `missing_live_evidence` | `evidence` | Execution was marked but its counts evidence is absent. |
+| `invalid_live_evidence` | `evidence` | Counts evidence or its local JUnit input is malformed. |
+| `empty_live_evidence` | `evidence` | Local JUnit input contains no testcases. |
+| `live_job_incomplete` | `evidence` | Test evidence exists but successful job and step completion are absent. |
+| `required_authentication_check_missing` | `evidence` | No positive authentication anchor exists in the observed scope. |
+| `earlier_attempt_outputs` | `not_run` | Job output attempt is absent, malformed or different from the publisher attempt. |
+| `probe_step_not_started` | `not_run` | The probe step was skipped. |
+| `reachability_not_completed` | `not_run` | Reachability was cancelled, skipped or has no completed job outcome. |
+| `live_job_cancelled` | `not_run` | Live job cancellation prevents a completed authenticated claim. |
+| `live_job_skipped` | `not_run` | The live job was skipped. |
+| `no_ci_account_configured` | `not_run` | Admission recorded no configured dedicated CI test account. |
+| `probe_state_unknown` | `not_run` | Admission skipped the suite because probe state was unknown. |
+| `live_step_not_started` | `not_run` | The live step was explicitly skipped without execution evidence. |
+| `all_live_tests_skipped` | `not_run` | Every observed testcase was skipped. |
+| `authentication_check_skipped` | `not_run` | The authentication anchor exists but did not pass. |
+| `no_authenticated_suite_configured` | `not_run` | This source has no configured authenticated suite. |
+
+
+## Freshness and example
+
+The workflow is scheduled daily at 06:17 UTC. A reader should select the newest
+completed scheduled run, require its exact run/attempt/SHA, and apply a stated
+freshness budget. For example, 36 hours allows one daily cadence and 12 hours of
+lateness; that is a reader policy, not an availability guarantee. A missing,
+unreadable, future-dated or older-than-budget artifact is evidence failure, even
+if the previous report passed. Re-reading or rerunning the publisher must not
+make older producer observations current. Artifact retention is not freshness.
+
+[Complete synthetic example](source-health-v1.example.json) shows all three
+sources, successful unauthenticated checks and an explicitly absent dedicated CI
+test account. Its run ID, SHA and timestamp are fixture values. The offline test
+regenerates it through the actual producer and checks exact equality.

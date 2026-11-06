@@ -131,6 +131,14 @@ def test_real_live_step_keeps_canaries_out_of_uploaded_files(
     counts_text = (tmp_path / "live-counts.json").read_text()
     assert all(value not in counts_text for value in [email, password, frame])
     counts = json.loads(counts_text)
+    assert set(counts) == {"schema_version", "problem", "evidence"}
+    assert set(counts["evidence"]) == {
+        "counts",
+        "problems",
+        "outside_case_problems",
+        "anchor_present",
+        "anchor_passed",
+    }
     assert counts["evidence"]["counts"] == {
         "total": 1,
         "passed": 0,

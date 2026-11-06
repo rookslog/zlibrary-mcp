@@ -36,6 +36,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 20
     outputs:
+      attempt: ${{ github.run_attempt }}
       report: ${{ steps.probe.outputs.report }}
       failed: ${{ steps.probe.outputs.failed }}
       probe_outcome: ${{ steps.probe.outcome }}
@@ -142,6 +143,7 @@ jobs:
           retention-days: 30
       - name: Preserve this attempt's probe evidence for source health
         uses: actions/upload-artifact@v7
+        continue-on-error: true
         if: always()
         with:
           name: upstream-source-health-probe-${{ github.run_attempt }}
@@ -162,6 +164,7 @@ jobs:
     needs: reachability
     if: always() && (github.event_name == 'schedule' || inputs.run_live_tests)
     outputs:
+      attempt: ${{ github.run_attempt }}
       status: ${{ steps.live.outputs.status }}
       blocked: ${{ steps.live.outputs.blocked }}
       execution_started: ${{ steps.live.outputs.execution_started }}
@@ -256,6 +259,7 @@ jobs:
           retention-days: 30
       - name: Preserve this attempt's live evidence for source health
         uses: actions/upload-artifact@v7
+        continue-on-error: true
         if: always()
         with:
           name: upstream-source-health-live-${{ github.run_attempt }}
@@ -411,6 +415,8 @@ jobs:
     name: Publish source-health report
     runs-on: ubuntu-latest
     timeout-minutes: 10
+    permissions:
+      contents: read
     needs: [reachability, live_tests]
     if: always() && github.event_name == 'schedule'
     steps:
@@ -435,8 +441,10 @@ jobs:
         if: always()
         env:
           REACHABILITY_RESULT: ${{ needs.reachability.result }}
+          REACHABILITY_ATTEMPT: ${{ needs.reachability.outputs.attempt }}
           PROBE_OUTCOME: ${{ needs.reachability.outputs.probe_outcome }}
           LIVE_RESULT: ${{ needs.live_tests.result }}
+          LIVE_ATTEMPT: ${{ needs.live_tests.outputs.attempt }}
           LIVE_STATUS: ${{ needs.live_tests.outputs.status }}
           LIVE_OUTCOME: ${{ needs.live_tests.outputs.outcome }}
           LIVE_STARTED: ${{ needs.live_tests.outputs.execution_started }}

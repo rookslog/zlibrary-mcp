@@ -971,3 +971,22 @@ def test_ci_account_configuration_controls_real_live_shell(
             not (tmp_path / "live.log").exists()
             and not (tmp_path / "live.xml").exists()
         )
+
+
+@pytest.mark.parametrize(
+    "body",
+    [
+        b'<?xml version="1.0" encoding="unknown-test-codec"?><testsuite/>',
+        '<!DOCTYPE testsuite [<!ENTITY x "canary">]><testsuite><testcase>&x;</testcase></testsuite>'.encode(
+            "utf-16"
+        ),
+    ],
+)
+def test_invalid_xml_encoding_and_declarations_are_classified_failed(
+    classifier, tmp_path, body
+):
+    path = tmp_path / "invalid.xml"
+    path.write_bytes(body)
+    result = classifier.classify(0, path)
+    assert result["status"] == "failed"
+    assert result["blocked"] is False

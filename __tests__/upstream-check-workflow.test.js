@@ -597,3 +597,29 @@ test('health inputs and live execution evidence are scoped to the current attemp
   expect(workflow.jobs.live_tests.outputs.pytest_exit_code).toBe('${{ steps.live.outputs.pytest_exit_code }}');
   expect(workflow.jobs.live_tests.outputs.outcome).toBe('${{ steps.live.outcome }}');
 });
+
+test.each(Object.entries({
+  REACHABILITY_RESULT: '${{ needs.reachability.result }}',
+  PROBE_OUTCOME: '${{ needs.reachability.outputs.probe_outcome }}',
+  LIVE_RESULT: '${{ needs.live_tests.result }}',
+  LIVE_STATUS: '${{ needs.live_tests.outputs.status }}',
+  LIVE_OUTCOME: '${{ needs.live_tests.outputs.outcome }}',
+  LIVE_STARTED: '${{ needs.live_tests.outputs.execution_started }}',
+  LIVE_PYTEST_EXIT_CODE: '${{ needs.live_tests.outputs.pytest_exit_code }}',
+  UPSTREAM_RELIED_SOURCES: "${{ vars.UPSTREAM_RELIED_SOURCES || 'zlibrary,libgen' }}",
+  REACHABILITY_ATTEMPT: '${{ needs.reachability.outputs.attempt }}',
+  LIVE_ATTEMPT: '${{ needs.live_tests.outputs.attempt }}',
+}))('source-health binds %s to its own producer output', (key, value) => {
+  expect(workflow.jobs.source_health.steps.find(step => step.id === 'health').env[key]).toBe(value);
+});
+
+test('source-health transport cannot change upstream alert results and has a read-only token', () => {
+  expect(workflow.jobs.source_health.permissions).toEqual({ contents: 'read' });
+  for (const [job, name] of [['reachability', 'probe'], ['live_tests', 'live']]) {
+    expect(workflow.jobs[job].outputs.attempt).toBe('${{ github.run_attempt }}');
+    const upload = workflow.jobs[job].steps.find(step => step.with?.name === `upstream-source-health-${name}-\${{ github.run_attempt }}`);
+    expect(upload['continue-on-error']).toBe(true);
+  }
+  expect(workflow.jobs.reachability.outputs.probe_outcome).toBe('${{ steps.probe.outcome }}');
+  expect(workflow.jobs.live_tests.steps.find(step => step.id === 'live_counts')['continue-on-error']).toBe(true);
+});

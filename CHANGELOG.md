@@ -9,6 +9,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Scheduled source-health reports separate unauthenticated reachability from
+  authenticated coverage, bind retained outputs to their job attempts and preserve
+  missing or contradictory evidence. Authenticated report input contains only
+  counts and fixed flags. Probe exception types distinguish transport/server
+  failures from contract changes.
+
 - Source downloads persist decoded chunks without waiting for a full buffer,
   preserving partial tails. New high-water gain accumulates
   across attempts; each 64 KiB credit resets the no-progress count. Repeated

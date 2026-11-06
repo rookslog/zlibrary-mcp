@@ -65,6 +65,8 @@ def inputs(tmp_path):
         "LIVE_STARTED": "true",
         "LIVE_PYTEST_EXIT_CODE": "0",
         "UPSTREAM_RELIED_SOURCES": "zlibrary,libgen",
+        "REACHABILITY_ATTEMPT": "2",
+        "LIVE_ATTEMPT": "2",
     }
     return {"path": tmp_path, "probe": probe, "xml": root, "env": env}
 
@@ -76,11 +78,14 @@ def produce(data, *, raw_probe=None, raw_xml=None, raw_counts=None):
             raw_probe if raw_probe is not None else json.dumps(data["probe"])
         )
     if data["xml"] is not None:
-        (path / "live.xml").write_text(
-            raw_xml
-            if raw_xml is not None
-            else ET.tostring(data["xml"], encoding="unicode")
-        )
+        if isinstance(raw_xml, bytes):
+            (path / "live.xml").write_bytes(raw_xml)
+        else:
+            (path / "live.xml").write_text(
+                raw_xml
+                if raw_xml is not None
+                else ET.tostring(data["xml"], encoding="unicode")
+            )
     counts = subprocess.run(
         [
             sys.executable,
@@ -195,10 +200,10 @@ def test_missing_execution_stays_not_run_or_blocked(
 @pytest.mark.parametrize(
     "job,outcome,state,reason,ran",
     [
-        ("failure", "failure", "failed", "live_collection_error", False),
-        ("cancelled", "failure", "failed", "live_collection_error", False),
-        ("skipped", "failure", "failed", "live_collection_error", False),
-        ("success", "failure", "failed", "live_collection_error", False),
+        ("failure", "failure", "failed", "live_collection_error", None),
+        ("cancelled", "failure", "failed", "live_collection_error", None),
+        ("skipped", "failure", "failed", "live_collection_error", None),
+        ("success", "failure", "failed", "live_collection_error", None),
         ("failure", "", "failed", "execution_not_recorded", None),
         ("success", "success", "failed", "execution_not_recorded", None),
         ("cancelled", "success", "failed", "execution_not_recorded", None),
@@ -292,7 +297,7 @@ def test_preliminary_collection_failure_in_actual_workflow_is_reported_failed(in
     assert (auth["status"], auth["reason"], auth["ran"]) == (
         "failed",
         "live_collection_error",
-        False,
+        None,
     )
     assert auth["counts"] is None and auth["coverage_complete"] is False
 
@@ -592,24 +597,41 @@ def test_failed_case_is_not_double_counted_when_it_also_has_skip_metadata(inputs
 
 
 @pytest.mark.parametrize(
-    "message,reason",
+    "error_types,http_statuses,reason",
     [
-        ("TimeoutError private.invalid", "probe_timeout"),
-        ("TLS refused private.invalid", "probe_tls_failure"),
-        ("DNS error private.invalid", "probe_dns_failure"),
-        ("ConnectError private.invalid", "probe_connection_failed"),
+        (["ReadTimeout"], [], "probe_timeout"),
+        (["ConnectError", "SSLCertVerificationError"], [], "probe_tls_failure"),
+        (["ConnectError", "gaierror"], [], "probe_dns_failure"),
+        (["ConnectError"], [], "probe_connection_failed"),
+        (["ReadError"], [], "probe_connection_failed"),
+        (["RemoteProtocolError"], [], "probe_connection_failed"),
+        (["HTTPStatusError"], [503], "probe_server_error"),
+        (["HTTPStatusError"], [404], "probe_http_failure"),
+        (["ValueError"], [], "probe_contract_failed"),
+        ([], [], "probe_contract_failed"),
+        (["UnknownFutureError"], [], "probe_error_unknown"),
     ],
 )
 def test_probe_reason_categories_are_retained_without_raw_messages(
-    inputs, message, reason
+    inputs, error_types, http_statuses, reason
 ):
     row = inputs["probe"]["results"][0]
-    row.update(ok=False, status="changed", reason=message)
+    row.update(
+        ok=False,
+        status="changed",
+        reason="session timeout private.invalid",
+        error_types=error_types,
+        http_statuses=http_statuses,
+    )
     report = produce(inputs)
     assert (
         report["sources"]["zlibrary"]["reachability"]["checks"][0]["reason"] == reason
     )
     assert "private.invalid" not in json.dumps(report)
+    if reason == "probe_error_unknown":
+        assert (
+            report["sources"]["zlibrary"]["reachability"]["evidence_complete"] is False
+        )
 
 
 def test_report_records_expected_attempt_input_names_and_job_outcomes(inputs):
@@ -741,3 +763,264 @@ def test_missing_execution_marker_and_lost_junit_are_unknown_not_a_claim_of_no_r
     auth = produce(inputs)["sources"]["zlibrary"]["authenticated"]
     assert auth["status"] == "failed" and auth["ran"] is None
     assert auth["counts"] is None and auth["coverage_complete"] is False
+
+
+@pytest.mark.parametrize("status", ["passed", "no_account", "blocked", "unknown"])
+def test_publisher_rerun_does_not_restamp_earlier_live_outputs(inputs, status):
+    if status != "passed":
+        no_live(inputs, status)
+    inputs["env"]["LIVE_ATTEMPT"] = "1"
+    report = produce(inputs)
+    auth = report["sources"]["zlibrary"]["authenticated"]
+    assert (auth["status"], auth["reason"], auth["ran"], auth["counts"]) == (
+        "not_run",
+        "earlier_attempt_outputs",
+        None,
+        None,
+    )
+    assert auth["coverage_complete"] is False
+    assert report["jobs"]["live_tests"] == report["jobs"]["live_step"] == "unknown"
+    assert report["job_attempts"]["live_tests"] == 1
+    assert report["sources"]["libgen"]["reachability"]["status"] == "passed"
+
+
+@pytest.mark.parametrize("attempt", ["1", "", "0", "03", "untrusted", "3"])
+def test_live_only_rerun_cannot_reuse_another_probe_attempt(inputs, attempt):
+    inputs["env"]["REACHABILITY_ATTEMPT"] = attempt
+    report = produce(inputs)
+    assert report["probe_contract_complete"] is False
+    assert (
+        report["jobs"]["reachability"]
+        == report["jobs"]["reachability_step"]
+        == "unknown"
+    )
+    for source in report["sources"].values():
+        reach = source["reachability"]
+        assert (reach["status"], reach["reason"], reach["evidence_complete"]) == (
+            "not_run",
+            "earlier_attempt_outputs",
+            False,
+        )
+        assert all(
+            c["status"] == "not_run" and c["first_seen"] is None
+            for c in reach["checks"]
+        )
+    assert report["sources"]["zlibrary"]["authenticated"]["status"] == "passed"
+
+
+@pytest.mark.parametrize("warning_only_failure", [False, True])
+def test_probe_exit_failure_requires_a_failed_relied_on_row(
+    inputs, warning_only_failure
+):
+    if warning_only_failure:
+        row = next(
+            r for r in inputs["probe"]["results"] if r["source"] == "annas-archive"
+        )
+        row.update(status="changed", ok=False)
+    inputs["env"].update(PROBE_OUTCOME="failure", REACHABILITY_RESULT="failure")
+    report = produce(inputs)
+    assert report["probe_contract_complete"] is False
+    for source in report["sources"].values():
+        reach = source["reachability"]
+        assert (reach["status"], reach["reason"], reach["evidence_complete"]) == (
+            "failed",
+            "contradictory_probe_evidence",
+            False,
+        )
+
+
+def test_failed_probe_severity_precedes_a_blocked_check(inputs):
+    rows = inputs["probe"]["results"]
+    rows[0].update(status="blocked", ok=False, blocked=True)
+    rows[1].update(status="changed", ok=False)
+    inputs["env"].update(PROBE_OUTCOME="failure", REACHABILITY_RESULT="failure")
+    reach = produce(inputs)["sources"]["zlibrary"]["reachability"]
+    assert reach["status"] == "failed" and reach["reason"] == "probe_contract_failed"
+    assert reach["evidence_complete"] is True
+
+
+def test_failed_live_step_cannot_claim_no_account(inputs):
+    no_live(inputs)
+    inputs["env"].update(LIVE_OUTCOME="failure", LIVE_RESULT="failure")
+    auth = produce(inputs)["sources"]["zlibrary"]["authenticated"]
+    assert (
+        auth["status"] == "failed" and auth["reason"] == "contradictory_live_evidence"
+    )
+    assert auth["coverage_complete"] is False
+
+
+def test_future_first_seen_is_not_carried_into_report(inputs):
+    inputs["probe"]["results"][0].update(
+        status="changed", ok=False, first_seen="2099-01-01"
+    )
+    check = produce(inputs)["sources"]["zlibrary"]["reachability"]["checks"][0]
+    assert check["first_seen"] is None
+
+
+def test_passed_probe_row_must_match_current_alert_policy(inputs):
+    inputs["probe"]["results"][0]["relied_on"] = False
+    reach = produce(inputs)["sources"]["zlibrary"]["reachability"]
+    assert reach["status"] == "failed" and reach["reason"] == "invalid_probe_report"
+    assert reach["evidence_complete"] is False
+
+
+@pytest.mark.parametrize(
+    "raw",
+    [
+        b'<?xml version="1.0" encoding="unknown-codec"?><testsuites/>',
+        '<!DOCTYPE x [<!ENTITY x "CANARY-XML">]><testsuites><testsuite><testcase classname="TestRealAuthentication" name="test_authentication_succeeds"/></testsuite></testsuites>'.encode(
+            "utf-16"
+        ),
+    ],
+)
+def test_invalid_xml_counts_preserve_independent_probe_evidence(inputs, raw):
+    report = produce(inputs, raw_xml=raw)
+    assert report["sources"]["zlibrary"]["reachability"]["status"] == "passed"
+    auth = report["sources"]["zlibrary"]["authenticated"]
+    assert auth["status"] == "failed" and auth["reason"] == "invalid_live_evidence"
+
+
+def test_documented_reason_codes_equal_the_emitted_closed_vocabulary():
+    import ast
+    import importlib.util
+
+    spec = importlib.util.spec_from_file_location("health_contract", SCRIPT)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    document = (ROOT / "docs/schemas/source-health-v1.md").read_text()
+    documented = dict(
+        re.findall(
+            r"^\| `([a-z_]+)` \| `(observed|evidence|not_run)` \|", document, re.M
+        )
+    )
+    assert set(documented) == {code.value for code in module.Reason}
+    tree = ast.parse(SCRIPT.read_text())
+    used = {
+        node.attr
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Attribute)
+        and isinstance(node.value, ast.Name)
+        and node.value.id == "Reason"
+    }
+    assert used == set(module.Reason.__members__)
+
+
+def test_complete_synthetic_example_matches_the_real_producer(inputs):
+    inputs["xml"] = None
+    inputs["env"].update(
+        LIVE_STATUS="no_account", LIVE_STARTED="", LIVE_PYTEST_EXIT_CODE=""
+    )
+    example = json.loads(
+        (ROOT / "docs/schemas/source-health-v1.example.json").read_text()
+    )
+    assert produce(inputs) == example
+
+
+@pytest.mark.parametrize(
+    "corruption",
+    [
+        "extra-text",
+        "extra-envelope",
+        "extra-count-key",
+        "missing-count-key",
+        "bool-version",
+        "anchor-without-presence",
+        "unpassed-anchor-without-skips",
+        "bool-count",
+        "negative-count",
+        "inconsistent-total",
+        "non-bool-flag",
+        "failure-flag",
+        "anchor-without-pass",
+        "unknown-version",
+        "unknown-problem",
+        "duplicate-key",
+        "malformed",
+        "oversize",
+    ],
+)
+def test_corrupt_counts_input_never_establishes_authenticated_pass(inputs, corruption):
+    value = {
+        "schema_version": 1,
+        "problem": None,
+        "evidence": {
+            "counts": {"total": 1, "passed": 1, "failed": 0, "skipped": 0},
+            "problems": False,
+            "outside_case_problems": False,
+            "anchor_present": True,
+            "anchor_passed": True,
+        },
+    }
+    evidence, counts = value["evidence"], value["evidence"]["counts"]
+    if corruption == "extra-text":
+        evidence["text"] = "canary-test-output"
+    if corruption == "extra-envelope":
+        value["text"] = "canary-test-output"
+    if corruption == "extra-count-key":
+        counts["text"] = "canary-test-output"
+    if corruption == "missing-count-key":
+        counts.pop("skipped")
+    if corruption == "bool-version":
+        value["schema_version"] = True
+    if corruption == "anchor-without-presence":
+        evidence["anchor_present"] = False
+    if corruption == "unpassed-anchor-without-skips":
+        evidence["anchor_passed"] = False
+    if corruption == "bool-count":
+        counts["passed"] = True
+    if corruption == "negative-count":
+        counts.update(total=0, passed=-1, skipped=1)
+    if corruption == "inconsistent-total":
+        counts["total"] = 3
+    if corruption == "non-bool-flag":
+        evidence["anchor_present"] = 1
+    if corruption == "failure-flag":
+        evidence["problems"] = True
+    if corruption == "anchor-without-pass":
+        counts.update(passed=0, skipped=1)
+    if corruption == "unknown-version":
+        value["schema_version"] = 2
+    if corruption == "unknown-problem":
+        value.update(problem="future", evidence=None)
+    raw = json.dumps(value)
+    if corruption == "duplicate-key":
+        raw = raw.replace(
+            '"schema_version": 1', '"schema_version": 1, "schema_version": 1'
+        )
+    if corruption == "malformed":
+        raw = "{"
+    if corruption == "oversize":
+        raw = " " * (5 * 1024 * 1024 + 1)
+    report = produce(inputs, raw_counts=raw)
+    auth = report["sources"]["zlibrary"]["authenticated"]
+    assert (auth["status"], auth["reason"], auth["counts"]) == (
+        "failed",
+        "invalid_live_evidence",
+        None,
+    )
+    assert auth["coverage_complete"] is False
+    assert report["sources"]["libgen"]["reachability"]["status"] == "passed"
+    assert "canary-test-output" not in json.dumps(report)
+
+
+@pytest.mark.parametrize("status", ["passed", "failed", "skipped"])
+def test_completed_suite_status_without_marker_does_not_establish_nonexecution(
+    inputs, status
+):
+    no_live(inputs, status)
+    inputs["env"].update(LIVE_RESULT="skipped", LIVE_OUTCOME="skipped")
+    auth = produce(inputs)["sources"]["zlibrary"]["authenticated"]
+    assert (auth["status"], auth["reason"], auth["ran"]) == (
+        "failed",
+        "execution_not_recorded",
+        None,
+    )
+
+
+@pytest.mark.parametrize("source", [[], {}, None, 7])
+def test_failed_probe_with_malformed_source_is_evidence_failure(inputs, source):
+    inputs["probe"]["results"][0]["source"] = source
+    inputs["env"].update(PROBE_OUTCOME="failure", REACHABILITY_RESULT="failure")
+    report = produce(inputs)
+    assert report["probe_contract_complete"] is False
+    assert report["sources"]["zlibrary"]["reachability"]["status"] == "failed"

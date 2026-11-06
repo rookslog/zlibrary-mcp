@@ -3,11 +3,59 @@
 
 import argparse
 from datetime import date, datetime, timezone
+from enum import Enum
 import json
 import os
 from pathlib import Path
 import re
 import sys
+
+
+class Reason(str, Enum):
+    """Closed reason vocabulary shared with the version-1 reader contract."""
+
+    ALL_LIVE_TESTS_SKIPPED = "all_live_tests_skipped"
+    AUTHENTICATION_CHECK_SKIPPED = "authentication_check_skipped"
+    CONTRADICTORY_LIVE_EVIDENCE = "contradictory_live_evidence"
+    CONTRADICTORY_PROBE_EVIDENCE = "contradictory_probe_evidence"
+    DUPLICATE_PROBE_CHECK = "duplicate_probe_check"
+    EARLIER_ATTEMPT_OUTPUTS = "earlier_attempt_outputs"
+    EMPTY_LIVE_EVIDENCE = "empty_live_evidence"
+    EXECUTION_NOT_RECORDED = "execution_not_recorded"
+    INVALID_ALERT_POLICY = "invalid_alert_policy"
+    INVALID_LIVE_EVIDENCE = "invalid_live_evidence"
+    INVALID_LIVE_STATUS = "invalid_live_status"
+    INVALID_PROBE_REPORT = "invalid_probe_report"
+    LIVE_COLLECTION_ERROR = "live_collection_error"
+    LIVE_JOB_CANCELLED = "live_job_cancelled"
+    LIVE_JOB_INCOMPLETE = "live_job_incomplete"
+    LIVE_JOB_SKIPPED = "live_job_skipped"
+    LIVE_STEP_NOT_STARTED = "live_step_not_started"
+    LIVE_SUITE_FAILED = "live_suite_failed"
+    LIVE_SUITE_PARTIALLY_COVERED = "live_suite_partially_covered"
+    LIVE_SUITE_PASSED = "live_suite_passed"
+    MISSING_LIVE_EVIDENCE = "missing_live_evidence"
+    MISSING_PROBE_CHECK = "missing_probe_check"
+    MISSING_PROBE_REPORT = "missing_probe_report"
+    NO_AUTHENTICATED_SUITE_CONFIGURED = "no_authenticated_suite_configured"
+    NO_CI_ACCOUNT_CONFIGURED = "no_ci_account_configured"
+    PROBE_CONNECTION_FAILED = "probe_connection_failed"
+    PROBE_CONTRACT_FAILED = "probe_contract_failed"
+    PROBE_DNS_FAILURE = "probe_dns_failure"
+    PROBE_ERROR_UNKNOWN = "probe_error_unknown"
+    PROBE_EXECUTION_NOT_RECORDED = "probe_execution_not_recorded"
+    PROBE_HTTP_FAILURE = "probe_http_failure"
+    PROBE_PASSED = "probe_passed"
+    PROBE_REFUSED = "probe_refused"
+    PROBE_SERVER_ERROR = "probe_server_error"
+    PROBE_STATE_UNKNOWN = "probe_state_unknown"
+    PROBE_STEP_NOT_STARTED = "probe_step_not_started"
+    PROBE_TIMEOUT = "probe_timeout"
+    PROBE_TLS_FAILURE = "probe_tls_failure"
+    REACHABILITY_NOT_COMPLETED = "reachability_not_completed"
+    REQUIRED_AUTHENTICATION_CHECK_MISSING = "required_authentication_check_missing"
+    UNEXPECTED_PROBE_CHECK = "unexpected_probe_check"
+
 
 EXPECTED_CHECKS = {
     "zlibrary": ["zlibrary:eapi/info/domains", "zlibrary:eapi/book/search"],
@@ -56,20 +104,68 @@ def probe_input(path):
 
 def probe_reason(row):
     # Never copy upstream messages: they can contain URLs, keys or account data.
-    text = str(row.get("reason", "")).lower()
     if row["status"] == "passed":
-        return "probe_passed"
+        return Reason.PROBE_PASSED
     if row["status"] == "blocked":
-        return "probe_refused"
-    for needles, reason in [
-        (("timeout", "timed out", "deadline"), "probe_timeout"),
-        (("ssl", "tls"), "probe_tls_failure"),
-        (("dns", "gaierror", "could not resolve"), "probe_dns_failure"),
-        (("connecterror", "connection refused"), "probe_connection_failed"),
+        return Reason.PROBE_REFUSED
+    types, statuses = row.get("error_types", []), row.get("http_statuses", [])
+    if (
+        not isinstance(types, list)
+        or any(not isinstance(t, str) for t in types)
+        or not isinstance(statuses, list)
+        or any(type(s) is not int or not 100 <= s <= 599 for s in statuses)
+    ):
+        return Reason.PROBE_ERROR_UNKNOWN
+    types = set(types)
+    for names, reason in [
+        ({"gaierror"}, Reason.PROBE_DNS_FAILURE),
+        ({"SSLError", "SSLCertVerificationError"}, Reason.PROBE_TLS_FAILURE),
+        (
+            {
+                "TimeoutError",
+                "TimeoutException",
+                "ConnectTimeout",
+                "ReadTimeout",
+                "WriteTimeout",
+                "PoolTimeout",
+            },
+            Reason.PROBE_TIMEOUT,
+        ),
+        (
+            {
+                "ConnectError",
+                "ReadError",
+                "WriteError",
+                "CloseError",
+                "RemoteProtocolError",
+                "LocalProtocolError",
+                "NetworkError",
+                "TransportError",
+                "ProxyError",
+            },
+            Reason.PROBE_CONNECTION_FAILED,
+        ),
     ]:
-        if any(needle in text for needle in needles):
+        if names & types:
             return reason
-    return "probe_contract_failed"
+    if "HTTPStatusError" in types:
+        if not statuses:
+            return Reason.PROBE_ERROR_UNKNOWN
+        return (
+            Reason.PROBE_SERVER_ERROR
+            if any(s >= 500 for s in statuses)
+            else Reason.PROBE_HTTP_FAILURE
+        )
+    if types - {
+        "ValueError",
+        "KeyError",
+        "TypeError",
+        "AssertionError",
+        "JSONDecodeError",
+        "AllSourcesFailedError",
+    }:
+        return Reason.PROBE_ERROR_UNKNOWN
+    return Reason.PROBE_CONTRACT_FAILED
 
 
 def reachability(source, rows, problem, job, outcome, relied, today):
@@ -77,33 +173,37 @@ def reachability(source, rows, problem, job, outcome, relied, today):
     checks, missing = [], []
     for name in expected:
         matches = [row for row in rows or [] if row.get("name") == name]
-        state, reason, first_seen = "failed", "invalid_probe_report", None
+        state, reason, first_seen = "failed", Reason.INVALID_PROBE_REPORT, None
         if not matches:
             missing.append(name)
-        if problem == "missing":
+        if problem == "attempt":
+            state, reason = "not_run", Reason.EARLIER_ATTEMPT_OUTPUTS
+        elif problem == "contradictory":
+            reason = Reason.CONTRADICTORY_PROBE_EVIDENCE
+        elif problem == "missing":
             unstarted = outcome == "skipped" or (
                 job in ("cancelled", "skipped")
                 and outcome not in ("success", "failure")
             )
             state = "not_run" if unstarted else "failed"
             reason = (
-                "probe_step_not_started"
+                Reason.PROBE_STEP_NOT_STARTED
                 if outcome == "skipped"
-                else "reachability_not_completed"
+                else Reason.REACHABILITY_NOT_COMPLETED
                 if unstarted
-                else "missing_probe_report"
+                else Reason.MISSING_PROBE_REPORT
             )
         elif problem:
             pass
         elif job in ("cancelled", "skipped", "unknown"):
             state = "failed" if outcome == "failure" else "not_run"
-            reason = "reachability_not_completed"
+            reason = Reason.REACHABILITY_NOT_COMPLETED
         elif outcome not in ("success", "failure"):
-            reason = "probe_execution_not_recorded"
+            reason = Reason.PROBE_EXECUTION_NOT_RECORDED
         elif not matches:
-            reason = "missing_probe_check"
+            reason = Reason.MISSING_PROBE_CHECK
         elif len(matches) != 1:
-            reason = "duplicate_probe_check"
+            reason = Reason.DUPLICATE_PROBE_CHECK
         else:
             row = matches[0]
             status = row.get("status")
@@ -168,16 +268,17 @@ def reachability(source, rows, problem, job, outcome, relied, today):
         and not any(
             check["reason"]
             in {
-                "invalid_probe_report",
-                "duplicate_probe_check",
-                "probe_execution_not_recorded",
+                Reason.INVALID_PROBE_REPORT,
+                Reason.DUPLICATE_PROBE_CHECK,
+                Reason.PROBE_EXECUTION_NOT_RECORDED,
+                Reason.PROBE_ERROR_UNKNOWN,
             }
             for check in checks
         )
     )
     return {
         "status": "failed" if unexpected else worst["status"],
-        "reason": "unexpected_probe_check" if unexpected else worst["reason"],
+        "reason": Reason.UNEXPECTED_PROBE_CHECK if unexpected else worst["reason"],
         "evidence_complete": bool(complete),
         "expected_checks": expected,
         "missing_checks": missing,
@@ -260,15 +361,22 @@ def live_input(path):
 
 def authenticated(evidence, problem, status, job, outcome, started, exit_code):
     marked = started == "true"
-    ran = True if marked and evidence else None if marked else False
-    if not marked and (evidence or status in ("passed", "failed", "skipped")):
-        ran = None
-    if job == "cancelled" and outcome not in ("skipped", "failure") and not marked:
-        ran = None
+    ran = True if marked and evidence else None
+    if (
+        not marked
+        and not evidence
+        and status not in ("passed", "failed", "skipped")
+        and (
+            outcome == "skipped"
+            or (job == "skipped" and outcome not in ("success", "failure"))
+            or (status in ("no_account", "blocked", "unknown") and outcome == "success")
+        )
+    ):
+        ran = False
     counts = evidence["counts"] if evidence else None
     result = {
         "status": "failed",
-        "reason": "invalid_live_status",
+        "reason": Reason.INVALID_LIVE_STATUS,
         "ran": ran,
         "scope": "zlibrary:python-integration",
         "counts": counts,
@@ -284,57 +392,62 @@ def authenticated(evidence, problem, status, job, outcome, started, exit_code):
             "coverage_complete": complete,
         }
 
+    if problem == "attempt":
+        result.update(ran=None, counts=None)
+        return finish("not_run", Reason.EARLIER_ATTEMPT_OUTPUTS)
     if not marked and (evidence or status in ("passed", "failed", "skipped")):
-        return finish("failed", "execution_not_recorded")
+        return finish("failed", Reason.EXECUTION_NOT_RECORDED)
     if not marked and not status and outcome == "failure" and problem == "missing":
-        return finish("failed", "live_collection_error")
+        return finish("failed", Reason.LIVE_COLLECTION_ERROR)
     if job == "cancelled" and (marked or outcome not in ("success", "failure")):
-        return finish("not_run", "live_job_cancelled")
+        return finish("not_run", Reason.LIVE_JOB_CANCELLED)
     if job == "skipped" and (marked or outcome not in ("success", "failure")):
-        return finish("not_run", "live_job_skipped")
+        return finish("not_run", Reason.LIVE_JOB_SKIPPED)
     if status in ("no_account", "blocked", "unknown"):
         if marked or problem != "missing" or outcome != "success":
-            return finish("failed", "contradictory_live_evidence")
+            return finish("failed", Reason.CONTRADICTORY_LIVE_EVIDENCE)
         return finish(
             *{
-                "no_account": ("no_account", "no_ci_account_configured"),
-                "blocked": ("blocked", "probe_refused"),
-                "unknown": ("not_run", "probe_state_unknown"),
+                "no_account": ("no_account", Reason.NO_CI_ACCOUNT_CONFIGURED),
+                "blocked": ("blocked", Reason.PROBE_REFUSED),
+                "unknown": ("not_run", Reason.PROBE_STATE_UNKNOWN),
             }[status]
         )
     if not marked:
         if problem != "missing" or outcome != "skipped":
             result["ran"] = None
-            return finish("failed", "execution_not_recorded")
-        return finish("not_run", "live_step_not_started")
+            return finish("failed", Reason.EXECUTION_NOT_RECORDED)
+        return finish("not_run", Reason.LIVE_STEP_NOT_STARTED)
     if problem:
         return finish(
             "failed",
             {
-                "missing": "missing_live_evidence",
-                "invalid": "invalid_live_evidence",
-                "empty": "empty_live_evidence",
+                "missing": Reason.MISSING_LIVE_EVIDENCE,
+                "invalid": Reason.INVALID_LIVE_EVIDENCE,
+                "empty": Reason.EMPTY_LIVE_EVIDENCE,
             }[problem],
         )
     if status not in ("passed", "failed", "skipped"):
-        return finish("failed", "invalid_live_status")
+        return finish("failed", Reason.INVALID_LIVE_STATUS)
     if evidence["outside_case_problems"]:
-        return finish("failed", "live_collection_error")
+        return finish("failed", Reason.LIVE_COLLECTION_ERROR)
     if exit_code != "0" or evidence["problems"] or status == "failed":
-        return finish("failed", "live_suite_failed")
+        return finish("failed", Reason.LIVE_SUITE_FAILED)
     if job != "success" or outcome != "success":
-        return finish("failed", "live_job_incomplete")
+        return finish("failed", Reason.LIVE_JOB_INCOMPLETE)
     if counts["skipped"] == counts["total"]:
-        return finish("not_run", "all_live_tests_skipped")
+        return finish("not_run", Reason.ALL_LIVE_TESTS_SKIPPED)
     if not evidence["anchor_present"]:
-        return finish("failed", "required_authentication_check_missing")
+        return finish("failed", Reason.REQUIRED_AUTHENTICATION_CHECK_MISSING)
     if not evidence["anchor_passed"]:
-        return finish("not_run", "authentication_check_skipped")
+        return finish("not_run", Reason.AUTHENTICATION_CHECK_SKIPPED)
     if status != "passed":
-        return finish("failed", "contradictory_live_evidence")
+        return finish("failed", Reason.CONTRADICTORY_LIVE_EVIDENCE)
     return finish(
         "passed",
-        "live_suite_partially_covered" if counts["skipped"] else "live_suite_passed",
+        Reason.LIVE_SUITE_PARTIALLY_COVERED
+        if counts["skipped"]
+        else Reason.LIVE_SUITE_PASSED,
         not counts["skipped"],
     )
 
@@ -385,6 +498,38 @@ def build_report(probe, live, metadata, generated_at):
     }
     rows, probe_problem = probe_input(probe)
     evidence, live_problem = live_input(live)
+    job_attempts = {}
+    for job, key, step in (
+        ("reachability", "REACHABILITY_ATTEMPT", "reachability_step"),
+        ("live_tests", "LIVE_ATTEMPT", "live_step"),
+    ):
+        value = metadata.get(key, "")
+        job_attempts[job] = int(value) if re.fullmatch(r"[1-9][0-9]*", value) else None
+        if job_attempts[job] != int(attempt):
+            jobs[job] = jobs[step] = "unknown"
+            if job == "reachability":
+                rows, probe_problem = None, "attempt"
+            else:
+                evidence, live_problem = None, "attempt"
+    # A failed probe exits for relied-on failures only. An otherwise valid report
+    # with no such row contradicts that outcome; warning-only rows cannot explain it.
+    if (
+        not probe_problem
+        and jobs["reachability_step"] == "failure"
+        and not any(
+            isinstance(row.get("source"), str)
+            and row.get("source") in relied
+            and row.get("name") in EXPECTED_CHECKS.get(row.get("source"), [])
+            and row.get("relied_on") is True
+            and row.get("ok") is False
+            and (
+                (row.get("status") == "blocked" and row.get("blocked") is True)
+                or (row.get("status") == "changed" and row.get("blocked") is False)
+            )
+            for row in rows
+        )
+    ):
+        probe_problem = "contradictory"
     auth = authenticated(
         evidence,
         live_problem,
@@ -396,7 +541,7 @@ def build_report(probe, live, metadata, generated_at):
     )
     no_suite = {
         "status": "not_run",
-        "reason": "no_authenticated_suite_configured",
+        "reason": Reason.NO_AUTHENTICATED_SUITE_CONFIGURED,
         "ran": False,
         "scope": None,
         "counts": None,
@@ -423,10 +568,12 @@ def build_report(probe, live, metadata, generated_at):
         for source in sources.values():
             source["alert_policy"] = "unknown"
             source["reachability"].update(
-                status="failed", reason="invalid_alert_policy", evidence_complete=False
+                status="failed",
+                reason=Reason.INVALID_ALERT_POLICY,
+                evidence_complete=False,
             )
             for check in source["reachability"]["checks"]:
-                check.update(status="failed", reason="invalid_alert_policy")
+                check.update(status="failed", reason=Reason.INVALID_ALERT_POLICY)
     expected = {name for names in EXPECTED_CHECKS.values() for name in names}
     return {
         "schema_version": 1,
@@ -435,6 +582,7 @@ def build_report(probe, live, metadata, generated_at):
         "expected_sources": list(EXPECTED_CHECKS),
         "policy_valid": policy_valid,
         "jobs": jobs,
+        "job_attempts": job_attempts,
         "inputs": {
             "probe_artifact": f"upstream-source-health-probe-{attempt}",
             "live_artifact": f"upstream-source-health-live-{attempt}",
@@ -477,8 +625,10 @@ def main():
         "GITHUB_SHA",
         "GITHUB_EVENT_NAME",
         "REACHABILITY_RESULT",
+        "REACHABILITY_ATTEMPT",
         "PROBE_OUTCOME",
         "LIVE_RESULT",
+        "LIVE_ATTEMPT",
         "LIVE_STATUS",
         "LIVE_OUTCOME",
         "LIVE_STARTED",

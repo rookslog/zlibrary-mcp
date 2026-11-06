@@ -137,14 +137,17 @@ over HTTPS on the same trusted hosts as fast download. The cookie stays in an An
 resident Python worker's memory and is reused across searches until expiry or
 refusal. One shared refresh is allowed per refused session; failed/rejected
 sign-ins back off for 60 seconds, including across worker restarts in the same
-Node process. Anonymous HTTP search remains the fallback. Result anchors take
+Node process. A worker failure with a search pending starts a conservative
+60-second sign-in backoff even when the POST outcome is unknown. Anonymous
+HTTP search remains the fallback. Result anchors take
 priority over challenge words in book titles. A visible, scoped English
 “No files found.” marker returns empty results on anonymous and member paths.
 The marker comes from published site source and a synthetic fixture; we have
 not observed it on a live page. Other rowless pages report “Unrecognised page”
 rather than empty results, including for anonymous users.
-Member page redirects are limited to five hops within the configured HTTPS
-origin. `none` also covers an unattempted, cancelled or transport-failed sign-in;
+Page redirects with a configured key are limited to five hops within the
+configured origin, including before the session becomes active.
+`none` also covers an unattempted, cancelled or transport-failed sign-in;
 `rejected` means the provider refused sign-in/session access, not necessarily
 that the key is invalid. Transport
 debug logging is suppressed while a member adapter is alive to avoid cookie

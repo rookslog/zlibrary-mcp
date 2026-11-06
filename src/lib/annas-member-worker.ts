@@ -46,6 +46,8 @@ export class AnnasMemberWorker {
   }
 
   private fail(): void {
+    // A pending call may have posted before its final status reply was delivered.
+    if (this.pending.size) this.retryAt = Math.max(this.retryAt, Date.now() + 60_000);
     this.state = 'none';
     for (const entry of this.pending.values()) {
       entry.cleanup();

@@ -122,6 +122,18 @@ async def test_lazy_success_and_session_reuse(make_adapter):
     assert adapter.member_status()["member_session"] == "none"
 
 
+async def test_cookie_only_metadata_echo_is_refused(make_adapter):
+    fake = FakeSite()
+
+    async def site(request):
+        if request.method == "POST":
+            return await fake(request)
+        return httpx.Response(200, text=f'<a href="/md5/abc">{COOKIE}</a>')
+
+    with pytest.raises(SourceError, match="Credential echo omitted"):
+        await make_adapter(site).search("books")
+
+
 @pytest.mark.parametrize(
     "mode,expected", [("reject", "rejected"), ("error", "none"), ("redirect", "none")]
 )
@@ -223,6 +235,23 @@ async def test_rejected_login_can_retry_after_cooldown(make_adapter, monkeypatch
     await adapter.search("books")
     assert site.posts == 2
     assert adapter.member_status()["member_session"] == "active"
+
+
+async def test_rejected_login_waits_about_sixty_seconds(make_adapter, monkeypatch):
+    now = [100.0]
+    monkeypatch.setattr(
+        "lib.sources.annas.time", SimpleNamespace(monotonic=lambda: now[0])
+    )
+    site = FakeSite(login="reject")
+    adapter = make_adapter(site)
+    await adapter.search("books")
+    assert site.posts == 1
+    now[0] = 159.0
+    await adapter.search("books")
+    assert site.posts == 1
+    now[0] = 161.0
+    await adapter.search("books")
+    assert site.posts == 2
 
 
 async def test_debug_transport_logs_cannot_emit_credentials(make_adapter, caplog):

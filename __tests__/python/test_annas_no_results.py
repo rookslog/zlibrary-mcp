@@ -49,6 +49,7 @@ async def test_published_synthetic_no_files_page_is_empty_success(make_adapter, 
         ),
         FORM.format(MARKER.replace("No files found.", "no files found.")),
         FORM.format(MARKER.replace("<span class=", "<span hidden class=")),
+        FORM.format(MARKER.replace('class="font-bold"', 'class="other"')),
     ],
     ids=[
         "link",
@@ -59,6 +60,7 @@ async def test_published_synthetic_no_files_page_is_empty_success(make_adapter, 
         "extra-text",
         "wrong-case",
         "hidden-marker",
+        "wrong-span-class",
     ],
 )
 async def test_marker_outside_empty_state_context_is_unrecognised(
@@ -79,6 +81,7 @@ async def test_marker_outside_empty_state_context_is_unrecognised(
         ('<section style="display: none !important">', "</section>"),
         ('<section style="visibility: hidden">', "</section>"),
         ("<template>", "</template>"),
+        ("<noscript>", "</noscript>"),
     ],
     ids=[
         "hidden-attribute",
@@ -88,6 +91,7 @@ async def test_marker_outside_empty_state_context_is_unrecognised(
         "display-none",
         "visibility-hidden",
         "template",
+        "noscript",
     ],
 )
 async def test_hidden_marker_is_not_empty_success(make_adapter, key, opening, closing):

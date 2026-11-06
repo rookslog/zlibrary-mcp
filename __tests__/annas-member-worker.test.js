@@ -9,7 +9,7 @@ const owner = (mode = 'ok') => new AnnasMemberWorker(async () => spawn(
   { stdio: ['pipe', 'pipe', 'pipe'] },
 ));
 
-test('S1 resident preflight recovers after transient DNS failure and rechecks cached success', async () => {
+test('resident preflight recovers after transient DNS failure and rechecks cached success', async () => {
   const worker = owner('preflight');
   try {
     await expect(worker.search({ query: 'books' })).rejects.toMatchObject({ context: { details: { reason: 'dns_failure' } } });
@@ -18,10 +18,19 @@ test('S1 resident preflight recovers after transient DNS failure and rechecks ca
   } finally { await worker.close(); }
 });
 
-test('S1 resident HTTP DNS uses the bounded daemon resolver', async () => {
+test('resident HTTP DNS uses the bounded daemon resolver', async () => {
   const worker = owner('dns-hang');
   try {
     await expect(worker.search({ query: 'dns-hang' })).rejects.toMatchObject({ context: { details: { reason: 'dns_timeout' } } });
+  } finally { await worker.close(); }
+});
+
+test('resident preflight recovers after TCP refusal without restarting', async () => {
+  const worker = owner('preflight-tcp');
+  try {
+    await expect(worker.search({ query: 'books' })).rejects.toMatchObject({ context: { details: { reason: 'connect_refused' } } });
+    expect((await worker.search({ query: 'books' })).books[0].title).toBe('Sign-ins 1 DNS 2');
+    expect((await worker.search({ query: 'books' })).books[0].title).toBe('Sign-ins 1 DNS 3');
   } finally { await worker.close(); }
 });
 
@@ -115,7 +124,7 @@ test('malformed worker output is never relayed as an error or retained as sessio
   } finally { await worker.close(); }
 });
 
-test('S7 generic worker exception never crosses pipes with canaries', async () => {
+test('generic worker exception never crosses pipes with canaries', async () => {
   const worker = owner('generic');
   try {
     const error = await worker.search({ query: 'generic-canary' }).catch(e => e);
@@ -125,7 +134,7 @@ test('S7 generic worker exception never crosses pipes with canaries', async () =
   } finally { await worker.close(); }
 });
 
-test('S8 stdin is UTF-8 even under a legacy Python stdio encoding', async () => {
+test('stdin is UTF-8 even under a legacy Python stdio encoding', async () => {
   const worker = new AnnasMemberWorker(async () => spawn('.venv/bin/python', ['__tests__/fixtures/annas-member-worker.py', 'unicode'], { stdio: ['pipe', 'pipe', 'pipe'], env: { ...process.env, PYTHONIOENCODING: 'cp1252' } }));
   try {
     for (const query of ['Müller', 'Ángel']) {
@@ -134,7 +143,7 @@ test('S8 stdin is UTF-8 even under a legacy Python stdio encoding', async () => 
   } finally { await worker.close(); }
 });
 
-test('S9 rejection cooldown survives a worker crash in the Node owner', async () => {
+test('rejection cooldown survives a worker crash in the Node owner', async () => {
   let child;
   const worker = new AnnasMemberWorker(async () => {
     child = spawn('.venv/bin/python', ['__tests__/fixtures/annas-member-worker.py', 'reject'], { stdio: ['pipe', 'pipe', 'pipe'] });
@@ -147,7 +156,7 @@ test('S9 rejection cooldown survives a worker crash in the Node owner', async ()
   } finally { await worker.close(); }
 });
 
-test('S10 cancelled refresh publishes none and retains cooldown', async () => {
+test('cancelled refresh publishes none and retains cooldown', async () => {
   let started, status;
   const signinStarted = new Promise(resolve => { started = resolve; });
   const statusSeen = new Promise(resolve => { status = resolve; });
@@ -179,7 +188,7 @@ test('S10 cancelled refresh publishes none and retains cooldown', async () => {
   } finally { clearTimeout(timer); await worker.close(); }
 });
 
-test('N1 overload returns immediately instead of dropping request 65', async () => {
+test('overload returns immediately instead of dropping request 65', async () => {
   const worker = owner();
   const controllers = Array.from({ length: 64 }, () => new AbortController());
   let pending = [];

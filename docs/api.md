@@ -270,8 +270,12 @@ existing HTTP-base behavior is unchanged. A response setting `aa_account_id2` ac
 Search reuses it across MCP calls; one shared re-sign-in follows a refusal,
 with no retry loop. Rejected/failed sign-ins use a 60-second cooldown; Node
 remembers the private retry deadline across child crashes and passes it to the
-next worker. Cancellation publishes a status-only private update. Ordinary HTTP
-search remains the fallback. Member pages follow at most five same-origin hops;
+next worker. A worker failure while a search is pending also starts a conservative
+60-second sign-in backoff, covering a POST with no delivered outcome or an
+oversized reply. This can defer a valid sign-in even if the POST never ran.
+Cancellation publishes a status-only private update. Ordinary HTTP
+search remains the fallback. Key-configured pages follow at most five same-origin hops,
+even when an anonymous request is in flight as a member session becomes active;
 other scheme/host/port targets are refused. Result anchors take priority over
 challenge phrases. A rowless non-challenge page returns `[]` on anonymous and
 member paths when `form.js-search-form[role='search']` contains a visible
@@ -281,14 +285,21 @@ member paths when `form.js-search-form[role='search']` contains a visible
 this is static HTML recognition, not computed browser CSS.
 The marker is source-derived: published renderer `search.html:450-464` and
 English `messages.po:5261-5266` at revision
-`d26b35249a5a5241dfe2ce512dbf0d6502999c5e`. Its test fixture is synthetic;
+`d26b35249a5a5241dfe2ce512dbf0d6502999c5e`. That snapshot is dated 2024-12-16,
+and surrounding live markup has changed since it. Its test fixture is synthetic;
 we have not observed the marker on a live page. Other rowless pages return an
 attributed “Unrecognised page” error, including for anonymous users.
+The renderer warns that a slow search server can report no files incorrectly,
+so a recognized empty result can still be a false negative.
 Recognized vendor challenge pages remain errors. Anna's
 `get_book` continues to return the held search row; it performs no detail-page
 request. No key is needed for anonymous search, and no new download route is added.
 Transport debug logs are suppressed during the member adapter's lifetime because
-HTTP response headers can contain cookies. Real membership acceptance and
+HTTP response headers can contain cookies.
+HTTP response failures retain a sterile `HTTP NNN` structured detail, including
+429 and 5xx statuses, so dependency-health classification and breaker accounting
+continue after member sign-in. Raw request, body and cookie data stay omitted.
+Real membership acceptance and
 challenge avoidance have not been tested. Each resident search resets preflight
 cache verdicts and runs under the bounded resolver. Hung libc lookups can retain
 daemon threads until worker exit; per-wait bounds do not impose a global retained

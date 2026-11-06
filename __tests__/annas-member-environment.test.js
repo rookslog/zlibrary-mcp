@@ -11,7 +11,7 @@ jest.unstable_mockModule('node:child_process', () => ({
 }));
 const { AnnasMemberWorker } = await import('../dist/lib/annas-member-worker.js');
 
-test('N3 member child retains its key but excludes unrelated Z-Library credentials', async () => {
+test('member child retains its key but excludes unrelated Z-Library credentials', async () => {
   const prior = { ...process.env };
   Object.assign(process.env, { ZLIBRARY_EMAIL: 'fixture-zlib-email', ZLIBRARY_PASSWORD: 'fixture-zlib-password', ANNAS_SECRET_KEY: 'fixture-member-key' });
   const worker = new AnnasMemberWorker();

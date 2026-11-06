@@ -12,6 +12,7 @@ import httpx
 from lib.annas_member_worker import serve
 from lib.sources.annas import AnnasArchiveAdapter
 from lib.sources.config import SourceConfig
+from lib.sources.errors import SourceError
 
 posts = 0
 dns_calls = 0
@@ -22,11 +23,15 @@ async def site(request):
     global posts
     if request.method == "POST":
         posts += 1
+        if mode in ("reject-slow", "slow-signin", "reject-large"):
+            print("SIGNIN_POST", file=sys.stderr, flush=True)
+        if mode == "slow-signin":
+            await asyncio.sleep(10)
         if mode == "refresh-slow" and posts > 1:
             print("SIGNIN_STARTED", file=sys.stderr, flush=True)
             await asyncio.sleep(10)
         await asyncio.sleep(0.01)
-        if mode == "reject":
+        if mode in ("reject", "reject-slow", "reject-large"):
             return httpx.Response(200, text="<form>Sign in</form>")
         return httpx.Response(
             302,
@@ -36,6 +41,19 @@ async def site(request):
             },
         )
     query = request.url.params.get("q")
+    if mode == "reject-slow" and query == "wait":
+        print("GET_STARTED", file=sys.stderr, flush=True)
+    if mode == "reject-large" and query == "oversize":
+        title = "x" * 90000
+        return httpx.Response(
+            200,
+            text="".join(f'<a href="/md5/{i:032x}">{title}</a>' for i in range(50)),
+        )
+    if query and query.startswith("http-status-"):
+        return httpx.Response(
+            int(query.rsplit("-", 1)[1]),
+            text="worker-key-canary worker-cookie-canary",
+        )
     if query == "generic-canary":
         raise RuntimeError("worker-key-canary worker-cookie-canary")
     if query == "dns-hang":
@@ -51,7 +69,7 @@ async def site(request):
     return httpx.Response(
         200,
         text=f'<a href="/md5/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa">Sign-ins {posts}'
-        + (f" DNS {dns_calls}" if mode == "preflight" else "")
+        + (f" DNS {dns_calls}" if mode in ("preflight", "preflight-tcp") else "")
         + (f" Query {query}" if mode == "unicode" else "")
         + "</a>",
     )
@@ -68,22 +86,39 @@ adapter._client = httpx.AsyncClient(
 async def main():
     original = socket.getaddrinfo
     server = None
-    if mode == "preflight":
+    if mode in ("preflight", "preflight-tcp"):
         listener = socket.socket()
         listener.bind(("127.0.0.1", 0))
-        listener.listen()
-        server = await asyncio.start_server(lambda r, w: w.close(), sock=listener)
+        if mode == "preflight":
+            listener.listen()
+            server = await asyncio.start_server(lambda r, w: w.close(), sock=listener)
         adapter.config.preflight_enabled = True
         adapter.port = listener.getsockname()[1]
 
         def resolve(host, port, *args, **kwargs):
             global dns_calls
             dns_calls += 1
-            if dns_calls == 1:
+            if mode == "preflight" and dns_calls == 1:
                 raise socket.gaierror(socket.EAI_AGAIN, "synthetic transient DNS")
             return original("127.0.0.1", port, *args, **kwargs)
 
         socket.getaddrinfo = resolve
+        if mode == "preflight-tcp":
+            preflight = adapter._preflight
+
+            async def recover(*args, **kwargs):
+                nonlocal server
+                try:
+                    await preflight(*args, **kwargs)
+                except SourceError:
+                    if server is None:
+                        listener.listen()
+                        server = await asyncio.start_server(
+                            lambda r, w: w.close(), sock=listener
+                        )
+                    raise
+
+            adapter._preflight = recover
     if mode == "dns-hang":
         adapter.config.connect_timeout = 0.05
         adapter.config.total_timeout = 0.4

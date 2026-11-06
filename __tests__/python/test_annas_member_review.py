@@ -1,4 +1,4 @@
-"""Accepted member gate regressions; HTTP is MockTransport or loopback only."""
+"""Member HTTP search regressions; transport is synthetic or loopback."""
 
 import asyncio
 import socket
@@ -27,9 +27,10 @@ pytest_plugins = ["test_annas_member"]
         "Browser verification of web applications",
         "Checking Your Browser: a field guide",
         "DDoS Guard research",
+        "DDoS-Guard",
     ],
 )
-async def test_s2_result_rows_override_challenge_words(make_adapter, key, title):
+async def test_result_rows_override_challenge_words(make_adapter, key, title):
     async def site(request):
         if request.method == "POST":
             return await FakeSite()(request)
@@ -49,7 +50,7 @@ async def test_s2_result_rows_override_challenge_words(make_adapter, key, title)
         "<title>A ddos guard book</title>",
     ],
 )
-async def test_s2_no_rows_without_captured_empty_marker_is_unrecognised(
+async def test_no_rows_without_captured_empty_marker_is_unrecognised(
     make_adapter, key, page
 ):
     async def site(request):
@@ -63,7 +64,7 @@ async def test_s2_no_rows_without_captured_empty_marker_is_unrecognised(
         await make_adapter(site, key=key).search("books")
 
 
-async def test_n2_anonymous_timeout_keeps_master_detail(make_adapter):
+async def test_anonymous_timeout_keeps_master_detail(make_adapter):
     async def site(request):
         raise ProviderTimeoutError(
             "annas", "annas-archive.gl", "search exceeded 45s", reason="search_timeout"
@@ -74,7 +75,7 @@ async def test_n2_anonymous_timeout_keeps_master_detail(make_adapter):
     assert caught.value.detail == "search exceeded 45s"
 
 
-async def test_s3_anonymous_real_redirect_failure_preserves_transport_classification():
+async def test_anonymous_real_redirect_failure_preserves_transport_classification():
     closed = socket.socket()
     closed.bind(("127.0.0.1", 0))
     dead_port = closed.getsockname()[1]
@@ -105,7 +106,7 @@ async def test_s3_anonymous_real_redirect_failure_preserves_transport_classifica
 
 
 @pytest.mark.parametrize("hops", [1, 5])
-async def test_s4_same_origin_redirects_keep_member_session(make_adapter, hops):
+async def test_same_origin_redirects_keep_member_session(make_adapter, hops):
     fake = FakeSite()
     paths = []
 
@@ -133,7 +134,7 @@ async def test_s4_same_origin_redirects_keep_member_session(make_adapter, hops):
         "/loop",
     ],
 )
-async def test_s4_foreign_origin_or_redirect_loop_stops(make_adapter, location):
+async def test_foreign_origin_or_redirect_loop_stops(make_adapter, location):
     fake = FakeSite()
     gets = []
 
@@ -149,7 +150,38 @@ async def test_s4_foreign_origin_or_redirect_loop_stops(make_adapter, location):
     assert all(url.startswith(BASE) and ":444" not in url for url in gets)
 
 
-async def test_s5_noncredential_cookies_are_not_echo_secrets(make_adapter):
+@pytest.mark.parametrize(
+    "target",
+    [
+        "https://annas-archive.gl:444/next",
+        "https://sub.annas-archive.gl/next",
+        "http://annas-archive.gl/next",
+    ],
+)
+async def test_anonymous_inflight_redirect_cannot_pick_up_new_member_cookie(
+    make_adapter, target
+):
+    requests = []
+    adapter = None
+
+    async def site(request):
+        requests.append((str(request.url), request.headers.get("cookie", "")))
+        if request.url.path == "/search":
+            # A concurrent sign-in completes while this anonymous GET is in flight.
+            adapter._client.cookies.set(
+                "aa_account_id2", COOKIE, domain=".annas-archive.gl", path="/"
+            )
+            adapter._member_state = "active"
+            return httpx.Response(302, headers={"location": target})
+        return httpx.Response(200, text=HTML)
+
+    adapter = make_adapter(site)
+    with pytest.raises(SourceError, match="Page redirect refused"):
+        await adapter._fetch(adapter._client, BASE + "/search")
+    assert requests == [(BASE + "/search", "")]
+
+
+async def test_noncredential_cookies_are_not_echo_secrets(make_adapter):
     async def site(request):
         if request.method == "POST":
             return httpx.Response(
@@ -166,7 +198,7 @@ async def test_s5_noncredential_cookies_are_not_echo_secrets(make_adapter):
     assert (await make_adapter(site).search("books"))[0].title == "en volume 1"
 
 
-async def test_s6_plain_http_never_posts_key(make_adapter):
+async def test_plain_http_never_posts_key(make_adapter):
     fake = FakeSite()
     adapter = make_adapter(fake, base="http://annas-archive.gl")
     await adapter.search("books")
@@ -175,7 +207,7 @@ async def test_s6_plain_http_never_posts_key(make_adapter):
     assert adapter.member_status()["member_session"] == "none"
 
 
-async def test_s7_untrusted_signin_guard_is_observed(make_adapter):
+async def test_untrusted_signin_guard_is_observed(make_adapter):
     fake = FakeSite()
     adapter = make_adapter(fake, base="https://other.invalid")
     await adapter._signin(adapter._client)
@@ -183,7 +215,7 @@ async def test_s7_untrusted_signin_guard_is_observed(make_adapter):
     assert adapter.member_status()["member_session"] == "none"
 
 
-async def test_s7_foreign_redirect_with_valid_cookie_is_refused(make_adapter):
+async def test_foreign_redirect_with_valid_cookie_is_refused(make_adapter):
     class ForeignCookie(FakeSite):
         async def __call__(self, request):
             if request.method == "POST":
@@ -205,7 +237,7 @@ async def test_s7_foreign_redirect_with_valid_cookie_is_refused(make_adapter):
     assert adapter.member_status()["member_session"] != "active"
 
 
-async def test_s10_transport_failure_is_unknown_not_rejected(make_adapter):
+async def test_transport_failure_is_unknown_not_rejected(make_adapter):
     fake = FakeSite(login="error")
     adapter = make_adapter(fake)
     await adapter.search("books")

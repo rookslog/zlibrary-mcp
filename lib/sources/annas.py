@@ -462,7 +462,8 @@ class AnnasArchiveAdapter(SourceAdapter):
         Exists so the status check sits *inside* the wall-clock budget rather
         than after it.
         """
-        if self._member_state == "active" and not params:
+        # A concurrent sign-in can populate the cookie jar during this GET.
+        if self.secret_key and not params:
             origin = httpx.URL(self.base_url)
             for hop in range(6):
                 response = await client.get(url, follow_redirects=False)
@@ -548,13 +549,18 @@ class AnnasArchiveAdapter(SourceAdapter):
             )
             if self._had_member_session or echoes_key:
                 attributed = self._as_source_error(exc)
+                # Keep numeric HTTP evidence for the breaker, never the raw message.
                 _raise_keyed_error(
                     type(attributed)(
                         PROVIDER,
                         self.host,
-                        "Browser verification or member request failed"
-                        if isinstance(exc, SourceError)
-                        else type(exc).__name__,
+                        f"HTTP {exc.response.status_code}"
+                        if isinstance(exc, httpx.HTTPStatusError)
+                        else (
+                            "Browser verification or member request failed"
+                            if isinstance(exc, SourceError)
+                            else type(exc).__name__
+                        ),
                         reason=attributed.reason,
                     )
                 )

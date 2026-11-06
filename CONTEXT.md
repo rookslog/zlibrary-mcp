@@ -61,7 +61,10 @@ over HTTPS on a host accepted by the fast-download guard. Its `aa_account_id2` c
 in a resident Python worker's memory; search reuses it across tool calls. A
 refused session gets at most one shared refresh, and rejected/failed sign-in
 backs off for 60 seconds, preserved by Node across worker restarts, while
-ordinary HTTP search remains available. Guard skips, transport failures and
+ordinary HTTP search remains available. A pending-worker failure starts a
+conservative 60-second sign-in backoff even without a delivered POST outcome.
+Key-configured page redirects stay on the configured origin before and after
+session activation. Guard skips, transport failures and
 cancelled sign-ins report `none`; `rejected` denotes provider refusal of a
 sign-in or session. The scoped, visible English “No files found.” marker
 returns empty results on anonymous and member searches. It comes from published

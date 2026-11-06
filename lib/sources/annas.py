@@ -52,6 +52,36 @@ def _raise_keyed_error(error: SourceError) -> NoReturn:
         error.__context__ = None
 
 
+def _is_empty_search(soup: BeautifulSoup) -> bool:
+    # Published renderer search.html:450-464 and English messages.po:5261-5266,
+    # revision d26b35249a5a5241dfe2ce512dbf0d6502999c5e; synthetic fixture,
+    # not a captured live page. Search validates challenges before this check.
+    for marker in soup.select(
+        "form.js-search-form[role='search'] div > span.font-bold"
+    ):
+        if marker.get_text(" ", strip=True) != "No files found.":
+            continue
+        if marker.find_parent(["a", "script", "style", "template", "noscript"]):
+            continue
+        if marker.find_parent(class_="js-aarecord-list-outer"):
+            continue
+        if any(
+            node.has_attr("hidden")
+            or str(node.get("aria-hidden", "")).lower() == "true"
+            or {"hidden", "invisible"}.intersection(node.get("class", []))
+            or re.search(
+                r"(?:^|;)\s*(?:display\s*:\s*none|visibility\s*:\s*(?:hidden|collapse))"
+                r"\s*(?:!important\s*)?(?:;|$)",
+                node.get("style", ""),
+                re.I,
+            )
+            for node in (marker, *marker.parents)
+        ):
+            continue
+        return True
+    return False
+
+
 def _valid_download_url(url: str) -> bool:
     """Validate components without rewriting a provider's signed URL text."""
     if url != url.strip() or any(ord(c) < 32 or 127 <= ord(c) <= 159 for c in url):
@@ -576,12 +606,12 @@ class AnnasArchiveAdapter(SourceAdapter):
                         reason="protocol_error",
                     )
                 )
-        if not results:
+        if not results and not _is_empty_search(soup):
             _raise_keyed_error(
                 ProviderResponseError(
                     PROVIDER,
                     self.host,
-                    "Unrecognised page: no result rows or captured empty-results marker",
+                    "Unrecognised page: no result rows or recognised empty-results marker",
                     reason="protocol_error",
                 )
             )

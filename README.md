@@ -138,9 +138,11 @@ resident Python worker's memory and is reused across searches until expiry or
 refusal. One shared refresh is allowed per refused session; failed/rejected
 sign-ins back off for 60 seconds, including across worker restarts in the same
 Node process. Anonymous HTTP search remains the fallback. Result anchors take
-priority over challenge words in book titles. No positive empty-results marker
-has been captured from a real page: rowless pages without one report
-“Unrecognised page” rather than empty results, including for anonymous users.
+priority over challenge words in book titles. A visible, scoped English
+“No files found.” marker returns empty results on anonymous and member paths.
+The marker comes from published site source and a synthetic fixture; we have
+not observed it on a live page. Other rowless pages report “Unrecognised page”
+rather than empty results, including for anonymous users.
 Member page redirects are limited to five hops within the configured HTTPS
 origin. `none` also covers an unattempted, cancelled or transport-failed sign-in;
 `rejected` means the provider refused sign-in/session access, not necessarily

@@ -63,8 +63,10 @@ refused session gets at most one shared refresh, and rejected/failed sign-in
 backs off for 60 seconds, preserved by Node across worker restarts, while
 ordinary HTTP search remains available. Guard skips, transport failures and
 cancelled sign-ins report `none`; `rejected` denotes provider refusal of a
-sign-in or session. A no-row page without a real captured positive-empty marker
-reports “Unrecognised page”, including on anonymous search. This
+sign-in or session. The scoped, visible English “No files found.” marker
+returns empty results on anonymous and member searches. It comes from published
+site source and a synthetic fixture; we have not observed it on a live page.
+Other rowless pages report “Unrecognised page”, including on anonymous search. This
 adds no download route and solves no browser challenge. Local `get_limits`
 reports only configured/none/active/rejected state, with no account request.
 Fake HTTP tests cover the mechanism; actual member acceptance and avoidance of

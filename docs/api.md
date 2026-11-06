@@ -264,9 +264,18 @@ remembers the private retry deadline across child crashes and passes it to the
 next worker. Cancellation publishes a status-only private update. Ordinary HTTP
 search remains the fallback. Member pages follow at most five same-origin hops;
 other scheme/host/port targets are refused. Result anchors take priority over
-challenge phrases. No real positive-empty marker has been captured, so rowless
-pages without one return an attributed “Unrecognised page” error (anonymous
-users included), rather than `[]`. Recognized vendor challenge pages remain errors. Anna's
+challenge phrases. A rowless non-challenge page returns `[]` on anonymous and
+member paths when `form.js-search-form[role='search']` contains a visible
+`div > span.font-bold` with exact text `No files found.`, outside links and
+`.js-aarecord-list-outer`. Visibility excludes hidden attributes/classes,
+`aria-hidden`, inline display/visibility suppression and non-rendered containers;
+this is static HTML recognition, not computed browser CSS.
+The marker is source-derived: published renderer `search.html:450-464` and
+English `messages.po:5261-5266` at revision
+`d26b35249a5a5241dfe2ce512dbf0d6502999c5e`. Its test fixture is synthetic;
+we have not observed the marker on a live page. Other rowless pages return an
+attributed “Unrecognised page” error, including for anonymous users.
+Recognized vendor challenge pages remain errors. Anna's
 `get_book` continues to return the held search row; it performs no detail-page
 request. No key is needed for anonymous search, and no new download route is added.
 Transport debug logs are suppressed during the member adapter's lifetime because

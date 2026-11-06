@@ -415,7 +415,7 @@ export function renderSearchPage(
   const note =
     `${rows.length} file rows shown from ${prepared.acceptedRecords} accepted records, grouped by file.` +
     (incomplete.length ? ` ${incomplete.join('; ')}.` : '') +
-    ' These are bounded source windows, not everything.';
+    ' These are bounded source windows (up to 50 records per source), not everything.';
   return immutable({
     rows,
     sources: prepared.sources,

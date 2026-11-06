@@ -4,6 +4,7 @@ import { ToolFailure } from './tool-errors.js';
 
 export interface LocalSearchState {
   breaker?: 'closed' | 'open' | 'half_open';
+  breakerBlocked?: boolean;
   breakerRetryAfterS?: number;
   admission?: 'open' | 'backoff';
   admissionRetryAfterS?: number;
@@ -71,7 +72,7 @@ export function projectSearchLimits(
         invalid();
       const waits: number[] = [];
       for (const [enabled, value] of [
-        [breaker === 'open', state.breakerRetryAfterS],
+        [breaker === 'open' || state.breakerBlocked === true, state.breakerRetryAfterS],
         [admission === 'backoff', state.admissionRetryAfterS],
       ] as const) {
         if (enabled) {

@@ -76,6 +76,21 @@ const dependencyBreakers = Object.fromEntries(
   ]),
 );
 
+/** Local source health/admission only: never probes a provider or changes a generation. */
+export function getSearchState(env: Record<string, string | undefined> = process.env) {
+  return Object.fromEntries(
+    ['libgen', 'zlibrary', 'annas'].map((source) => [
+      source,
+      {
+        ...dependencyBreakers[source === 'zlibrary' ? 'eapi' : source]!.snapshot(),
+        ...(source === 'zlibrary'
+          ? eapiSessions.admission(env.ZLIBRARY_EMAIL ?? '')
+          : { admission: 'open' as const }),
+      },
+    ]),
+  );
+}
+
 /**
  * Breaker scope for a call that does not use EAPI: the source it selects.
  *

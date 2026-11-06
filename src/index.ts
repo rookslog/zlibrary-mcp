@@ -11,18 +11,19 @@ import { z } from 'zod';
 import { AcquisitionTools, INPUTS } from './lib/acquisition-tools.js';
 import type { ToolName } from './lib/acquisition-tools.js';
 import { getSessionMode } from './lib/eapi-session.js';
-import { invokeAcquisitionBridge } from './lib/zlibrary-api.js';
+import { invokeAcquisitionBridge, getSearchState } from './lib/zlibrary-api.js';
 import { logger } from './lib/logger.js';
+import { searchSuccessShape } from './lib/search-wire.js';
 
 const descriptions: Record<ToolName, string> = {
   search:
-    'Metadata, not book text. Give query and/or author; exact covers both. sources is ordered: libgen needs no account/quota; zlibrary needs an account, downloads spend quota; annas searches without a key, downloads with one. Defaults: get_limits. Use refs. Refs last this process and 5,000 recent entries; on ref_unavailable search and choose again. Pass cursor alone: replay fetches the same position; pages are re-queried, not frozen.',
+    'Metadata, not book text. Give query and/or author; exact checks each field locally. sources is a set asked together; defaults: get_limits. Rows group only equal catalogue MD5; ref selects the recommended source copy, other_copies remain selectable. Check sources, all_answered and note for incomplete windows. Search refs/cursors share a process-local 128-search LRU, up to 20 windows each; on ref_unavailable search again. Pass cursor alone: pages are retained snapshots; the first sole-source refill may issue one request, then replays are local.',
   get_book:
     'Edition evidence for a ref. Zlibrary costs one detail call; others return held rows. Description capped at 1,000 characters.',
   download:
     'Download a ref to server disk: path, bytes and record sidecar, not text. Repeats at the same destination re-hash sha256 and skip an intact copy without quota; different output_dir or filename transfers again. Local O_EXCL locks coalesce processes.',
   get_limits:
-    'Capabilities and default source order. mode:local (default) costs no network. mode:live fetches account numbers for named sources; only zlibrary costs an account call. Other clients can change estimates; errors are per source.',
+    'Capabilities, resolved search set, wait policy and local admission state. mode:local (default) costs no network. mode:live fetches account numbers for named sources; only zlibrary costs an account call. Other clients can change estimates; errors are per source.',
   get_history:
     'Zlibrary account history in source order. Not local files. Refs last this process and 5,000 entries; search again if unavailable. Pass cursor alone: replay fetches the same position; pages are not frozen.',
 };
@@ -44,15 +45,7 @@ const errorShape = {
   },
 };
 const successShapes: Record<ToolName, Record<string, any>> = {
-  search: {
-    required: ['rows', 'routing'],
-    properties: {
-      rows: { type: 'array', items: { type: 'object', required: ['ref', 'source'] } },
-      routing: { type: 'object', required: ['requested', 'attempts', 'fell_back'] },
-      next_cursor: { type: 'string' },
-      note: { type: 'string' },
-    },
-  },
+  search: searchSuccessShape,
   get_book: {
     required: ['ref', 'source', 'identifiers', 'evidence'],
     properties: {
@@ -75,10 +68,10 @@ const successShapes: Record<ToolName, Record<string, any>> = {
     },
   },
   get_limits: {
-    required: ['sources'],
+    required: ['sources', 'search'],
     properties: {
       sources: { type: 'object' },
-      default_order: { type: 'array', items: { type: 'string' } },
+      search: { type: 'object', required: ['default_sources', 'wait_ms', 'ordering'] },
     },
   },
   get_history: {
@@ -113,7 +106,9 @@ export const TOOL_DEFINITIONS: Tool[] = (Object.keys(INPUTS) as ToolName[]).map(
 /** Lower-level SDK dispatch retains typed errors for invalid schemas and removed names. */
 class AcquisitionServer extends Server {
   private definitions: Tool[] = [];
-  readonly tools = new AcquisitionTools(invokeAcquisitionBridge);
+  readonly tools = new AcquisitionTools(invokeAcquisitionBridge, process.env, {
+    localState: () => getSearchState(),
+  });
   constructor() {
     super(
       { name: 'book-acquisition', version: getPackageVersion() },

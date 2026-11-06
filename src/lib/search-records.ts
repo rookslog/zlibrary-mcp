@@ -30,7 +30,10 @@ interface RecordState {
   windows: Map<number, Window>;
   pages: Map<string, SearchReply>;
   cursors: Map<string, string>;
-  pending: Map<number, { promise: Promise<Window>; controller: AbortController }>;
+  pending: Map<
+    number,
+    { promise: Promise<Window>; controller: AbortController; subscribers: Set<symbol> }
+  >;
   md5s: Set<string>;
 }
 type Alias = { record: RecordState } & (
@@ -43,16 +46,21 @@ const md5Of = (copy: CatalogueCopy): string | undefined =>
     ? copy.md5.toLowerCase()
     : undefined;
 
-/** Internal preparation: no public handler owns this store before S4c. Capacity
+/** Process-local search owner. Capacity
  * counts whole searches, so selections, local pages and refill pages share one lifetime. */
 export class SearchRecords {
   private readonly refs: RefStore;
   private readonly records = new Map<number, RecordState>();
   private serial = 0;
-  constructor(private readonly options: { capacity: number; nonce?: bigint }) {
+  constructor(private readonly options: { capacity: number; nonce?: bigint; maxWindows?: number }) {
     if (!Number.isSafeInteger(options.capacity) || options.capacity < 1)
       throw new RangeError('Retained search capacity must be a positive integer.');
     this.refs = new RefStore({ nonce: options.nonce, capacity: Number.MAX_SAFE_INTEGER });
+    if (!Number.isSafeInteger(options.maxWindows ?? 20) || (options.maxWindows ?? 20) < 1)
+      throw new RangeError('Retained window bound must be a positive integer.');
+  }
+  owns(ref: string): boolean {
+    return ref.slice(1, 14) === this.refs.nonce;
   }
   private touch(record: RecordState): void {
     if (!this.records.has(record.id)) throw unavailable();
@@ -205,7 +213,11 @@ export class SearchRecords {
     const limit = record.plan.request.limit ?? 10;
     let next: { window: number; offset: number } | undefined;
     if (offset + limit < prepared.rows.length) next = { window: number, offset: offset + limit };
-    else if (record.dispatched.length === 1 && record.refill) {
+    else if (
+      number < (this.options.maxWindows ?? 20) &&
+      record.dispatched.length === 1 &&
+      record.refill
+    ) {
       const line = prepared.sources[record.dispatched[0]!]!;
       if ('more' in line && line.more) next = { window: number + 1, offset: 0 };
     }
@@ -226,13 +238,36 @@ export class SearchRecords {
     const existing = record.pending.get(number);
     if (existing) return existing.promise;
     const controller = new AbortController();
+    let work: Promise<CollectedSource> | undefined;
+    let settled = false;
     const promise = Promise.resolve()
       .then(async () => {
         this.touch(record);
+        if (controller.signal.aborted) throw unavailable();
         const stopped = new Promise<never>((_resolve, reject) =>
-          controller.signal.addEventListener('abort', () => reject(unavailable()), { once: true }),
+          controller.signal.addEventListener(
+            'abort',
+            () =>
+              reject(
+                controller.signal.reason === 'search_evicted'
+                  ? unavailable()
+                  : new ToolFailure('cancelled', 'Refill cancelled.', { retry: 'safe' }),
+              ),
+            { once: true },
+          ),
         );
-        const result = await Promise.race([record.refill!(number, controller.signal), stopped]);
+        work = Promise.resolve(record.refill!(number, controller.signal));
+        void work.then(
+          () => {
+            settled = true;
+          },
+          () => {
+            settled = true;
+          },
+        );
+        const result = await Promise.race([work, stopped]);
+        if (controller.signal.aborted)
+          throw new ToolFailure('cancelled', 'Refill cancelled.', { retry: 'safe' });
         this.touch(record); // Fence eviction before any aliases or pages are allocated.
         if (result.source !== record.dispatched[0])
           throw new ToolFailure('invalid_argument', 'Refill changed source.');
@@ -243,14 +278,52 @@ export class SearchRecords {
         record.windows.set(number, window);
         return window;
       })
-      .finally(() => record.pending.delete(number));
-    record.pending.set(number, { promise, controller });
+      .finally(() => {
+        const release = () => {
+          record.pending.delete(number);
+        };
+        if (controller.signal.aborted && work && !settled) void work.then(release, release);
+        else release();
+      });
+    record.pending.set(number, { promise, controller, subscribers: new Set() });
     return promise;
   }
-  async page(cursor: string): Promise<SearchReply> {
+  async page(cursor: string, options: { signal?: AbortSignal } = {}): Promise<SearchReply> {
+    if (options.signal?.aborted)
+      throw new ToolFailure('cancelled', 'Call cancelled.', { retry: 'safe' });
     const alias = this.lookup(cursor, 'c');
     if (alias.kind !== 'c') throw unavailable();
-    if (!alias.record.windows.has(alias.window)) await this.expand(alias.record, alias.window);
+    if (!alias.record.windows.has(alias.window)) {
+      const promise = this.expand(alias.record, alias.window);
+      const pending = alias.record.pending.get(alias.window)!;
+      const subscriber = Symbol();
+      pending.subscribers.add(subscriber);
+      await new Promise<void>((resolve, reject) => {
+        const finish = () => {
+          options.signal?.removeEventListener('abort', abort);
+          pending.subscribers.delete(subscriber);
+        };
+        const abort = () => {
+          finish();
+          if (!pending.subscribers.size) pending.controller.abort('caller_cancelled');
+          reject(new ToolFailure('cancelled', 'Call cancelled.', { retry: 'safe' }));
+        };
+        options.signal?.addEventListener('abort', abort, { once: true });
+        if (options.signal?.aborted) abort();
+        void promise.then(
+          () => {
+            finish();
+            resolve();
+          },
+          (error) => {
+            finish();
+            reject(error);
+          },
+        );
+      });
+    }
+    if (options.signal?.aborted)
+      throw new ToolFailure('cancelled', 'Call cancelled.', { retry: 'safe' });
     return this.materialize(alias.record, alias.window, alias.offset);
   }
 }

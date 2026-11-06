@@ -1,75 +1,83 @@
 import { z } from 'zod';
 import { RefStore } from './refs.js';
-import { checkRowFilters, FILTER_CAPABILITIES } from './row-filters.js';
-import type { RowFilterRequest } from './row-filters.js';
+import { checkRowFilters, checkMergedRowFilters, FILTER_CAPABILITIES } from './row-filters.js';
+import { SourceRegistry, type WindowRequest, type SearchWindow } from './source-registry.js';
+import { fanOut } from './fan-out.js';
+import { SearchRecords } from './search-records.js';
+import { planSearch, type SearchPlan, type CollectedSource } from './search-assembly.js';
+import { parseSearchSettings, type SearchSettings } from './search-settings.js';
+import { RecentSearches, projectSearchLimits, type LocalSearchState } from './search-limits.js';
 import { normalizeLanguages } from './filter-languages.js';
 import { classifyFailure, errorEnvelope, ToolFailure } from './tool-errors.js';
 import type { CallOptions } from './zlibrary-api.js';
 
-type Source = 'libgen' | 'annas' | 'zlibrary';
+type Source = string;
 type Invoke = (operation: string, args: Record<string, any>, options?: CallOptions) => Promise<any>;
-const sourceSchema = z.enum(['libgen', 'annas', 'zlibrary']);
-const sources = z
-  .array(sourceSchema)
-  .min(1)
-  .max(3)
-  .refine((a) => new Set(a).size === a.length);
-const limit = z.number().int().min(1).max(50).optional();
-export const INPUTS = {
-  search: z
-    .object({
-      query: z.string().trim().min(1).max(500).optional(),
-      author: z.string().trim().min(1).max(200).optional(),
-      sources: sources.optional(),
-      exact: z
-        .boolean()
-        .optional()
-        .describe('Z-Library only: sent, not checked by this server; other sources are skipped.'),
-      year_from: z
-        .number()
-        .int()
-        .optional()
-        .describe(
-          'Inclusive minimum year; checked on every source. Unknown years are excluded and counted.',
-        ),
-      year_to: z
-        .number()
-        .int()
-        .optional()
-        .describe(
-          'Inclusive maximum year; checked on every source. Unknown years are excluded and counted.',
-        ),
-      languages: z
-        .array(z.string())
-        .optional()
-        .describe(
-          'OR of names/codes; checked on every source. Unknown metadata is excluded. Empty list adds no constraint.',
-        ),
-      formats: z
-        .array(z.string())
-        .optional()
-        .describe(
-          'OR of extensions, case-insensitive, one leading dot ignored; checked on every source. Empty list adds no constraint.',
-        ),
-      limit,
-      cursor: z.string().optional(),
-    })
-    .strict(),
-  get_book: z.object({ ref: z.string().min(1) }).strict(),
-  download: z
-    .object({
-      ref: z.string().min(1),
-      output_dir: z.string().min(1).optional(),
-      filename: z.string().min(1).optional(),
-    })
-    .strict(),
-  get_limits: z
-    .object({ sources: sources.optional(), mode: z.enum(['local', 'live']).optional() })
-    .strict(),
-  get_history: z
-    .object({ source: sourceSchema.optional(), limit, cursor: z.string().optional() })
-    .strict(),
-};
+export function createInputs(names: readonly string[] = ['libgen', 'zlibrary', 'annas']) {
+  const sourceSchema = z.enum(names as [string, ...string[]]);
+  const sources = z
+    .array(sourceSchema)
+    .min(1)
+    .max(names.length)
+    .refine((a) => new Set(a).size === a.length);
+  const limit = z.number().int().min(1).max(50).optional();
+  return {
+    search: z
+      .object({
+        query: z.string().trim().min(1).max(500).optional(),
+        author: z.string().trim().min(1).max(200).optional(),
+        sources: sources.optional(),
+        exact: z
+          .boolean()
+          .optional()
+          .describe('Local per-field phrase check on every source; also sent to Z-Library.'),
+        year_from: z
+          .number()
+          .int()
+          .optional()
+          .describe(
+            'Inclusive minimum year; checked on every source. Unknown years are excluded and counted.',
+          ),
+        year_to: z
+          .number()
+          .int()
+          .optional()
+          .describe(
+            'Inclusive maximum year; checked on every source. Unknown years are excluded and counted.',
+          ),
+        languages: z
+          .array(z.string())
+          .optional()
+          .describe(
+            'OR of names/codes; checked on every source. Unknown metadata is excluded. Empty list adds no constraint.',
+          ),
+        formats: z
+          .array(z.string())
+          .optional()
+          .describe(
+            'OR of extensions, case-insensitive, one leading dot ignored; checked on every source. Empty list adds no constraint.',
+          ),
+        limit,
+        cursor: z.string().optional(),
+      })
+      .strict(),
+    get_book: z.object({ ref: z.string().min(1) }).strict(),
+    download: z
+      .object({
+        ref: z.string().min(1),
+        output_dir: z.string().min(1).optional(),
+        filename: z.string().min(1).optional(),
+      })
+      .strict(),
+    get_limits: z
+      .object({ sources: sources.optional(), mode: z.enum(['local', 'live']).optional() })
+      .strict(),
+    get_history: z
+      .object({ source: sourceSchema.optional(), limit, cursor: z.string().optional() })
+      .strict(),
+  };
+}
+export const INPUTS = createInputs();
 export type ToolName = keyof typeof INPUTS;
 export const OLD_TOOLS: Record<string, string> = {
   search_books:
@@ -94,7 +102,7 @@ export const OLD_TOOLS: Record<string, string> = {
     'Text processing was removed in 2.0; use a separate 1.4.x installation.',
 };
 // Retired tool spellings stay in migration data, not source branding text.
-interface Selection {
+export interface Selection {
   book: Record<string, any>;
   source: Source;
   query?: string;
@@ -108,15 +116,6 @@ interface Cursor {
   held?: any[];
   filtering?: Record<string, any>;
   offset?: number;
-}
-interface Attempt {
-  source: Source;
-  outcome: string;
-  ignored?: string[];
-  filtering?: Record<string, any>;
-  code?: string;
-  reason?: string;
-  unsupported?: string[];
 }
 const allSources: Source[] = ['libgen', 'zlibrary', 'annas'];
 // Match lib/sources/config.py. The cross-language reporting test guards drift.
@@ -187,26 +186,57 @@ const DownloadReplySchema = z
       .optional(),
   })
   .refine((result) => !(result.reused && result.transfer_skipped));
+export interface SearchRuntime {
+  registry?: SourceRegistry;
+  localState?: () => Readonly<Record<string, LocalSearchState>>;
+  now?: () => number;
+  nonce?: bigint;
+  recordCapacity?: number;
+  maxWindows?: number;
+}
 export class AcquisitionTools {
   readonly refs = new RefStore();
   private estimates = new Map<
     Source,
     { source: Source; remaining: number; as_of: string; basis: 'observed' | 'decremented' }
   >();
-  private defaultOrder?: Source[];
+  private readonly settings: Readonly<SearchSettings>;
+  private readonly registry: SourceRegistry;
+  private readonly searches: SearchRecords;
+  private readonly recent: RecentSearches;
+  private readonly inputs: typeof INPUTS;
   constructor(
     private invoke: Invoke,
     private env: Record<string, string | undefined> = process.env,
+    private readonly runtime: SearchRuntime = {},
   ) {
-    const raw = env.BOOK_SOURCE_DEFAULT_ORDER;
-    if (raw) {
-      const parsed = sources.safeParse(raw.split(',').map((s) => s.trim()));
-      if (parsed.success) this.defaultOrder = parsed.data;
-      else
-        throw new Error(
-          'BOOK_SOURCE_DEFAULT_ORDER must name 1–3 distinct sources: libgen,zlibrary,annas',
-        );
-    }
+    this.registry =
+      runtime.registry ??
+      new SourceRegistry(
+        allSources.map((name) => ({
+          name,
+          capabilities: () => this.capabilities(name),
+          defaultSearch: () => this.defaultSearch(name),
+          md5: (book: any) => book.md5,
+          searchWindow: (request, signal) => this.sourceWindow(name, request, signal),
+        })),
+      );
+    const names = this.registry.sources.map((spec) => spec.name);
+    this.inputs = createInputs(names);
+    this.settings = parseSearchSettings(env, names);
+    this.searches = new SearchRecords({
+      capacity: runtime.recordCapacity ?? 128,
+      maxWindows: runtime.maxWindows ?? 20,
+      nonce: runtime.nonce,
+    });
+    this.recent = new RecentSearches(names);
+  }
+  private defaultSearch(source: Source) {
+    if (source === 'annas') return { on: false, reason: 'route_off' };
+    const capability = this.capabilities(source);
+    return capability.search_available
+      ? { on: true }
+      : { on: false, reason: 'credentials_missing' };
   }
   private capabilities(source: Source) {
     const annasBaseUsable = usableAnnasBase(this.env.ANNAS_BASE_URL);
@@ -218,7 +248,10 @@ export class AcquisitionTools {
         : Boolean(this.env.ANNAS_SECRET_KEY) && annasBaseTrusted);
     return {
       configured,
-      filters: { ...FILTER_CAPABILITIES[source] },
+      filters: {
+        ...FILTER_CAPABILITIES[source as keyof typeof FILTER_CAPABILITIES],
+        exact: 'local',
+      },
       search_available: source === 'annas' ? annasBaseUsable : source !== 'zlibrary' || configured,
       download_available: configured,
       operations: ['search', 'details', 'download', ...(source === 'zlibrary' ? ['history'] : [])],
@@ -284,13 +317,13 @@ export class AcquisitionTools {
   }
   async call(name: string, raw: unknown = {}, options: CallOptions = {}): Promise<any> {
     try {
-      if (!Object.hasOwn(INPUTS, name))
+      if (!Object.hasOwn(this.inputs, name))
         throw new ToolFailure('invalid_argument', 'Tool name is not available in 2.0.', {
           recovery:
             (Object.hasOwn(OLD_TOOLS, name) ? OLD_TOOLS[name] : undefined) ??
             'Use search, get_book, download, get_limits or get_history.',
         });
-      const parsed = INPUTS[name as ToolName].safeParse(raw);
+      const parsed = this.inputs[name as ToolName].safeParse(raw);
       if (!parsed.success) {
         const operationRecovery =
           name === 'download'
@@ -315,9 +348,15 @@ export class AcquisitionTools {
       if (options.signal?.aborted)
         throw new ToolFailure('cancelled', 'Call cancelled before any request.', { retry: 'safe' });
       if (name === 'get_limits') return await this.limits(args, options);
-      if (name === 'get_history') return await this.historyPage(args, options);
-      if (name === 'search') return await this.page('search', args, options);
-      const selection = this.refs.get<Selection>(args.ref, 'r');
+      if (name === 'get_history') {
+        if (args.cursor && this.searches.owns(args.cursor))
+          throw new ToolFailure('invalid_argument', 'Cursor belongs to another operation.');
+        return await this.historyPage(args, options);
+      }
+      if (name === 'search') return await this.searchPage(args, options);
+      const selection: Selection = this.searches.owns(args.ref)
+        ? this.selection(args.ref)
+        : this.refs.get<Selection>(args.ref, 'r');
       if (name === 'get_book') return await this.details(args.ref, selection, options);
       // Configuration is checked inside the bridge, after disk reuse, so a receipt remains useful offline.
       try {
@@ -356,13 +395,20 @@ export class AcquisitionTools {
     }
   }
   private async limits(args: any, options: CallOptions) {
-    const result: any = {
-      ...(this.defaultOrder ? { default_order: this.defaultOrder } : {}),
-      sources: {},
-    };
-    for (const source of args.sources ?? allSources) {
-      const capability = this.capabilities(source);
-      result.sources[source] = capability;
+    const views = this.views();
+    const snapshot = projectSearchLimits(
+      views,
+      this.settings,
+      this.runtime.localState?.(),
+      this.recent.snapshot(),
+    );
+    const result: any = structuredClone(snapshot);
+    if (args.sources)
+      result.sources = Object.fromEntries(
+        Object.entries(result.sources).filter(([name]) => args.sources.includes(name)),
+      );
+    for (const source of args.sources ?? this.registry.sources.map((spec) => spec.name)) {
+      const capability = result.sources[source];
       if (args.mode === 'live' && source === 'zlibrary') {
         try {
           this.configured(source);
@@ -497,329 +543,217 @@ export class AcquisitionTools {
         : undefined;
     return { rows, ...(next ? { next_cursor: this.refs.mintStable('c', next) } : {}) };
   }
-  private async page(operation: 'search', args: any, options: CallOptions) {
-    let cursor: Cursor | undefined;
-    if (args.cursor !== undefined) {
-      cursor = this.refs.get<Cursor>(args.cursor, 'c');
-      if (cursor.operation !== operation)
-        throw new ToolFailure('invalid_argument', 'Cursor belongs to another operation.');
-      args = cursor.args;
-    }
-    const requested: Source[] = cursor?.requested ?? args.sources ?? this.defaultOrder;
-    if (!requested)
-      throw new ToolFailure('sources_required', 'Choose the sources to search.', {
-        detail: {
-          available: allSources.map((source) => ({
-            source,
-            search_available: this.capabilities(source).search_available,
-            download_available: this.capabilities(source).download_available,
-          })),
-        },
-      });
-    if (operation === 'search' && !args.query && !args.author)
-      throw new ToolFailure('invalid_argument', 'Give query, author, or both.');
-    if (args.year_from != null && args.year_to != null && args.year_from > args.year_to)
-      throw new ToolFailure('invalid_argument', 'year_from must not exceed year_to.');
+  private selection(ref: string): Selection {
+    const selection = this.searches.select(ref);
+    return {
+      source: selection.copy.source,
+      book: { ...selection.copy.book, source: selection.copy.source },
+      query: [selection.request.query, selection.request.author].filter(Boolean).join(' '),
+    };
+  }
+  private views() {
+    return this.registry.sources.map((spec) => ({
+      name: spec.name,
+      capabilities: spec.capabilities(this.env),
+      defaultSearch: spec.defaultSearch(this.env),
+    }));
+  }
+  private async sourceWindow(
+    source: Source,
+    request: WindowRequest,
+    signal: AbortSignal,
+    options: CallOptions = {},
+  ): Promise<SearchWindow> {
+    const languages = normalizeLanguages(request.languages ?? []).values;
     const formats = [
-      ...new Set<string>(
-        (args.formats ?? [])
-          .filter((v: string) => v.trim())
-          .map((v: string) => v.normalize('NFC').trim().toLowerCase().replace(/^\./u, ''))
+      ...new Set(
+        (request.formats ?? [])
+          .map((value) => value.normalize('NFC').trim().toLowerCase().replace(/^\./u, ''))
           .filter(Boolean),
       ),
     ];
-    const languages = normalizeLanguages(args.languages ?? []);
-    const filterRequest: RowFilterRequest = nonempty({
-      year_from: args.year_from,
-      year_to: args.year_to,
-      ...(languages.values.length ? { languages: languages.values } : {}),
-      ...(formats.length ? { formats } : {}),
-    });
-    const effectiveRequest = {
-      ...filterRequest,
-      ...(languages.values.length
-        ? {
-            languages: (args.languages as string[])
-              .filter((v) => v.trim())
-              .map((v) =>
-                normalizeLanguages([v]).unrecognized.length
-                  ? v
-                  : v.normalize('NFC').trim().toLowerCase(),
-              ),
-          }
-        : {}),
-      ...(args.exact === true ? { exact: true } : {}),
-    };
-    const active = Object.keys(effectiveRequest).length > 0;
-    const count = args.limit ?? 10;
-    const attempts: Attempt[] = [];
-    const failures: ToolFailure[] = [];
-    let answered = false;
-    let selected: Source | undefined;
-    let books: any[] = [];
-    let next: Cursor | undefined;
-    let earliestEmpty: Cursor | undefined;
-    let note: string | undefined;
-    for (const source of cursor ? [cursor.served] : requested) {
-      const ignored: string[] = [];
-      try {
-        const unsupported = (
-          Object.keys(effectiveRequest) as (keyof (typeof FILTER_CAPABILITIES)[Source])[]
-        ).filter((key) => FILTER_CAPABILITIES[source][key] === 'unsupported');
-        if (operation === 'search' && unsupported.length)
-          throw new ToolFailure(
-            'unsupported_operation',
-            'Requested filters are unsupported on this source.',
+    const result =
+      source === 'zlibrary'
+        ? await this.invoke(
+            'search',
             {
-              source,
-              recovery: 'Use zlibrary for exact, or drop exact with the caller’s agreement.',
-              detail: { reason: 'filter_unsupported', unsupported },
+              query: request.query ?? '',
+              author: request.author,
+              exact: request.exact ?? false,
+              from_year: request.year_from,
+              to_year: request.year_to,
+              languages,
+              extensions: formats,
+              count: 50,
+              page: request.page ?? 1,
             },
+            { ...options, signal },
+          )
+        : await this.invoke(
+            'search_multi_source',
+            {
+              query: [request.query, request.author].filter(Boolean).join(' '),
+              source,
+              count: 50,
+              multi_source: request.multiSource,
+            },
+            { ...options, signal },
           );
-        this.configured(source);
-        let fetched: any[];
-        const page = cursor?.page ?? 1;
-        if (cursor?.held) fetched = cursor.held;
-        else if (source === 'zlibrary')
-          fetched = (
-            await this.invoke(
-              'search',
-              {
-                query: args.query ?? '',
-                author: args.author,
-                exact: args.exact ?? false,
-                from_year: args.year_from,
-                to_year: args.year_to,
-                languages: languages.values,
-                extensions: formats,
-                count,
-                page,
-              },
-              options,
-            )
-          ).books;
-        else {
-          const query = [args.query, args.author].filter(Boolean).join(' ');
-          fetched = (
-            await this.invoke('search_multi_source', { query, source, count: 50 }, options)
-          ).books;
-        }
-        if (!Array.isArray(fetched))
-          throw new ToolFailure('provider_error', 'Provider returned an invalid page.', {
-            source,
-            retry: 'safe',
-            detail: { reason: 'protocol_error' },
-          });
-        if (fetched.some((book) => book.source && sourceName(book.source) !== source))
-          throw new ToolFailure('provider_error', 'Provider changed the selected source.', {
-            source,
-            retry: 'safe',
-            detail: { reason: 'protocol_error' },
-          });
-        answered = true;
-        selected = source;
-        note = undefined;
-        let filtering = cursor?.filtering;
-        let matches = fetched;
-        if (operation === 'search' && active && !cursor?.held) {
-          matches = [];
-          let rejected = 0;
-          let unknown = 0;
-          for (const book of fetched) {
-            const result = checkRowFilters(
-              { ...book, extension: book.extension ?? book.format },
-              { ...filterRequest, formats: args.formats },
-            );
-            if (result.status === 'pass') matches.push(book);
-            else if (result.status === 'fail') rejected++;
-            else unknown++;
-          }
-          filtering = {
-            ...(source === 'zlibrary'
-              ? {
-                  native_sent: {
-                    ...filterRequest,
-                    ...(args.exact === true ? { exact: true } : {}),
-                  },
-                  ...(args.exact === true ? { native_only: ['exact'] } : {}),
-                }
-              : {}),
-            applied: Object.keys(filterRequest),
-            examined: fetched.length,
-            matched: matches.length,
-            rejected,
-            unknown,
-            ...(Object.keys(filterRequest).length ? { unknown_metadata: 'excluded' } : {}),
-            scope: source === 'zlibrary' ? 'page' : 'first_upstream_page',
-          };
-        }
-        const offset = cursor?.offset ?? 0;
-        books =
-          source === 'zlibrary' ? matches.slice(0, count) : matches.slice(offset, offset + count);
-        attempts.push({
-          source,
-          outcome: books.length ? 'rows' : 'empty',
-          ...(active ? { ignored } : {}),
-          ...(filtering ? { filtering } : {}),
-        });
-        const base = {
-          operation,
-          args: { ...args, limit: count, sources: requested },
-          requested,
-          served: source,
-          ...(filtering ? { filtering } : {}),
-        };
-        let onward: Cursor | undefined;
-        if (source === 'zlibrary' && fetched.length >= count) onward = { ...base, page: page + 1 };
-        if (source !== 'zlibrary') {
-          if (books.length) note = `This server returns at most 50 ${source} rows per query.`;
-          if (offset + count < matches.length)
-            onward = { ...base, page: 1, held: matches, offset: offset + count };
-        }
-        if (books.length || cursor) {
-          next = onward;
-          break;
-        }
-        earliestEmpty ??= onward;
-      } catch (e) {
-        const failure = classifyFailure(e, operation, source);
-        failures.push(failure);
-        attempts.push({
-          source,
-          outcome:
-            failure.code === 'credentials_missing' || failure.code === 'unsupported_operation'
-              ? 'skipped'
-              : 'failed',
-          code: failure.code,
-          reason: failure.info.detail?.reason,
-          ...(failure.info.detail?.reason === 'filter_unsupported'
-            ? { unsupported: failure.info.detail.unsupported }
-            : {}),
-        });
-      }
-    }
+    const fetched = result?.books;
     if (
-      !books.length &&
-      failures.length &&
-      (!answered || attempts.some((a) => a.outcome === 'failed'))
-    ) {
-      if (requested.length === 1 || cursor)
-        throw new ToolFailure(failures[0]!.code, failures[0]!.message, {
-          ...failures[0]!.info,
-          attempts,
-        });
-      const code = answered
-        ? 'partial_failure'
-        : failures.every((f) => f.code === 'unsupported_operation')
-          ? 'unsupported_operation'
-          : 'all_sources_failed';
-      const diagnostics = failures.find((failure) => failure.info.detail?.diagnostics)?.info.detail
-        .diagnostics;
-      const configurationRecovery =
-        !answered &&
-        failures.every(
-          (failure) =>
-            failure.code === 'invalid_argument' &&
-            failure.info.detail?.reason === 'configuration_error' &&
-            failure.info.detail?.request_issued === false &&
-            failure.info.recovery === failures[0]!.info.recovery,
-        )
-          ? failures[0]!.info.recovery
-          : undefined;
-      throw new ToolFailure(
-        code,
-        answered
-          ? 'Some sources answered empty; others did not answer.'
-          : 'No requested source completed the operation.',
-        {
-          attempts,
-          retry: failures.some((f) => f.info.retry === 'safe') ? 'safe' : 'no',
-          ...(configurationRecovery
-            ? { recovery: configurationRecovery }
-            : code === 'unsupported_operation' &&
-                failures.every((f) => f.info.detail?.reason === 'filter_unsupported')
-              ? { recovery: 'Use zlibrary for exact, or drop exact with the caller’s agreement.' }
-              : {}),
-          ...(diagnostics ? { detail: { diagnostics } } : {}),
-        },
-      );
-    }
-    if (!books.length) next = earliestEmpty ?? next;
-    const rows = books.map((book) => {
-      const actualSource = selected!;
-      book = { ...book, source: actualSource };
+      !Array.isArray(fetched) ||
+      fetched.length > 50 ||
+      fetched.some((book) => !book || (book.source && sourceName(book.source) !== source))
+    )
+      throw new ToolFailure('provider_error', 'Provider returned an invalid page.', {
+        source,
+        retry: 'safe',
+        detail: { reason: 'protocol_error' },
+      });
+    const rows = fetched.map((raw, index) => {
+      const book = { ...raw, source };
+      const metadata = this.compact({ book, source }, false);
+      delete metadata.source;
       return {
-        ...this.compact(
-          {
-            book,
-            source: actualSource,
-            query: [args.query, args.author].filter(Boolean).join(' '),
-          },
-          true,
-        ),
-        ...(book.downloaded_at ? { downloaded_at: book.downloaded_at } : {}),
+        id: String(book.id ?? book.md5 ?? index),
+        source,
+        book,
+        metadata,
+        md5: book.md5,
+        rank: index + 1,
+        filterResult: checkMergedRowFilters({ ...metadata, extension: metadata.format }, request),
+        downloadAvailable: this.capabilities(source).download_available,
+        quotaRemaining: this.estimates.get(source)?.remaining,
       };
     });
-    if (operation === 'search' && active) {
-      const windows = attempts
-        .filter((a) => a.filtering)
-        .map((a) => {
-          const f = a.filtering!;
-          if (!f.applied.length)
-            return `${a.source}: ${f.examined} rows examined; no metadata predicates were checked (${f.scope}).`;
-          return `${a.source}: ${f.matched} of ${f.examined} examined rows matched; ${f.rejected} rejected, ${f.unknown} unknown metadata excluded (${f.scope}).`;
-        });
-      note = [
-        ...windows,
-        ...attempts
-          .filter((a) => a.filtering && a.source !== 'zlibrary')
-          .map((a) => `This server returns at most 50 ${a.source} rows per query.`),
-        ...(languages.unrecognized.length
-          ? ['Unrecognized language values were matched literally; see filtering.unrecognized.']
-          : []),
-        ...(attempts.some((a) => a.filtering?.native_only?.includes('exact'))
-          ? ['exact was sent to Z-Library, not checked by this server.']
-          : []),
-        ...(!books.length
-          ? [
-              `${Object.keys(filterRequest).length ? 'No matches' : 'No rows returned'} in these windows; later matches may exist. ${attempts.some((a) => a.source === 'zlibrary') ? 'Try a narrower query' : 'Try zlibrary or a narrower query'} without relaxing filters. To see rows excluded for unknown metadata, search without the affected metadata filters.`,
-            ]
-          : []),
-      ].join(' ');
-    }
+    const nativeSent = nonempty({
+      year_from: request.year_from,
+      year_to: request.year_to,
+      ...(languages.length ? { languages } : {}),
+      ...(formats.length ? { formats } : {}),
+      ...(request.exact ? { exact: true } : {}),
+    });
     return {
       rows,
-      ...(operation === 'search' && active
-        ? {
-            filtering: {
-              requested: effectiveRequest,
-              ...(languages.unrecognized.length
-                ? { unrecognized: { languages: languages.unrecognized } }
-                : {}),
-            },
-          }
-        : {}),
-      ...(next ? { next_cursor: this.refs.mintStable('c', next) } : {}),
-      ...(operation === 'search'
-        ? {
-            routing: nonempty({
-              requested,
-              served_by: rows.length ? selected : undefined,
-              continuation_source: operation === 'search' && active ? next?.served : undefined,
-              fell_back: rows.length > 0 && selected !== requested[0],
-              attempts,
-            }),
-          }
-        : {}),
-      ...(note
-        ? { note }
-        : books.length === 0 && operation === 'search'
-          ? {
-              note: cursor
-                ? 'No more matches for this continuation.'
-                : 'No matches; try exact:false, fewer filters or another source.',
-            }
-          : {}),
+      accepted: rows.filter((row) => row.filterResult.status === 'pass').length,
+      ...(source === 'zlibrary' && fetched.length === 50 ? { more: true as const } : {}),
+      ...(source === 'zlibrary' ? { filtering: { native_sent: nativeSent } } : {}),
     };
+  }
+  private async collect(
+    plan: SearchPlan,
+    options: CallOptions,
+    page = 1,
+    startedAt?: number,
+  ): Promise<CollectedSource[]> {
+    if (!plan.intent.length)
+      return plan.sources.map((view) => ({
+        source: view.name,
+        state: 'not_asked',
+        reason: plan.excluded[view.name] ?? 'not_in_default_order',
+      }));
+    const states = this.runtime.localState?.() ?? {};
+    const blocked = Object.fromEntries(
+      Object.entries(states).flatMap(([name, state]) =>
+        state.admission === 'backoff' ||
+        (state.breakerBlocked ?? (state.breaker === 'open' && (state.breakerRetryAfterS ?? 0) > 0))
+          ? [
+              [
+                name,
+                {
+                  reason: state.admission === 'backoff' ? 'auth_backoff' : 'breaker_open',
+                  retry_after_s: Math.max(
+                    state.admissionRetryAfterS ?? 0,
+                    state.breakerRetryAfterS ?? 0,
+                  ),
+                },
+              ],
+            ]
+          : [],
+      ),
+    );
+    const registry = new SourceRegistry(
+      this.registry.sources.map((spec) => {
+        const view = plan.sources.find((view) => view.name === spec.name)!;
+        return {
+          ...spec,
+          capabilities: () => view.capabilities,
+          defaultSearch: () => view.defaultSearch,
+          searchWindow: this.runtime.registry
+            ? spec.searchWindow
+            : (request, signal) => this.sourceWindow(spec.name, request, signal, options),
+        };
+      }),
+    );
+    let snapshot: Awaited<ReturnType<typeof fanOut>>;
+    try {
+      snapshot = await fanOut(
+        registry,
+        { ...plan.request, page },
+        {
+          sources: plan.intent,
+          env: this.env,
+          waitMs: this.settings.waitMs,
+          now: this.runtime.now,
+          startedAt,
+          signal: options.signal,
+          blocked,
+        },
+      );
+    } catch (error) {
+      if (error instanceof ToolFailure && error.code === 'cancelled')
+        for (const line of error.info.attempts ?? []) this.recent.record(line.source, line);
+      throw error;
+    }
+    return Object.entries(snapshot.sources).map(([source, line]): CollectedSource => {
+      this.recent.record(source, line);
+      if (line.state === 'rows' || line.state === 'empty') {
+        const window = snapshot.windows.get(source)!;
+        return {
+          source,
+          state: 'answered',
+          ms: line.ms,
+          copies: window.rows.map((row, index) => ({
+            ...row,
+            source,
+            id: String(row.id ?? index),
+            ref: `input-${source}-${index}`,
+            metadata: (row.metadata ?? {}) as any,
+            book: row.book as any,
+            md5: row.md5 as string | undefined,
+          })),
+          ...(window.more ? { more: true as const } : {}),
+          ...(window.filtering?.native_sent
+            ? { nativeSent: window.filtering.native_sent as Record<string, unknown> }
+            : {}),
+        };
+      }
+      if (line.state === 'failed')
+        return { source, state: 'failed', ms: line.ms, failure: snapshot.failures.get(source)! };
+      if (line.state === 'late') return { source, state: 'late', ms: line.ms };
+      if (line.state === 'not_asked') return { source, ...line };
+      throw new ToolFailure('internal', 'Invalid terminal source state.');
+    });
+  }
+  private async searchPage(args: any, options: CallOptions) {
+    if (args.cursor !== undefined) {
+      if (args.cursor.slice(1, 14) === this.refs.nonce) {
+        this.refs.get<Cursor>(args.cursor, 'c');
+        throw new ToolFailure('invalid_argument', 'Cursor belongs to another operation.');
+      }
+      return this.searches.page(args.cursor, options);
+    }
+    const startedAt = this.runtime.now?.() ?? performance.now();
+    const plan = planSearch(args, this.views(), this.settings);
+    const collected = await this.collect(plan, options, 1, startedAt);
+    return this.searches.retain(plan, collected, {
+      refill: async (page, signal) => {
+        const dispatched = collected.filter((result) => result.state !== 'not_asked');
+        const source = dispatched[0]!.source;
+        const narrowed = { ...plan, intent: [source] };
+        const next = await this.collect(narrowed, { signal }, page);
+        return next.find((result) => result.source === source)!;
+      },
+    });
   }
 }

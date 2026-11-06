@@ -94,9 +94,9 @@ for (const key of ['', 'synthetic-secret']) {
     const search = await tools.call('search', { query: 'book', sources: ['annas'] });
     expect(search).not.toHaveProperty('error');
     expect(search.rows).toEqual([]);
-    expect(search.routing.attempts).toEqual([{ source: 'annas', outcome: 'empty' }]);
+    expect(search.sources.annas).toMatchObject({state:'empty',rows:0});expect(search.all_answered).toBe(true);
     expect(invoke).toHaveBeenCalledWith('search_multi_source',
-      { query: 'book', source: 'annas', count: 50 }, {});
+      { query: 'book', source: 'annas', count: 50, multi_source:false }, {signal:expect.any(AbortSignal)});
   });
 }
 
@@ -111,7 +111,7 @@ test('supported operations are symmetric across configured and unconfigured sour
   expect(empty.zlibrary.operations).toEqual(['search', 'details', 'download', 'history']);
   for (const source of ['libgen', 'annas', 'zlibrary']) {
     expect(empty[source].operations).toEqual(configured[source].operations);
-    expect(Object.keys(empty[source]).sort()).toEqual(
+    expect(Object.keys(empty[source]).filter(key=>key!=='off_reason').sort()).toEqual(
       Object.keys(empty.libgen).concat(source === 'libgen' ? [] : ['note']).sort(),
     );
   }
@@ -123,34 +123,14 @@ test('supported operations are symmetric across configured and unconfigured sour
   await checkTrustedBases();
 });
 
-test.each([
-  ['libgen'], ['annas'], ['libgen', 'annas'], ['annas', 'libgen'], ['zlibrary', 'libgen'],
-])('empty search has no serving source for order %j', async (...sources) => {
-  const invoke = jest.fn(async () => ({ books: [] }));
-  const result = await new AcquisitionTools(invoke, {}).call('search', { query: 'book', sources });
-  expect(result.rows).toEqual([]);
-  expect(result.routing).not.toHaveProperty('served_by');
-  expect(result.routing.fell_back).toBe(false);
-  expect(result.routing.requested).toEqual(sources);
-  expect(result.routing.attempts.map(a => [a.source, a.outcome])).toEqual(
-    sources.map(source => [source, source === 'zlibrary' ? 'skipped' : 'empty']),
-  );
+test.each([['libgen'],['annas'],['libgen','annas'],['annas','libgen'],['zlibrary','libgen']])('empty source-set %j preserves intent and reports unavailable members',async(...sources)=>{
+ const invoke=jest.fn(async()=>({books:[]}));const result=await new AcquisitionTools(invoke,{}).call('search',{query:'book',sources});
+ if(sources.includes('zlibrary')) {expect(result.error.code).toBe('partial_failure');expect(result.error.attempts.find(a=>a.source==='zlibrary')).toMatchObject({state:'not_asked',reason:'credentials_missing'});}
+ else {expect(result.rows).toEqual([]);expect(result.all_answered).toBe(true);for(const source of sources)expect(result.sources[source]).toMatchObject({state:'empty',rows:0});expect(result).not.toHaveProperty('routing');}
 });
 
-test('an exhausted continuation does not name its previously serving fallback', async () => {
-  const invoke = jest.fn(async (op, args) => ({
-    books: op === 'search' && args.page === 1 ? [{ id: '1', hash: 'abc' }] : [],
-  }));
-  const tools = new AcquisitionTools(invoke, credentials);
-  const first = await tools.call('search', { query: 'book', sources: ['libgen', 'zlibrary'], limit: 1 });
-  expect(first.routing).toMatchObject({ served_by: 'zlibrary', fell_back: true });
-  const next = await tools.call('search', { cursor: first.next_cursor });
-  expect(next.rows).toEqual([]);
-  expect(next.routing).not.toHaveProperty('served_by');
-  expect(next.routing.fell_back).toBe(false);
-  expect(next.routing.requested).toEqual(['libgen', 'zlibrary']);
-  expect(next.routing.attempts).toEqual([{ source: 'zlibrary', outcome: 'empty' }]);
-  await checkNonemptyRouting();
+test('an exhausted single-source refill reports emptiness rather than a stale serving source',async()=>{
+ const invoke=jest.fn(async(op,args)=>({books:op==='search'&&args.page===1?Array.from({length:50},(_,i)=>({id:String(i),hash:'abc'})):[]}));const tools=new AcquisitionTools(invoke,credentials);const first=await tools.call('search',{query:'book',sources:['zlibrary'],limit:50});const next=await tools.call('search',{cursor:first.next_cursor});expect(next.rows).toEqual([]);expect(next.sources.zlibrary.state).toBe('empty');expect(next).not.toHaveProperty('routing');expect(next.all_answered).toBe(true);await checkNonemptyRouting();
 });
 
 // Positive controls embedded in the regressions constrain valid configurations.
@@ -190,6 +170,6 @@ async function checkNonemptyRouting() {
   });
   const result = await new AcquisitionTools(invoke, {}).call('search', { query: 'book', sources });
   expect(result.rows).toHaveLength(1);
-  expect(result.routing).toMatchObject({ requested: sources, served_by: served, fell_back: fellBack });
+  expect(result.rows[0].source).toBe(served);expect(result.sources[served].state).toBe('rows');expect(result.all_answered).toBe(true);expect(result).not.toHaveProperty('routing');
   }
 }

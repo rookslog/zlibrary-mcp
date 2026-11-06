@@ -103,6 +103,14 @@ export class EapiSessionOwner {
   private validatedEpoch = 0;
   private loginFailures = new Map<string, LoginFailure>();
 
+  /** Read-only admission view: no identity switch, login, validation or reset. */
+  admission(identity: string): { admission: 'open' | 'backoff'; admissionRetryAfterS?: number } {
+    const retryAt = this.loginFailures.get(identity)?.retryAt ?? 0;
+    return retryAt > Date.now()
+      ? { admission: 'backoff', admissionRetryAfterS: (retryAt - Date.now()) / 1000 }
+      : { admission: 'open' };
+  }
+
   generationFor(identity: string): number {
     if (identity !== this.identity) {
       this.acquisition?.controller.abort();

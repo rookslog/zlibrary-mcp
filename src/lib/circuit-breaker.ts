@@ -173,6 +173,20 @@ export class CircuitBreaker {
     return this.state;
   }
 
+  /** Observe admission without advancing OPEN to HALF_OPEN or taking a probe. */
+  snapshot() {
+    const blocked =
+      (this.state === 'OPEN' && this.openError().context.retryAfterMs > 0) ||
+      (this.state === 'HALF_OPEN' && this.probe?.exclusive === true);
+    return {
+      breaker: this.state.toLowerCase() as 'closed' | 'open' | 'half_open',
+      breakerBlocked: blocked,
+      ...(this.state !== 'CLOSED'
+        ? { breakerRetryAfterS: this.openError().context.retryAfterMs / 1000 }
+        : {}),
+    };
+  }
+
   /**
    * Get current failure count
    */

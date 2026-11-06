@@ -4,6 +4,7 @@ import importlib.util
 import json
 import os
 from pathlib import Path
+import shutil
 import subprocess
 import sys
 import xml.etree.ElementTree as ET
@@ -448,6 +449,11 @@ def test_live_job_never_invokes_integration_without_explicit_unblocked(
     )
     fake_uv.chmod(0o755)
     live_output = tmp_path / "live-output"
+    (tmp_path / "scripts").mkdir()
+    shutil.copyfile(
+        ROOT / "scripts/filter_live_test_output.py",
+        tmp_path / "scripts/filter_live_test_output.py",
+    )
 
     def enabled(condition):
         result = subprocess.run(
@@ -458,7 +464,7 @@ def test_live_job_never_invokes_integration_without_explicit_unblocked(
                 # GitHub compares expression strings without case sensitivity.
                 "const lower=v=>typeof v==='string'?v.toLowerCase():"
                 "v&&typeof v==='object'?Object.fromEntries(Object.entries(v).map(([k,x])=>[k,lower(x)])):v;"
-                "console.log(new Function('needs','steps','return '+d.condition)(lower(d.needs),lower(d.steps)));",
+                "console.log(new Function('needs','steps','always','return '+d.condition)(lower(d.needs),lower(d.steps),()=>true));",
             ],
             input=json.dumps({"condition": condition, "needs": needs, "steps": steps}),
             capture_output=True,

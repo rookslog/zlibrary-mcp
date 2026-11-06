@@ -187,6 +187,10 @@ updated drift report. No collection or login runs. This is neither a pass nor
 recovery and cannot itself file a drift issue. Independent probe failures still
 alert; reachability and offline checks are unchanged.
 
+`filter_live_test_output.py` keeps test output out of uploaded files. The live
+job uses short tracebacks, filters the configured literal values before upload,
+and skips diagnostic upload if filtering cannot complete.
+
 The credentialed live suite, including collection, requires an explicit
 `zlib_blocked=false` from the reachability probe. A true value reports `blocked`;
 missing, empty or any other value reports `unknown` and skips logins. A failed

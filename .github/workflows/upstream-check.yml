@@ -228,13 +228,20 @@ jobs:
           uv run pytest -m integration --collect-only --no-cov -q
           echo "execution_started=true" >> "$GITHUB_OUTPUT"
           set +e
-          uv run pytest -m integration --no-cov --benchmark-disable --no-header --junitxml=live.xml -q 2>&1 | tee live.log
+          uv run pytest -m integration --no-cov --benchmark-disable --no-header --tb=short --junitxml=live.xml -q 2>&1 | tee live.log
           code=${PIPESTATUS[0]}
           set -e
           echo "pytest_exit_code=$code" >> "$GITHUB_OUTPUT"
           uv run python scripts/classify_live_tests.py --exit-code "$code" --junitxml live.xml
-      - uses: actions/upload-artifact@v7
+      - name: Keep test output out of uploaded files
+        id: filter_output
         if: always()
+        env:
+          ZLIBRARY_EMAIL: ${{ secrets.ZLIBRARY_CI_EMAIL }}
+          ZLIBRARY_PASSWORD: ${{ secrets.ZLIBRARY_CI_PASSWORD }}
+        run: python3 scripts/filter_live_test_output.py
+      - uses: actions/upload-artifact@v7
+        if: always() && steps.filter_output.outcome == 'success'
         with:
           name: live-integration-log
           path: |

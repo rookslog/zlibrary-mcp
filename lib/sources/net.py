@@ -657,6 +657,14 @@ class WalkDeadline:
         left = max(0.0, self._expires_at - clock)
         return self._remaining_limit(left) if self._remaining_limit else left
 
+    def child(self, budget: float) -> "WalkDeadline":
+        """A shorter phase clock sharing the injected clock and parent ceiling."""
+        return WalkDeadline(
+            min(budget, self.remaining()),
+            clock=self._clock,
+            remaining_limit=lambda left: min(left, self.remaining()),
+        )
+
     def expired(self) -> bool:
         """True once nothing further may be started."""
         return self.remaining() <= 0.0

@@ -130,6 +130,10 @@ Scheduled runs also publish an attempt-bound [versioned source-health report](do
 after both jobs, preserving missing or untested coverage rather than treating
 job success as a healthy source.
 
+The live step uses short tracebacks and filters the configured literal values
+before uploading diagnostic files. If filtering fails, those files are not
+uploaded. This keeps test output out of uploaded files.
+
 | Tier | Command | Needs |
 |------|---------|-------|
 | Fast (PR gate) | `uv run pytest -m "not slow and not integration and not performance"` | Nothing extra |

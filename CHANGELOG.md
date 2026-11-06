@@ -9,10 +9,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
-- Source downloads gaining at least 64 KiB beyond the furthest offset keep
-  recovering without spending the no-progress budget. Repeated prefixes, gzip
-  restarts and tiny ranges spend it; every retry is paced by 250 ms. Staged
-  bytes survive Range 500/502/503/504 replies.
+- Source downloads persist decoded chunks without waiting for a full buffer,
+  preserving partial tails. New high-water gain accumulates
+  across attempts; each 64 KiB credit resets the no-progress count. Repeated
+  prefixes, gzip restarts and tiny ranges cannot repeatedly earn credit;
+  every retry is paced by 250 ms. Encoded drops still restart from zero, and
+  staged bytes survive Range 500/502/503/504 replies.
+- With another candidate remaining, known-length source transfers yield when
+  their projected remainder plus retry wait exceeds 1.5 times the chain time
+  left. If all later candidates fail, return once to each guard-abandoned
+  resolved URL in order without its guard, re-resolution or another keyed quota
+  spend.
+  The return restarts its stage at zero under the original deadline and retains
+  the original quota observation. Lone/last candidates and unknown totals keep
+  the existing allowance; unknown totals can still hold the whole chain.
+- Guard decisions emit one numeric stderr record with net rate and time left.
+- A lone response repeatedly dropping after 5,000 bytes now reports
+  `partial_transfer` after three requests by default, rather than `protocol_error`
+  after one. The breaker treats `partial_transfer` as transient.
 - LibGen retries a wholly unresolved mirror walk once under the same deadline.
 - Known source sizes can extend the transfer allowance at a configurable
   40 KiB/s floor up to a 3600s ceiling (or a higher configured base); the long

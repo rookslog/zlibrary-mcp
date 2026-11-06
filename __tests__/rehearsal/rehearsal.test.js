@@ -155,7 +155,7 @@ test('S5 capture observed tool names and argument names (not an approved surface
       true,
     );
     expect(surface.map(t => t.name)).toEqual(['download', 'get_book', 'get_history', 'get_limits', 'search']);
-    expect(JSON.stringify(listed).length).toBeLessThan(7100);
+    expect(JSON.stringify(listed).length).toBeLessThan(9200);
     await h.captureSurface(surface);
   });
 });

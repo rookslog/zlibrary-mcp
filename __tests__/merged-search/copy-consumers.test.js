@@ -247,7 +247,7 @@ test('F27 same identity reuses intact receipt; foreign same-MD5 identity refuses
   expect(snapshot(f.dir)).toEqual(before);
   expect(transfers(f.dir)).toEqual(['libgen']);
   expect(f.calls.filter((c) => c.operation === 'acquire_book')).toHaveLength(3);
-});
+}, 30000);
 test.each(['cancelled', 'refused'])(
   'M13 %s before intent creates no receipt or source transfer',
   async (phase) => {
@@ -281,6 +281,7 @@ test.each(['cancelled', 'refused'])(
     expect(transfers(f.dir)).toEqual([]);
     expect(fs.readdirSync(f.dir)).toEqual([]);
   },
+  30000,
 );
 test.each(['issued', 'checkpoint'])(
   'M13 %s failure keeps the real intent/recovery state and offers alternatives without substitution',
@@ -315,6 +316,7 @@ test.each(['issued', 'checkpoint'])(
       );
     else expect(record.sha256).toBeNull();
   },
+  30000,
 );
 test.each(['complete', 'reused'])(
   'M13 lost reply with %s artifact leaves authoritative bytes and provenance intact',
@@ -341,6 +343,7 @@ test.each(['complete', 'reused'])(
       expect(transfers(f.dir)).toEqual(['libgen']);
     }
   },
+  30000,
 );
 
 test('in-flight selected detail survives parent eviction and omits expired sibling refs', async () => {

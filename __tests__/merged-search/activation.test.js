@@ -1,4 +1,5 @@
 import { afterEach, beforeEach, expect, jest, test } from '@jest/globals';
+import os from 'node:os';
 import { AcquisitionTools } from '../../dist/lib/acquisition-tools.js';
 import { createServer, TOOL_DEFINITIONS } from '../../dist/index.js';
 import { RefStore } from '../../dist/lib/refs.js';
@@ -40,7 +41,7 @@ test.each([11999,12000,12001])('M06 public strict observation at %i preserves cu
  let resolve,now=0;const tools=make(async(op)=>op==='search'?new Promise(r=>resolve=r):{books:[book('fast')]},{},{now:()=>now});const pending=tools.call('search',{query:'Solaris'});await jest.advanceTimersByTimeAsync(0);now=observed;resolve({books:[book('boundary')]});await jest.advanceTimersByTimeAsync(observed);const reply=await pending;expect(reply.sources.zlibrary.state).toBe(observed<12000?'rows':'late');expect(reply.rows).toHaveLength(observed<12000?2:1);
 });
 test('F09 startup now rejects malformed wait/format settings before creating a server',async()=>{
- process.env.ZLIBRARY_OUTPUT_ROOT=process.env.TMPDIR;process.env.BOOK_SOURCE_SEARCH_WAIT_MS='bad';expect(()=>createServer()).toThrow(/BOOK_SOURCE_SEARCH_WAIT_MS/);delete process.env.BOOK_SOURCE_SEARCH_WAIT_MS;process.env.BOOK_FORMAT_PREFERENCE='pdf,,pdf';expect(()=>createServer()).toThrow(/BOOK_FORMAT_PREFERENCE/);
+ process.env.ZLIBRARY_OUTPUT_ROOT=os.tmpdir();process.env.BOOK_SOURCE_SEARCH_WAIT_MS='bad';expect(()=>createServer()).toThrow(/BOOK_SOURCE_SEARCH_WAIT_MS/);delete process.env.BOOK_SOURCE_SEARCH_WAIT_MS;process.env.BOOK_FORMAT_PREFERENCE='pdf,,pdf';expect(()=>createServer()).toThrow(/BOOK_FORMAT_PREFERENCE/);
 });
 test('F10 admission snapshot refuses before dispatch and limits exposes the same gate',async()=>{
  const calls=[];const tools=make(async(op)=>{calls.push(op);return {books:[book('fast')]};},{},{localState:()=>({zlibrary:{breaker:'closed',admission:'backoff',admissionRetryAfterS:7}})});const reply=await tools.call('search',{query:'Solaris'});expect(calls).toEqual(['search_multi_source']);expect(reply.sources.zlibrary).toEqual({state:'not_asked',reason:'auth_backoff',retry_after_s:7});const limits=await tools.call('get_limits');expect(limits.sources.zlibrary).toMatchObject({breaker:'closed',admission:'backoff',retry_after_s:7,recent:{searches:0,failed:0,late:0}});
@@ -51,13 +52,13 @@ test('F16 typed failures keep configuration recovery through the public frozen s
 test('F36 F38 public cursors memoize refill and selections keep source-bound raw books',async()=>{
  let calls=0;const tools=make(async(op,args)=>{if(op==='search'){calls++;return {books:Array.from({length:50},(_,i)=>book(`${args.page}-${i}`,{hash:'opaque'}))};}return {title:'Detail'};});const first=await tools.call('search',{query:'Solaris',sources:['zlibrary'],limit:50});const second=await tools.call('search',{cursor:first.next_cursor});expect(calls).toBe(2);expect(await tools.call('search',{cursor:first.next_cursor})).toEqual(second);expect(calls).toBe(2);const detail=await tools.call('get_book',{ref:second.rows[0].ref});expect(detail.source).toBe('zlibrary');expect(detail.identifiers.hash).toBe('opaque');
 });
-test('C retained window cap stops further requests while existing pages and refs remain usable',async()=>{
+test('retained window cap stops further requests while existing pages and refs remain usable',async()=>{
  const store=new SearchRecords({capacity:2,maxWindows:2,nonce:1n});let calls=0;const first=store.retain(plan(),collected('a'),{refill:async()=>{calls++;return collected('b')[0];}});const second=await store.page(first.next_cursor);expect(second.next_cursor).toBeUndefined();expect(second.sources.zlibrary.more).toBe(true);expect(store.select(first.rows[0].ref).copy.id).toBe('a');expect(await store.page(first.next_cursor)).toEqual(second);expect(calls).toBe(1);
 });
-test('C one refill subscriber cancels independently and its peer materializes a memoized page',async()=>{
+test('one refill subscriber cancels independently and its peer materializes a memoized page',async()=>{
  const store=new SearchRecords({capacity:2});let release,signal,calls=0;const first=store.retain(plan(),collected('a'),{refill:async(_page,s)=>{calls++;signal=s;return new Promise(r=>release=r);}});const caller=new AbortController();const a=store.page(first.next_cursor,{signal:caller.signal}).catch(e=>e);const b=store.page(first.next_cursor);await jest.advanceTimersByTimeAsync(0);caller.abort();let settled=false;a.then(()=>settled=true);await jest.advanceTimersByTimeAsync(0);expect(settled).toBe(true);expect((await a).code).toBe('cancelled');expect(signal.aborted).toBe(false);release(collected('b',false)[0]);expect((await b).rows).toHaveLength(1);expect(await store.page(first.next_cursor)).toEqual(await b);expect(calls).toBe(1);
 });
-test('C last refill subscriber withdraws ownership and late completion cannot materialize',async()=>{
+test('last refill subscriber withdraws ownership and late completion cannot materialize',async()=>{
  const store=new SearchRecords({capacity:2});let release,signal;const first=store.retain(plan(),collected('a'),{refill:async(_page,s)=>{signal=s;return new Promise(r=>release=r);}});const caller=new AbortController();const a=store.page(first.next_cursor,{signal:caller.signal}).catch(e=>e);await jest.advanceTimersByTimeAsync(0);caller.abort();await jest.advanceTimersByTimeAsync(0);expect(signal.aborted).toBe(true);expect((await a).code).toBe('cancelled');release(collected('late')[0]);await jest.advanceTimersByTimeAsync(0);expect(store.select(first.rows[0].ref).copy.id).toBe('a');
 });
 
@@ -68,7 +69,7 @@ test('A5 public wire schema accepts merged replies and refuses malformed state e
  const bad=structuredClone(reply);bad.rows[0].other_copies=[{ref:'r-other',source:'libgen'}];delete bad.rows[0].route_basis;expect(validate(bad)).toBe(false);
 });
 
-test('C abandoned refill remains fenced until its owner settles and cannot overlap a retry',async()=>{
+test('abandoned refill remains fenced until its owner settles and cannot overlap a retry',async()=>{
  const store=new SearchRecords({capacity:2});let release,calls=0;const first=store.retain(plan(),collected('a'),{refill:async()=>{calls++;return new Promise(r=>release=r);}});const caller=new AbortController();const a=store.page(first.next_cursor,{signal:caller.signal}).catch(e=>e);await jest.advanceTimersByTimeAsync(0);caller.abort();await a;await jest.advanceTimersByTimeAsync(0);const retry=store.page(first.next_cursor).catch(e=>e);await jest.advanceTimersByTimeAsync(0);expect(calls).toBe(1);release(collected('late')[0]);await retry;
 });
 test('M04 real owner backoff and breaker admission are visible locally without side effects',async()=>{

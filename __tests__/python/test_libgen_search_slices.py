@@ -485,3 +485,49 @@ async def test_h2_searches_stamp_for_mirror_and_sequential_pacing(
         else ["libgen.li", "libgen.li"]
     )
     assert calls[1][1] - calls[0][1] >= 2.0
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("phase", ["search preflight", "search pacing"])
+async def test_h3_unissued_phase_timeout_keeps_detail_and_uses_slice_reason(
+    monkeypatch, phase
+):
+    adapter = libgen.LibgenAdapter(SourceConfig(preflight_enabled=False))
+    monkeypatch.setattr(adapter, "_mirror_candidates", lambda: ["li"])
+    monkeypatch.setattr(adapter, "_preflight", AsyncMock())
+    detail = f"{phase} exceeded 5s"
+
+    async def bounded(awaitable, timeout, **kwargs):
+        if kwargs["operation"] == phase:
+            awaitable.close()
+            raise ProviderTimeoutError(
+                "libgen", "libgen.li", detail, reason="search_timeout"
+            )
+        return await awaitable
+
+    worker = AsyncMock()
+    monkeypatch.setattr(libgen, "bounded_await", bounded)
+    monkeypatch.setattr(libgen, "run_bounded", worker)
+    with pytest.raises(libgen.AllSourcesFailedError) as caught:
+        await adapter.search("Solaris", multi_source=True)
+    worker.assert_not_awaited()
+    assert len(caught.value.failures) == 1
+    failure = caught.value.failures[0]
+    assert failure.reason == "mirror_slice_exhausted"
+    assert failure.detail == detail
+    assert failure.to_dict()["host"] == "libgen.li"
+    assert "was not searched" in str(failure)
+
+
+@pytest.mark.asyncio
+async def test_h3_preflight_connection_failure_keeps_its_network_reason(monkeypatch):
+    adapter = libgen.LibgenAdapter(SourceConfig(preflight_enabled=False))
+    monkeypatch.setattr(adapter, "_mirror_candidates", lambda: ["li"])
+    failure = libgen.ProviderUnreachableError(
+        "libgen", "libgen.li", "synthetic refusal", reason="connect_refused"
+    )
+    monkeypatch.setattr(adapter, "_preflight", AsyncMock(side_effect=failure))
+    with pytest.raises(libgen.AllSourcesFailedError) as caught:
+        await adapter.search("Solaris", multi_source=True)
+    assert caught.value.failures == [failure]
+    assert caught.value.failures[0].reason == "connect_refused"

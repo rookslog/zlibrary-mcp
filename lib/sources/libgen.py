@@ -582,7 +582,14 @@ class LibgenAdapter(SourceAdapter):
             except (ProviderUnreachableError, ProviderTimeoutError) as exc:
                 if not multi_source and not isinstance(exc, ProviderUnreachableError):
                     raise
-                logger.warning("LibGen mirror %s unreachable: %s", mirror, exc)
+                if isinstance(exc, ProviderTimeoutError):
+                    exc = SourceError(
+                        exc.provider,
+                        exc.host,
+                        exc.detail,
+                        reason="mirror_slice_exhausted",
+                    )
+                logger.warning("LibGen mirror %s preflight failed: %s", mirror, exc)
                 failures.append(exc)
                 continue
 
@@ -609,7 +616,14 @@ class LibgenAdapter(SourceAdapter):
             except ProviderTimeoutError as exc:
                 if not multi_source:
                     raise
-                failures.append(exc)
+                failures.append(
+                    SourceError(
+                        exc.provider,
+                        exc.host,
+                        exc.detail,
+                        reason="mirror_slice_exhausted",
+                    )
+                )
                 continue
             if ready is False:
                 if multi_source:

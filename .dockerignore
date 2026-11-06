@@ -45,6 +45,7 @@ claudedocs
 .claude
 *.md
 !docker/README.md
+!THIRD-PARTY-NOTICES.md
 
 # Environment files (use docker/env.example)
 .env

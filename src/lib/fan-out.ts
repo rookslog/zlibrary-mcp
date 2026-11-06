@@ -1,6 +1,6 @@
 import { classifyFailure, ToolFailure } from './tool-errors.js';
 import type { ErrorCode } from './tool-errors.js';
-import type { MergedFilterRequest } from './row-filters.js';
+import type { MergedFilterRequest, FilterCheck } from './row-filters.js';
 import type { Env, SearchWindow, SourceRegistry } from './source-registry.js';
 
 export interface NotAsked {
@@ -59,6 +59,36 @@ function readonlyWindows(windows: Map<string, SearchWindow>): ReadonlyMap<string
     ) => windows.forEach((value, key) => callback.call(thisArg, value, key, view)),
   });
   return view;
+}
+/** Check the single all-record window contract before retaining it. */
+function validWindow(window: SearchWindow): boolean {
+  if (!Array.isArray(window.rows) || window.rows.length > 50) return false;
+  for (const [index, row] of window.rows.entries()) {
+    if (!row || row.rank !== index + 1 || !row.filterResult) return false;
+    const { checks, status } = row.filterResult;
+    if (!checks || typeof checks !== 'object' || Array.isArray(checks)) return false;
+    const values = Object.entries(checks) as [string, FilterCheck][];
+    if (
+      values.some(
+        ([key, check]) =>
+          !['year_from', 'year_to', 'languages', 'formats', 'exact'].includes(key) ||
+          !check ||
+          !['pass', 'fail', 'unknown'].includes(check.status) ||
+          typeof check.reason !== 'string',
+      )
+    )
+      return false;
+    const derived = values.some(([, check]) => check.status === 'fail')
+      ? 'fail'
+      : values.some(([, check]) => check.status === 'unknown')
+        ? 'unknown'
+        : 'pass';
+    if (status !== derived) return false;
+  }
+  return (
+    Number.isInteger(window.accepted) &&
+    window.accepted === window.rows.filter((row) => row.filterResult.status === 'pass').length
+  );
 }
 const cancelled = (): ToolFailure =>
   new ToolFailure('cancelled', 'Search cancelled.', {
@@ -140,9 +170,9 @@ export async function fanOut(
       const failed = registry.sources
         .filter((spec) => sources[spec.name]!.state === 'failed')
         .map((spec) => spec.name);
-      const rows = [...windows.values()].reduce((sum, window) => sum + window.rows.length, 0);
+      const rows = [...windows.values()].reduce((sum, window) => sum + window.accepted, 0);
       const note =
-        `${rows} rows from ${answered.join(', ') || 'no sources'}.` +
+        `${rows} accepted records from ${answered.join(', ') || 'no sources'}.` +
         (late.length ? ` ${late.join(', ')} still searching at ${elapsed(observed)} ms.` : '') +
         (failed.length ? ` ${failed.join(', ')} failed.` : '') +
         (!all_answered
@@ -219,6 +249,7 @@ export async function fanOut(
       if (window) {
         try {
           window = freeze(structuredClone(window));
+          if (!validWindow(window)) throw new Error('Invalid window contract.');
         } catch {
           window = undefined;
           error = new ToolFailure('provider_error', 'Provider returned an invalid window.', {
@@ -230,8 +261,8 @@ export async function fanOut(
       if (window) {
         windows.set(name, window);
         lines.set(name, {
-          state: window.rows.length ? 'rows' : 'empty',
-          rows: window.rows.length,
+          state: window.accepted ? 'rows' : 'empty',
+          rows: window.accepted,
           ms: elapsed(observed),
           ...(window.more ? { more: true as const } : {}),
           ...(window.filtering ? { filtering: window.filtering } : {}),

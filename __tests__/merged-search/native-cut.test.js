@@ -1,3 +1,4 @@
+import { windowFixture } from './window-fixture.js';
 import { afterEach, beforeEach, expect, jest, test } from '@jest/globals';
 import fs from 'node:fs';
 import os from 'node:os';
@@ -23,8 +24,11 @@ const alive = pid => {
 };
 async function until(predicate) { while (!predicate()) await immediate(); }
 function published(file) {
-  if (fs.existsSync(file)) return Promise.resolve();
-  return new Promise(resolve => { const watcher = fs.watch(dir, () => { if (fs.existsSync(file)) { watcher.close(); resolve(); } }); watchers.push(watcher); });
+  return new Promise(resolve => {
+    const watcher = fs.watch(dir, () => { if (fs.existsSync(file)) { watcher.close(); resolve(); } });
+    watchers.push(watcher);
+    if (fs.existsSync(file)) { watcher.close(); resolve(); }
+  });
 }
 afterEach(async () => {
   killAllPythonChildren('SIGKILL'); await until(() => liveChildCount() === 0);
@@ -34,9 +38,11 @@ afterEach(async () => {
   jest.clearAllTimers(); jest.useRealTimers(); fs.rmSync(dir, { recursive: true, force: true });
 });
 const spec = (name, work) => ({ name, capabilities: () => ({ configured: true, search_available: true, download_available: true }), defaultSearch: () => ({ on: true }), md5: () => undefined, searchWindow: work });
-const registry = work => new SourceRegistry([spec('fast', async () => ({ rows: [{ id: 'fast' }] })), spec('owned', work)]);
+const registry = work => new SourceRegistry([spec('fast', async () => windowFixture([{ id: 'fast' }])), spec('owned', work)]);
 function script(privateMode = false) {
   const ready = path.join(dir, 'ready'); const release = path.join(dir, 'release');
+  const gap = path.join(dir, 'readiness-gap'); const publish = path.join(dir, 'publish-ready');
+  const temporary = ready + '.tmp';
   const child = `import signal,time; signal.signal(signal.SIGTERM,signal.SIG_IGN); time.sleep(600)`;
   const lines = [
     'import os,sys,json,pathlib,signal,subprocess,time',
@@ -44,14 +50,29 @@ function script(privateMode = false) {
     ...(privateMode ? ['value=json.loads(sys.stdin.readline())'] : []),
     `child=subprocess.Popen([sys.executable,'-c',${JSON.stringify(child)}],stdin=subprocess.DEVNULL,stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL)`,
     // Descendant publishes readiness after installing its own TERM disposition.
-    `pathlib.Path(${JSON.stringify(ready)}).write_text(json.dumps([os.getpid(),child.pid]))`,
+    'readiness=json.dumps([os.getpid(),child.pid])',
+    `temporary=pathlib.Path(${JSON.stringify(temporary)})`,
+    "with temporary.open('w') as publication:",
+    '    publication.write(readiness[:1]); publication.flush()',
+    `    pathlib.Path(${JSON.stringify(gap)}).touch()`,
+    `    while not pathlib.Path(${JSON.stringify(publish)}).exists(): time.sleep(0.01)`,
+    '    publication.write(readiness[1:])',
+    `os.replace(temporary,${JSON.stringify(ready)})`,
     `while not pathlib.Path(${JSON.stringify(release)}).exists(): time.sleep(0.01)`,
     ...(privateMode ? ["value.update(domain='synthetic.invalid',remix_userid='1',remix_userkey='synthetic')", "os.write(3,(json.dumps(value)+'\\n').encode())"] : []),
     'print("late result",flush=True)',
   ];
   // Inherit ignored SIGTERM into the child before it executes its own handler.
   fs.writeFileSync(path.join(dir, 'native.py'), lines.join('\n'));
-  return { ready, release, pids: () => JSON.parse(fs.readFileSync(ready, 'utf8')) };
+  return { ready, release, gap, publish, temporary, pids: () => JSON.parse(fs.readFileSync(ready, 'utf8')) };
+}
+async function ready(f) {
+  const publication = published(f.ready);
+  await published(f.gap);
+  expect(fs.existsSync(f.ready)).toBe(false);
+  expect(fs.readFileSync(f.temporary, 'utf8')).toBe('[');
+  fs.writeFileSync(f.publish, 'go');
+  await publication;
 }
 const options = () => ({ pythonPath: 'python3', scriptPath: dir, mode: 'text', env: { PATH: process.env.PATH } });
 
@@ -62,10 +83,10 @@ native('M01 real private login child and descendant remain owned after reply; la
     controls++;
     await runPythonBridge('native.py', options(), { signal: childSignal, timeoutMs: 60000, sessionInput: input,
       onSession: update => owner.consume(update, 'synthetic', input.generation) });
-    return { rows: [{ id: 'late' }] };
+    return windowFixture([{ id: 'late' }]);
   });
   const response = fanOut(registry((_request, childSignal) => { signal = childSignal; return owner.run('synthetic', backend, { signal: childSignal, timeoutMs: 60000 }); }), {}, { waitMs: 100, now: () => now });
-  await published(f.ready); const pids = f.pids(); expect(pids.every(alive)).toBe(true);
+  await ready(f); const pids = f.pids(); expect(pids.every(alive)).toBe(true);
   now = 100; await jest.advanceTimersByTimeAsync(100); const result = await response;
   expect(signal.reason).toBe('search_cut'); expect(result.sources.owned.state).toBe('late');
   expect(liveChildCount()).toBe(1); expect(pids.every(alive)).toBe(true);
@@ -94,7 +115,7 @@ native.each(['caller', 'comparison'])('M02 source-owned lock outlives %s cancell
     const release = await acquire(signal); const number = ++issued;
     try {
       if (number === 1) await runPythonBridge('native.py', options(), { signal, timeoutMs: 60000 });
-      return { rows: [{ id: `issued-${number}` }] };
+      return windowFixture([{ id: `issued-${number}` }]);
     } finally {
       // The adapter owns this lease through runner rejection and native cleanup.
       if (number === 1) await until(() => f.pids().every(pid => !alive(pid)) && liveChildCount() === 0);
@@ -105,7 +126,7 @@ native.each(['caller', 'comparison'])('M02 source-owned lock outlives %s cancell
   const before = new AbortController(); before.abort();
   await expect(fanOut(sources, {}, { signal: before.signal })).rejects.toMatchObject({ code: 'cancelled' }); expect(issued).toBe(0);
   const caller = new AbortController();
-  const first = fanOut(sources, {}, { waitMs: 100, now: () => now, signal: caller.signal }).catch(e => e); await published(f.ready);
+  const first = fanOut(sources, {}, { waitMs: 100, now: () => now, signal: caller.signal }).catch(e => e); await ready(f);
   now = 100; if (origin === 'caller') caller.abort();
   await jest.advanceTimersByTimeAsync(100); const firstResult = await first;
   if (origin === 'caller') expect(firstResult.code).toBe('cancelled'); else expect(firstResult.sources.owned.state).toBe('late');
@@ -122,4 +143,21 @@ native.each(['caller', 'comparison'])('M02 source-owned lock outlives %s cancell
   await until(() => released); await jest.advanceTimersByTimeAsync(0);
   expect((await peer).sources.owned.state).toBe('rows'); expect(issued).toBe(2);
   expect(held).toBe(false); expect(fs.existsSync(lock)).toBe(false); expect(liveChildCount()).toBe(0);
+});
+
+native('F1 watcher exists before a publication crosses the negative-exists check', async () => {
+  const target = path.join(dir, 'race-ready');
+  const originalWatch = fs.watch, originalExists = fs.existsSync;
+  let watching = false, first = true, watchedAtCheck;
+  const watch = jest.spyOn(fs, 'watch').mockImplementation((...args) => { watching = true; return originalWatch(...args); });
+  const exists = jest.spyOn(fs, 'existsSync').mockImplementation(file => {
+    if (file === target && first) {
+      first = false; watchedAtCheck = watching;
+      fs.writeFileSync(target, '[]');
+      return false;
+    }
+    return originalExists(file);
+  });
+  try { const ready = published(target); expect(watchedAtCheck).toBe(true); await ready; }
+  finally { exists.mockRestore(); watch.mockRestore(); }
 });

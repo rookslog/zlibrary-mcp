@@ -17,6 +17,7 @@ export class AnnasMemberWorker {
   private child?: ChildProcessWithoutNullStreams;
   private starting?: Promise<void>;
   private pending = new Map<number, Pending>();
+  private cancelled = new Set<number>();
   private sequence = 0;
   private retryAt = 0;
   private state: SessionState = 'none';
@@ -46,8 +47,9 @@ export class AnnasMemberWorker {
   }
 
   private fail(): void {
-    // A pending call may have posted before its final status reply was delivered.
-    if (this.pending.size) this.retryAt = Math.max(this.retryAt, Date.now() + 60_000);
+    // An unacknowledged call may have posted before its final reply arrived.
+    if (this.pending.size || this.cancelled.size)
+      this.retryAt = Math.max(this.retryAt, Date.now() + 60_000);
     this.state = 'none';
     for (const entry of this.pending.values()) {
       entry.cleanup();
@@ -60,6 +62,7 @@ export class AnnasMemberWorker {
       );
     }
     this.pending.clear();
+    this.cancelled.clear();
   }
 
   private refs(active: boolean): void {
@@ -82,11 +85,13 @@ export class AnnasMemberWorker {
       this.child = child;
       this.buffer = '';
       process.once('exit', this.onExit);
+      let failed = false;
       child.stdout.setEncoding('utf8');
       child.stdout.on('data', (chunk: string) => {
-        if (this.child !== child) return;
+        if (failed || this.child !== child) return;
         this.buffer += chunk;
         if (Buffer.byteLength(this.buffer) > 4 * 1024 * 1024) {
+          failed = true;
           this.fail();
           child.kill();
           return;
@@ -100,6 +105,7 @@ export class AnnasMemberWorker {
             this.state = message.member_session;
             if (Number.isFinite(message.retry_at) && message.retry_at >= 0)
               this.retryAt = message.retry_at;
+            this.cancelled.delete(message.id);
             if (message.status_only) continue;
             const entry = this.pending.get(message.id);
             if (!entry) continue;
@@ -115,8 +121,10 @@ export class AnnasMemberWorker {
               );
             else entry.resolve(message.result);
           } catch {
+            failed = true;
             this.fail();
             child.kill();
+            return;
           }
         }
         if (!this.pending.size) this.refs(false);
@@ -149,6 +157,8 @@ export class AnnasMemberWorker {
         const entry = this.pending.get(id);
         if (!entry) return;
         this.pending.delete(id);
+        // Retain failure accounting until the child acknowledges cancellation.
+        this.cancelled.add(id);
         entry.cleanup();
         this.child?.stdin.write(JSON.stringify({ id, cancel: true }) + '\n');
         reject(

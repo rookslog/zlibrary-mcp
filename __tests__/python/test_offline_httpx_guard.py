@@ -95,8 +95,16 @@ def test_transports(monkeypatch):
 """
     )
     result = subprocess.run(
-        [sys.executable, "-m", "pytest", "-q", "-m", "integration",
-         "-c", str(tmp_path / "pytest.ini")],
+        [
+            sys.executable,
+            "-m",
+            "pytest",
+            "-q",
+            "-m",
+            "integration",
+            "-c",
+            str(tmp_path / "pytest.ini"),
+        ],
         cwd=tmp_path,
         env={**os.environ, "PYTEST_ADDOPTS": ""},
         capture_output=True,

@@ -137,8 +137,8 @@ over HTTPS on the same trusted hosts as fast download. The cookie stays in an An
 resident Python worker's memory and is reused across searches until expiry or
 refusal. One shared refresh is allowed per refused session; failed/rejected
 sign-ins back off for 60 seconds, including across worker restarts in the same
-Node process. A worker failure with a search pending starts a conservative
-60-second sign-in backoff even when the POST outcome is unknown. Anonymous
+Node process. A worker failure before a search or its cancellation is acknowledged
+starts a conservative 60-second sign-in backoff even when the POST outcome is unknown. Anonymous
 HTTP search remains the fallback. Result anchors take
 priority over challenge words in book titles. A visible, scoped English
 “No files found.” marker returns empty results on anonymous and member paths.

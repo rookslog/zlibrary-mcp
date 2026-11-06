@@ -270,8 +270,8 @@ existing HTTP-base behavior is unchanged. A response setting `aa_account_id2` ac
 Search reuses it across MCP calls; one shared re-sign-in follows a refusal,
 with no retry loop. Rejected/failed sign-ins use a 60-second cooldown; Node
 remembers the private retry deadline across child crashes and passes it to the
-next worker. A worker failure while a search is pending also starts a conservative
-60-second sign-in backoff, covering a POST with no delivered outcome or an
+next worker. A worker failure before a search or its cancellation is acknowledged
+also starts a conservative 60-second sign-in backoff, covering a POST with no delivered outcome or an
 oversized reply. This can defer a valid sign-in even if the POST never ran.
 Cancellation publishes a status-only private update. Ordinary HTTP
 search remains the fallback. Key-configured pages follow at most five same-origin hops,

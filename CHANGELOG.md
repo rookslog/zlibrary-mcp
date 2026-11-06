@@ -10,11 +10,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Fixed
 
 - Source downloads persist decoded chunks without waiting for a full buffer,
-  preserving dropped tails smaller than 8 KiB. New high-water gain accumulates
+  preserving partial tails. New high-water gain accumulates
   across attempts; each 64 KiB credit resets the no-progress count. Repeated
   prefixes, gzip restarts and tiny ranges cannot repeatedly earn credit;
   every retry is paced by 250 ms. Encoded drops still restart from zero, and
   staged bytes survive Range 500/502/503/504 replies.
+- With another candidate remaining, known-length source transfers stop recovery
+  when their observed net rate cannot finish within the chain time left. Lone
+  or last candidates and unknown totals keep the existing deadline allowance.
+- A lone response repeatedly dropping after 5,000 bytes now reports
+  `partial_transfer` after three requests by default, rather than `protocol_error`
+  after one. The breaker treats `partial_transfer` as transient.
 - LibGen retries a wholly unresolved mirror walk once under the same deadline.
 - Known source sizes can extend the transfer allowance at a configurable
   40 KiB/s floor up to a 3600s ceiling (or a higher configured base); the long

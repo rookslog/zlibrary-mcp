@@ -982,6 +982,7 @@ class LibgenAdapter(SourceAdapter):
                         source=SourceType.LIBGEN,
                         quota_info=None,  # LibGen has no quota
                         mirror=mirror_host(mirror),
+                        has_more_candidates=index + 1 < len(mirrors),
                     )
                 else:
                     continue

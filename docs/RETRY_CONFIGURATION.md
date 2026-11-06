@@ -183,9 +183,18 @@ resets the no-progress count; smaller gains accumulate toward
 that next credit while spending the allowance. The initial attempt retains its
 existing recovery allowance. Resending a prefix, restarting gzip at the same
 prefix, and tiny valid ranges cannot earn repeated credit. Decoded chunks are
-written as they arrive, including tails smaller than 8 KiB; a dropped encoded
+written as they arrive, including partial tails; a dropped encoded
 response still clears its stage and restarts without Range because decoded
 offsets cannot address encoded bytes. `0` continues to disable recovery.
+When an untried mirror or provider remains, recovery also checks feasibility
+once at least 64 KiB has been observed. For a known decoded total, it estimates
+the time to receive the remaining bytes at the net high-water rate so far,
+including the next retry wait. If that exceeds the chain time left, it abandons
+this mirror and proceeds to the next candidate. Candidates are resolved lazily;
+an untried alternative may itself fail resolution. A lone or last candidate,
+and transfers without a known total, keep the existing patience up to the same
+deadline. This check runs before retries; it does not interrupt a connection
+that keeps streaming without a retry.
 Every admitted retry waits 250 ms, including read/protocol drops and 416
 restarts. A Range reply of 500, 502, 503 or 504 preserves its prefix for another allowed request.
 An exhausted HTTP error keeps its `HTTP NNN` detail.

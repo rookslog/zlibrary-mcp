@@ -71,3 +71,4 @@ class DownloadResult:
     quota_info: Optional[QuotaInfo] = None
     # Resolution identity, distinct from the host observed during transfer.
     mirror: str = ""
+    has_more_candidates: bool = False  # Untried destinations, not prefetched URLs.

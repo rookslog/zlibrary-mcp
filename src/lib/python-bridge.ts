@@ -16,6 +16,7 @@ export interface BridgeErrorEnvelope {
   error: string;
   type?: string;
   status_code?: number;
+  redirect_host?: string;
   details?: any;
   diagnostics?: unknown;
 }
@@ -135,6 +136,7 @@ export async function callPythonFunction(
             details: envelope.details,
             pythonErrorType: envelope.type,
             httpStatus: envelope.status_code,
+            redirectHost: envelope.redirect_host,
             diagnostics: readAuthDiagnostics(envelope.diagnostics),
           },
           isBridgeDetailRetryable(envelope.details),

@@ -14,6 +14,7 @@ from pathlib import Path
 
 from dotenv import load_dotenv
 import httpx
+from zlibrary.eapi import RedirectRefusedError, raise_for_refused_redirect
 
 # Load .env from project root
 load_dotenv(Path(__file__).parent.parent.parent / ".env")
@@ -30,6 +31,7 @@ def test_fast_download(md5: str):
 
     try:
         response = httpx.get(url, timeout=30, follow_redirects=False)
+        raise_for_refused_redirect(response)
         print(f"Status: {response.status_code}")
         print(f"Content-Type: {response.headers.get('content-type', 'unknown')}")
 
@@ -52,6 +54,12 @@ def test_fast_download(md5: str):
                 "body": response.text[:500],
             }
 
+    except RedirectRefusedError as e:
+        return {
+            "status": "redirect_refused",
+            "code": e.status_code,
+            "host": e.target_host,
+        }
     except httpx.TimeoutException:
         print("ERROR: Request timed out")
         return {"status": "timeout"}

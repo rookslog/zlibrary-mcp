@@ -12,6 +12,7 @@ FAILURE_TYPES = frozenset(
     {
         "EAPIAuthenticationError",
         "HTTPStatusError",
+        "RedirectRefusedError",
         "DiamWallError",
         "NonJSONResponseError",
         "ConnectError",
@@ -126,13 +127,29 @@ def failure_diagnostics(error, *, refreshed=False):
     except ValueError:
         request_id = str(uuid4())
     causes = list(_causes(error))
-    from zlibrary.eapi import EAPIAuthenticationError, DiamWallError
+    from zlibrary.eapi import (
+        EAPIAuthenticationError,
+        DiamWallError,
+        RedirectRefusedError,
+    )
 
+    # The closest typed verdict wins. A replacement's real 401 must not be
+    # hidden by the refusal that triggered recovery, or vice versa.
+    verdict = next(
+        (
+            cause
+            for cause in causes
+            if isinstance(cause, (RedirectRefusedError, EAPIAuthenticationError))
+        ),
+        None,
+    )
     kind = (
         "ambiguous_status"
         if isinstance(error, httpx.HTTPStatusError)
+        else "transport"
+        if isinstance(verdict, RedirectRefusedError)
         else "auth_rejected"
-        if any(isinstance(cause, EAPIAuthenticationError) for cause in causes)
+        if isinstance(verdict, EAPIAuthenticationError)
         else "wall"
         if any(isinstance(cause, DiamWallError) for cause in causes)
         else "transport"

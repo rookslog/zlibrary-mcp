@@ -81,7 +81,10 @@ def handle(request):
             return httpx.Response(401,json={'error':${JSON.stringify(poison)}})
         return httpx.Response(400,json={'error':${JSON.stringify(poison)}})
     if mode=='success': return httpx.Response(200,json={'success':1,'books':[],'user':{'id':'17'}})
-    if mode=='transport': raise httpx.ReadTimeout(${JSON.stringify(poison)},request=request)
+    if mode in ('redirect', 'login-redirect'):
+        return httpx.Response(307,headers={'location':'https://user:i251-password@redirect.example.test/private?key=i251-cookie'},text='DiamWall Authentication required '+${JSON.stringify(poison)})
+    if mode=='transport' or mode=='login-transport': raise httpx.ReadTimeout(${JSON.stringify(poison)},request=request)
+    if mode in ('connect', 'login-connect'): raise httpx.ConnectError(${JSON.stringify(poison)},request=request)
     if mode=='read-error': raise httpx.ReadError(${JSON.stringify(poison)},request=request)
     if mode=='write-error': raise httpx.WriteError(${JSON.stringify(poison)},request=request)
     if mode=='write-timeout': raise httpx.WriteTimeout(${JSON.stringify(poison)},request=request)
@@ -337,6 +340,56 @@ test('generic 400 neither heals nor increments a partially failed breaker', asyn
   expect(calls.filter((x) => x === '/eapi/book/search')).toHaveLength(4);
   expect(calls.filter((x) => x === '/eapi/user/login')).toHaveLength(1);
 });
+
+test.each(['redirect', 'connect'])(
+  '%s operation retains its session and counts like a host outage on the breaker', async mode => {
+    process.env.ZLIBRARY_SESSION_MODE = 'memory';
+    await api.searchBooks({ query: 'seed' });
+    fs.writeFileSync(modeFile, mode);
+    for (let index = 0; index < 2; index++) {
+      const failure = await api.searchBooks({ query: 'outage' }).catch(error => error);
+      expect(failure.context.diagnostics).toMatchObject({ failure_kind: 'transport', refresh_count: 0 });
+      if (mode === 'redirect') {
+        expect(failure.context.pythonErrorType).toBe('RedirectRefusedError');
+        expect(failure.message).toContain('Redirect refused');
+        expect(failure.message).toContain('redirect.example.test');
+        expect(envelope(failure, 'search', 'zlibrary').error.message).toContain('Redirect refused (HTTP 307) to host redirect.example.test');
+      }
+      expect(failure.context.reason).not.toBe('auth_rejected');
+      expect(envelope(failure, 'search', 'zlibrary').error.code).toBe('provider_unreachable');
+    }
+    fs.writeFileSync(modeFile, 'success');
+    await expect(api.searchBooks({ query: 'breaker' })).rejects.toMatchObject({ code: 'CIRCUIT_BREAKER_OPEN' });
+    const calls = fs.readFileSync(callsFile, 'utf8').trim().split('\n');
+    expect(calls.filter(path => path === '/eapi/user/login')).toHaveLength(1);
+    expect(calls.filter(path => path === '/eapi/book/search')).toHaveLength(3);
+    for (const sentinel of sentinels) expect(captured.join('') + JSON.stringify(logs.mock.calls)).not.toContain(sentinel);
+  },
+);
+
+test.each(['login-redirect', 'login-connect'])(
+  '%s login is an upstream failure and counts like a host outage', async mode => {
+    process.env.ZLIBRARY_SESSION_MODE = 'memory';
+    process.env.ZLIBRARY_SESSION_LOGIN_COOLDOWN_MS = '1';
+    fs.writeFileSync(modeFile, mode);
+    for (let index = 0; index < 2; index++) {
+      const failure = await api.searchBooks({ query: 'outage' }).catch(error => error);
+      expect(failure.context.diagnostics).toMatchObject({ failure_kind: 'transport', refresh_count: 0 });
+      expect(failure.context.loginToken).toBe('Upstream request failed');
+      expect(envelope(failure, 'search', 'zlibrary').error.code).toBe('provider_unreachable');
+      if (mode === 'login-redirect') {
+        expect(failure.context.pythonErrorType).toBe('RedirectRefusedError');
+        expect(envelope(failure, 'search', 'zlibrary').error.message).toContain('Redirect refused (HTTP 307) to host redirect.example.test');
+      }
+      await new Promise(resolve => setTimeout(resolve, 5));
+    }
+    fs.writeFileSync(modeFile, 'success');
+    await expect(api.searchBooks({ query: 'breaker' })).rejects.toMatchObject({ code: 'CIRCUIT_BREAKER_OPEN' });
+    const calls = fs.readFileSync(callsFile, 'utf8').trim().split('\n');
+    expect(calls).toEqual(['/eapi/user/login', '/eapi/user/login']);
+    for (const sentinel of sentinels) expect(captured.join('') + JSON.stringify(logs.mock.calls)).not.toContain(sentinel);
+  },
+);
 
 test('lazy transfer logs and tool error agree after a pre-grant owner refresh', async () => {
   process.env.ZLIBRARY_SESSION_MODE = 'memory';

@@ -5,6 +5,7 @@ from aiohttp_socks import ChainProxyConnector
 
 from .exception import LoopError
 from .logger import logger
+from .eapi import raise_for_refused_redirect
 from aiohttp.abc import AbstractCookieJar
 from typing import Tuple
 
@@ -32,6 +33,7 @@ async def GET_request(url, cookies=None, proxy_list=None) -> str:
             logger.debug(f"Request cookies for {url}: {cookies}")
             # Legacy requests can carry session cookies or keys in the URL.
             async with sess.get(url, allow_redirects=False) as resp:
+                raise_for_refused_redirect(resp)
                 response_text = await resp.text()
                 logger.debug(f"Response status for {url}: {resp.status}")
                 logger.debug(f"Response headers for {url}: {resp.headers}")
@@ -65,6 +67,7 @@ async def GET_request_cookies(
         ) as sess:
             logger.info("GET %s" % url)
             async with sess.get(url, allow_redirects=False) as resp:
+                raise_for_refused_redirect(resp)
                 return (await resp.text(), sess.cookie_jar)
     except asyncio.exceptions.CancelledError:
         raise LoopError("Asyncio loop has been closed before request could finish.")
@@ -81,6 +84,7 @@ async def POST_request(url, data, proxy_list=None):
             logger.info("POST %s" % url)
             # Login forms contain a password; 307/308 would replay the body.
             async with sess.post(url, data=data, allow_redirects=False) as resp:
+                raise_for_refused_redirect(resp)
                 return (await resp.text(), sess.cookie_jar)
     except asyncio.exceptions.CancelledError:
         raise LoopError("Asyncio loop has been closed before request could finish.")

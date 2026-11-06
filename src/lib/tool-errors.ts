@@ -1,6 +1,6 @@
 import { z } from 'zod';
 import { CircuitBreakerOpenError } from './circuit-breaker.js';
-import { readAuthDiagnostics } from './auth-diagnostics.js';
+import { readAuthDiagnostics, redirectRefusalMessage } from './auth-diagnostics.js';
 
 export const ERROR_CODES = [
   'invalid_argument',
@@ -266,13 +266,18 @@ export function classifyFailure(error: any, operation: string, source?: string):
         : 'safe'
       : 'no';
   const occupied = code === 'output_refused' && detail.destination_occupied === true;
+  const refusal = redirectRefusalMessage(
+    context.pythonErrorType,
+    context.redirectHost,
+    diagnostics?.http_status ?? context.httpStatus ?? context.loginStatus,
+  );
   return new ToolFailure(
     code,
     sourceConfiguration
       ? 'Source deadline configuration error; see docs/RETRY_CONFIGURATION.md.'
       : occupied
         ? 'Destination already holds a file with no matching receipt.'
-        : `${operation} did not complete (${reason === 'unknown' ? code : reason}).`,
+        : refusal ?? `${operation} did not complete (${reason === 'unknown' ? code : reason}).`,
     {
       source,
       retry,

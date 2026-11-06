@@ -14,6 +14,7 @@ from typing import Dict, List, NoReturn, Optional
 from urllib.parse import quote, quote_plus, urlsplit
 
 import httpx
+from zlibrary.eapi import RedirectRefusedError, raise_for_refused_redirect
 from bs4 import BeautifulSoup
 from bs4.element import Tag
 
@@ -270,6 +271,8 @@ class AnnasArchiveAdapter(SourceAdapter):
             response = await client.get(url, params=params)
         else:
             response = await client.get(url)
+        if params and "key" in params:
+            raise_for_refused_redirect(response)
         response.raise_for_status()
         return response
 
@@ -479,6 +482,12 @@ class AnnasArchiveAdapter(SourceAdapter):
             )
             response.content.decode("utf-8")
             data = response.json()
+        except RedirectRefusedError as exc:
+            _raise_keyed_error(
+                ProviderResponseError(
+                    PROVIDER, self.host, str(exc), reason="http_error"
+                )
+            )
         except httpx.HTTPStatusError as exc:
             final_url = exc.response.request.url
             configured_url = httpx.URL(url)

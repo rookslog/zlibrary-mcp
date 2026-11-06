@@ -10,14 +10,12 @@ from contextlib import asynccontextmanager
 from pathlib import Path
 from unittest.mock import AsyncMock
 
-import httpx
 import pytest
 
 from lib.sources.annas import AnnasArchiveAdapter
 from lib.sources.config import SourceConfig
 from lib.sources.errors import ProviderResponseError
-from zlibrary.eapi import DiamWallError, EAPIClient
-from zlibrary.exception import DownloadError
+from zlibrary.eapi import EAPIClient, RedirectRefusedError
 from zlibrary.libasync import AsyncZlib
 from zlibrary.util import GET_request, GET_request_cookies, POST_request
 
@@ -116,7 +114,7 @@ async def test_login_password_is_not_redirected(monkeypatch, status, same_host):
     async with redirect_pair(status, same_host) as (origin, sent, received):
         client = eapi_at(monkeypatch, origin, authenticated=False)
         try:
-            with pytest.raises((httpx.HTTPStatusError, DiamWallError)):
+            with pytest.raises(RedirectRefusedError):
                 await client.login("reader@example.invalid", PASSWORD)
         finally:
             await client.close()
@@ -131,7 +129,7 @@ async def test_eapi_cookie_is_not_redirected(monkeypatch, status, same_host, met
     async with redirect_pair(status, same_host) as (origin, sent, received):
         client = eapi_at(monkeypatch, origin)
         try:
-            with pytest.raises((httpx.HTTPStatusError, DiamWallError)):
+            with pytest.raises(RedirectRefusedError):
                 if method == "GET":
                     await client.get_profile()
                 else:
@@ -153,7 +151,6 @@ async def test_file_host_cookie_is_not_redirected(tmp_path, status, same_host, r
         )
         if route == "eapi":
             operation = client.download_file(123, "fixture", str(tmp_path))
-            expected_error = httpx.HTTPStatusError
         else:
             legacy = AsyncZlib()
             legacy.profile = object()
@@ -161,8 +158,7 @@ async def test_file_host_cookie_is_not_redirected(tmp_path, status, same_host, r
             operation = legacy.download_book(
                 {"id": "123", "hash": "fixture"}, str(tmp_path)
             )
-            expected_error = DownloadError
-        with pytest.raises(expected_error):
+        with pytest.raises(RedirectRefusedError):
             await operation
         assert KEY.encode() in sent[0]  # Existing initial file-host disclosure.
         assert received == []
@@ -174,16 +170,16 @@ async def test_file_host_cookie_is_not_redirected(tmp_path, status, same_host, r
 @pytest.mark.parametrize("route", ["get", "cookie-get", "post"])
 async def test_legacy_credentials_are_not_redirected(status, same_host, route):
     async with redirect_pair(status, same_host) as (origin, sent, received):
-        if route == "get":
-            result = await GET_request(origin + "/file", cookies=COOKIES)
-        elif route == "cookie-get":
-            result, _ = await GET_request_cookies(
-                origin + "/?remix_userkey=" + KEY, cookies=COOKIES
-            )
-        else:
-            result, _ = await POST_request(origin + "/login", {"password": PASSWORD})
+        with pytest.raises(RedirectRefusedError):
+            if route == "get":
+                await GET_request(origin + "/file", cookies=COOKIES)
+            elif route == "cookie-get":
+                await GET_request_cookies(
+                    origin + "/?remix_userkey=" + KEY, cookies=COOKIES
+                )
+            else:
+                await POST_request(origin + "/login", {"password": PASSWORD})
         assert received == []
-        assert result == "redirect fixture"
         assert (PASSWORD if route == "post" else KEY).encode() in sent[0]
 
 
@@ -228,9 +224,9 @@ async def test_archived_keyed_experiment_does_not_redirect(
         assert KEY.encode() in sent[0]
         assert received == []
         assert result == {
-            "status": "http_error",
+            "status": "redirect_refused",
             "code": status,
-            "body": "redirect fixture",
+            "host": "127.0.0.1" if same_host else "127.0.0.2",
         }
 
 

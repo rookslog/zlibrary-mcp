@@ -297,6 +297,7 @@ async def test_eapi_observer_falls_back_to_request_host_without_response_url(
         yield PAYLOAD
 
     response = SimpleNamespace(
+        status_code=200,
         headers={"content-disposition": 'attachment; filename="book.pdf"'},
         raise_for_status=lambda: None,
         aiter_bytes=chunks,

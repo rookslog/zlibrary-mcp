@@ -91,6 +91,38 @@ def test_committed_notices_match_locks_and_preserved_licences():
     assert result.returncode == 0, result.stdout + result.stderr
 
 
+def test_retained_image_wheels_match_docker_python_target():
+    mod = module()
+    lock = mod.tomllib.loads((ROOT / "uv.lock").read_text())
+    data = json.loads((ROOT / "scripts/notices/metadata.json").read_bytes())
+    retained = {
+        (p["name"], p.get("lock_version", p["version"])): p
+        for p in data["components"]
+        if p["kind"] == "Python"
+    }
+    target = mod.image_python(ROOT)
+    for package in mod.runtime_records(lock):
+        key = (package["name"], package["version"])
+        selected = sorted(wheel["url"] for wheel in mod.image_wheels(package, target))
+        recorded = sorted(
+            wheel["url"] for wheel in retained[key]["origin"].get("image_wheels", [])
+        )
+        assert selected == recorded, (
+            f"Image wheels differ for {key} at Docker Python {target}; run "
+            "`uv run --frozen python scripts/generate-third-party-notices.py --refresh`"
+        )
+
+
+@pytest.mark.parametrize(
+    "version,expected", [("3.13", (3, 13)), ("3.15.1", (3, 15)), ("3.14.11", (3, 14))]
+)
+def test_image_python_reads_temporary_dockerfile(tmp_path, version, expected):
+    dockerfile = tmp_path / "docker/Dockerfile"
+    dockerfile.parent.mkdir()
+    dockerfile.write_text(f"FROM fixture\nENV UV_PYTHON={version}\n")
+    assert module().image_python(tmp_path) == expected
+
+
 def test_notice_whitespace_passes_but_runtime_lock_drift_is_rejected(tmp_path):
     mod = module()
     for name in ["package-lock.json", "uv.lock", "THIRD-PARTY-NOTICES.md"]:
@@ -697,6 +729,43 @@ def test_additional_public_licence_surfaces_are_protected(frozen_checkout, targe
     else:
         (frozen_checkout / "COPYING").write_text("New public licence text")
     with pytest.raises(ValueError, match="Protected licence"):
+        module().check_freeze(frozen_checkout)
+
+
+@pytest.mark.parametrize("field", ["license_file", "license-file"])
+def test_singular_setup_licence_file_is_protected(frozen_checkout, field):
+    path = frozen_checkout / "zlibrary/setup.cfg"
+    path.write_text(
+        path.read_text().replace("[metadata]", f"[metadata]\n{field} = OTHER.txt", 1)
+    )
+    with pytest.raises(ValueError, match="Protected licence metadata"):
+        module().check_freeze(frozen_checkout)
+
+
+@pytest.mark.parametrize("manifest", ["pyproject.toml", "zlibrary/pyproject.toml"])
+def test_setuptools_licence_files_are_protected(frozen_checkout, manifest):
+    path = frozen_checkout / manifest
+    path.write_text(
+        path.read_text() + '\n[tool.setuptools]\nlicense-files = ["OTHER.txt"]\n'
+    )
+    with pytest.raises(ValueError, match="Protected licence metadata"):
+        module().check_freeze(frozen_checkout)
+
+
+@pytest.mark.parametrize(
+    "name,directory",
+    [("LICENSES.md", False), ("LICENCES.md", False), ("LICENSES", True)],
+)
+def test_new_root_plural_licence_entries_are_protected(
+    frozen_checkout, name, directory
+):
+    path = frozen_checkout / name
+    if directory:
+        path.mkdir()
+        (path / "third-party.txt").write_text("Additional licence terms")
+    else:
+        path.write_text("Additional licence terms")
+    with pytest.raises(ValueError, match="Protected licence file set"):
         module().check_freeze(frozen_checkout)
 
 

@@ -21,6 +21,7 @@ with the Docker recipe's CPython version and linux/amd64 (x86_64), including old
 CPython abi3 and ABI-independent Python 3 tags. It excludes free-threaded builds and other architectures.
 These wheel archives use the same hash-checked PyPI download/cache path as other
 refresh artifacts; their URLs, hashes and bundled file lists are retained in metadata.
+Changing Docker's Python minor version requires `--refresh`.
 Other image architectures require separate wheel validation before distribution.
 Run refresh on Linux or macOS; Windows wheels may use different upstream line endings.
 Refresh can download those dependency artifacts; it does not contact book providers.
@@ -48,8 +49,10 @@ inventory describes the application dependency closure; inherited container runt
 OS packages and their bundled libraries need separate inspection of those artifacts.
 
 `license-freeze.json` pins root/vendor licence-file bytes, the licence badge and
-`## License` section in `README.md`, root/vendor licence metadata and root licence
-file names to commit `5ff8c0b9`. It does not freeze unrelated README prose or
+`## License` section in `README.md`, root/vendor licence metadata (including
+`[tool.setuptools]` fields), and root licence file/directory names to commit
+`5ff8c0b9`. New licence filenames under `zlibrary/`, such as `COPYING`, are not scanned.
+It does not freeze unrelated README prose or
 other documentation, nor scan other Markdown for licence claims. Unrelated
 README prose mentioning licences belongs outside the protected `## License` section.
 Missing manifest fields fail with an explicit diagnostic. The baseline must not

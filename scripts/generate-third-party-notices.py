@@ -501,7 +501,7 @@ def render(root):
         "The Alpine base image records OS package licence identifiers but does not include their licence texts. "
         "The CPython licence file in the image does not include the texts of its embedded libraries. "
         "Node and inherited container tools retain their own notice files. "
-        "Metadata and original notice text are retained in `scripts/notices/metadata.json`; "
+        "Metadata and original notice text are retained in `scripts/notices/metadata.json`. "
         "Native contents vary by platform. "
         "The bs4 alias wheel supplies metadata but no separate full notice file.\n\n",
     ]
@@ -551,7 +551,8 @@ def licence_metadata(root):
         return {
             key: value
             for key, value in data.items()
-            if key.lower().replace("_", "-") in {"license", "licenses", "license-files"}
+            if key.lower().replace("_", "-")
+            in {"license", "licenses", "license-file", "license-files"}
         }
 
     package = json.loads((root / "package.json").read_bytes())
@@ -570,13 +571,17 @@ def licence_metadata(root):
         },
     }
     for name in ["pyproject.toml", "zlibrary/pyproject.toml"]:
-        project = tomllib.loads(read_text(root / name))["project"]
+        manifest = tomllib.loads(read_text(root / name))
+        project = manifest["project"]
         result[name] = {
             **fields(project),
             "licence-classifiers": [
                 c for c in project.get("classifiers", []) if c.startswith("License ::")
             ],
         }
+        setuptools = fields(manifest.get("tool", {}).get("setuptools", {}))
+        if setuptools:
+            result[name]["tool.setuptools"] = setuptools
     return {
         name: sha(json.dumps(value, sort_keys=True).encode())
         for name, value in result.items()
@@ -615,7 +620,7 @@ def check_freeze(root):
     root_files = sorted(
         p.name
         for p in root.iterdir()
-        if p.is_file() and re.match(r"(?i)^(licen[cs]e|copying)([._-]|$)", p.name)
+        if re.match(r"(?i)^(licen[cs]es?|copying)([._-]|$)", p.name)
     )
     if root_files != frozen["root_licence_files"]:
         raise ValueError("Protected licence file set changed at project root")

@@ -16,6 +16,12 @@ from hash-checked locked wheels. Pycares' bundled c-ares notice files are additi
 read from its hash-checked locked source archive, including its `LICENSES/` directory.
 The same table collects ujson's bundled double-conversion notices. Refresh rejects
 unknown files under wheel `*.libs/` directories and mappings without retained texts.
+Besides the refresh host, it checks the locked musllinux 1.1/1.2 wheels compatible
+with the Docker recipe's CPython version and linux/amd64 (x86_64), including older
+CPython abi3 tags. It excludes free-threaded builds and other architectures.
+These wheel archives use the same hash-checked PyPI download/cache path as other
+refresh artifacts; their URLs, hashes and bundled file lists are retained in metadata.
+Other image architectures require separate wheel validation before distribution.
 Run refresh on Linux or macOS; Windows wheels may use different upstream line endings.
 Refresh can download those dependency artifacts; it does not contact book providers.
 Use `TMPDIR` for the wheel/source scratch cache.
@@ -39,15 +45,16 @@ attestation of every wheel's exact native source/build correspondence.
 Each supplement carries its original text hash. Changing dependencies requires
 reviewing these supplements as well as refreshing installed inputs. The notices
 inventory describes the application dependency closure; inherited container runtimes,
-OS packages and their bundled libraries need the actual image inventory too.
+OS packages and their bundled libraries need separate inspection of those artifacts.
 
-`license-freeze.json` pins root/vendor licence-file bytes, the licence-bearing
-lines in `README.md`, the literal root manifest licence fields and the project's
-licence classifiers to the lane's starting commit. It does not freeze unrelated
-README prose or other documentation, nor scan new Markdown for licence claims.
+`license-freeze.json` pins root/vendor licence-file bytes, the licence badge and
+`## License` section in `README.md`, root/vendor licence metadata and root licence
+file names to commit `5ff8c0b9`. It does not freeze unrelated README prose or
+other documentation, nor scan other Markdown for licence claims. Unrelated
+README prose mentioning licences belongs outside the protected `## License` section.
 Missing manifest fields fail with an explicit diagnostic. The baseline must not
 be refreshed as part of dependency notice generation. A later authorized policy
-change must explicitly replace or retire that lane guard.
+change must explicitly replace or retire this guard.
 
 The generator and input snapshots are source/build tooling. The npm payload includes
 the generated notices, while dependencies are installed separately. Reconstructing

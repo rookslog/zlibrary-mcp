@@ -110,9 +110,7 @@ def test_notice_whitespace_passes_but_runtime_lock_drift_is_rejected(tmp_path):
     (tmp_path / "uv.lock").write_bytes((tmp_path / "uv.lock").read_bytes() + b"\n")
     assert mod.render(tmp_path) == (tmp_path / "THIRD-PARTY-NOTICES.md").read_bytes()
     lock = (tmp_path / "uv.lock").read_text()
-    (tmp_path / "uv.lock").write_text(
-        lock.replace("sha256:", "sha256:changed", 1)
-    )
+    (tmp_path / "uv.lock").write_text(lock.replace("sha256:", "sha256:changed", 1))
     with pytest.raises(
         ValueError,
         match="lock drift.*npm ci.*uv sync.*--refresh.*scripts/notices/README.md",
@@ -215,6 +213,9 @@ def test_licence_freeze_rejects_each_protected_surface(tmp_path, filename):
         "package.json",
         "pyproject.toml",
         "scripts/notices/license-freeze.json",
+        "package-lock.json",
+        "zlibrary/setup.cfg",
+        "zlibrary/pyproject.toml",
     ]:
         target = tmp_path / name
         target.parent.mkdir(parents=True, exist_ok=True)
@@ -272,6 +273,9 @@ def frozen_checkout(tmp_path):
         "package.json",
         "pyproject.toml",
         "scripts/notices/license-freeze.json",
+        "package-lock.json",
+        "zlibrary/setup.cfg",
+        "zlibrary/pyproject.toml",
     }:
         target = tmp_path / name
         target.parent.mkdir(parents=True, exist_ok=True)
@@ -285,8 +289,8 @@ def test_unrelated_readme_and_doc_edits_pass_freeze(frozen_checkout):
         path = frozen_checkout / filename
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_bytes(
-            (path.read_bytes() if path.exists() else b"")
-            + b"\nRoutine contributor explanation.\n"
+            b"Routine contributor explanation.\n\n"
+            + (path.read_bytes() if path.exists() else b"")
         )
     mod.check_freeze(frozen_checkout)
 
@@ -551,3 +555,159 @@ def test_bs4_metadata_from_locked_wheel_stays_raw_without_installed_distribution
     }
     records = mod.collect_python(ROOT, lock)
     assert list(records[0]["notices"].values()) == [raw.decode()]
+
+
+@pytest.mark.parametrize(
+    "tag,reject",
+    [
+        ("cp314-cp314-musllinux_1_2_x86_64", True),
+        ("cp310-abi3-musllinux_1_2_x86_64", True),
+        ("cp313-cp313-musllinux_1_2_x86_64", False),
+        ("cp314-cp314t-musllinux_1_2_x86_64", False),
+        ("cp314-cp314-musllinux_1_2_armv7l", False),
+        ("cp314-cp314-manylinux_2_28_x86_64", False),
+    ],
+)
+def test_refresh_checks_image_wheel_from_lock_not_host_distribution(
+    tmp_path, monkeypatch, tag, reject
+):
+    import importlib.metadata
+    import zipfile
+
+    mod = module()
+    distribution = importlib.metadata.distribution("bs4")
+    filename = f"bs4-{distribution.version}-{tag}.whl"
+    cache = tmp_path / "notice-wheels"
+    cache.mkdir()
+    wheel = cache / filename
+    with zipfile.ZipFile(wheel, "w") as archive:
+        archive.writestr("bs4.libs/libnew.so", b"synthetic binary")
+    monkeypatch.setattr(mod.tempfile, "gettempdir", lambda: str(tmp_path))
+
+    def forbidden(*args, **kwargs):
+        raise AssertionError("unit test must never fetch an artifact")
+
+    monkeypatch.setattr(mod.urllib.request, "urlopen", forbidden)
+    lock = {
+        "package": [
+            {"name": "zlibrary-mcp", "dependencies": [{"name": "bs4"}]},
+            {
+                "name": "bs4",
+                "version": distribution.version,
+                "wheels": [
+                    {
+                        "url": "https://files.pythonhosted.org/fixture/" + filename,
+                        "hash": "sha256:" + mod.sha(wheel.read_bytes()),
+                    }
+                ],
+            },
+        ]
+    }
+    if reject:
+        with pytest.raises(ValueError, match="Unmapped bundled native library.*libnew"):
+            mod.collect_python(ROOT, lock)
+    else:
+        assert mod.collect_python(ROOT, lock)[0]["name"] == "bs4"
+
+
+def test_image_wheel_hash_is_checked_before_inspecting_native_files(
+    tmp_path, monkeypatch
+):
+    import importlib.metadata
+
+    mod = module()
+    distribution = importlib.metadata.distribution("bs4")
+    filename = f"bs4-{distribution.version}-cp314-cp314-musllinux_1_2_x86_64.whl"
+    cache = tmp_path / "notice-wheels"
+    cache.mkdir()
+    (cache / filename).write_bytes(b"tampered archive")
+    monkeypatch.setattr(mod.tempfile, "gettempdir", lambda: str(tmp_path))
+
+    def forbidden(*args, **kwargs):
+        raise AssertionError("unit test must never fetch an artifact")
+
+    monkeypatch.setattr(mod.urllib.request, "urlopen", forbidden)
+    lock = {
+        "package": [
+            {"name": "zlibrary-mcp", "dependencies": [{"name": "bs4"}]},
+            {
+                "name": "bs4",
+                "version": distribution.version,
+                "wheels": [
+                    {
+                        "url": "https://files.pythonhosted.org/fixture/" + filename,
+                        "hash": "sha256:expected",
+                    }
+                ],
+            },
+        ]
+    }
+    with pytest.raises(ValueError, match="Wheel hash mismatch"):
+        mod.collect_python(ROOT, lock)
+
+
+@pytest.mark.parametrize(
+    "target",
+    [
+        "root-license-files",
+        "root-licenses",
+        "vendor-setup-license",
+        "vendor-project-license",
+        "lock-license",
+        "lock-entry-license",
+        "new-copying",
+    ],
+)
+def test_additional_public_licence_surfaces_are_protected(frozen_checkout, target):
+    if target == "root-license-files":
+        path = frozen_checkout / "pyproject.toml"
+        path.write_text(
+            path.read_text().replace(
+                "[project]", '[project]\nlicense-files = ["COPYING"]', 1
+            )
+        )
+    elif target == "root-licenses":
+        path = frozen_checkout / "package.json"
+        data = json.loads(path.read_bytes())
+        data["licenses"] = [{"type": "Changed"}]
+        path.write_text(json.dumps(data))
+    elif target == "vendor-setup-license":
+        path = frozen_checkout / "zlibrary/setup.cfg"
+        path.write_text(
+            path.read_text().replace("[metadata]", "[metadata]\nlicense = Changed", 1)
+        )
+    elif target == "vendor-project-license":
+        path = frozen_checkout / "zlibrary/pyproject.toml"
+        path.write_text(
+            path.read_text().replace("[project]", '[project]\nlicense = "Changed"', 1)
+        )
+    elif target in {"lock-license", "lock-entry-license"}:
+        path = frozen_checkout / "package-lock.json"
+        data = json.loads(path.read_bytes())
+        (data if target == "lock-license" else data["packages"][""])["license"] = (
+            "Changed"
+        )
+        path.write_text(json.dumps(data))
+    else:
+        (frozen_checkout / "COPYING").write_text("New public licence text")
+    with pytest.raises(ValueError, match="Protected licence"):
+        module().check_freeze(frozen_checkout)
+
+
+def test_unrelated_licence_words_outside_readme_licence_section_pass(frozen_checkout):
+    path = frozen_checkout / "README.md"
+    path.write_text(
+        path.read_text().replace(
+            "## License",
+            "This tool does not bypass any licence restriction.\nSee dependency licences for upstream terms.\n\n## License",
+            1,
+        )
+    )
+    module().check_freeze(frozen_checkout)
+
+
+def test_new_readme_licence_section_statement_is_protected(frozen_checkout):
+    path = frozen_checkout / "README.md"
+    path.write_text(path.read_text() + "\nAdditional project terms apply.\n")
+    with pytest.raises(ValueError, match="Protected licence"):
+        module().check_freeze(frozen_checkout)

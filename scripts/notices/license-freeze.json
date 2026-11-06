@@ -8,6 +8,16 @@
     "package.json": "5edff0d3404e97f7ff84b9b063c9e417abeb7f83e2fb88d3d3bbfc82d5f0ea63",
     "pyproject.toml": "fcd009a52e59149bea6ce22a8ca27413a938c421b3e965e315e30737903d4131"
   },
-  "readme_licence_lines": "0ce6a5a059a3af09c3b4509caf37d31ca65692dad9401d4d6fc8b11a058d184a",
-  "project_licence_classifiers": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945"
+  "readme_licence_lines": "8816b9f3c6f0ca338b0d82ed1cf273cbeffbc6ef198963fdcafcfa6f10b9dfef",
+  "project_licence_classifiers": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
+  "metadata_fields": {
+    "package.json": "2a1b53b349d0b7fafa98714428c0e746f9d454c63d1f512862bfaf804878e1ba",
+    "package-lock.json": "4a64f949a66ea19c472a7ec51f9d6fee8cd1a4d976d82fc1019c2971906492e6",
+    "zlibrary/setup.cfg": "19bc4c706141e4d7157aa0bf53688071916b4332fd6e9b72302cae46e830c54c",
+    "pyproject.toml": "138c72d2de66a3606c46120cf389fb0d0b8c0924bc65e3e24b892bb9c1133adb",
+    "zlibrary/pyproject.toml": "1bee27cbf17a19f0295a9316bf23b8539c27c1b25800d14ba0ac1c78e17801ee"
+  },
+  "root_licence_files": [
+    "LICENSE"
+  ]
 }

@@ -247,22 +247,16 @@ async def test_pacing_slack_reaches_healthy_second_mirror(
 async def test_unissued_search_does_not_stamp_last_request(monkeypatch):
     clock = Clock()
     adapter = libgen.LibgenAdapter(SourceConfig(preflight_enabled=False))
-    adapter._last_request = 98.0
+    adapter._last_request = clock.now()
     monkeypatch.setattr(libgen.time, "time", clock.now)
-    monkeypatch.setattr(adapter, "_mirror_candidates", lambda: ["li", "vg"])
+    monkeypatch.setattr(adapter, "_mirror_candidates", lambda: ["li"])
     monkeypatch.setattr(adapter, "_preflight", AsyncMock())
 
     async def sleep(delay):
-        clock.spend(delay)
-
-    async def exhausted(awaitable, timeout, **kwargs):
-        result = await awaitable
-        if kwargs["operation"] == "search pacing":
-            clock.spend(timeout)
-        return result
+        # Exhaust the slice inside pacing, before its atomic admission check.
+        clock.spend(delay + 5)
 
     monkeypatch.setattr(libgen.asyncio, "sleep", sleep)
-    monkeypatch.setattr(libgen, "bounded_await", exhausted)
     worker = AsyncMock()
     monkeypatch.setattr(libgen, "run_bounded", worker)
     with pytest.raises(libgen.AllSourcesFailedError):
@@ -270,7 +264,7 @@ async def test_unissued_search_does_not_stamp_last_request(monkeypatch):
             "Solaris", deadline=WalkDeadline(12, clock=clock.now), multi_source=True
         )
     worker.assert_not_awaited()
-    assert adapter._last_request == 98.0
+    assert adapter._last_request == 100.0
 
 
 @pytest.mark.asyncio
@@ -411,3 +405,42 @@ async def test_n2_issued_search_preserves_actual_search_timeout(monkeypatch):
         await adapter.search("Solaris", multi_source=True)
     assert worker.await_count == 1
     assert caught.value.failures[0].reason == "search_timeout"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("multi_source", [False, True])
+@pytest.mark.parametrize("warm", [False, True])
+async def test_h1_concurrent_callers_keep_one_admission_per_interval(
+    monkeypatch, multi_source, warm
+):
+    """Separate wait_for tasks and already-sleeping callers must not burst."""
+    import asyncio
+    import sys
+    import time
+
+    adapter = libgen.LibgenAdapter(SourceConfig(preflight_enabled=False))
+    monkeypatch.setattr(adapter, "_mirror_candidates", lambda: ["li", "vg"])
+    monkeypatch.setattr(adapter, "_preflight", AsyncMock())
+    monkeypatch.setattr(libgen.time, "time", time.monotonic)
+    if warm:
+        adapter._last_request = time.monotonic()
+    calls = []
+
+    async def worker(func, timeout, **kwargs):
+        calls.append(time.monotonic())
+        return [], None, 0
+
+    monkeypatch.setattr(libgen, "run_bounded", worker)
+    results = await asyncio.gather(
+        *[
+            adapter.search(
+                "Solaris", deadline=WalkDeadline(12), multi_source=multi_source
+            )
+            for _ in range(2)
+        ]
+    )
+    assert results == [[], []]
+    assert len(calls) == 2
+    gap = calls[1] - calls[0]
+    print(f"python={sys.version.split()[0]} {multi_source=} {warm=} gap_s={gap:.6f}")
+    assert gap >= 1.98

@@ -464,9 +464,6 @@ export function mergeRows(
     }
     return [...names];
   };
-  const activeFields = new Set(
-    options.filtersActive ? copies.flatMap((copy) => filterFields(copy)) : [],
-  );
   const alternate = (copy: MergeCopy): CopyRef => {
     const ref = copyRef(copy);
     if (!options.filtersActive) return ref;
@@ -531,7 +528,6 @@ export function mergeRows(
             : 'stable_tie';
       const differs = fields.filter(
         (field) =>
-          !activeFields.has(field) &&
           new Set(
             group
               .map((copy) => copy.metadata[field])

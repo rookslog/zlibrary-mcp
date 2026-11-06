@@ -44,3 +44,22 @@ EAPI, Anna's Archive, LibGen). Issues in those upstream services are not
 vulnerabilities in this project; the scheduled
 [upstream contract check](.github/workflows/upstream-check.yml) tracks their
 availability. Run `npm run doctor` to check them yourself.
+
+## CI test account and uploaded output
+
+CI only ever uses a dedicated test account with nothing else on it. Creating that
+account and configuring it are repository-owner tasks. Without an account, the
+live suite reports `no_account` and skips authentication.
+
+`scripts/check-workflow-secrets.mjs`, run by CI, parses every workflow and enforces
+where secrets may go: a job using secrets other than `GITHUB_TOKEN` must gate each
+artifact upload on `steps.filter_output.outcome == 'success'`. Aggregate, bracket,
+and inherited secret access also require this gate. Exceptions require a named
+entry and a stated reason in the policy checker.
+
+Integration credentials use an opaque test helper and an explicit login boundary.
+The output filter replaces configured values, their encoded representations, and
+recognized login-session fields, then rereads the upload files and checks decoded
+XML. An unsuccessful filter prevents upload. Live test output is retained for one
+day; the separate source report remains at thirty days. Offline canaries exercise
+this path with synthetic values in the normal test suite.

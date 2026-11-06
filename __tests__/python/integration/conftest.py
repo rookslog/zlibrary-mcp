@@ -17,6 +17,12 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "..", "..", "li
 from zlibrary.eapi import EAPIClient  # noqa: E402
 
 import python_bridge  # noqa: E402
+from .ci_credentials import environment_credentials, login_with_credentials  # noqa: E402
+
+
+@pytest.fixture(scope="module")
+def credentials():
+    return environment_credentials()
 
 
 @pytest.fixture(scope="module")
@@ -28,7 +34,7 @@ def eapi_domain():
 
 
 @pytest_asyncio.fixture(scope="module", loop_scope="module")
-async def zlib_client(eapi_domain):
+async def zlib_client(eapi_domain, credentials):
     """Pre-authenticated EAPIClient for integration tests.
 
     Reads credentials from environment variables.
@@ -40,14 +46,8 @@ async def zlib_client(eapi_domain):
     kept only for backward compatibility and is ignored — so without this the
     bridge-level tests would fail with "EAPI client not initialized".
     """
-    email = os.environ.get("ZLIBRARY_EMAIL", "")
-    password = os.environ.get("ZLIBRARY_PASSWORD", "")
-
     client = EAPIClient(eapi_domain)
-    login_result = await client.login(email, password)
-    assert login_result.get("success") == 1, (
-        f"zlib_client fixture: login failed — {login_result}"
-    )
+    assert await login_with_credentials(client, credentials), "Integration login failed"
 
     previous_global = python_bridge._eapi_client
     python_bridge._eapi_client = client

@@ -556,3 +556,18 @@ test('no CI account cannot enable the live-test failure step', () => {
   expect(enabled({ live: { outputs: { status: 'no_account', blocked: 'false' } } })).toBe(false);
   expect(enabled({ live: { outputs: { status: 'failed', blocked: 'false' } } })).toBe(true);
 });
+
+test('tracking-only updates retain the recovery marker without a Recovered line', async () => {
+  const github = api([{ number: 250, title: rollingTitle, state: 'closed', body: sourceMarker + '\n<!-- upstream-recovered-at: 2026-10-21 -->' }]);
+  Object.assign(process.env, { REACHABILITY_RESULT: 'success', PROBE_FAILED: 'false', LIVE_STATUS: 'no_account', PROBE_REPORT: '<!-- upstream-source-status: {} -->' });
+  await run(script('report', 'issue'), github);
+  const body = github.rest.issues.update.mock.calls[0][0].body;
+  expect(body).not.toContain('Recovered:');
+  expect(body).toContain('<!-- upstream-recovered-at: 2026-10-21 -->');
+});
+
+test('live output retention is one day and source retention remains thirty days', () => {
+  const uploads = Object.values(workflow.jobs).flatMap(job => job.steps).filter(step => step.uses?.startsWith('actions/upload-artifact@'));
+  expect(uploads.find(step => step.with.name === 'live-integration-log').with['retention-days']).toBe(1);
+  expect(uploads.find(step => step.with.name === 'upstream-source-report').with['retention-days']).toBe(30);
+});

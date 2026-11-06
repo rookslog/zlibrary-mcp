@@ -219,7 +219,7 @@ jobs:
           code=${PIPESTATUS[0]}
           set -e
           uv run python scripts/classify_live_tests.py --exit-code "$code" --junitxml live.xml
-      - name: Keep test output out of uploaded files
+      - name: Replace sensitive values in test output
         id: filter_output
         if: always()
         env:
@@ -234,7 +234,7 @@ jobs:
             live.log
             live.xml
           if-no-files-found: ignore
-          retention-days: 30
+          retention-days: 1
       - name: Fail the job when live tests regressed
         if: steps.live.outputs.status == 'failed'
         run: |
@@ -352,7 +352,8 @@ jobs:
               '',
               report,
               '',
-              ...(!failed && (recovered || recoveryDate(previous)) ? [`Recovered: ${recoveredAt} (UTC)`, `<!-- upstream-recovered-at: ${recoveredAt} -->`, ''] : []),
+              ...(recovered ? [`Recovered: ${recoveredAt} (UTC)`] : []),
+              ...(!failed && (recovered || recoveryDate(previous)) ? [`<!-- upstream-recovered-at: ${recoveredAt} -->`, ''] : []),
               'Unit tests mock these calls and will stay green, so triage from the report above or the run artifact.',
             ].join('\n');
 

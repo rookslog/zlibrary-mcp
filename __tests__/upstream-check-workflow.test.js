@@ -556,3 +556,44 @@ test('no CI account cannot enable the live-test failure step', () => {
   expect(enabled({ live: { outputs: { status: 'no_account', blocked: 'false' } } })).toBe(false);
   expect(enabled({ live: { outputs: { status: 'failed', blocked: 'false' } } })).toBe(true);
 });
+
+test('scheduled source-health publication runs after both jobs regardless of their result', () => {
+  const job = workflow.jobs.source_health;
+  expect(job).toBeDefined();
+  expect(job.needs).toEqual(['reachability', 'live_tests']);
+  const enabled = new Function('github', 'always', 'success', 'return ' + job.if);
+  expect(enabled({ event_name: 'schedule' }, () => true, () => false)).toBe(true);
+  expect(enabled({ event_name: 'workflow_dispatch' }, () => true, () => false)).toBe(false);
+  const downloads = job.steps.filter(step => step.uses?.startsWith('actions/download-artifact@'));
+  expect(downloads.map(step => step.with.name)).toEqual([
+    'upstream-source-health-probe-${{ github.run_attempt }}',
+    'upstream-source-health-live-${{ github.run_attempt }}',
+  ]);
+  expect(downloads.every(step => step['continue-on-error'] === true)).toBe(true);
+  const upload = job.steps.find(step => step.uses?.startsWith('actions/upload-artifact@'));
+  expect(upload.if).toBe('always()');
+  expect(upload.with.name).toBe('upstream-source-health-v1-${{ github.run_attempt }}');
+  expect(upload.with.path).toBe('source-health.v1.json');
+  expect(upload.with['if-no-files-found']).toBe('error');
+  const producer = job.steps.find(step => step.id === 'health');
+  expect(producer.if).toBe('always()');
+  expect(producer.env.PROBE_OUTCOME).toBe('${{ needs.reachability.outputs.probe_outcome }}');
+  expect(producer.env.LIVE_STARTED).toBe('${{ needs.live_tests.outputs.execution_started }}');
+  expect(producer.env.LIVE_PYTEST_EXIT_CODE).toBe('${{ needs.live_tests.outputs.pytest_exit_code }}');
+  expect(producer.env.LIVE_OUTCOME).toBe('${{ needs.live_tests.outputs.outcome }}');
+  expect(JSON.stringify(job)).not.toContain('secrets.');
+});
+
+test('health inputs and live execution evidence are scoped to the current attempt', () => {
+  const probe = workflow.jobs.reachability.steps.find(step => step.with?.name === 'upstream-source-health-probe-${{ github.run_attempt }}');
+  const live = workflow.jobs.live_tests.steps.find(step => step.with?.name === 'upstream-source-health-live-${{ github.run_attempt }}');
+  expect(probe).toBeDefined();
+  expect(live).toBeDefined();
+  expect(probe.if).toBe('always()');
+  expect(probe.with.path).toBe('upstream-report.json');
+  expect(live.if).toBe('always()');
+  expect(live.with.path).toBe('live.xml');
+  expect(workflow.jobs.live_tests.outputs.execution_started).toBe('${{ steps.live.outputs.execution_started }}');
+  expect(workflow.jobs.live_tests.outputs.pytest_exit_code).toBe('${{ steps.live.outputs.pytest_exit_code }}');
+  expect(workflow.jobs.live_tests.outputs.outcome).toBe('${{ steps.live.outcome }}');
+});

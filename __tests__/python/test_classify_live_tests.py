@@ -883,6 +883,8 @@ def test_ci_account_configuration_controls_real_live_shell(
         f"with Path({str(calls)!r}).open('a') as out:\n"
         "    out.write(json.dumps(sys.argv[1:]) + '\\n')\n"
         "if sys.argv[1:3] == ['run', 'pytest']:\n"
+        "    started = 'execution_started=true' in Path(os.environ['GITHUB_OUTPUT']).read_text() if Path(os.environ['GITHUB_OUTPUT']).exists() else False\n"
+        "    assert started == ('--collect-only' not in sys.argv)\n"
         "    if '--collect-only' in sys.argv:\n        sys.exit(0)\n"
         "    shutil.copyfile(os.environ['SYNTHETIC_REPORT'], 'live.xml')\n"
         "    print('offline pytest log')\n    sys.exit(0)\n"
@@ -927,6 +929,9 @@ def test_ci_account_configuration_controls_real_live_shell(
     assert values == {
         "status": "passed" if configured else "no_account",
         "blocked": "false",
+        **(
+            {"execution_started": "true", "pytest_exit_code": "0"} if configured else {}
+        ),
     }
     invocations = (
         [json.loads(line) for line in calls.read_text().splitlines()]

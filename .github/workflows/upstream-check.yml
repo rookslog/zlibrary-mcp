@@ -38,6 +38,7 @@ jobs:
     outputs:
       report: ${{ steps.probe.outputs.report }}
       failed: ${{ steps.probe.outputs.failed }}
+      probe_outcome: ${{ steps.probe.outcome }}
       # Probe-observed block, with the domain retained for live selection and reporting.
       # This cannot distinguish an IP refusal from a wall affecting everyone.
       zlib_blocked: ${{ steps.probe.outputs.zlib_blocked }}
@@ -139,6 +140,14 @@ jobs:
             upstream-report.json
           if-no-files-found: warn
           retention-days: 30
+      - name: Preserve this attempt's probe evidence for source health
+        uses: actions/upload-artifact@v7
+        if: always()
+        with:
+          name: upstream-source-health-probe-${{ github.run_attempt }}
+          path: upstream-report.json
+          if-no-files-found: warn
+          retention-days: 30
       - name: Fail the job when a relied-on source is blocked or changed
         if: steps.probe.outcome == 'failure'
         run: exit 1
@@ -155,6 +164,9 @@ jobs:
     outputs:
       status: ${{ steps.live.outputs.status }}
       blocked: ${{ steps.live.outputs.blocked }}
+      execution_started: ${{ steps.live.outputs.execution_started }}
+      pytest_exit_code: ${{ steps.live.outputs.pytest_exit_code }}
+      outcome: ${{ steps.live.outcome }}
     steps:
       - uses: actions/checkout@v7
         with:
@@ -214,10 +226,12 @@ jobs:
           # Use the same literal-false gate for collection and execution.
           # Coverage belongs to the full acquisition suite (#250).
           uv run pytest -m integration --collect-only --no-cov -q
+          echo "execution_started=true" >> "$GITHUB_OUTPUT"
           set +e
           uv run pytest -m integration --no-cov --benchmark-disable --no-header --junitxml=live.xml -q 2>&1 | tee live.log
           code=${PIPESTATUS[0]}
           set -e
+          echo "pytest_exit_code=$code" >> "$GITHUB_OUTPUT"
           uv run python scripts/classify_live_tests.py --exit-code "$code" --junitxml live.xml
       - uses: actions/upload-artifact@v7
         if: always()
@@ -226,6 +240,14 @@ jobs:
           path: |
             live.log
             live.xml
+          if-no-files-found: ignore
+          retention-days: 30
+      - name: Preserve this attempt's live evidence for source health
+        uses: actions/upload-artifact@v7
+        if: always()
+        with:
+          name: upstream-source-health-live-${{ github.run_attempt }}
+          path: live.xml
           if-no-files-found: ignore
           retention-days: 30
       - name: Fail the job when live tests regressed
@@ -371,3 +393,48 @@ jobs:
                 labels: ['upstream-drift'],
               });
             }
+
+
+  source_health:
+    name: Publish source-health report
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    needs: [reachability, live_tests]
+    if: always() && github.event_name == 'schedule'
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          lfs: false
+      # Attempt-specific names prevent a rerun from relabeling older evidence.
+      - name: Read this attempt's probe evidence
+        uses: actions/download-artifact@v4
+        continue-on-error: true
+        with:
+          name: upstream-source-health-probe-${{ github.run_attempt }}
+          path: health-input/probe
+      - name: Read this attempt's authenticated evidence
+        uses: actions/download-artifact@v4
+        continue-on-error: true
+        with:
+          name: upstream-source-health-live-${{ github.run_attempt }}
+          path: health-input/live
+      - name: Write versioned source-health JSON
+        id: health
+        if: always()
+        env:
+          REACHABILITY_RESULT: ${{ needs.reachability.result }}
+          PROBE_OUTCOME: ${{ needs.reachability.outputs.probe_outcome }}
+          LIVE_RESULT: ${{ needs.live_tests.result }}
+          LIVE_STATUS: ${{ needs.live_tests.outputs.status }}
+          LIVE_OUTCOME: ${{ needs.live_tests.outputs.outcome }}
+          LIVE_STARTED: ${{ needs.live_tests.outputs.execution_started }}
+          LIVE_PYTEST_EXIT_CODE: ${{ needs.live_tests.outputs.pytest_exit_code }}
+          UPSTREAM_RELIED_SOURCES: ${{ vars.UPSTREAM_RELIED_SOURCES || 'zlibrary,libgen' }}
+        run: python3 scripts/source_health_report.py
+      - uses: actions/upload-artifact@v7
+        if: always()
+        with:
+          name: upstream-source-health-v1-${{ github.run_attempt }}
+          path: source-health.v1.json
+          if-no-files-found: error
+          retention-days: 30

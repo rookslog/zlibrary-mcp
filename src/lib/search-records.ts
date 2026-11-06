@@ -32,6 +32,7 @@ interface RecordState {
   cursors: Map<string, string>;
   pending: Map<number, { promise: Promise<Window>; controller: AbortController }>;
   md5s: Set<string>;
+  acceptedRecords: number;
 }
 type Alias = { record: RecordState } & (
   { kind: 'r'; selection: RetainedSelection } | { kind: 'c'; window: number; offset: number }
@@ -143,6 +144,7 @@ export class SearchRecords {
           : {}),
       };
     });
+    record.acceptedRecords += prepared.acceptedRecords;
     return { prepared: immutable({ ...prepared, rows }) };
   }
   retain(
@@ -187,6 +189,7 @@ export class SearchRecords {
       cursors: new Map(),
       pending: new Map(),
       md5s: new Set(),
+      acceptedRecords: 0,
     };
     this.records.set(record.id, record);
     while (this.records.size > this.options.capacity)
@@ -200,10 +203,10 @@ export class SearchRecords {
       existing = record.pages.get(key);
     if (existing) return existing;
     const prepared = record.windows.get(number)!.prepared;
-    const reply = renderSearchPage(prepared, offset);
+    const limit = record.plan.request.limit ?? 10;
+    const reply = renderSearchPage(prepared, offset, limit, record.acceptedRecords);
     if ('error' in reply)
       throw new ToolFailure(reply.error.code, reply.error.message, reply.error);
-    const limit = record.plan.request.limit ?? 10;
     let next: { window: number; offset: number } | undefined;
     if (offset + limit < prepared.rows.length) next = { window: number, offset: offset + limit };
     else if (record.dispatched.length === 1 && record.refill) {

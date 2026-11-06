@@ -395,6 +395,7 @@ export function renderSearchPage(
   prepared: PreparedSearch,
   offset = 0,
   limit = prepared.plan.request.limit ?? 10,
+  acceptedRecords = prepared.acceptedRecords,
 ): SearchReply {
   if (
     !Number.isInteger(offset) ||
@@ -413,7 +414,7 @@ export function renderSearchPage(
         `${source}: ${line.state}${line.state === 'not_asked' ? ` (${line.reason})` : ''}`,
     );
   const note =
-    `${rows.length} file rows shown from ${prepared.acceptedRecords} accepted records, grouped by file.` +
+    `${rows.length} file rows shown from ${acceptedRecords} accepted records, grouped by file.` +
     (incomplete.length ? ` ${incomplete.join('; ')}.` : '') +
     ' These are bounded source windows, not everything.';
   return immutable({

@@ -102,3 +102,24 @@ test.each(['late', 'failed'])('G2 genuinely %s refill remains retryable', async 
   expect(await s.page(first.next_cursor)).toBe(next);
   expect(refill).toHaveBeenCalledTimes(2);
 });
+
+test('G3 notes count accepted records across kept windows once and leave old pages frozen', async () => {
+  const s = store(2), md5 = 'a'.repeat(32);
+  const initial = window('zlibrary', ['a', 'b'], true);
+  initial.copies[0].md5 = md5;
+  const refill = jest.fn(async () => ({ ...window('zlibrary', ['duplicate', 'c']),
+    copies: [copy('zlibrary', 'duplicate', { md5 }), copy('zlibrary', 'c')],
+  }));
+  const first = s.retain(plan(), [initial], { refill });
+  const local = await s.page(first.next_cursor);
+  expect(first.note).toContain('1 file rows shown from 2 accepted records');
+  expect(local.note).toContain('1 file rows shown from 2 accepted records');
+  const next = await s.page(local.next_cursor);
+  expect(next.note).toContain('1 file rows shown from 4 accepted records');
+  expect(next.rows).toHaveLength(1); // duplicate file suppressed, accepted record still counted
+  expect(await s.page(local.next_cursor)).toBe(next);
+  expect(await s.page(first.next_cursor)).toBe(local);
+  expect(first.note).toContain('from 2 accepted records');
+  expect(local.note).toContain('from 2 accepted records');
+  expect(refill).toHaveBeenCalledTimes(1);
+});

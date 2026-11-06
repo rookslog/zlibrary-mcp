@@ -8,7 +8,7 @@ import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js'
 import { CallToolRequestSchema, ListToolsRequestSchema } from '@modelcontextprotocol/sdk/types.js';
 import type { Tool } from '@modelcontextprotocol/sdk/types.js';
 import { z } from 'zod';
-import { AcquisitionTools, INPUTS } from './lib/acquisition-tools.js';
+import { AcquisitionTools, createInputs } from './lib/acquisition-tools.js';
 import type { ToolName } from './lib/acquisition-tools.js';
 import { getSessionMode } from './lib/eapi-session.js';
 import { invokeAcquisitionBridge, getSearchState } from './lib/zlibrary-api.js';
@@ -83,26 +83,32 @@ const successShapes: Record<ToolName, Record<string, any>> = {
     },
   },
 };
-export const TOOL_DEFINITIONS: Tool[] = (Object.keys(INPUTS) as ToolName[]).map((name) => {
-  const json = z.toJSONSchema(INPUTS[name]);
-  delete json.$schema;
-  if ((json.properties as any)?.sources) (json.properties as any).sources.uniqueItems = true;
-  return {
-    name,
-    description: descriptions[name],
-    inputSchema: json as Tool['inputSchema'],
-    outputSchema: {
-      type: 'object',
-      oneOf: [{ ...successShapes[name], not: { required: ['error'] } }, errorShape],
-    },
-    annotations: {
-      readOnlyHint: name !== 'download',
-      ...(name === 'download' ? { destructiveHint: false } : {}),
-      idempotentHint: ['search', 'get_book', 'download'].includes(name),
-      openWorldHint: true,
-    },
-  };
-});
+export function toolDefinitionsFor(
+  names: readonly string[] = ['libgen', 'zlibrary', 'annas'],
+): Tool[] {
+  const inputs = createInputs(names);
+  return (Object.keys(inputs) as ToolName[]).map((name) => {
+    const json = z.toJSONSchema(inputs[name]);
+    delete json.$schema;
+    if ((json.properties as any)?.sources) (json.properties as any).sources.uniqueItems = true;
+    return {
+      name,
+      description: descriptions[name],
+      inputSchema: json as Tool['inputSchema'],
+      outputSchema: {
+        type: 'object',
+        oneOf: [{ ...successShapes[name], not: { required: ['error'] } }, errorShape],
+      },
+      annotations: {
+        readOnlyHint: name !== 'download',
+        ...(name === 'download' ? { destructiveHint: false } : {}),
+        idempotentHint: ['search', 'get_book', 'download'].includes(name),
+        openWorldHint: true,
+      },
+    };
+  });
+}
+export const TOOL_DEFINITIONS = toolDefinitionsFor();
 
 /** Lower-level SDK dispatch retains typed errors for invalid schemas and removed names. */
 class AcquisitionServer extends Server {

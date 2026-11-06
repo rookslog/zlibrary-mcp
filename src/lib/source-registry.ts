@@ -1,4 +1,5 @@
 import type { MergedFilterRequest, RowFilterResult } from './row-filters.js';
+import type { CallOptions } from './zlibrary-api.js';
 import { ToolFailure } from './tool-errors.js';
 
 export type Env = Readonly<Record<string, string | undefined>>;
@@ -41,6 +42,9 @@ export interface SourceSpec {
    */
   searchWindow(req: WindowRequest, signal: AbortSignal): Promise<SearchWindow>;
   md5(book: unknown): string | undefined;
+  /** Optional owners for registered extensions; public adapters keep existing bridge owners. */
+  details?(book: Readonly<Record<string, any>>, options: CallOptions): Promise<any>;
+  acquire?(args: Readonly<Record<string, any>>, options: CallOptions): Promise<any>;
 }
 
 /** Fixed insertion order is accounting order, never source preference.

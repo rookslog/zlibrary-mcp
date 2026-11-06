@@ -434,8 +434,8 @@ export class AcquisitionTools {
       // Configuration is checked inside the bridge, after disk reuse, so a receipt remains useful offline.
       try {
         const result = DownloadReplySchema.parse(
-          await this.invoke(
-            'acquire_book',
+          await this.acquire(
+            selection.source,
             {
               book_details: selection.book,
               output_dir: args.output_dir,
@@ -458,7 +458,7 @@ export class AcquisitionTools {
           ...(estimate ? { quota_estimate: { ...estimate } } : {}),
         };
       } catch (e) {
-        const failure = classifyFailure(e, 'download', selection.source);
+        const failure = this.selectionFailure(e, 'download', selection.source);
         if (
           failure.info.retry === 'may_spend_quota' ||
           failure.code === 'internal' ||
@@ -473,6 +473,21 @@ export class AcquisitionTools {
     } catch (error) {
       return errorEnvelope(error, name);
     }
+  }
+  private selectionFailure(error: unknown, operation: string, source: Source) {
+    const failure = classifyFailure(error, operation, source);
+    return new ToolFailure(failure.code, failure.message, { ...failure.info, source });
+  }
+  private async acquire(source: Source, args: Record<string, any>, options: CallOptions) {
+    const spec = this.registry.sources.find((spec) => spec.name === source);
+    if (spec?.acquire) return spec.acquire(args, options);
+    if (!allSources.includes(source))
+      throw new ToolFailure(
+        'unsupported_operation',
+        'Registered source has no acquisition owner.',
+        { source },
+      );
+    return this.invoke('acquire_book', args, options);
   }
   private async limits(args: any, options: CallOptions) {
     const views = this.views();
@@ -518,16 +533,23 @@ export class AcquisitionTools {
   private async details(ref: string, selection: Selection, options: CallOptions) {
     const b = selection.book;
     let detail: any = {};
-    if (selection.source === 'zlibrary') {
+    const registered = this.registry.sources.find((spec) => spec.name === selection.source);
+    if (registered?.details || selection.source === 'zlibrary') {
       try {
-        this.configured(selection.source);
-        detail = await this.invoke(
-          'get_book_metadata_complete',
-          { book_id: String(b.id), book_hash: b.hash ?? b.book_hash },
-          options,
-        );
+        if (registered?.details) detail = await registered.details(b, options);
+        else {
+          this.configured(selection.source);
+          detail = await this.invoke(
+            'get_book_metadata_complete',
+            { book_id: String(b.id), book_hash: b.hash ?? b.book_hash },
+            options,
+          );
+        }
       } catch (error) {
-        return errorEnvelope(error, 'get_book', selection.source);
+        return errorEnvelope(
+          this.selectionFailure(error, 'get_book', selection.source),
+          'get_book',
+        );
       }
     }
     const merged = { ...b, ...nonempty(detail) };
@@ -579,7 +601,7 @@ export class AcquisitionTools {
     }
     if (!cursor && args.source && args.source !== 'zlibrary')
       throw new ToolFailure('unsupported_operation', 'Only zlibrary supports account history.', {
-        ...(allSources.includes(args.source) ? { source: args.source } : {}),
+        source: args.source,
       });
     const source = 'zlibrary' as const;
     const requested: Source[] = cursor?.requested ?? [source];
@@ -642,7 +664,11 @@ export class AcquisitionTools {
     const selection = this.searches.select(ref);
     return {
       source: selection.copy.source,
-      book: { ...selection.copy.book, source: selection.copy.source },
+      book: {
+        ...selection.copy.book,
+        source: selection.copy.source,
+        md5: selection.copy.md5 ?? selection.copy.book?.md5,
+      },
       query: [selection.request.query, selection.request.author].filter(Boolean).join(' '),
       search: selection,
     };
@@ -816,7 +842,7 @@ export class AcquisitionTools {
             ref: `input-${source}-${index}`,
             metadata: (row.metadata ?? {}) as any,
             book: row.book as any,
-            md5: row.md5 as string | undefined,
+            md5: this.registry.sources.find((spec) => spec.name === source)!.md5(row.book ?? row),
           })),
           ...(window.more ? { more: true as const } : {}),
           ...(window.filtering?.native_sent

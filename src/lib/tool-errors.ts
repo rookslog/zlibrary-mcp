@@ -29,7 +29,7 @@ export const ErrorEnvelopeSchema = z
     error: z
       .object({
         code: z.enum(ERROR_CODES),
-        source: z.enum(['libgen', 'annas', 'zlibrary']).optional(),
+        source: z.string().min(1).optional(),
         operation: z.string(),
         message: z.string().max(199),
         retry: z.enum(['safe', 'may_spend_quota', 'no']),

@@ -454,6 +454,10 @@ def test_live_job_never_invokes_integration_without_explicit_unblocked(
         ROOT / "scripts/filter_live_test_output.py",
         tmp_path / "scripts/filter_live_test_output.py",
     )
+    shutil.copyfile(
+        ROOT / "scripts/live_test_counts.py",
+        tmp_path / "scripts/live_test_counts.py",
+    )
 
     def enabled(condition):
         result = subprocess.run(

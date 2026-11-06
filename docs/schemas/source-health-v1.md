@@ -1,9 +1,9 @@
 # Scheduled source-health report, version 1
 
 The scheduled upstream workflow publishes `source-health.v1.json` in artifact
-`upstream-source-health-v1-<run_attempt>`, retained for 30 days. This is an
-account-sensitive report for a reader, separate from the existing unauthenticated
-`upstream-source-report` and `live-integration-log` artifacts. It makes no
+`upstream-source-health-v1-<run_attempt>`, retained for 30 days. This is a
+metadata-only report for a reader, separate from the unauthenticated
+`upstream-source-report` and authenticated `live-integration-log` diagnostics. It makes no
 whole-service healthy claim. Source identifiers are `zlibrary`, `annas-archive`
 and `libgen`.
 
@@ -48,7 +48,7 @@ All outcome states use this closed vocabulary:
 
 | State | Meaning |
 |---|---|
-| `passed` | Positive evidence the named scope ran and passed; for authenticated coverage this requires the live execution markers, usable JUnit, successful completion and a passing positive authentication check. |
+| `passed` | Positive evidence the named scope ran and passed; for authenticated coverage this requires the live execution markers, usable counts evidence, successful completion and a passing positive authentication check. |
 | `no_account` | The dedicated CI test account was absent; no authenticated health claim. |
 | `not_run` | The relevant work did not complete or was skipped, cancelled, never started, entirely skipped by pytest, or has no configured authenticated suite. Read its reason and nullable execution evidence. |
 | `blocked` | Probe-observed refusal of the named source/scope. This does not establish a global outage. |
@@ -86,7 +86,7 @@ Z-Library's scope is `zlibrary:python-integration`. It includes:
 - `status` and fixed `reason` code;
 - `ran`: true when execution and nonempty JUnit cases corroborate it, false for
   a known skip/never-started step, null when execution cannot be established;
-- `counts`: null without usable JUnit, otherwise observed `total`, `passed`,
+- `counts`: null without usable counts evidence, otherwise observed `total`, `passed`,
   `failed` and `skipped` case counts;
 - `required_check`: `zlibrary:authentication-succeeds`, tied to
   `TestRealAuthentication.test_authentication_succeeds` (parameter variants are
@@ -98,16 +98,16 @@ Z-Library's scope is `zlibrary:python-integration`. It includes:
 A passing subset with skips remains explicitly partial (`coverage_complete`
 false, `live_suite_partially_covered`). All-skipped results are `not_run`, and a
 missing or entirely skipped required authentication check cannot establish an
-authenticated pass. Missing/invalid JUnit after an execution marker is `failed`;
+authenticated pass. Missing/invalid counts after an execution marker is `failed`;
 an explicitly skipped live step without execution evidence is `not_run`.
-If the live step fails before emitting a marker or status, without JUnit,
+If the live step fails before emitting a marker or status, without counts evidence,
 the report is `failed` / `live_collection_error`, even if its job was cancelled
 or skipped. `ran=false` refers to suite execution, not preliminary collection.
 A missing marker alone never establishes a skip. Without positive skip or
 cancellation evidence or an admission status, unknown/completed step outcomes
 are `failed` / `execution_not_recorded`, `ran=null`. For an unmarked live step,
 completed step outcomes take precedence over its job's skip/cancellation.
-JUnit cases or a completed-suite status without a marker are contradictory
+Case counts or a completed-suite status without a marker are contradictory
 execution evidence and also fail with `ran=null`, rather than claiming no run.
 Collection/report errors remain failures.
 No-account reports use `no_ci_account_configured`. The existing live log and
@@ -126,13 +126,19 @@ the current workflow run. A publisher-only rerun has no fallback to a previous
 attempt's inputs: absent evidence is explicit rather than newly timestamped
 as current. The final artifact is also attempt-specific.
 
+The authenticated input is `live-counts.json`, a closed version-1 envelope
+containing counts and fixed authentication/error flags, without case identifiers
+or test text. A local step derives it from JUnit after output filtering. Source
+health never uploads or consumes raw XML. The diagnostic files are prepared
+locally to keep test output out of uploaded files.
+
 The stdlib-only producer reads these local files and selected non-secret run
 metadata. It performs no network, account or credential operation. Inputs are
 bounded to 5 MiB each; malformed JSON/XML and contradictory evidence cannot
 produce a pass. Output uses allowlisted source/check identifiers and fixed
 reason codes. It does not copy raw upstream messages, hostnames, URLs, account
-identifiers, credentials or parameterized JUnit case names. The existing raw
-artifacts retain their prior behavior.
+identifiers, credentials or parameterized JUnit case names. The authenticated diagnostic upload requires successful local output filtering.
+Counts preparation runs independently and contains no test text.
 
 The schema and offline tests qualify the producer, not a live source or the
 private reader. A real completed scheduled artifact still requires the change

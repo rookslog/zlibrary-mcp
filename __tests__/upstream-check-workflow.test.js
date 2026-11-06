@@ -592,7 +592,7 @@ test('health inputs and live execution evidence are scoped to the current attemp
   expect(probe.if).toBe('always()');
   expect(probe.with.path).toBe('upstream-report.json');
   expect(live.if).toBe('always()');
-  expect(live.with.path).toBe('live.xml');
+  expect(live.with.path).toBe('live-counts.json');
   expect(workflow.jobs.live_tests.outputs.execution_started).toBe('${{ steps.live.outputs.execution_started }}');
   expect(workflow.jobs.live_tests.outputs.pytest_exit_code).toBe('${{ steps.live.outputs.pytest_exit_code }}');
   expect(workflow.jobs.live_tests.outputs.outcome).toBe('${{ steps.live.outcome }}');

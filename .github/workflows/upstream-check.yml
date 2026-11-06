@@ -240,6 +240,11 @@ jobs:
           ZLIBRARY_EMAIL: ${{ secrets.ZLIBRARY_CI_EMAIL }}
           ZLIBRARY_PASSWORD: ${{ secrets.ZLIBRARY_CI_PASSWORD }}
         run: python3 scripts/filter_live_test_output.py
+      - name: Prepare counts-only live evidence
+        id: live_counts
+        if: always()
+        continue-on-error: true
+        run: python3 scripts/live_test_counts.py
       - uses: actions/upload-artifact@v7
         if: always() && steps.filter_output.outcome == 'success'
         with:
@@ -254,7 +259,7 @@ jobs:
         if: always()
         with:
           name: upstream-source-health-live-${{ github.run_attempt }}
-          path: live.xml
+          path: live-counts.json
           if-no-files-found: ignore
           retention-days: 30
       - name: Fail the job when live tests regressed

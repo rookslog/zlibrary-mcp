@@ -8,7 +8,6 @@ import os
 from pathlib import Path
 import re
 import sys
-import xml.etree.ElementTree as ET
 
 EXPECTED_CHECKS = {
     "zlibrary": ["zlibrary:eapi/info/domains", "zlibrary:eapi/book/search"],
@@ -191,73 +190,71 @@ def live_input(path):
     if problem:
         return None, problem
     try:
-        if b"<!DOCTYPE" in data or b"<!ENTITY" in data:
-            raise ValueError("unsupported XML declaration")
-        root = ET.fromstring(data)
-        if root.tag not in ("testsuites", "testsuite"):
-            raise ValueError("invalid JUnit envelope")
-        cases = list(root.iter("testcase"))
-        if not cases:
-            return None, "empty"
-        failed = sum(any(p.tag in ("error", "failure") for p in case) for case in cases)
-        skipped = sum(
-            case.find("skipped") is not None
-            and not any(p.tag in ("error", "failure") for p in case)
-            for case in cases
-        )
-        passed = sum(
-            not any(p.tag in ("error", "failure", "skipped") for p in case)
-            for case in cases
-        )
-        problems = [p for p in root.iter() if p.tag in ("error", "failure")]
-        case_problems = {
-            p for case in cases for p in case.iter() if p.tag in ("error", "failure")
-        }
-        outside_case_problems = any(p not in case_problems for p in problems)
-        if not problems:
-            for suite in root.iter():
-                if suite.tag not in ("testsuites", "testsuite"):
-                    continue
-                children = list(suite.iter("testcase"))
-                observed = {
-                    "tests": len(children),
-                    "skipped": sum(c.find("skipped") is not None for c in children),
-                    "errors": 0,
-                    "failures": 0,
-                }
-                if any(
-                    key in suite.attrib
-                    and (
-                        not suite.attrib[key].isascii()
-                        or not suite.attrib[key].isdigit()
-                        or int(suite.attrib[key]) != count
-                    )
-                    for key, count in observed.items()
-                ):
-                    raise ValueError("inconsistent JUnit counters")
-        anchor = [
-            case
-            for case in cases
-            if case.get("classname", "").split(".")[-1] == "TestRealAuthentication"
-            and case.get("name", "").split("[")[0] == "test_authentication_succeeds"
-        ]
-        anchor_passed = any(
-            not any(p.tag in ("error", "failure", "skipped") for p in case)
-            for case in anchor
-        )
-        return {
-            "counts": {
-                "total": len(cases),
-                "passed": passed,
-                "failed": failed,
-                "skipped": skipped,
-            },
-            "problems": bool(problems),
-            "outside_case_problems": outside_case_problems,
-            "anchor_present": bool(anchor),
-            "anchor_passed": anchor_passed,
-        }, None
-    except (ET.ParseError, ValueError, RecursionError):
+        value = json.loads(data, object_pairs_hook=unique_object)
+        if (
+            not isinstance(value, dict)
+            or set(value) != {"schema_version", "evidence", "problem"}
+            or type(value["schema_version"]) is not int
+            or value["schema_version"] != 1
+        ):
+            raise ValueError("invalid counts envelope")
+        evidence, problem = value["evidence"], value["problem"]
+        if problem in ("missing", "invalid", "empty") and evidence is None:
+            return None, problem
+        if (
+            problem is not None
+            or not isinstance(evidence, dict)
+            or set(evidence)
+            != {
+                "counts",
+                "problems",
+                "outside_case_problems",
+                "anchor_present",
+                "anchor_passed",
+            }
+        ):
+            raise ValueError("invalid counts evidence")
+        counts = evidence["counts"]
+        if not isinstance(counts, dict) or set(counts) != {
+            "total",
+            "passed",
+            "failed",
+            "skipped",
+        }:
+            raise ValueError("invalid counts")
+        if (
+            any(type(n) is not int or n < 0 for n in counts.values())
+            or not counts["total"]
+            or counts["total"]
+            != counts["passed"] + counts["failed"] + counts["skipped"]
+        ):
+            raise ValueError("invalid counts")
+        if any(
+            type(evidence[k]) is not bool
+            for k in (
+                "problems",
+                "outside_case_problems",
+                "anchor_present",
+                "anchor_passed",
+            )
+        ):
+            raise ValueError("invalid flags")
+        if evidence["problems"] != bool(
+            counts["failed"] or evidence["outside_case_problems"]
+        ):
+            raise ValueError("inconsistent failure counts")
+        if evidence["anchor_passed"] and (
+            not evidence["anchor_present"] or not counts["passed"]
+        ):
+            raise ValueError("inconsistent authentication counts")
+        if (
+            evidence["anchor_present"]
+            and not evidence["anchor_passed"]
+            and not (counts["failed"] or counts["skipped"])
+        ):
+            raise ValueError("inconsistent authentication counts")
+        return evidence, None
+    except (ValueError, UnicodeError, RecursionError):
         return None, "invalid"
 
 
@@ -465,7 +462,7 @@ def main():
         default=Path("health-input/probe/upstream-report.json"),
     )
     parser.add_argument(
-        "--live-junit", type=Path, default=Path("health-input/live/live.xml")
+        "--live-counts", type=Path, default=Path("health-input/live/live-counts.json")
     )
     parser.add_argument("--output", type=Path, default=Path("source-health.v1.json"))
     parser.add_argument(
@@ -492,7 +489,7 @@ def main():
     try:
         report = build_report(
             args.probe_report,
-            args.live_junit,
+            args.live_counts,
             metadata,
             args.generated_at or datetime.now(timezone.utc).isoformat(),
         )

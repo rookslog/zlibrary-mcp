@@ -69,7 +69,7 @@ def inputs(tmp_path):
     return {"path": tmp_path, "probe": probe, "xml": root, "env": env}
 
 
-def produce(data, *, raw_probe=None, raw_xml=None):
+def produce(data, *, raw_probe=None, raw_xml=None, raw_counts=None):
     path = data["path"]
     if data["probe"] is not None:
         (path / "probe.json").write_text(
@@ -81,14 +81,30 @@ def produce(data, *, raw_probe=None, raw_xml=None):
             if raw_xml is not None
             else ET.tostring(data["xml"], encoding="unicode")
         )
+    counts = subprocess.run(
+        [
+            sys.executable,
+            str(ROOT / "scripts/live_test_counts.py"),
+            "--junitxml",
+            str(path / "live.xml"),
+            "--output",
+            str(path / "live-counts.json"),
+        ],
+        env=data["env"],
+        capture_output=True,
+        text=True,
+    )
+    assert counts.returncode == 0
+    if raw_counts is not None:
+        (path / "live-counts.json").write_text(raw_counts)
     run = subprocess.run(
         [
             sys.executable,
             str(SCRIPT),
             "--probe-report",
             str(path / "probe.json"),
-            "--live-junit",
-            str(path / "live.xml"),
+            "--live-counts",
+            str(path / "live-counts.json"),
             "--output",
             str(path / "health.json"),
             "--generated-at",

@@ -604,11 +604,11 @@ class LibgenAdapter(SourceAdapter):
             if ready is False:
                 if multi_source:
                     failures.append(
-                        ProviderTimeoutError(
+                        SourceError(
                             PROVIDER,
                             host,
                             "Mirror slice cannot accommodate pacing and search.",
-                            reason="search_timeout",
+                            reason="mirror_slice_exhausted",
                         )
                     )
                     continue
@@ -622,11 +622,11 @@ class LibgenAdapter(SourceAdapter):
             if budget is None:
                 if multi_source:
                     failures.append(
-                        ProviderTimeoutError(
+                        SourceError(
                             PROVIDER,
                             host,
                             "Mirror slice exhausted before search.",
-                            reason="search_timeout",
+                            reason="mirror_slice_exhausted",
                         )
                     )
                     continue

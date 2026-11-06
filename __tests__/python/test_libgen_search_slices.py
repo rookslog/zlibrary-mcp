@@ -367,3 +367,47 @@ async def test_g5_comparison_uses_short_minimum_before_preflight(monkeypatch):
     )
     assert worker.await_count == 1
     assert 0 < worker.call_args.args[1] <= 2
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("phase", ["pacing_refused", "slice_exhausted"])
+async def test_n2_unissued_search_has_its_own_mirror_slice_reason(monkeypatch, phase):
+    clock = Clock()
+    adapter = libgen.LibgenAdapter(SourceConfig(preflight_enabled=False))
+    monkeypatch.setattr(adapter, "_mirror_candidates", lambda: ["li"])
+    monkeypatch.setattr(adapter, "_preflight", AsyncMock())
+
+    async def pacing(*args, **kwargs):
+        if phase == "pacing_refused":
+            return False
+        clock.spend(5)
+        return True
+
+    monkeypatch.setattr(adapter, "_rate_limit", pacing)
+    worker = AsyncMock()
+    monkeypatch.setattr(libgen, "run_bounded", worker)
+    with pytest.raises(libgen.AllSourcesFailedError) as caught:
+        await adapter.search(
+            "Solaris", deadline=WalkDeadline(12, clock=clock.now), multi_source=True
+        )
+    worker.assert_not_awaited()
+    failure = caught.value.failures[0]
+    assert failure.reason == "mirror_slice_exhausted"
+    assert failure.to_dict()["reason"] == "mirror_slice_exhausted"
+    assert "was not searched" in str(failure)
+    assert not failure.unreachable
+
+
+@pytest.mark.asyncio
+async def test_n2_issued_search_preserves_actual_search_timeout(monkeypatch):
+    adapter = libgen.LibgenAdapter(SourceConfig(preflight_enabled=False))
+    monkeypatch.setattr(adapter, "_mirror_candidates", lambda: ["li"])
+    monkeypatch.setattr(adapter, "_preflight", AsyncMock())
+    worker = AsyncMock(
+        side_effect=ProviderTimeoutError("libgen", "libgen.li", "synthetic stall")
+    )
+    monkeypatch.setattr(libgen, "run_bounded", worker)
+    with pytest.raises(libgen.AllSourcesFailedError) as caught:
+        await adapter.search("Solaris", multi_source=True)
+    assert worker.await_count == 1
+    assert caught.value.failures[0].reason == "search_timeout"

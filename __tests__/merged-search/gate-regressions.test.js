@@ -5,7 +5,7 @@ import { fileURLToPath } from 'node:url';
 import ts from 'typescript';
 import { SearchRecords } from '../../dist/lib/search-records.js';
 import { planSearch, prepareSearch } from '../../dist/lib/search-assembly.js';
-import { ToolFailure } from '../../dist/lib/tool-errors.js';
+import { ToolFailure, classifyFailure } from '../../dist/lib/tool-errors.js';
 
 const views = () => ['libgen', 'annas'].map(name => ({ name,
   capabilities: { configured: true, search_available: true, download_available: true },
@@ -74,4 +74,10 @@ test.each(['capability', 'copy'])('G5 A16 assembly carries unavailable download 
   expect(prepared.rows[0]).toMatchObject({ ref: 'r-libgen', route_basis: 'only_usable',
     other_copies: [expect.objectContaining({ ref: 'r-annas', download_available: false })],
   });
+});
+
+
+test('N2 mirror slice reason survives bridge classification without blaming a searched host', () => {
+  const result = classifyFailure({ context: { details: { reason: 'mirror_slice_exhausted' } } }, 'search', 'libgen');
+  expect(result).toMatchObject({ code: 'provider_timeout', info: { retry: 'safe', detail: { reason: 'mirror_slice_exhausted' } } });
 });

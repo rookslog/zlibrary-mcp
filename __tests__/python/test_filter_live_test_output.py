@@ -1,11 +1,13 @@
 """Keep test output out of uploaded files using synthetic values only."""
 
+import importlib.util
 import json
 from pathlib import Path
 import shutil
 import subprocess
 import sys
 import xml.etree.ElementTree as ET
+from xml.sax.saxutils import escape, quoteattr
 
 import pytest
 
@@ -28,7 +30,10 @@ def workflow():
     )
 
 
-@pytest.mark.parametrize("password", ["CANARY-OUTPUT-123", 'CANARY<&"-OUTPUT-456'])
+@pytest.mark.parametrize(
+    "password",
+    ["CANARY-OUTPUT-123", 'CANARY<&"-OUTPUT-456', "CANARY-é雪<&\"'-OUTPUT-789"],
+)
 def test_real_live_step_keeps_canaries_out_of_uploaded_files(
     workflow, tmp_path, password
 ):
@@ -105,6 +110,10 @@ def test_real_live_step_keeps_canaries_out_of_uploaded_files(
     root = ET.parse(tmp_path / "live.xml")
     assert len(list(root.iter("testcase"))) == 1
     assert len(list(root.iter("failure"))) == 1
+    decoded = "".join(root.getroot().itertext()) + "".join(
+        value for element in root.iter() for value in element.attrib.values()
+    )
+    assert all(value not in decoded for value in [email, password, frame])
 
 
 def test_upload_requires_successful_output_filtering(workflow):
@@ -144,3 +153,124 @@ def test_filter_skips_absent_files_and_fails_closed(workflow, tmp_path, case):
     if case == "missing":
         assert not (tmp_path / "live.log").exists()
         assert not (tmp_path / "live.xml").exists()
+
+
+@pytest.mark.parametrize(
+    "value", ["CANARY<&\"'-OUTPUT-456", "CANARY-é雪<&\"'-OUTPUT-789"]
+)
+def test_parsed_attributes_text_cdata_and_tails_are_filtered(tmp_path, value):
+    (tmp_path / "live.xml").write_text(
+        f"<testsuites label={quoteattr(value)}><testcase>{escape(value)}"
+        f"<system-out><![CDATA[{value}]]></system-out>{escape(value)}"
+        "</testcase></testsuites>",
+        encoding="utf-8",
+    )
+    (tmp_path / "live.log").write_text(value, encoding="utf-8")
+    run = subprocess.run(
+        [sys.executable, str(ROOT / "scripts/filter_live_test_output.py")],
+        cwd=tmp_path,
+        env={"ZLIBRARY_EMAIL": "", "ZLIBRARY_PASSWORD": value},
+        capture_output=True,
+        text=True,
+    )
+    assert run.returncode == 0
+    assert value not in run.stdout + run.stderr
+    assert value not in (tmp_path / "live.log").read_text()
+    tree = ET.parse(tmp_path / "live.xml")
+    assert tree.getroot().attrib["label"] == "[filtered]"
+    assert tree.find("testcase").text == "[filtered]"
+    assert tree.find("testcase/system-out").text == "[filtered]"
+    assert tree.find("testcase/system-out").tail == "[filtered]"
+    assert value not in "".join(tree.getroot().itertext())
+
+
+@pytest.mark.parametrize(
+    "data",
+    [
+        b"<testsuites>broken",
+        b"\xff",
+        b'<?xml version="1.0" encoding="unknown-codec"?><testsuites/>',
+    ],
+)
+def test_unparseable_xml_is_removed_and_upload_preparation_fails(tmp_path, data):
+    (tmp_path / "live.xml").write_bytes(data)
+    run = subprocess.run(
+        [sys.executable, str(ROOT / "scripts/filter_live_test_output.py")],
+        cwd=tmp_path,
+        env={"ZLIBRARY_PASSWORD": "CANARY-INVALID-XML"},
+        capture_output=True,
+        text=True,
+    )
+    assert run.returncode != 0
+    assert not (tmp_path / "live.xml").exists()
+    assert run.stdout == run.stderr == ""
+
+
+@pytest.mark.parametrize("name", ["live.log", "live.xml"])
+def test_verification_rereads_written_files(monkeypatch, tmp_path, name):
+    value = "CANARY-AFTER-WRITE-é雪<&\"'"
+    spec = importlib.util.spec_from_file_location(
+        "filter_output_under_test", ROOT / "scripts/filter_live_test_output.py"
+    )
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("ZLIBRARY_EMAIL", "")
+    monkeypatch.setenv("ZLIBRARY_PASSWORD", value)
+    (tmp_path / "live.log").write_text(value, encoding="utf-8")
+    (tmp_path / "live.xml").write_text("<testsuites/>")
+    write = Path.write_bytes
+
+    def changed_after_write(path, data):
+        result = write(path, data)
+        if path.name == name:
+            if name == "live.log":
+                write(path, data + value.encode("utf-8"))
+            else:
+                root = ET.fromstring(data)
+                root.set("test-output", value)
+                write(path, ET.tostring(root, encoding="utf-8"))
+        return result
+
+    monkeypatch.setattr(Path, "write_bytes", changed_after_write)
+    assert module.filter_output() == 1
+
+
+@pytest.mark.parametrize("name", ["live.log", "live.xml"])
+def test_verification_rechecks_initially_absent_files(monkeypatch, tmp_path, name):
+    value = "CANARY-APPEARED-AFTER-FIRST-READ"
+    spec = importlib.util.spec_from_file_location(
+        "filter_output_absent_under_test", ROOT / "scripts/filter_live_test_output.py"
+    )
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("ZLIBRARY_EMAIL", "")
+    monkeypatch.setenv("ZLIBRARY_PASSWORD", value)
+    if name == "live.log":
+        read = Path.read_bytes
+        first = True
+
+        def appearing_log(path):
+            nonlocal first
+            if path.name == "live.log" and first:
+                first = False
+                path.write_text(value)
+                raise FileNotFoundError
+            return read(path)
+
+        monkeypatch.setattr(Path, "read_bytes", appearing_log)
+    else:
+        read = module.read_xml
+        first = True
+
+        def appearing_xml(path):
+            nonlocal first
+            result = read(path)
+            if first:
+                first = False
+                path.write_text(f'<testsuites label="{value}"/>')
+            return result
+
+        monkeypatch.setattr(module, "read_xml", appearing_xml)
+    assert module.filter_output() == 1

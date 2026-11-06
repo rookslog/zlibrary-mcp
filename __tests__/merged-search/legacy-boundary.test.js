@@ -1,0 +1,24 @@
+import { afterEach, expect, test } from '@jest/globals';
+import fs from 'node:fs';
+import { TOOL_DEFINITIONS, createServer } from '../../dist/index.js';
+import { AcquisitionTools } from '../../dist/lib/acquisition-tools.js';
+import { RefStore } from '../../dist/lib/refs.js';
+const expected = JSON.parse(fs.readFileSync(new URL('./legacy-boundary.json', import.meta.url), 'utf8'));
+const original = { ...process.env };
+afterEach(() => { process.env = { ...original }; });
+test.each([{}, { BOOK_SOURCE_SEARCH_WAIT_MS: 'bad', BOOK_FORMAT_PREFERENCE: 'pdf,,pdf' }])('A/B boundary: tool definitions, limits, plain search, exact and startup retain the old contract with %p', async future => {
+  delete process.env.ZLIBRARY_EMAIL; delete process.env.ZLIBRARY_PASSWORD;
+  delete process.env.BOOK_SOURCE_DEFAULT_ORDER;
+  process.env.ZLIBRARY_OUTPUT_ROOT = '/tmp/synthetic-output';
+  delete process.env.BOOK_SOURCE_SEARCH_WAIT_MS; delete process.env.BOOK_FORMAT_PREFERENCE;
+  Object.assign(process.env, future);
+  const server = createServer(); await server.close();
+  const calls = [];
+  const tools = new AcquisitionTools(async (operation, args) => { calls.push([operation, args]); return { books: [{ id: 'legacy', md5: 'a'.repeat(32), title: 'Legacy', author: 'Synthetic', extension: 'pdf' }] }; }, { BOOK_SOURCE_DEFAULT_ORDER: 'libgen', ...future });
+  tools.refs = new RefStore({ nonce: 1n });
+  expect(TOOL_DEFINITIONS).toEqual(expected.definitions);
+  expect(await tools.call('get_limits', {})).toEqual(expected.limits); expect(calls).toHaveLength(0);
+  expect(await tools.call('search', { query: 'Legacy' })).toEqual(expected.plain);
+  expect(await tools.call('search', { query: 'Legacy', exact: true })).toEqual(expected.exact);
+  expect(calls.map(c => c[0])).toEqual(['search_multi_source']);
+});

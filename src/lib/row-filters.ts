@@ -1,7 +1,8 @@
+import { normalizeText } from './merge.js';
 import { normalizeLanguages } from './filter-languages.js';
 
 export type FilterStatus = 'pass' | 'fail' | 'unknown';
-export type FilterKey = 'year_from' | 'year_to' | 'languages' | 'formats';
+export type FilterKey = 'year_from' | 'year_to' | 'languages' | 'formats' | 'exact';
 export interface FilterCheck {
   status: FilterStatus;
   reason: string;
@@ -176,3 +177,59 @@ export const FILTER_CAPABILITIES = {
     exact: 'native_only',
   },
 } as const;
+
+/** Opt-in contract for merged search; legacy routing retains its capabilities. */
+export const MERGED_FILTER_CAPABILITIES = {
+  libgen: { ...FILTER_CAPABILITIES.libgen, exact: 'local' },
+  annas: { ...FILTER_CAPABILITIES.annas, exact: 'local' },
+  zlibrary: { ...FILTER_CAPABILITIES.zlibrary, exact: 'local' },
+} as const;
+export interface MergedFilterRequest extends RowFilterRequest {
+  exact?: boolean;
+  query?: string;
+  author?: string;
+}
+export interface MergedCatalogueFields extends CatalogueFields {
+  title?: unknown;
+  author?: unknown;
+}
+
+/** S4 calls this checker and counts unknown results as excluded metadata. */
+export function checkMergedRowFilters(
+  row: MergedCatalogueFields,
+  request: MergedFilterRequest,
+): RowFilterResult {
+  const result = checkRowFilters(row, request);
+  if (request.exact !== true) return result;
+  const statuses: FilterStatus[] = [];
+  for (const field of ['query', 'author'] as const) {
+    const wanted = normalizeText(request[field]);
+    if (!wanted) continue;
+    const actual = normalizeText(row[field === 'query' ? 'title' : 'author']);
+    statuses.push(!actual ? 'unknown' : ` ${actual} `.includes(` ${wanted} `) ? 'pass' : 'fail');
+  }
+  if (!statuses.length) return result;
+  const status: FilterStatus = statuses.includes('fail')
+    ? 'fail'
+    : statuses.includes('unknown')
+      ? 'unknown'
+      : 'pass';
+  const checks = {
+    ...result.checks,
+    exact: {
+      status,
+      reason:
+        status === 'unknown'
+          ? 'exact_metadata_missing'
+          : status === 'fail'
+            ? 'exact_phrase_mismatch'
+            : 'exact_phrase_matches',
+    },
+  };
+  const all = Object.values(checks).map((check) => check.status);
+  return {
+    ...result,
+    checks,
+    status: all.includes('fail') ? 'fail' : all.includes('unknown') ? 'unknown' : 'pass',
+  };
+}

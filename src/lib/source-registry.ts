@@ -27,6 +27,10 @@ export interface SourceSpec {
   name: string;
   capabilities(env: Env): SourceCapabilities;
   defaultSearch(env: Env): { on: boolean; reason?: string };
+  /** Withdraw this waiter on abort before issuing work. Issued work retains its
+   * owner through runner TERM/grace/KILL, even if this promise settles first.
+   * Return raw records; refs and cursors are built only from the final snapshot.
+   */
   searchWindow(req: WindowRequest, signal: AbortSignal): Promise<SearchWindow>;
   md5(book: unknown): string | undefined;
 }

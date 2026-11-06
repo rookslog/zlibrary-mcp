@@ -68,8 +68,16 @@ function loginCause(error: any): string {
   if (typeof token === 'string' && /^[A-Za-z0-9 .#-]{1,64}$/.test(token)) cause += `: ${token}`;
   return cause;
 }
+function isDeadline(signal: AbortSignal): boolean {
+  // A comparison cut remains cancellation even through a tagged signal wrapper.
+  return (
+    signal.reason !== 'search_cut' &&
+    signal.reason?.reason !== 'search_cut' &&
+    signal.reason?.name === 'TimeoutError'
+  );
+}
 function deadlineError(signal: AbortSignal): BridgeTimeoutError {
-  const timedOut = signal.reason?.name === 'TimeoutError';
+  const timedOut = isDeadline(signal);
   return new BridgeTimeoutError(timedOut ? 'EAPI call deadline exceeded' : 'EAPI call aborted', {
     reason: timedOut ? 'timeout' : 'aborted',
   });
@@ -242,7 +250,7 @@ export class EapiSessionOwner {
           })
           .catch((error) => {
             if (leaderSignal.aborted) {
-              if (leaderSignal.reason?.name === 'TimeoutError') {
+              if (isDeadline(leaderSignal)) {
                 this.backoff(
                   identity,
                   new PythonBridgeError(

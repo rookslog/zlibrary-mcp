@@ -20,6 +20,7 @@ const projectRoot = resolve(__dirname, '..');
 
 // Required Python bridge files
 const requiredPythonFiles = [
+  { path: 'lib/annas_member_worker.py', critical: true, description: 'Resident Anna member search worker' },
   { path: 'lib/python_bridge.py', critical: true, description: 'Main Python bridge script' },
   { path: 'lib/enhanced_metadata.py', critical: true, description: 'Enhanced metadata extraction' },
   { path: 'lib/author_tools.py', critical: false, description: 'Author-specific search tools' },
@@ -29,6 +30,7 @@ const requiredPythonFiles = [
 
 // Required TypeScript compiled files (dist/)
 const requiredCompiledFiles = [
+  { path: 'dist/lib/annas-member-worker.js', critical: true, description: 'Anna member worker owner' },
   { path: 'dist/lib/eapi-session.js', critical: true, description: 'In-memory EAPI session owner' },
   { path: 'dist/index.js', critical: true, description: 'Main MCP server entry point' },
   {

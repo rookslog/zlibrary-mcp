@@ -767,6 +767,7 @@ export class AcquisitionTools {
     options: CallOptions,
     page = 1,
     startedAt?: number,
+    drainOnCancel = false,
   ): Promise<CollectedSource[]> {
     if (!plan.intent.length)
       return plan.sources.map((view) => ({
@@ -794,6 +795,7 @@ export class AcquisitionTools {
           : [],
       ),
     );
+    const issued: Promise<SearchWindow>[] = [];
     const registry = new SourceRegistry(
       this.registry.sources.map((spec) => {
         const view = plan.sources.find((view) => view.name === spec.name)!;
@@ -801,9 +803,13 @@ export class AcquisitionTools {
           ...spec,
           capabilities: () => view.capabilities,
           defaultSearch: () => view.defaultSearch,
-          searchWindow: this.runtime.registry
-            ? spec.searchWindow
-            : (request, signal) => this.sourceWindow(spec.name, request, signal, options),
+          searchWindow: (request, signal) => {
+            const work = this.runtime.registry
+              ? spec.searchWindow(request, signal)
+              : this.sourceWindow(spec.name, request, signal, options);
+            issued.push(work);
+            return work;
+          },
         };
       }),
     );
@@ -825,6 +831,10 @@ export class AcquisitionTools {
     } catch (error) {
       if (error instanceof ToolFailure && error.code === 'cancelled')
         for (const line of error.info.attempts ?? []) this.recent.record(line.source, line);
+      // A refill's subscribers can leave immediately, but its position stays
+      // leased until the actual adapter promises settle. Physical cleanup and
+      // source-lock release remain with the adapter/runner, never this cache.
+      if (drainOnCancel) await Promise.allSettled(issued);
       throw error;
     }
     return Object.entries(snapshot.sources).map(([source, line]): CollectedSource => {
@@ -873,7 +883,7 @@ export class AcquisitionTools {
         const dispatched = collected.filter((result) => result.state !== 'not_asked');
         const source = dispatched[0]!.source;
         const narrowed = { ...plan, intent: [source] };
-        const next = await this.collect(narrowed, { signal }, page);
+        const next = await this.collect(narrowed, { signal }, page, undefined, true);
         return next.find((result) => result.source === source)!;
       },
     });

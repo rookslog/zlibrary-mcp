@@ -64,7 +64,7 @@ export const tasks = [
     prompt:
       'Get The Glass Orchard by Mira Vale (only on LibGen) without touching my Z-Library quota.',
     A: ['search_multi_source source=libgen', 'download_book_to_file'],
-    B: ['search sources=[libgen]', 'download'],
+    B: ['search sources=[libgen]', 'get_book if copy-specific metadata is needed', 'download'],
     wrong: ['any zlibrary provider call', 'wrong source argument'],
   },
   {
@@ -72,7 +72,7 @@ export const tasks = [
     prompt:
       'Download these three titles: Pride and Prejudice by Jane Austen; Middlemarch by George Eliot; On Liberty by John Stuart Mill.',
     A: ['3 distinct same-task per-title searches, each before its download_book_to_file'],
-    B: ['3 distinct same-task per-title searches, each before its download'],
+    B: ['3 distinct same-task per-title searches, optional copy-specific get_book, each before its download'],
     wrong: ['wrong or duplicate rows', 'missing title'],
   },
   {

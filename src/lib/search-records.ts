@@ -332,7 +332,10 @@ export class SearchRecords {
     record.pending.set(number, { promise, controller, subscribers: new Set() });
     return promise;
   }
-  async page(cursor: string, options: { signal?: AbortSignal } = {}): Promise<SearchReply> {
+  async page(
+    cursor: string,
+    options: { signal?: AbortSignal; timeoutMs?: number } = {},
+  ): Promise<SearchReply> {
     if (options.signal?.aborted)
       throw new ToolFailure('cancelled', 'Call cancelled.', { retry: 'safe' });
     const alias = this.lookup(cursor, 'c');
@@ -342,26 +345,77 @@ export class SearchRecords {
       const pending = alias.record.pending.get(alias.window)!;
       const subscriber = Symbol();
       pending.subscribers.add(subscriber);
+      const waitingAt = performance.now();
+      const waitFailure = (
+        code: 'cancelled' | 'provider_timeout',
+        reason: string,
+        message: string,
+      ) =>
+        new ToolFailure(code, message, {
+          source: alias.record.dispatched[0],
+          retry: 'safe',
+          detail: { reason },
+          attempts: alias.record.plan.sources.map((view) => {
+            const refusal = alias.record.refusals.find((line) => line.source === view.name);
+            return refusal
+              ? { ...refusal }
+              : {
+                  source: view.name,
+                  state: 'failed',
+                  code,
+                  reason,
+                  ms: Math.max(0, Math.floor(performance.now() - waitingAt)),
+                };
+          }),
+        });
       await new Promise<void>((resolve, reject) => {
+        let timer: ReturnType<typeof setTimeout> | undefined;
+        let finished = false;
         const finish = () => {
+          if (finished) return false;
+          finished = true;
+          if (timer !== undefined) clearTimeout(timer);
           options.signal?.removeEventListener('abort', abort);
           pending.subscribers.delete(subscriber);
+          return true;
         };
         const abort = () => {
-          finish();
+          if (!finish()) return;
           if (!pending.subscribers.size) pending.controller.abort('caller_cancelled');
-          reject(new ToolFailure('cancelled', 'Call cancelled.', { retry: 'safe' }));
+          reject(waitFailure('cancelled', 'aborted', 'Call cancelled.'));
         };
+        // A cursor's work is shared, but each caller owns its own wait budget.
+        // Expiry withdraws that subscriber; it is not a provider health verdict.
+        if (
+          options.timeoutMs !== undefined &&
+          Number.isFinite(options.timeoutMs) &&
+          options.timeoutMs > 0 &&
+          options.timeoutMs <= 2147483647
+        )
+          timer = setTimeout(() => {
+            if (!finish()) return;
+            if (!pending.subscribers.size) pending.controller.abort('caller_timeout');
+            reject(
+              waitFailure(
+                'provider_timeout',
+                'caller_timeout',
+                'Refill caller wait budget exceeded.',
+              ),
+            );
+          }, options.timeoutMs);
         options.signal?.addEventListener('abort', abort, { once: true });
         if (options.signal?.aborted) abort();
         void promise.then(
           () => {
-            finish();
-            resolve();
+            if (finish()) resolve();
           },
           (error) => {
-            finish();
-            reject(error);
+            if (finish())
+              reject(
+                error instanceof ToolFailure && error.code === 'cancelled'
+                  ? waitFailure('cancelled', 'aborted', error.message)
+                  : error,
+              );
           },
         );
       });

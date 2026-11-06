@@ -16,13 +16,10 @@ export function dataOf(reply) {
 export function rowsOf(data) {
   return Array.isArray(data) ? data : (data.rows ?? data.books ?? data.items ?? []);
 }
-// Actual copy refs inherit the row's display metadata unless the copy states
-// a differing value. Availability hints contain no selection authority.
+// A copy ref grants selection authority, not another copy's metadata.
+// Availability hints contain neither selection nor metadata authority.
 export function selectableRows(data) {
-  return rowsOf(data).flatMap((row) => [row, ...(row.other_copies ?? []).map((copy) => {
-    const {other_copies, ...metadata} = row;
-    return {...metadata, ...copy};
-  })]);
+  return rowsOf(data).flatMap((row) => [row, ...(row.other_copies ?? []).map(copy => ({...copy}))]);
 }
 export const identity = (row) =>
   String(row?.id ?? row?.identifiers?.zlibrary_id ?? '') || row?.title;
@@ -33,15 +30,15 @@ export const isCampbell = (row) =>
 export const isSearch = (name) => /^(search|full_text)/.test(name);
 export const isDownload = (name) => ['download', 'download_book_to_file'].includes(name);
 const allowed = {
-  T1: ['search', 'download'],
+  T1: ['search', 'detail', 'download'],
   T2: ['search', 'detail'],
   T3: ['download'],
   T4: ['limits'],
   T5: ['limits'],
   T6: ['search'],
   T7: ['history'],
-  T8: ['search', 'download'],
-  T9: ['search', 'download'],
+  T8: ['search', 'detail', 'download'],
+  T9: ['search', 'detail', 'download'],
   T10: ['search', 'detail', 'download'],
   T11: ['limits', 'search', 'history'],
   T12: ['search'],
@@ -111,11 +108,9 @@ export async function scoreTask({
       isSearch(search.name) &&
       successful(search) &&
       selectableRows(dataOf(search.reply ?? {})).some(
-        (found) =>
-          found.title === row.title &&
-          identity(found) === identity(row) &&
-          found.source === row.source &&
-          (!download.args?.ref || found.ref === download.args.ref),
+        (found) => download.args?.ref
+          ? found.ref === download.args.ref && found.source === row.source
+          : found.title === row.title && identity(found) === identity(row) && found.source === row.source,
       )
         ? [searchIndex]
         : [],
@@ -341,7 +336,12 @@ export async function scoreTask({
     arm,
     final,
     remainingBefore,
-    rows: successfulTrace.flatMap((c) => rowsOf(dataOf(c.reply ?? {}))),
+    rows: successfulTrace.flatMap((c) => {
+      const data = dataOf(c.reply ?? {});
+      const ownDetail = b && category(c.name) === 'detail' && c.observedSelection &&
+        data.ref === c.args?.ref && data.source === selected(c).source;
+      return [...rowsOf(data), ...(ownDetail ? [data] : [])];
+    }),
     historyRows: successfulTrace
       .filter((c) => category(c.name) === 'history')
       .flatMap((c) => rowsOf(dataOf(c.reply ?? {}))),

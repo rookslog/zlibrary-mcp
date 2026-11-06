@@ -338,8 +338,11 @@ Replays re-slice the same snapshot and issue no request. Once a sole dispatched
 source's retained tail is exhausted, the first continuation issues one upstream
 refill, single-flight per position, and memoizes the resulting window. Concurrent
 callers and lost-reply replays see the same page. Each caller can cancel its own
-subscription without cancelling peers. Last-subscriber withdrawal aborts that
-waiter; the position stays fenced until its owner settles. Failed/abandoned
+subscription without cancelling peers. An explicit `timeoutMs` call option also
+bounds only that subscriber's wait; expiry returns `provider_timeout` with
+`detail.reason: "caller_timeout"` and does not charge provider health. A peer
+with a longer budget can continue. Last-subscriber withdrawal aborts the job
+waiter; the position stays fenced until its adapter promise settles. Failed/abandoned
 refills can be explicitly retried after that drain, never overlapped.
 
 History retains its separate 5,000-entry handle LRU with 5,000 recent expired

@@ -5,7 +5,7 @@ import { parseBridgeErrorEnvelope } from '../dist/lib/python-bridge.js';
 import { execFile } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 
-// The code remains one of the existing 19; the recovery must address operator envs.
+// The code remains one of the existing 18; the recovery must address operator envs.
 test.each(['search', 'download'])(
   'short %s source owner reports configuration recovery',
   (operation) => {
@@ -21,7 +21,7 @@ test.each(['search', 'download'])(
       operation,
       'libgen',
     );
-    expect(ERROR_CODES).toHaveLength(19);
+    expect(ERROR_CODES).toHaveLength(18);
     expect(result.error.code).toBe('invalid_argument');
     expect(result.error.message).toMatch(/configuration error/i);
     expect(result.error.recovery).toContain('docs/RETRY_CONFIGURATION.md');
@@ -118,7 +118,7 @@ test('real short-owner bridge envelope retains Node configuration recovery', asy
   expect(result.error.recovery).toContain('docs/RETRY_CONFIGURATION.md');
 });
 
-test('public two-source search keeps shared local configuration recovery and ordered attempts', async () => {
+test('public two-source search keeps shared local configuration recovery and canonical source lines', async () => {
   const envelopes = Object.fromEntries(
     await Promise.all(
       ['libgen', 'annas'].map(async (source) => [source, await shortOwnerEnvelope(source)]),
@@ -136,13 +136,9 @@ test('public two-source search keeps shared local configuration recovery and ord
   expect(result.error.recovery).toContain('Configure PYTHON_BRIDGE_TIMEOUT to at least 10000 ms');
   expect(result.error.recovery).toContain('docs/RETRY_CONFIGURATION.md');
   expect(result.error.attempts).toEqual([
-    {
-      source: 'libgen',
-      outcome: 'failed',
-      code: 'invalid_argument',
-      reason: 'configuration_error',
-    },
-    { source: 'annas', outcome: 'failed', code: 'invalid_argument', reason: 'configuration_error' },
+    {source:'libgen',state:'failed',code:'invalid_argument',reason:'configuration_error',ms:expect.any(Number)},
+    {source:'zlibrary',state:'not_asked',reason:'not_requested'},
+    {source:'annas',state:'failed',code:'invalid_argument',reason:'configuration_error',ms:expect.any(Number)},
   ]);
 });
 

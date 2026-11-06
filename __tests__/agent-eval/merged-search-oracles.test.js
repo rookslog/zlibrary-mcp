@@ -26,7 +26,7 @@ test('explicit non-exhausted source is checked against actual lines and returned
 test('evaluation broker observes actual alternative-copy refs but not availability hints',async()=>{
  const server=new EvaluationServer();Object.assign(server,{arm:{history:true,textCopy:true},trace:[],observed:new Map(),rows:new Map(),refRows:new Map(),tools:[{name:'search'},{name:'get_book'}],client:{callTool:async()=>({structuredContent:{rows:[{ref:'primary',source:'zlibrary',title:'Persuasion',other_copies:[{ref:'alternative',source:'libgen'}],also_available_on:['annas']}]}})}});
  await server.call('search',{query:'Persuasion'});
- expect(server.refRows.get('alternative')).toMatchObject({ref:'alternative',source:'libgen',title:'Persuasion'});
+ expect(server.refRows.get('alternative')).toEqual({ref:'alternative',source:'libgen'});
  expect([...server.refRows.keys()]).toEqual(['primary','alternative']);
  server.client.callTool=async()=>({structuredContent:{ref:'alternative',source:'libgen',title:'Persuasion',identifiers:{md5:'a'.repeat(32)},evidence:{}}});
  await server.call('get_book',{ref:'alternative'});

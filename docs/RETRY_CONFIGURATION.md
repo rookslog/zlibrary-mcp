@@ -52,7 +52,13 @@ line says the reply stopped waiting for a dispatched job, not whether a request
 was issued or cleanup completed. Locks and worker capacity stay with their
 owners until cleanup actually finishes. Cancelling a retained refill withdraws
 one subscriber; last withdrawal aborts it, with the position fenced until its
-owner settles before an explicit retry can issue.
+adapter promise settles before an explicit retry can dispatch. Programmatic
+`CallOptions.timeoutMs` applies separately to each refill subscriber. Expiry
+returns `provider_timeout` / `caller_timeout` and withdraws only that caller; a
+longer-budget peer continues. This local wait expiry is neutral to provider
+health. The bridge operation keeps its ordinary owner budget; the subscriber
+does not install its shorter timer on shared work. Adapter settlement does not
+claim physical cleanup or lock release.
 
 LibGen and Anna's mirror searches use a private 3-second per-mirror allowance,
 clamped by the remaining walk. Preflight, pacing and the search itself share

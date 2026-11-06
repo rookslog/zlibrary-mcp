@@ -146,10 +146,11 @@ function defaultTimeoutFor(functionName: string): number | undefined {
 export interface CallOptions {
   /**
    * Wall-clock budget in ms. Defaults to PYTHON_BRIDGE_TIMEOUT, or
-   * PYTHON_BRIDGE_LONG_TIMEOUT for download calls.
+   * PYTHON_BRIDGE_LONG_TIMEOUT for download calls. On shared retained refills,
+   * this bounds only this subscriber's wait, without shortening a peer's work.
    */
   timeoutMs?: number;
-  /** Abort signal from the MCP request, so a cancelled call kills the child. */
+  /** MCP cancellation; a shared refill withdraws only this subscriber. */
   signal?: AbortSignal;
 }
 

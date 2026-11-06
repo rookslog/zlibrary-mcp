@@ -254,7 +254,7 @@ export class EvaluationServer {
       Middlemarch: row?.source === 'libgen' ? 304 : 210,
       'On Liberty': row?.source === 'libgen' ? 305 : 211,
     };
-    c.fixtureId = row?.id ?? fixtureTitles[row?.title];
+    c.fixtureId = row?.id ?? row?.identifiers?.id ?? fixtureTitles[row?.title];
     c.observedSelection = args.ref
       ? this.refRows.has(args.ref)
       : args.bookDetails
@@ -288,9 +288,26 @@ export class EvaluationServer {
       }
       const data = dataOf(c.reply);
       for (const r of selectableRows(data)) {
-        this.observed.set(canonicalRow(r), r);
-        this.rows.set(identity(r), r);
-        if (r.ref) this.refRows.set(r.ref, r);
+        const observed = r.ref ? {...r, ...this.refRows.get(r.ref)} : r;
+        this.observed.set(canonicalRow(observed), observed);
+        this.rows.set(identity(observed), observed);
+        if (observed.ref) this.refRows.set(observed.ref, observed);
+      }
+      if (
+        name === 'get_book' && row && !c.reply.isError && !data.error &&
+        data.ref === args.ref && data.source === row.source
+      ) {
+        // Refresh only an already observed ref, from that exact copy's detail.
+        const fresh = {...row, ...data, ref: args.ref, source: row.source};
+        this.refRows.set(args.ref, fresh);
+        this.rows.set(identity(fresh), fresh);
+        c.selected = fresh;
+        for (const copy of [...(data.other_copies ?? []), ...(data.likely_editions ?? [])]) {
+          if (typeof copy.ref !== 'string' || typeof copy.source !== 'string') continue;
+          const own = {...copy, ...this.refRows.get(copy.ref)};
+          this.refRows.set(copy.ref, own);
+          this.rows.set(identity(own), own);
+        }
       }
       if (!this.arm.textCopy && c.reply.structuredContent) c.reply = { ...c.reply, content: [] };
       return c.reply;

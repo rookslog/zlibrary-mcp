@@ -1,4 +1,4 @@
-"""Lead reproductions: corrupt content, ancestor links, and resolver isolation."""
+"""Corrupt content recovery, ancestor links, and resolver isolation."""
 
 import json
 import os

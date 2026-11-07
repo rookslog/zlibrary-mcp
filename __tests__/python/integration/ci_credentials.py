@@ -1,5 +1,6 @@
 """Opaque integration credentials; raw values cross only the login boundary."""
 
+from functools import partial
 import json
 import os
 from pathlib import Path
@@ -53,28 +54,34 @@ def record_session(stamp, record):
         os.close(fd)
 
 
+async def capture_login(client, login, *args, **kwargs):
+    stamp = session_capture_path()
+    attempt = uuid4().hex
+    record_session(stamp, {"attempt": attempt, "status": "pending"})
+    try:
+        return await login(*args, **kwargs)
+    finally:
+        record_session(
+            stamp,
+            {
+                "attempt": attempt,
+                "status": "complete",
+                "values": [
+                    str(getattr(client, "remix_userid", None) or ""),
+                    str(getattr(client, "remix_userkey", None) or ""),
+                ],
+            },
+        )
+
+
 async def login_with_credentials(client, credentials):
     """Return a boolean so assertions cannot display a complete login reply."""
     try:
-        stamp = session_capture_path()
-        attempt = uuid4().hex
-        record_session(stamp, {"attempt": attempt, "status": "pending"})
-        try:
-            result = await client.login(
-                credentials["email"].reveal(), credentials["password"].reveal()
-            )
-        finally:
-            record_session(
-                stamp,
-                {
-                    "attempt": attempt,
-                    "status": "complete",
-                    "values": [
-                        str(getattr(client, "remix_userid", None) or ""),
-                        str(getattr(client, "remix_userkey", None) or ""),
-                    ],
-                },
-            )
-        return result.get("success") == 1
+        login = client.login
+        if not getattr(login, "_captures_session_values", False):
+            login = partial(capture_login, client, login)
+        return (
+            await login(credentials["email"].reveal(), credentials["password"].reveal())
+        ).get("success") == 1
     except Exception:
         raise RuntimeError("Integration login failed") from None

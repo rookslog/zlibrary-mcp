@@ -295,9 +295,11 @@ Exceptions require a named entry and a nonempty stated reason in the checker.
 The check covers direct `actions/upload-artifact` steps in workflow files only. It does not inspect composite actions, other actions, shell commands, caches, job summaries or job outputs.
 
 Integration credentials use an opaque test helper and an explicit login boundary.
-The login helper records session values in a private file outside the workspace.
+Integration setup captures every EAPI login in a private file outside the workspace.
 The output filter consumes and removes that file, replaces configured and captured
 values and their encoded representations, and also checks recognized session fields.
+For captured values of at least 16 characters, it also replaces matching runs of
+at least eight characters, including shortened test-output representations.
 Missing required capture or incomplete login records prevent preparation. The
 filter rereads the upload files and checks decoded XML. An unsuccessful filter
 prevents upload. After successful filtering, the workflow prints a fixed test

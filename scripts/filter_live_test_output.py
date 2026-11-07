@@ -206,6 +206,24 @@ def captured_values(stamp):
     return values
 
 
+def replace_fragment_runs(text, fragments):
+    pieces = []
+    previous, end = 0, 0
+    for start in range(len(text) - 7):
+        if text[start : start + 8] not in fragments:
+            continue
+        if start > end:
+            if end > previous:
+                pieces.append(REPLACEMENT)
+            pieces.append(text[end:start])
+            previous = start
+        end = start + 8
+    if end > previous:
+        pieces.append(REPLACEMENT)
+    pieces.append(text[end:])
+    return "".join(pieces)
+
+
 def prepare_output(stamp) -> int:
     def fail():
         print(FAILURE)
@@ -228,22 +246,32 @@ def prepare_output(stamp) -> int:
         if (had_log or tree is not None) and not all(configured):
             return fail()
         values = {value for value in configured if value}
+        captured = set()
         if stamp is not None and (had_log or tree is not None or stamp.exists()):
-            values.update(captured_values(stamp))
+            captured = captured_values(stamp)
+            values.update(captured)
         values.update(session_values(data.decode("utf-8")))
         if tree is not None:
             for text in xml_content(tree):
                 values.update(session_values(text))
+        fragments = {
+            value[start : start + 8]
+            for value in captured
+            if len(value) >= 16
+            for start in range(len(value) - 7)
+        }
         patterns = sorted(
             {form for value in values for form in encoded_values(value)},
             key=len,
             reverse=True,
         )
 
+        checked_patterns = patterns + sorted(fragments)
+
         def redact(text):
             for pattern in patterns:
                 text = text.replace(pattern, "[filtered]")
-            return text
+            return replace_fragment_runs(text, fragments)
 
         if had_log:
             log.write_bytes(redact(data.decode("utf-8")).encode("utf-8"))
@@ -266,7 +294,9 @@ def prepare_output(stamp) -> int:
         else:
             if (
                 not had_log
-                or any(pattern.encode("utf-8") in written for pattern in patterns)
+                or any(
+                    pattern.encode("utf-8") in written for pattern in checked_patterns
+                )
                 or any(session_values(written.decode("utf-8")))
             ):
                 return fail()
@@ -276,7 +306,7 @@ def prepare_output(stamp) -> int:
         if written_tree is not None and any(
             pattern in text
             for text in xml_content(written_tree)
-            for pattern in patterns
+            for pattern in checked_patterns
         ):
             return fail()
         if written_tree is not None and any(

@@ -5,6 +5,7 @@ Provides a module-scoped zlib_client fixture that authenticates
 with Z-Library via EAPIClient for test methods that declare it.
 """
 
+from functools import wraps
 import os
 import sys
 
@@ -17,7 +18,30 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "..", "..", "li
 from zlibrary.eapi import EAPIClient  # noqa: E402
 
 import python_bridge  # noqa: E402
-from .ci_credentials import environment_credentials, login_with_credentials  # noqa: E402
+from .ci_credentials import (  # noqa: E402
+    capture_login,
+    environment_credentials,
+    login_with_credentials,
+)
+
+
+_original_login = EAPIClient.login
+
+
+@wraps(_original_login)
+async def _captured_login(client, *args, **kwargs):
+    return await capture_login(
+        client, _original_login.__get__(client, type(client)), *args, **kwargs
+    )
+
+
+_captured_login._captures_session_values = True
+EAPIClient.login = _captured_login
+
+
+def pytest_unconfigure():
+    if EAPIClient.login is _captured_login:
+        EAPIClient.login = _original_login
 
 
 @pytest.fixture(scope="module")

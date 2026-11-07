@@ -1,9 +1,9 @@
 #!/usr/bin/env node
 /** Enforce filtering before artifact uploads in jobs that consume secrets. */
-import { readFileSync, readdirSync } from 'node:fs';
+import { readFileSync, readdirSync, realpathSync } from 'node:fs';
 import { basename, join } from 'node:path';
 import { parseDocument } from 'yaml';
-import { pathToFileURL } from 'node:url';
+import { fileURLToPath } from 'node:url';
 
 // Exceptions use "workflow/job" for reusable callers or "workflow/job/step-index"
 // for uploads. Each named entry must state a nonempty reason.
@@ -147,6 +147,9 @@ function main() {
   return failures ? 1 : 0;
 }
 
-if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
+if (
+  process.argv[1] &&
+  realpathSync(fileURLToPath(import.meta.url)) === realpathSync(process.argv[1])
+) {
   process.exitCode = main();
 }

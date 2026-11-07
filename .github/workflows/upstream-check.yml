@@ -151,6 +151,8 @@ jobs:
     # reachability probe so a network-level block skips the suite instead of
     # burning login attempts (~10/hour/IP) against a wall.
     needs: reachability
+    env:
+      ZLIBRARY_TEST_SESSION_VALUES: ${{ runner.temp }}/zlibrary-live-sessions.jsonl
     if: always() && (github.event_name == 'schedule' || inputs.run_live_tests)
     outputs:
       status: ${{ steps.live.outputs.status }}
@@ -211,6 +213,8 @@ jobs:
             fi
             exit 0
           fi
+          umask 077
+          : > "$ZLIBRARY_TEST_SESSION_VALUES"
           # Use the same literal-false gate for collection and execution.
           # Coverage belongs to the full acquisition suite (#250).
           uv run pytest -m integration --collect-only --no-cov -q > live.log 2>&1

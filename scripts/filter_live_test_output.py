@@ -18,7 +18,8 @@ SESSION_NAMES = (
     "remix_userkey|remix_userid|user_key|session_key|access_token|refresh_token|token"
 )
 SESSION_FIELD = re.compile(
-    rf"""(?<![\w])['\"]?(?:{SESSION_NAMES})['\"]?\s*[:=]\s*""", re.IGNORECASE
+    rf"""(?<![A-Za-z0-9])['\"]?(?:{SESSION_NAMES})['\"]?\s*[:=](?!\s*=)\s*""",
+    re.IGNORECASE,
 )
 USER_OBJECT = re.compile(r"""['\"]user['\"]\s*:\s*\{""", re.IGNORECASE)
 USER_ID = re.compile(r"""(?<![\w])['\"]id['\"]\s*:\s*""", re.IGNORECASE)
@@ -72,6 +73,8 @@ def discovery_texts(text):
 
 def field_value(text, start):
     remaining = text[start:]
+    if remaining.startswith("="):
+        raise ValueError("invalid session value")
     quoted = QUOTED_VALUE.match(remaining)
     if quoted:
         literal = quoted.group()
@@ -170,7 +173,40 @@ def xml_content(tree):
     yield "".join(tree.getroot().itertext())
 
 
-def filter_output() -> int:
+def captured_values(stamp):
+    pending, complete, values = set(), set(), set()
+    for line in stamp.read_text(encoding="utf-8").splitlines():
+        record = json.loads(line)
+        if not isinstance(record, dict):
+            raise ValueError("invalid session capture")
+        attempt = record.get("attempt")
+        status = record.get("status")
+        if not isinstance(attempt, str) or not attempt:
+            raise ValueError("invalid session capture")
+        if status == "pending" and set(record) == {"attempt", "status"}:
+            if attempt in pending or attempt in complete:
+                raise ValueError("duplicate session capture")
+            pending.add(attempt)
+        elif status == "complete" and set(record) == {"attempt", "status", "values"}:
+            captured = record["values"]
+            if (
+                attempt not in pending
+                or not isinstance(captured, list)
+                or len(captured) != 2
+                or not all(isinstance(value, str) for value in captured)
+            ):
+                raise ValueError("invalid session capture")
+            pending.remove(attempt)
+            complete.add(attempt)
+            values.update(value for value in captured if value)
+        else:
+            raise ValueError("invalid session capture")
+    if pending:
+        raise ValueError("incomplete session capture")
+    return values
+
+
+def prepare_output(stamp) -> int:
     def fail():
         print(FAILURE)
         return 1
@@ -192,6 +228,8 @@ def filter_output() -> int:
         if (had_log or tree is not None) and not all(configured):
             return fail()
         values = {value for value in configured if value}
+        if stamp is not None and (had_log or tree is not None or stamp.exists()):
+            values.update(captured_values(stamp))
         values.update(session_values(data.decode("utf-8")))
         if tree is not None:
             for text in xml_content(tree):
@@ -250,6 +288,29 @@ def filter_output() -> int:
     except (OSError, ET.ParseError, LookupError, UnicodeError, ValueError):
         return fail()
     return 0
+
+
+def filter_output() -> int:
+    stamp = None
+    result = 1
+    try:
+        if path := os.environ.get("ZLIBRARY_TEST_SESSION_VALUES"):
+            candidate = Path(path).absolute()
+            workspace = Path(os.environ.get("GITHUB_WORKSPACE", os.getcwd())).resolve()
+            if candidate.resolve().is_relative_to(workspace):
+                raise ValueError("invalid session capture path")
+            stamp = candidate
+        result = prepare_output(stamp)
+    except (OSError, ValueError):
+        print(FAILURE)
+    finally:
+        if stamp is not None:
+            try:
+                stamp.unlink(missing_ok=True)
+            except OSError:
+                print(FAILURE)
+                result = 1
+    return result
 
 
 if __name__ == "__main__":

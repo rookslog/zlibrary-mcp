@@ -117,7 +117,14 @@ def test_real_live_step_keeps_canaries_out_of_uploaded_files(
         "os.execv(sys.executable, [sys.executable, *sys.argv[3:]])\n"
     )
     uv.chmod(0o755)
+    runner_temp = tmp_path.parent / (tmp_path.name + "-runner")
+    runner_temp.mkdir()
+    job_env = {
+        key: value.replace("${{ runner.temp }}", str(runner_temp))
+        for key, value in workflow["jobs"]["live_tests"]["env"].items()
+    }
     env = {
+        **job_env,
         "PATH": str(bin_path),
         "GITHUB_WORKSPACE": str(tmp_path),
         "GITHUB_OUTPUT": str(tmp_path / "outputs"),
@@ -209,6 +216,9 @@ def test_upload_requires_successful_output_filtering(workflow):
     steps = workflow["jobs"]["live_tests"]["steps"]
     prepare = next((s for s in steps if s.get("id") == "filter_output"), None)
     assert prepare is not None
+    assert workflow["jobs"]["live_tests"].get("env") == {
+        "ZLIBRARY_TEST_SESSION_VALUES": "${{ runner.temp }}/zlibrary-live-sessions.jsonl"
+    }
     assert prepare["if"] == "always()"
     assert prepare["env"] == {
         "ZLIBRARY_EMAIL": "${{ secrets.ZLIBRARY_CI_EMAIL }}",
@@ -745,3 +755,59 @@ def test_named_session_recheck_requires_the_exact_replacement(
 
     monkeypatch.setattr(Path, "write_bytes", contaminate)
     assert module.filter_output() == 1
+
+
+def test_excessive_escaped_field_layers_reject_output(monkeypatch, tmp_path):
+    module = load_filter(monkeypatch, tmp_path, "FAKE-CONFIGURED-PASSWORD")
+    # Eight backslashes still leave a named escaped field after four passes.
+    printed = "{" + "\\" * 8 + '"token' + "\\" * 8 + '": "FAKE-DEEP"}'
+    (tmp_path / "live.log").write_text(printed)
+    assert module.filter_output() == 1
+
+
+def test_uppercase_session_field_filters_a_later_bare_value(monkeypatch, tmp_path):
+    module = load_filter(monkeypatch, tmp_path, "FAKE-CONFIGURED-PASSWORD")
+    (tmp_path / "live.log").write_text("REMIX_USERKEY=FAKE-UPPERCASE\nFAKE-UPPERCASE")
+    assert module.filter_output() == 0
+    assert "FAKE-UPPERCASE" not in (tmp_path / "live.log").read_text()
+
+
+def test_escaped_user_id_is_discovered_without_a_session_key(monkeypatch, tmp_path):
+    module = load_filter(monkeypatch, tmp_path, "FAKE-CONFIGURED-PASSWORD")
+    printed = r"{\"user\": {\"id\": \"FAKE-ESCAPED-ID\"}}"
+    (tmp_path / "live.log").write_text(printed + "\nFAKE-ESCAPED-ID")
+    assert module.filter_output() == 0
+    assert "FAKE-ESCAPED-ID" not in (tmp_path / "live.log").read_text()
+
+
+def test_quoted_closing_brace_does_not_end_user_object(monkeypatch, tmp_path):
+    module = load_filter(monkeypatch, tmp_path, "FAKE-CONFIGURED-PASSWORD")
+    printed = '{"user": {"name": "a } b", "id": "FAKE-AFTER-BRACE"}}'
+    (tmp_path / "live.log").write_text(printed + "\nFAKE-AFTER-BRACE")
+    assert module.filter_output() == 0
+    assert "FAKE-AFTER-BRACE" not in (tmp_path / "live.log").read_text()
+
+
+@pytest.mark.parametrize("field", ["auth_token", "session_token"])
+def test_prefixed_token_fields_filter_their_bare_values(monkeypatch, tmp_path, field):
+    module = load_filter(monkeypatch, tmp_path, "FAKE-CONFIGURED-PASSWORD")
+    (tmp_path / "live.log").write_text(
+        f"{field}=FAKE-PREFIXED-TOKEN\nFAKE-PREFIXED-TOKEN"
+    )
+    assert module.filter_output() == 0
+    assert "FAKE-PREFIXED-TOKEN" not in (tmp_path / "live.log").read_text()
+
+
+@pytest.mark.parametrize("printed", ["assert c.remix_userkey == 'x'", "token := x"])
+def test_source_operators_do_not_become_session_values(monkeypatch, tmp_path, printed):
+    module = load_filter(monkeypatch, tmp_path, "FAKE-CONFIGURED-PASSWORD")
+    original = printed + "\nordinary = output\n"
+    (tmp_path / "live.log").write_text(original)
+    assert module.filter_output() == 0
+    assert (tmp_path / "live.log").read_text() == original
+
+
+def test_session_value_cannot_start_with_equals(monkeypatch, tmp_path):
+    module = load_filter(monkeypatch, tmp_path, "FAKE-CONFIGURED-PASSWORD")
+    with pytest.raises(ValueError):
+        module.field_value("=unsafe", 0)

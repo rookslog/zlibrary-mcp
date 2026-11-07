@@ -17,8 +17,12 @@ SCRIPT = ROOT / "scripts" / "classify_live_tests.py"
 
 
 @pytest.fixture(autouse=True)
-def workflow_workspace(monkeypatch):
+def workflow_workspace(monkeypatch, tmp_path, workflow):
     monkeypatch.setenv("GITHUB_WORKSPACE", str(ROOT))
+    runner_temp = tmp_path.parent / (tmp_path.name + "-runner")
+    runner_temp.mkdir()
+    for key, value in workflow["jobs"]["live_tests"]["env"].items():
+        monkeypatch.setenv(key, value.replace("${{ runner.temp }}", str(runner_temp)))
 
 
 RECORDED = ET.parse(ROOT / "__tests__/python/fixtures/live-junit/pytest-junit.xml")

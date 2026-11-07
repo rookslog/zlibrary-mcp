@@ -1,7 +1,7 @@
 import { test, expect } from '@jest/globals';
-import { mkdtempSync, writeFileSync, rmSync } from 'node:fs';
+import { mkdtempSync, writeFileSync, rmSync, symlinkSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { join, resolve } from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { stringify } from 'yaml';
 import { pathToFileURL } from 'node:url';
@@ -145,5 +145,18 @@ test('rejects duplicate YAML job keys instead of silently replacing the secret j
   try {
     writeFileSync(join(directory, 'duplicate.yml'), `jobs:\n  test:\n    uses: other/repo/.github/workflows/x.yml@v1\n    secrets: inherit\n  test:\n    steps: []\n`);
     expect(spawnSync(process.execPath, ['scripts/check-workflow-secrets.mjs', directory]).status).toBe(1);
+  } finally { rmSync(directory, { recursive: true, force: true }); }
+});
+
+
+test('symlinked checker rejects an unsafe workflow and reports its result', () => {
+  const directory = mkdtempSync(join(tmpdir(), 'workflow-cli-link-'));
+  try {
+    const cli = join(directory, 'check.mjs');
+    symlinkSync(resolve('scripts/check-workflow-secrets.mjs'), cli);
+    writeFileSync(join(directory, 'unsafe.yml'), stringify(workflow('${{ secrets.TEST_VALUE }}', 'always()')));
+    const result = spawnSync(process.execPath, [cli, directory], { encoding: 'utf8' });
+    expect(result.status).toBe(1);
+    expect(result.stderr).toContain('Workflow secret policy:');
   } finally { rmSync(directory, { recursive: true, force: true }); }
 });

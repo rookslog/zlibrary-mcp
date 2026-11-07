@@ -47,9 +47,8 @@ availability. Run `npm run doctor` to check them yourself.
 
 ## CI test account and uploaded output
 
-CI may only use a dedicated test account with nothing else on it. Creating that
-account and configuring it are repository-owner tasks. Without an account, the
-live suite reports `no_account` and skips authentication.
+CI may only use a dedicated test account with nothing else on it. Without an
+account, the live suite reports `no_account` and skips authentication.
 
 `scripts/check-workflow-secrets.mjs`, run by CI, parses every workflow and requires
 successful output preparation before artifact uploads in jobs using secrets other
@@ -58,13 +57,16 @@ workspace root, with only artifact-upload steps between filtering and the last
 upload. Aggregate and bracket secret access receive the same checks.
 Reusable-workflow callers using secrets require a named job exception.
 Exceptions require a named entry and a nonempty stated reason in the checker.
-The check covers artifact uploads only.
+The check covers direct `actions/upload-artifact` steps in workflow files only. It does not inspect composite actions, other actions, shell commands, caches, job summaries or job outputs.
 
 Integration credentials use an opaque test helper and an explicit login boundary.
-The output filter replaces configured values, their encoded representations, and
-recognized login-session fields, then rereads the upload files and checks decoded
-XML. An unsuccessful filter prevents upload. After successful filtering, the
-workflow prints a fixed test summary; raw pytest output stays in the prepared
+The login helper records session values in a private file outside the workspace.
+The output filter consumes and removes that file, replaces configured and captured
+values and their encoded representations, and also checks recognized session fields.
+Missing required capture or incomplete login records prevent preparation. The
+filter rereads the upload files and checks decoded XML. An unsuccessful filter
+prevents upload. After successful filtering, the workflow prints a fixed test
+summary; raw pytest output stays in the prepared
 log file. Live test output is retained for one day; the separate source report
 remains at thirty days. Offline canaries exercise this path with synthetic values
 in the normal test suite.

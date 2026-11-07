@@ -97,19 +97,3 @@ logs/
 # checkouts of other branches, so leaving them untracked made `git status`
 # permanently dirty and hid real uncommitted work.
 .claude/worktrees/
-
-# Test output files
-test_strikethrough_findings.json
-test_specific_pages_findings.json
-test_files/formatting_extraction_results.json
-test_files/heidegger_line_analysis.json
-test_files/margins_line_analysis.json
-test_files/heidegger_pymupdf_strikethrough.json
-test_files/margins_pymupdf_strikethrough.json
-test_files/tesseract_comparison_data.json
-test_files/test_run_output.txt
-test_files/tesseract_comparison_report.txt
-test_files/VISUAL_COMPARISON.txt
-
-# Test visualization outputs
-test_files/*_visualization.png

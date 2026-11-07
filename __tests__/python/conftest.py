@@ -18,39 +18,6 @@ project_root = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..
 if project_root not in sys.path:
     sys.path.insert(0, project_root)
 
-# PDF fixtures are stored in Git LFS. A clone made without LFS (or with
-# GIT_LFS_SKIP_SMUDGE set) leaves ~130-byte pointer files on disk in their place.
-# PyMuPDF then fails with "no objects found", and the real tests fail with
-# assertion errors that look like detection regressions. Detect the pointers and
-# skip with a message that names the actual cause.
-_LFS_POINTER_MAGIC = b"version https://git-lfs.github.com/spec/v1"
-
-
-def is_lfs_pointer(path) -> bool:
-    """True if `path` is an unhydrated Git LFS pointer rather than real content."""
-    try:
-        with open(path, "rb") as handle:
-            return handle.read(len(_LFS_POINTER_MAGIC)) == _LFS_POINTER_MAGIC
-    except OSError:
-        return False
-
-
-def require_real_fixture(path):
-    """Skip the calling test when `path` is missing or an unhydrated LFS pointer."""
-    if not os.path.isfile(path):
-        pytest.skip(f"fixture missing: {path}")
-    if is_lfs_pointer(path):
-        pytest.skip(
-            f"fixture {os.path.basename(path)} is an unhydrated Git LFS pointer. "
-            "Run 'git lfs pull' to fetch the real PDF."
-        )
-
-
-@pytest.fixture
-def lfs_fixture():
-    """Fixture form of require_real_fixture for tests that prefer injection."""
-    return require_real_fixture
-
 
 @pytest.fixture(autouse=True)
 def _no_preflight_probes(request, monkeypatch):

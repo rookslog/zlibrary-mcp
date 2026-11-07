@@ -1,5 +1,10 @@
 # RAG Robustness Enhancement Specification
 
+> Historical processing record. Its processing paths, examples, dependency
+> relationships and measurements describe the earlier text implementation, not
+> this acquisition checkout. Retired processing fixtures have been removed from
+> this tip; use Git history for the old paths. See [migration](text-processing-migration.md).
+
 **Version:** 1.0
 **Date:** 2025-04-29
 **Author:** Specification Writer (AI Mode)

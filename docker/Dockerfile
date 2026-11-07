@@ -34,6 +34,7 @@ FROM tooling AS source
 # Copy dependency files first (better layer caching)
 COPY pyproject.toml uv.lock ./
 COPY package.json package-lock.json ./
+COPY LICENSE THIRD-PARTY-NOTICES.md ./
 
 # Copy source files
 COPY src/ ./src/
@@ -42,11 +43,14 @@ COPY zlibrary/ ./zlibrary/
 COPY tsconfig.json ./
 COPY scripts/ ./scripts/
 
+# Checkout modes may be owner-only; runtime users must read all Python sources.
+RUN chmod -R a+rX /app/lib /app/zlibrary
+
 # Only acquisition dependencies ship in the runtime image.
 RUN uv sync --frozen --no-dev
 
 # Install Node dependencies and build TypeScript
-RUN npm ci && npm run build
+RUN npm ci && npm run build && npm prune --omit=dev --ignore-scripts
 
 # No source compilation here: exercise exactly the dist/lib bytes in the npm
 # release tarball, with locked production dependencies and no lifecycle hooks.
@@ -74,7 +78,9 @@ COPY --from=builder /app/zlibrary ./zlibrary/
 COPY --from=builder /app/dist ./dist/
 COPY --from=builder /app/node_modules ./node_modules/
 COPY --from=builder /app/lib ./lib/
-COPY --from=builder /app/package.json ./
+# Worktree-generated metadata can be owner-only. Runtime readers, including
+# non-root smoke/users, need the original bytes with readable file modes.
+COPY --chmod=644 --from=builder /app/package.json /app/LICENSE /app/THIRD-PARTY-NOTICES.md ./
 
 # Keep downloads in the mounted volume across container restarts
 ENV ZLIBRARY_OUTPUT_ROOT=/app/downloads

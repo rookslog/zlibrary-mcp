@@ -29,7 +29,7 @@ logs
 .DS_Store
 Thumbs.db
 
-# Test fixtures and test suites (not needed in runtime)
+# HTML parser fixtures and test suites (not needed in runtime)
 test_files
 __tests__
 !__tests__/
@@ -45,6 +45,7 @@ claudedocs
 .claude
 *.md
 !docker/README.md
+!THIRD-PARTY-NOTICES.md
 
 # Environment files (use docker/env.example)
 .env

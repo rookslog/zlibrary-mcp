@@ -13,3 +13,6 @@ env/
 .DS_Store
 .gitignore
 .roo/
+
+# Source-only HTML parser fixtures
+test_files/

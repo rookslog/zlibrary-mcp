@@ -1,6 +1,6 @@
 # ADR-011: Promote Z-Library to a Source Adapter
 
-**Status:** Accepted; compatibility-façade interval superseded by [ADR-012](ADR-012-Acquisition-Tool-Interface.md) for the 2.0 tool interface.
+**Status:** Accepted; compatibility-façade interval superseded by [ADR-012](ADR-012-Acquisition-Tool-Interface.md) for the 2.0 tool interface; public search routing amended by the merged-search amendment under Decision 4.
 
 **Date:** 2026-08-12
 
@@ -118,8 +118,11 @@ The design must satisfy these constraints together:
 - **Per-user credentials and quotas.** The adapter reads the current user's
   Z-Library credentials and quota. The router never pools accounts or hides a
   per-user limit behind another source.
-- **No privileged source.** Registration does not imply preference. The
-  router does not rank, score, or deduplicate sources or results.
+- **No privileged source.** Registration does not imply preference. `SourceRouter`
+  does not rank, score, or deduplicate sources or results. The tool layer above
+  it merges search answers as the merged-search amendment under Decision 4
+  describes; neither layer orders results by source, and only an operator's
+  written list can prefer one route over another.
 - **Search-result-first acquisition.** The caller passes back the result it
   selected. A source-specific identifier inside that result is not a new
   direct-ID tool.
@@ -277,8 +280,10 @@ source-scoped reference; it must not pass a Z-Library `{id, hash}` reference to
 LibGen or invent an alternate lookup. A quota or acquisition failure is
 returned with the selected source's provenance. The caller may then select a
 result from another source. Cross-source availability hints remain hints under
-#96 and do not authorize automatic acquisition fallback; source-to-source
-deduplication or matching remains #52.
+#96 and do not authorize automatic acquisition fallback. Equal-MD5 grouping in
+search replies does not change this: each copy keeps its own source-bound
+reference, and a failed transfer is never retried on another copy. Matching
+beyond equal MD5 remains #52.
 
 `get_book_metadata` should likewise migrate from raw `bookId`/`bookHash`
 parameters to the selected `bookDetails` result. The old parameters **must
@@ -348,14 +353,18 @@ Routing rules are:
 2. Fallback for search and other reference-free operations requires an ordered
    source list supplied by the caller or operator configuration. The router
    attempts that order exactly. Acquisition remains source-bound as specified
-   above.
+   above. The public `search` tool no longer walks an order; see the
+   merged-search amendment below.
 3. The legacy `source="auto"` input is a compatibility alias for configured
    order. Adapter registration order is never used as the fallback order, and
    registering Z-Library does not silently put it first.
 4. The router does not merge, score, deduplicate, or reorder successful
-   results. Cross-source deduplication remains #52.
+   results. The tool layer does, under the merged-search amendment below.
+   Matching beyond equal MD5 remains #52.
 5. Responses follow #96: `requested`, `served_by`, `fell_back`, and symmetric
    per-source route constraints are reported. `sources_used` is deprecated.
+   Public `search` replies report per-source lines instead of `requested`,
+   `served_by` and `fell_back`; see the merged-search amendment below.
 6. Transfer results carry nested `provenance` with source, route, mirror, and
    host when each value is applicable. Provenance describes the transfer, not
    document content.
@@ -363,6 +372,31 @@ Routing rules are:
 Legacy Z-Library-named tool behaviour may supply an explicit Z-Library source
 at its compatibility façade. That is a property of the legacy tool contract,
 not a default inside the generic router.
+
+**Merged-search amendment (Refs #377, 2026-11-06):** the public `search` tool
+asks every source in a resolved set at once, in separate bridge calls, and
+merges their answers in the Node tool layer. `SourceRouter` keeps rules 1 to 4
+for its own operations; no public tool sends `auto`.
+
+- **Source set.** `sources` is a set. Omitted, it is the default set reported by
+  `get_limits`. Registration alone still confers no preference.
+- **Grouping.** Equal lowercase 32-hex MD5 forms one row. That is a catalogue
+  claim of the same file, not a check of bytes. No other field groups; title,
+  author and size only produce labelled likely relations.
+- **Ordering.** Rows sort by fit to the request, then best source rank, then a
+  stable hash. Source identity, arrival time and repetition across sources do
+  not affect order.
+- **Acquisition stays source-bound.** A row's `ref` names one copy on one source.
+  The server recommends a copy; it never switches copies.
+- **Accounting.** Every registered source has a line in every reply. Empty still
+  means answered, and a mixed empty and failed search with no rows is still
+  `partial_failure`. Late and refused sources are accounted for too.
+- **Configuration.** `BOOK_SOURCE_ORDER`, designed below, was not built. The
+  public setting `BOOK_SOURCE_DEFAULT_ORDER` selects the default set and breaks
+  ties between routes to one file. It orders neither the asking nor the rows.
+
+Rejected alternative D stands: there is no fixed source order. The one-shot
+process boundary and the following routing history remain unchanged.
 
 `source="auto"` has an explicit migration path. A new optional
 `BOOK_SOURCE_ORDER` names the providers to attempt, in order, and is the only

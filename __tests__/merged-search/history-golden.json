@@ -50,7 +50,8 @@
     "reused": false,
     "transfer_skipped": false,
     "verified": "sha256",
-    "record": "/synthetic/history.record.json"
+    "record": "/synthetic/history.record.json",
+    "source": "zlibrary"
   },
   "next": {
     "rows": [

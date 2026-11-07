@@ -63,30 +63,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   acquisition; malformed timer values still fall back to defaults. See
   [timeout configuration](docs/RETRY_CONFIGURATION.md#multi-source-timeout-configuration).
 
-### Filters — partial milestone for 2.0 (unreleased)
+### Changed
 
-Year, language and format are checked locally on all three sources, with
-examined-window counts and excluded unknown metadata. `exact` remains a gap:
-unsupported sources are skipped; Z-Library receives it as `native_only`, sent
-but not checked by this server. The 50-row Z-Library page/held-tail drain is
-deferred; there is no overfetch or new input field in this slice.
-
-Compatibility: numeric public years remain unchanged on non-year paths, and
-`continuation_source` is limited to filtered searches. Readable date strings
-now add a public year; inactive `exact:false`/empty lists no longer add false
-`ignored` entries. Full or oversupplied raw pages retain an onward cursor.
-
-Before/after examples (operator O4):
-
-- LibGen, French EPUBs: before, top rows from an unfiltered page; after,
-  only French EPUBs, often none, with examined-window counts and a note.
-- Z-Library with `fr`: before, the value was forwarded without local language
-  checks; after, `fr` is normalized to `french` and every returned row is
-  checked locally. This does not assume that the native source ignored `fr`.
-- Year filter: before, unreadable/absent years could survive; after, those
-  rows are excluded and counted as unknown unless another field mismatches.
-- `exact` on LibGen alone: before, rows with ignored `exact`; after, an
-  `unsupported_operation` error pointing to Z-Library or dropping `exact`.
+- Search now asks a reported set of sources together, rather than stopping at
+  the first with rows. Omitted sources use the locally resolved default set;
+  Anna's remains out of the unset default until its route is on. Refs #377.
+- Replies account for every registered source, freeze at a bounded comparison
+  wait and label incomplete answers. File rows group only equal catalogue MD5;
+  source-neutral fit ordering and selectable copies replace the routing block.
+- `exact` checks title-query and author phrases separately on every source.
+  Native Z-Library filters remain transmitted, with local examined-window
+  evidence for all active predicates and up to 50 candidates per source.
+- Search cursor replays are retained snapshots, including single-flight
+  memoized one-source refills. Whole-search LRU eviction and a 20-window bound
+  keep refs and cursors consistent. History continuation remains unchanged.
+- Detail replies expose bounded copy evidence and likely editions. Download
+  success names the selected source; failure can offer explicit alternatives
+  without substitution. Existing receipt identity and refusal rules remain.
+- Local limits report search defaults, wait, preferences and read-only health
+  and admission state. Startup validates search wait and format settings.
 
 ### Security
 
@@ -104,12 +99,12 @@ Before/after examples (operator O4):
 
 - Replaced the old tool names with `search`, `get_book`, `download`, `get_limits`,
   `get_history`; old calls return typed migration errors without contacting providers.
-- Added ordered source routing, compact process-local refs, immutable replayable
-  cursors, bounded paging and consistent closed error envelopes with quota-aware retry hints.
+- Added compact process-local refs, replayable cursors, bounded paging and
+  consistent closed error envelopes with quota-aware retry hints.
 - Added no-network local source limits; account history remains distinct from local files.
-- Added optional `BOOK_SOURCE_DEFAULT_ORDER` (a comma-separated, distinct source
-  order). Without it, `search` requires explicit `sources` and otherwise returns
-  `sources_required`; there is no implicit preferred source.
+- Added optional `BOOK_SOURCE_DEFAULT_ORDER` (a comma-separated, distinct default
+  set and copy-route tie preference), `BOOK_SOURCE_SEARCH_WAIT_MS` and
+  `BOOK_FORMAT_PREFERENCE`; there is no implicit preferred source.
 - **Breaking: download location.** Downloads are contained by default in the
   platform data directory's `zlibrary-mcp/downloads`, configurable with absolute
   `ZLIBRARY_OUTPUT_ROOT`. Relative `output_dir` values resolve under that root.
@@ -298,7 +293,7 @@ Before/after examples (operator O4):
   `source="annas"` came to hang inside LibGen's search.
 - An empty result from the legacy multi-source bridge means every provider
   answered and none matched. Its old `search_multi_source` MCP tool is removed;
-  the replacement `search` reports `routing.attempts` and typed failures.
+  the replacement `search` reports per-source lines and typed failures.
   Previously a network failure with fallback disabled also
   returned an empty list, making an outage indistinguishable from no results.
   This holds for partial walks too: one provider answering empty while another

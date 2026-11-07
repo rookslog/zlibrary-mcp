@@ -155,7 +155,7 @@ test('S5 capture observed tool names and argument names (not an approved surface
       true,
     );
     expect(surface.map(t => t.name)).toEqual(['download', 'get_book', 'get_history', 'get_limits', 'search']);
-    expect(JSON.stringify(listed).length).toBeLessThan(7100);
+    expect(JSON.stringify(listed).length).toBeLessThan(9200);
     await h.captureSurface(surface);
   });
 });
@@ -228,10 +228,13 @@ test('I2 lost-reply cursor replay repeats position and local limits cost no upst
   await h.scenario('I2', async connect => {
     const c = await connect();
     const before = await h.stats();
-    await h.call(c, 'get_limits', {});
-    const missing = await h.call(c, 'search', { query: 'Phenomenology' }, true);
-    expect(missing.error.code).toBe('sources_required');
+    const limits = await h.call(c, 'get_limits', {});
+    expect(limits.search.default_sources).toEqual(['libgen','zlibrary']);
     expect(await h.stats()).toEqual(before);
+    const implicit = await h.call(c, 'search', { query: 'Phenomenology' }, true);
+    expect(implicit.error).toBeUndefined();
+    expect(implicit.sources.zlibrary.state).toBe('rows');
+    expect(implicit.sources.annas).toMatchObject({state:'not_asked',reason:'route_off'});
     const first = await h.call(c, 'search', { query: 'Phenomenology', sources: ['zlibrary'], limit: 50 });
     expect(first.rows.map(r => r.title)).toEqual(Array.from({ length: 50 }, (_, i) => `Phenomenology Studies, Volume ${String(i + 1).padStart(2, '0')}`));
     const firstDetail = await h.call(c, 'get_book', { ref: first.rows[0].ref });
@@ -243,14 +246,16 @@ test('I2 lost-reply cursor replay repeats position and local limits cost no upst
     expect(lost.next_cursor).toBeUndefined();
     const nextDetail = await h.call(c, 'get_book', { ref: lost.rows[0].ref });
     expect(nextDetail.identifiers).toEqual({ id: '1050', hash: 'hash1050' });
+    const beforeReplay = await h.stats();
     const replay = await h.call(c, 'search', { cursor });
+    expect(await h.stats()).toEqual(beforeReplay);
     expect(replay.rows.map(r => r.title)).toEqual(lost.rows.map(r => r.title));
     expect(replay).toEqual(lost);
     const at = await h.stats();
     const invalid = await h.call(c, 'search', { cursor, limit: 2 }, true);
     expect(invalid.error.code).toBe('invalid_argument');
     expect(await h.stats()).toEqual(at);
-  });
+  }, {libgen:true});
 });
 const breakerTest = expectedFixes.has('breaker') ? test : test.failing;
 breakerTest(

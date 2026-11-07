@@ -127,7 +127,7 @@ test.each(['libgen', 'annas'])(
       encode({ books: [row(source), { ...row(source), md5: 'b'.repeat(32) }] }),
     );
     const result = await call('search', { query: 'Book', sources: [source], limit: 1 });
-    expect(result.note).toContain(source);
+    expect(result.sources[source].state).toBe('rows');
     expect(result.note).toContain('50');
     expect(result.next_cursor).toBeDefined();
   },
@@ -137,17 +137,16 @@ test('fallthrough cannot retain an empty non-serving source note', async () => {
     encode({ books: options.args[0] === 'search' ? [row('zlibrary')] : [] }),
   );
   const result = await call('search', { query: 'Book', sources: ['libgen', 'zlibrary'] });
-  expect(result.routing.served_by).toBe('zlibrary');
-  expect(result.note).toBeUndefined();
+  expect(result.rows[0].source).toBe('zlibrary');expect(result.sources.libgen.state).toBe('empty');expect(result.note).toMatch(/^1 file rows shown from 1 accepted records/);
 });
 test('exhausted continuation never advises changing exact on its cursor-only request', async () => {
   run
-    .mockResolvedValueOnce(encode({ books: [row('zlibrary')] }))
+    .mockResolvedValueOnce(encode({ books: Array.from({length:50},(_,i)=>({...row('zlibrary'),id:String(i),md5:undefined})) }))
     .mockResolvedValueOnce(encode({ books: [] }));
   const first = await call('search', {
     query: 'Book',
     sources: ['zlibrary'],
-    limit: 1,
+    limit: 50,
     exact: true,
   });
   const result = await call('search', { cursor: first.next_cursor });

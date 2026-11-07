@@ -201,8 +201,13 @@ async function main(image) {
     assert.equal(typeof data.rows[0].ref, 'string', 'process-local selection ref');
     assert(data.rows[0].ref.length > 0, 'nonempty selection ref');
     assert.deepEqual(reply.structuredContent, data, 'text and structured search envelopes agree');
-    assert.deepEqual(data.routing?.requested, ['zlibrary'], 'search routing envelope');
-    assert.equal(data.routing?.served_by, 'zlibrary', 'search routing envelope');
+    assert.equal(data.all_answered, true, 'all intended sources answered');
+    assert.equal(data.sources?.zlibrary?.state, 'rows', 'selected source accounting');
+    assert.equal(data.sources?.zlibrary?.rows, 1, 'selected source row count');
+    assert(Number.isInteger(data.sources?.zlibrary?.ms) && data.sources.zlibrary.ms >= 0,
+      'selected source elapsed time');
+    for (const source of ['libgen', 'annas'])
+      assert.equal(data.sources?.[source]?.state, 'not_asked', 'unrequested source accounting');
     // Fetch stats inside the isolated namespace, not via a published host port.
     const { stdout } = await docker([
       'exec',

@@ -46,6 +46,7 @@ class TestBoundedResolver:
     """Actual httpx resolution must not enter asyncio's joined executor."""
 
     @pytest.mark.asyncio
+    @pytest.mark.httpx_dns_probe("resolver-stall.invalid")
     async def test_httpx_hostname_resolution_uses_a_daemon_bounded_worker(
         self, monkeypatch
     ):

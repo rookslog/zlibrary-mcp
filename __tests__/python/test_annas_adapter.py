@@ -10,6 +10,7 @@ Tests cover:
 import asyncio
 from pathlib import Path
 
+import httpx
 import pytest
 from bs4 import BeautifulSoup
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -68,10 +69,11 @@ class TestAnnasArchiveSearch:
         adapter = AnnasArchiveAdapter(config)
 
         # Mock the HTTP client
-        mock_response = MagicMock()
-        mock_response.text = MOCK_SEARCH_HTML
-        mock_response.status_code = 200
-        mock_response.raise_for_status = MagicMock()
+        mock_response = httpx.Response(
+            200,
+            text=MOCK_SEARCH_HTML,
+            request=httpx.Request("GET", config.annas_base_url + "/search?q=python"),
+        )
 
         with patch.object(adapter, "_get_client") as mock_get_client:
             mock_client = AsyncMock()
@@ -100,10 +102,11 @@ class TestAnnasArchiveSearch:
         )
         adapter = AnnasArchiveAdapter(config)
 
-        mock_response = MagicMock()
-        mock_response.text = MOCK_SEARCH_HTML
-        mock_response.status_code = 200
-        mock_response.raise_for_status = MagicMock()
+        mock_response = httpx.Response(
+            200,
+            text=MOCK_SEARCH_HTML,
+            request=httpx.Request("GET", config.annas_base_url + "/search?q=python"),
+        )
 
         with patch.object(adapter, "_get_client") as mock_get_client:
             mock_client = AsyncMock()
@@ -130,10 +133,11 @@ class TestAnnasArchiveSearch:
         )
         adapter = AnnasArchiveAdapter(config)
 
-        mock_response = MagicMock()
-        mock_response.text = MOCK_SEARCH_HTML
-        mock_response.status_code = 200
-        mock_response.raise_for_status = MagicMock()
+        mock_response = httpx.Response(
+            200,
+            text=MOCK_SEARCH_HTML,
+            request=httpx.Request("GET", config.annas_base_url + "/search?q=python"),
+        )
 
         with patch.object(adapter, "_get_client") as mock_get_client:
             mock_client = AsyncMock()
@@ -164,19 +168,20 @@ class TestAnnasArchiveSearch:
         <html><body><div>No results found</div></body></html>
         """
 
-        mock_response = MagicMock()
-        mock_response.text = empty_html
-        mock_response.status_code = 200
-        mock_response.raise_for_status = MagicMock()
+        mock_response = httpx.Response(
+            200,
+            text=empty_html,
+            request=httpx.Request("GET", config.annas_base_url + "/search?q=python"),
+        )
 
         with patch.object(adapter, "_get_client") as mock_get_client:
             mock_client = AsyncMock()
             mock_client.get.return_value = mock_response
             mock_get_client.return_value = mock_client
 
-            results = await adapter.search("nonexistent_book_xyz123")
-
-        assert results == []
+            # This page has neither result rows nor the published empty marker.
+            with pytest.raises(ProviderResponseError, match="Unrecognised page"):
+                await adapter.search("nonexistent_book_xyz123")
 
         await adapter.close()
 
@@ -775,10 +780,11 @@ class TestSecretKeyHostAllowlist:
         )
         adapter = AnnasArchiveAdapter(config)
 
-        mock_response = MagicMock()
-        mock_response.text = MOCK_SEARCH_HTML
-        mock_response.status_code = 200
-        mock_response.raise_for_status = MagicMock()
+        mock_response = httpx.Response(
+            200,
+            text=MOCK_SEARCH_HTML,
+            request=httpx.Request("GET", config.annas_base_url + "/search?q=python"),
+        )
 
         with patch.object(adapter, "_get_client") as mock_get_client:
             mock_client = AsyncMock()
@@ -1123,7 +1129,7 @@ class TestKeyedDownloadTracebacksCannotCarryTheKey:
 
     @pytest.mark.asyncio
     async def test_search_still_chains_its_cause(self, mocker):
-        """Search sends no key, so it keeps the diagnostic chain.
+        """After rejected sign-in, the unkeyed GET keeps its diagnostic chain.
 
         Suppressing causes everywhere would trade a real leak for a real loss
         of debuggability. The distinction is whether the request carried the
@@ -1132,6 +1138,11 @@ class TestKeyedDownloadTracebacksCannotCarryTheKey:
         import httpx
 
         adapter = self._adapter()
+        adapter._client = httpx.AsyncClient(
+            transport=httpx.MockTransport(
+                lambda request: httpx.Response(200, text="<form>Sign in</form>")
+            )
+        )
         mocker.patch.object(adapter, "_preflight", return_value=None)
         mocker.patch.object(
             adapter,
@@ -1144,8 +1155,11 @@ class TestKeyedDownloadTracebacksCannotCarryTheKey:
             ),
         )
 
-        with pytest.raises(Exception) as excinfo:
-            await adapter.search("anything")
+        try:
+            with pytest.raises(Exception) as excinfo:
+                await adapter.search("anything")
+        finally:
+            await adapter.close()
 
         assert excinfo.value.__cause__ is not None, (
             "the search request carries no secret, so its cause is pure "

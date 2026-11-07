@@ -112,7 +112,10 @@ test('supported operations are symmetric across configured and unconfigured sour
   for (const source of ['libgen', 'annas', 'zlibrary']) {
     expect(empty[source].operations).toEqual(configured[source].operations);
     expect(Object.keys(empty[source]).sort()).toEqual(
-      Object.keys(empty.libgen).concat(source === 'libgen' ? [] : ['note']).sort(),
+      Object.keys(empty.libgen)
+        .concat(source === 'libgen' ? [] : ['note'])
+        .concat(source === 'annas' ? ['member_key_configured', 'member_session'] : [])
+        .sort(),
     );
   }
   expect(empty.annas.download_available).toBe(false);

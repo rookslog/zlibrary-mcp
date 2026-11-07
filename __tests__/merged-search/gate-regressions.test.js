@@ -14,7 +14,7 @@ const views = () => ['libgen', 'annas'].map(name => ({ name,
 const copy = (source, id) => ({ source, id, ref: `r-${id}`, md5: 'a'.repeat(32), metadata: { title: 'Solaris' } });
 const answer = (source, copies = [copy(source, source)]) => ({ source, state: 'answered', ms: 1, copies });
 
-test('G5 W1 W2 public handler import graph excludes inactive search models transitively', () => {
+test('G5 public handler import graph joins activated search models transitively', () => {
   const root = fileURLToPath(new URL('../../dist/', import.meta.url));
   const seen = new Set();
   function visit(file) {
@@ -32,8 +32,8 @@ test('G5 W1 W2 public handler import graph excludes inactive search models trans
   }
   visit(path.join(root, 'index.js'));
   visit(path.join(root, 'lib/acquisition-tools.js'));
-  expect([...seen].map(file => path.relative(root, file))).not.toEqual(expect.arrayContaining(['lib/search-limits.js']));
-  expect([...seen].map(file => path.relative(root, file))).not.toEqual(expect.arrayContaining(['lib/search-assembly.js']));
+  expect([...seen].map(file => path.relative(root, file))).toEqual(expect.arrayContaining(['lib/search-limits.js']));
+  expect([...seen].map(file => path.relative(root, file))).toEqual(expect.arrayContaining(['lib/search-assembly.js']));
 });
 
 test('G5 E1 eviction releases backing row and cursor aliases rather than only hiding them', () => {

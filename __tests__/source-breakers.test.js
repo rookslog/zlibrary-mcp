@@ -65,7 +65,7 @@ async function load(env = {}) {
   }));
   api = await import('../lib/zlibrary-api.js');
   const { AcquisitionTools } = await import('../lib/acquisition-tools.js');
-  tools = new AcquisitionTools(api.invokeAcquisitionBridge, process.env);
+  tools = new AcquisitionTools(api.invokeAcquisitionBridge,process.env,{localState:()=>api.getSearchState()});
 }
 afterEach(() => {
   process.env = saved;
@@ -91,7 +91,7 @@ test.each([
   const reply = await tools.call('search', { query: 'x', sources: [healthy] });
   expect(reply.error).toBeUndefined();
   expect(reply.rows).toHaveLength(1);
-  expect(reply.routing).toMatchObject({ served_by: healthy, fell_back: false });
+  expect(reply.rows[0].source).toBe(healthy);expect(reply.sources[healthy].state).toBe('rows');
   expect(callsTo(healthy)).toHaveLength(1);
 });
 
@@ -100,14 +100,7 @@ test('after an Anna outage an ordered annas,libgen search reaches LibGen', async
   await fiveOutages('annas');
   const reply = await tools.call('search', { query: 'x', sources: ['annas', 'libgen'] });
   expect(reply.error).toBeUndefined();
-  expect(reply.routing).toMatchObject({
-    served_by: 'libgen',
-    fell_back: true,
-    attempts: [
-      { source: 'annas', outcome: 'failed', code: 'breaker_open' },
-      { source: 'libgen', outcome: 'rows' },
-    ],
-  });
+  expect(reply.sources.annas).toMatchObject({state:'not_asked',reason:'breaker_open'});expect(reply.sources.libgen.state).toBe('rows');expect(reply.rows[0].source).toBe('libgen');
   expect(callsTo('annas')).toHaveLength(5);
   expect(callsTo('libgen')).toHaveLength(1);
 });
@@ -118,13 +111,7 @@ test('annas-first searches keep reaching LibGen while each Anna probe re-opens',
   for (let round = 1; round <= 3; round++) {
     await new Promise((resolve) => setTimeout(resolve, 80));
     const reply = await tools.call('search', { query: 'x', sources: ['annas', 'libgen'] });
-    expect(reply.routing).toMatchObject({
-      served_by: 'libgen',
-      attempts: [
-        { source: 'annas', outcome: 'failed', code: 'provider_timeout' },
-        { source: 'libgen', outcome: 'rows' },
-      ],
-    });
+    expect(reply.sources.annas).toMatchObject({state:'failed',code:'provider_timeout'});expect(reply.sources.libgen.state).toBe('rows');expect(reply.rows[0].source).toBe('libgen');
     expect(callsTo('annas')).toHaveLength(5 + round);
     expect(callsTo('libgen')).toHaveLength(round);
   }

@@ -79,6 +79,30 @@ const dependencyBreakers = Object.fromEntries(
   ]),
 );
 
+/** Local source health/admission only: never probes a provider or changes a generation. */
+export function getSearchState(
+  env: Record<string, string | undefined> = process.env,
+  login?: Pick<LoginMetadata, 'origin' | 'identity'>,
+) {
+  const environmentSession = login === undefined || login.origin === 'environment';
+  const identity = login?.identity ?? env.ZLIBRARY_EMAIL ?? '';
+  return Object.fromEntries(
+    ['libgen', 'zlibrary', 'annas'].map((source) => [
+      source,
+      {
+        ...dependencyBreakers[source === 'zlibrary' ? 'eapi' : source]!.snapshot(),
+        refusal:
+          (source === 'zlibrary' && environmentSession
+            ? eapiSessions.refusal(identity)
+            : undefined) ?? dependencyBreakers[source === 'zlibrary' ? 'eapi' : source]!.refusal(),
+        ...(source === 'zlibrary' && environmentSession
+          ? eapiSessions.admission(identity)
+          : { admission: 'open' as const }),
+      },
+    ]),
+  );
+}
+
 /**
  * Breaker scope for a call that does not use EAPI: the source it selects.
  *
@@ -134,10 +158,11 @@ function defaultTimeoutFor(functionName: string): number | undefined {
 export interface CallOptions {
   /**
    * Wall-clock budget in ms. Defaults to PYTHON_BRIDGE_TIMEOUT, or
-   * PYTHON_BRIDGE_LONG_TIMEOUT for download calls.
+   * PYTHON_BRIDGE_LONG_TIMEOUT for download calls. On shared retained refills,
+   * this bounds only this subscriber's wait, without shortening a peer's work.
    */
   timeoutMs?: number;
-  /** Abort signal from the MCP request, so a cancelled call kills the child. */
+  /** MCP cancellation; a shared refill withdraws only this subscriber. */
   signal?: AbortSignal;
 }
 

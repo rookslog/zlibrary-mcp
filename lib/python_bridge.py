@@ -1196,8 +1196,7 @@ def _artifacts_match(source: Path, destination: Path, expected_md5: str) -> bool
     """Decide whether an existing destination already holds this acquisition."""
     if source.stat().st_size != destination.stat().st_size:
         return False
-    if expected_md5:
-        return _file_md5(destination, check_deadline=True) == expected_md5
+    # Catalogue hashes are identity claims; compare both artifacts before reuse.
     return _file_md5(source, check_deadline=True) == _file_md5(
         destination, check_deadline=True
     )

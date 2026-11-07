@@ -1,9 +1,11 @@
+import '../helpers/environment-login.js';
 import { windowFixture } from './window-fixture.js';
 import { afterEach, beforeEach, expect, jest, test } from '@jest/globals';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { setImmediate as immediate } from 'node:timers/promises';
+const { AcquisitionTools } = await import('../../dist/lib/acquisition-tools.js');
 import { fanOut } from '../../dist/lib/fan-out.js';
 import { SourceRegistry } from '../../dist/lib/source-registry.js';
 import { EapiSessionOwner } from '../../dist/lib/eapi-session.js';
@@ -76,7 +78,15 @@ async function ready(f) {
 }
 const options = () => ({ pythonPath: 'python3', scriptPath: dir, mode: 'text', env: { PATH: process.env.PATH } });
 
-native('M01 real private login child and descendant remain owned after reply; late output never publishes', async () => {
+async function dispatch(mode, registry, request, options) {
+  if(mode==='engine')return fanOut(registry,request,options);
+  const tools=new AcquisitionTools(async()=>{throw new Error('No provider call');},{BOOK_SOURCE_SEARCH_WAIT_MS:String(options.waitMs ?? 12000)}, {registry,now:options.now});
+  const result=await tools.call('search',{query:'Synthetic',...request,...(options.sources?{sources:options.sources}:{})},{signal:options.signal});
+  if(result.error)throw Object.assign(new Error('Public search failed'),{code:result.error.code});
+  return result;
+}
+
+native.each(['engine', 'public'])('M01 %s real private login child and descendant remain owned after reply; late output never publishes', async mode => {
   const f = script(true); const owner = new EapiSessionOwner(); const breaker = new CircuitBreaker({ threshold: 1, isFailure: isTransientDependencyError });
   let signal; let controls = 0;
   const backend = (input, childSignal) => breaker.execute(async () => {
@@ -85,23 +95,23 @@ native('M01 real private login child and descendant remain owned after reply; la
       onSession: update => owner.consume(update, 'synthetic', input.generation) });
     return windowFixture([{ id: 'late' }]);
   });
-  const response = fanOut(registry((_request, childSignal) => { signal = childSignal; return owner.run('synthetic', backend, { signal: childSignal, timeoutMs: 60000 }); }), {}, { waitMs: 100, now: () => now });
+  const response = dispatch(mode, registry((_request, childSignal) => { signal = childSignal; return owner.run('synthetic', backend, { signal: childSignal, timeoutMs: 60000 }); }), {}, { waitMs: 100, now: () => now });
   await ready(f); const pids = f.pids(); expect(pids.every(alive)).toBe(true);
   now = 100; await jest.advanceTimersByTimeAsync(100); const result = await response;
   expect(signal.reason).toBe('search_cut'); expect(result.sources.owned.state).toBe('late');
   expect(liveChildCount()).toBe(1); expect(pids.every(alive)).toBe(true);
-  const frozen = JSON.stringify([...result.windows]);
+  const frozen = JSON.stringify(mode==='public'?result.rows:[...result.windows]);
   fs.writeFileSync(f.release, 'go'); await until(() => !alive(pids[0]));
   expect(alive(pids[1])).toBe(true); expect(liveChildCount()).toBe(1);
   await jest.advanceTimersByTimeAsync(KILL_GRACE_MS + 1); await until(() => pids.every(pid => !alive(pid)) && liveChildCount() === 0);
   await jest.advanceTimersByTimeAsync(0);
   expect(owner.get('synthetic')).toBeUndefined(); expect(controls).toBe(1);
   expect(breaker.getFailureCount()).toBe(0); expect(breaker.getState()).toBe('CLOSED');
-  expect(JSON.stringify([...result.windows])).toBe(frozen);
+  expect(JSON.stringify(mode==='public'?result.rows:[...result.windows])).toBe(frozen);
   await expect(owner.run('synthetic', async input => { if (input.action === 'login') owner.consume({ ...input, domain: 'synthetic.invalid', remix_userid: '1', remix_userkey: 'fresh' }, 'synthetic', input.generation); return { rows: [] }; })).resolves.toEqual({ rows: [] });
 });
 
-native.each(['caller', 'comparison'])('M02 source-owned lock outlives %s cancellation; queued waiters cannot steal a peer slot', async origin => {
+native.each([['engine','caller'],['engine','comparison'],['public','caller'],['public','comparison']])('M02 %s source-owned lock outlives %s cancellation; queued waiters cannot steal a peer slot', async (mode,origin) => {
   const f = script(); const lock = path.join(dir, 'slot.lock'); let held = false; let issued = 0; let released = false;
   const waiters = [];
   const acquire = signal => new Promise((resolve, reject) => {
@@ -124,18 +134,18 @@ native.each(['caller', 'comparison'])('M02 source-owned lock outlives %s cancell
   };
   const sources = registry(work);
   const before = new AbortController(); before.abort();
-  await expect(fanOut(sources, {}, { signal: before.signal })).rejects.toMatchObject({ code: 'cancelled' }); expect(issued).toBe(0);
+  await expect(dispatch(mode, sources, {}, { signal: before.signal })).rejects.toMatchObject({ code: 'cancelled' }); expect(issued).toBe(0);
   const caller = new AbortController();
-  const first = fanOut(sources, {}, { waitMs: 100, now: () => now, signal: caller.signal }).catch(e => e); await ready(f);
+  const first = dispatch(mode, sources, {}, { waitMs: 100, now: () => now, signal: caller.signal }).catch(e => e); await ready(f);
   now = 100; if (origin === 'caller') caller.abort();
   await jest.advanceTimersByTimeAsync(100); const firstResult = await first;
   if (origin === 'caller') expect(firstResult.code).toBe('cancelled'); else expect(firstResult.sources.owned.state).toBe('late');
   expect(held).toBe(true); expect(released).toBe(false); expect(fs.existsSync(lock)).toBe(true);
   const cancel = new AbortController();
-  const cancelled = fanOut(sources, {}, { sources: ['owned'], signal: cancel.signal, now: () => now }).catch(e => e);
+  const cancelled = dispatch(mode, sources, {}, { sources: ['owned'], signal: cancel.signal, now: () => now }).catch(e => e);
   cancel.abort(); expect((await cancelled).code).toBe('cancelled');
-  const queued = fanOut(sources, {}, { waitMs: 100, now: () => now });
-  const peer = fanOut(sources, {}, { sources: ['owned'], waitMs: 100, now: () => now });
+  const queued = dispatch(mode, sources, {}, { waitMs: 100, now: () => now });
+  const peer = dispatch(mode, sources, {}, { sources: ['owned'], waitMs: 100, now: () => now });
   await jest.advanceTimersByTimeAsync(0); expect(issued).toBe(1);
   now = 200; await jest.advanceTimersByTimeAsync(100); expect((await queued).sources.owned.state).toBe('late');
   expect(issued).toBe(1); expect(waiters).toHaveLength(1); expect(held).toBe(true);

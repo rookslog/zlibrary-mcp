@@ -19,7 +19,7 @@ See [API reference](api.md) and [ADR-012](https://github.com/rookslog/zlibrary-m
 | `search_by_author`         | `search.author` without query; retain `exact`, `languages`; `yearFrom`/`yearTo` → `year_from`/`year_to`; `extensions` → `formats`; `count` → `limit`; old default 25 becomes 10               |
 | `fetch_booklist`           | Removed; use catalogue metadata search                                                                                                                                                        |
 | `search_advanced`          | Removed; make `search` calls with `exact:true`, then `exact:false` if needed                                                                                                                  |
-| `search_multi_source`      | `search`: `count` → `limit`; `source:annas/libgen` → `sources:[...]`; `auto` requires explicit order or operator `BOOK_SOURCE_DEFAULT_ORDER`                                                  |
+| `search_multi_source`      | `search`: `count` → `limit`; `source:annas/libgen` → `sources:[...]`; `auto` removed; omit `sources` for the reported default set                                                  |
 | `process_document_for_rag` | Removed; use an isolated 1.4.x installation for text processing                                                                                                                               |
 
 All new tools reject unknown argument names before provider contact. Both
@@ -27,64 +27,60 @@ All new tools reject unknown argument names before provider contact. Both
 on the 2.0 MCP download tool. The internal legacy API façade retains its
 already-parked false no-op for non-MCP callers; it is not registered as a tool.
 
-Author-only exact queries retain quoted-author behavior. With both `query` and
-`author`, `exact` covers the **whole combined query**, not the title alone.
-No author post-filter is promised. Metadata filters are checked locally on every
-source; `exact` is delegated only to Z-Library as described below.
+## Merged search and local filters
 
-## Filters: partial milestone for 2.0
+`sources` is now a set, not an ordered fallback walk. The server asks admitted
+sources together; array order does not affect the answer. Omit it to use the
+resolved set in `get_limits.search.default_sources`. Without an operator list,
+install-disabled sources are excluded, and Anna's stays out until its route is
+on. An explicit caller/operator list retains its intent despite local refusal.
+The former `sources_required` error is removed. A caller wanting serial searches
+can make separate single-source calls.
 
-Year, language and format are checked locally on every source. Missing checked
-metadata is excluded and counted; `exact` remains a gap. Sources without
-`exact` are skipped before contact. Z-Library keeps receiving it, reported as
-`native_only`: sent, not checked by this server. The additive `filtering`
-request/attempt records report the checked window, not completeness. Existing
-clients must accept `filtering` and, on filtered searches with a cursor,
-`routing.continuation_source`. Unfiltered replies do not add that routing key. A later
-winning source owns the continuation; an all-empty walk can retain a full
-Z-Library page's onward pointer. The 50-row Z-Library candidate page and
-held-tail drain are deferred; no new input fields or overfetch are introduced.
-See [the detailed contract](api.md#filters-partial-milestone-for-20).
+`routing` is replaced by per-source `sources` lines and `all_answered`. Every
+registered source is accounted for, including `not_asked`, `late` and failures.
+Clients must use these lines and the bounded-window note instead of assuming
+an empty page means every source answered. The comparison wait defaults to
+12 seconds when multiple jobs are dispatched; late is terminal for that reply.
 
-Compatibility details: existing numeric public years, including `0` and values
-below 1000, retain their old conversion on unfiltered/non-year paths, get_book
-and history. Readable date strings such as `2014 Juin` now add a parsed year.
-Explicit `exact:false` and empty/blank lists no longer appear in `ignored`: they
-add no constraint. Dot-only formats are blank. These two intentional changes
-(parsed dates and inactive-key reporting) remain distinct from local year checks.
+`exact` now checks title-query and author phrases separately, locally on every
+source. It is still sent natively to Z-Library. Year/language/format checks and
+alias normalization continue; missing checked metadata is excluded and counted.
+Per-source `filtering` describes at most 50 examined candidate records, not a
+catalogue total. Native transmission and local checking are separate evidence.
+For example, LibGen with `exact:true` can now return locally passing rows;
+it no longer refuses that predicate. See [the detailed contract](api.md#filters).
 
-Before/after examples (operator O4):
+Rows represent file groups only when catalogue MD5 agrees. `other_copies`
+contains source-bound selectable refs, with per-copy pass/fail/unknown evidence
+when filters are active. `also_available_on` remains only an upstream hint.
+`get_book` adds bounded related-copy metadata; `download` adds selected `source`
+on success and may offer `detail.other_copies` on failure. No copy is ever
+substituted automatically; receipt identity and refusal rules are unchanged.
 
-- LibGen, French EPUBs: before, top rows from an unfiltered page; after,
-  only French EPUBs, often none, with examined-window counts and a note.
-- Z-Library with `fr`: before, the value was forwarded without local language
-  checks; after, `fr` is normalized to `french` and every returned row is
-  checked locally. This does not assume that the native source ignored `fr`.
-- Year filter: before, unreadable/absent years could survive; after, those
-  rows are excluded and counted as unknown unless another field mismatches.
-- `exact` on LibGen alone: before, rows with ignored `exact`; after, an
-  `unsupported_operation` error pointing to Z-Library or dropping `exact`.
-
-Reinstalling the older 1.4.0 behavior restores its filtering problems; it cannot
-undo downloads or answers already based on newer replies, or retract published
-release notes. This entry describes the pending 2.0 transition, not a release.
+Search cursors now replay retained snapshots without provider contact. A sole
+source's first refill is single-flight and memoized. Whole-search eviction
+expires refs and cursors together (128 searches, at most 20 windows each).
+History continues to re-query its upstream position and uses a separate handle
+store. Unknown/expired handles require a new search and edition selection.
 
 ## Result shapes
 
 | Before                           | 2.0                                                                     |
 | -------------------------------- | ----------------------------------------------------------------------- |
 | `books[]`                        | `rows[]` with process-local `ref`, not full upstream records            |
-| `file_path`                      | `path` plus `bytes`, `reused`, `transfer_skipped`, `verified`, `record` |
+| `file_path`                      | `path` plus `bytes`, `reused`, `transfer_skipped`, `verified`, `record`, `source` |
 | `daily_limit`, `daily_remaining` | `sources.zlibrary.limit.per_day`, `remaining`                           |
-| `sources_used`                   | `routing.served_by` plus ordered attempts                               |
+| `sources_used`                   | `sources` lines plus `all_answered`                               |
 | full-text `search_type`          | Removed with the misleading text-search tool                            |
 | unstructured tool errors         | Closed `{error}` envelope and three-way `retry`                         |
 
-`routing.served_by` is absent when a search returns no rows; `fell_back` is
-false on that empty page. `get_limits.operations` describes supported operations
-even for unconfigured sources. Use `search_available` and `download_available`
-for current local availability. A known daily cap without known spend does not
-produce a `remaining` count.
+`get_limits.search` replaces `default_order` and reports the resolved set,
+comparison wait, ordering and configured preferences. Source reports add
+`default_search`, `off_reason`, read-only breaker/admission snapshots and recent
+source-job counts. Every filter capability, including `exact`, is `local`.
+Supported operations remain independent of local configuration; availability
+is not a live reachability check. Live account quota remains explicit.
 
 Saved full records/IDs must not be replayed as download inputs. Search again and
 choose the edition, then use its current ref. Refs do not survive process

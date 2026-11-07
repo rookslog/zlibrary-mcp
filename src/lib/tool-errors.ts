@@ -4,7 +4,6 @@ import { readAuthDiagnostics } from './auth-diagnostics.js';
 
 export const ERROR_CODES = [
   'invalid_argument',
-  'sources_required',
   'ref_unavailable',
   'unsupported_operation',
   'credentials_missing',
@@ -30,7 +29,7 @@ export const ErrorEnvelopeSchema = z
     error: z
       .object({
         code: z.enum(ERROR_CODES),
-        source: z.enum(['libgen', 'annas', 'zlibrary']).optional(),
+        source: z.string().min(1).optional(),
         operation: z.string(),
         message: z.string().max(199),
         retry: z.enum(['safe', 'may_spend_quota', 'no']),
@@ -54,7 +53,6 @@ export class ToolFailure extends Error {
 }
 const recoveries: Partial<Record<ErrorCode, string>> = {
   invalid_argument: 'Correct the arguments; see the 2.0 migration guide.',
-  sources_required: 'Choose sources from detail.available, in the order you want them tried.',
   ref_unavailable: 'Search again and choose the edition again; use its new ref.',
   credentials_missing: 'Use get_limits; configure the named source or choose another source.',
   auth_failed: 'Check the configured account or API key.',

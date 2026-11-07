@@ -135,7 +135,7 @@ test.each(
       if (state === 'modified') await fs.writeFile(artifact, 'modified occupied bytes');
     }
     if (source === 'libgen' && state === 'intact') {
-      const held = server.tools.refs.get(row.ref, 'r').book;
+      const held = server.tools.searches.select(row.ref).copy.book;
       const seed = JSON.parse(await fs.readFile(`${artifact}.acq.json`, 'utf8'));
       expect(seed.identifiers).toEqual({ md5: String(held.md5).toLowerCase() });
       expect(seed.sha256).toBe(
@@ -192,11 +192,21 @@ test.each(['identical', 'different'])(
     if (state === 'different') await fs.writeFile(target, 'foreign canonical bytes');
     const original = await fs.readFile(target);
     // Sparse catalogue metadata predicts .bin; the real EAPI response names a PDF.
-    server.tools.refs.get(row.ref, 'r').book.extension = '';
+    const sourceWindow = server.tools.sourceWindow.bind(server.tools);
+    jest.spyOn(server.tools, 'sourceWindow').mockImplementation(async (...args) => {
+      const window = await sourceWindow(...args);
+      return {...window, rows:window.rows.map(copy=>({...copy,
+        metadata:{...copy.metadata,format:undefined},
+        book:{...copy.book,extension:'',format:''},
+      }))};
+    });
+    const sparse = (await call('search', {query:'Seneca Letters', sources:['zlibrary']})).structuredContent.rows[0];
+    expect(row.format).toBe('pdf');
+    expect(sparse.format).toBeUndefined();
     const before = await h.stats();
     demands = 0;
 
-    const reply = await call('download', { ref: row.ref, filename: 'chosen.bin' });
+    const reply = await call('download', { ref: sparse.ref, filename: 'chosen.bin' });
 
     expect(reply.isError).toBe(true);
     expect(reply.structuredContent.error).toMatchObject({
@@ -242,7 +252,7 @@ test('open EAPI serves an intact receipt but refuses owner admission and transfe
   for (let i = 0; i < 5; i++) {
     const failure = await call('search', { query: 'outage', sources: ['zlibrary'] });
     expect(failure.isError).toBe(true);
-    expect(failure.structuredContent.error.attempts[0]).toMatchObject({
+    expect(failure.structuredContent.error.attempts.find(line=>line.source === 'zlibrary')).toMatchObject({
       source: 'zlibrary',
       code: 'provider_error',
       reason: 'http_error',

@@ -18,25 +18,15 @@ test('local limits and LibGen-only live limits never invoke a bridge or acquire 
   expect(local.sources.annas.download_available).toBe(false);
   await tools.call('get_limits', { sources: ['libgen'], mode: 'live' });
   expect(invoke).not.toHaveBeenCalled();
-  expect((await tools.call('search', { query: 'books' })).error.code).toBe('sources_required');
+  invoke.mockResolvedValueOnce({books:[]});
+  const search=await tools.call('search',{query:'books'});expect(search.rows).toEqual([]);expect(search.all_answered).toBe(true);expect(search.sources.libgen.state).toBe('empty');
 });
 
-test('lost-reply cursor replay fetches the same page without fallback, and extra arguments cost no request', async () => {
-  const calls = [];
-  const tools = new AcquisitionTools(async (op, args) => {
-    calls.push([op, args]); return { books: args.page === 1 ? [book] : [{ ...book, id: '2', title: 'Page two' }] };
-  }, env);
-  const first = await tools.call('search', { query: 'books', sources: ['zlibrary', 'libgen'], limit: 1 });
-  const cursor = first.next_cursor;
-  const lost = await tools.call('search', { cursor }); // simulate lost reply
-  const replay = await tools.call('search', { cursor });
-  expect(replay.rows[0].title).toBe('Page two');
-  expect(replay).toEqual(lost);
-  expect(calls.slice(1).map(c => c[1].page)).toEqual([2, 2]);
-  const before = calls.length;
-  expect((await tools.call('search', { cursor, query: 'different' })).error.code).toBe('invalid_argument');
-  expect(calls.length).toBe(before);
-  expect((await tools.call('get_history', { cursor })).error.code).toBe('invalid_argument');
+test('lost-reply refill replay is memoized and extra arguments cost no request', async () => {
+ const calls=[];const tools=new AcquisitionTools(async(op,args)=>{calls.push([op,args]);return {books:Array.from({length:50},(_,i)=>({...book,id:`${args.page}-${i}`,title:`Page ${args.page}`}))};},env);
+ const first=await tools.call('search',{query:'books',sources:['zlibrary'],limit:50});const cursor=first.next_cursor;
+ const lost=await tools.call('search',{cursor}),replay=await tools.call('search',{cursor});expect(replay.rows[0].title).toBe('Page 2');expect(replay).toEqual(lost);expect(calls.map(c=>c[1].page)).toEqual([1,2]);
+ const before=calls.length;expect((await tools.call('search',{cursor,query:'different'})).error.code).toBe('invalid_argument');expect(calls.length).toBe(before);expect((await tools.call('get_history',{cursor})).error.code).toBe('invalid_argument');
 });
 
 test('held non-EAPI page is sliced and cursor replay survives row eviction', async () => {
@@ -64,7 +54,7 @@ test('routing distinguishes empty, failed, skipped configuration and all failure
   const missing = await new AcquisitionTools(invoke, {}).call('search', { query: 'book', sources: ['zlibrary'] });
   expect(missing.error.code).toBe('credentials_missing');
   const empty = await new AcquisitionTools(async () => ({ books: [] }), {}).call('search', { query: 'book', sources: ['zlibrary', 'libgen'] });
-  expect(empty.routing.attempts.map(a => a.outcome)).toEqual(['skipped', 'empty']);
+  expect(empty.error.code).toBe('partial_failure');expect(empty.error.attempts.map(a=>[a.source,a.state])).toEqual([['libgen','empty'],['zlibrary','not_asked'],['annas','not_asked']]);
 });
 
 test('get_book includes bounded description and field-origin evidence; history only mints downloadable refs', async () => {
@@ -129,14 +119,9 @@ test('provider rows cannot silently substitute a source selected by the caller',
   expect(result.error.code).toBe('provider_error');
 });
 
-test('cursor remains usable after its displayed rows have left the LRU', async () => {
-  const tools = new AcquisitionTools(async (_op, args) => ({ books: [{ ...book, id: String(args.page), title: 'Page ' + args.page }] }), env);
-  tools.refs.capacity = 3;
-  const first = await tools.call('search', { query: 'book', sources: ['zlibrary'], limit: 1 });
-  tools.refs.mint('r', { unrelated: 1 });
-  tools.refs.mint('r', { unrelated: 2 });
-  expect((await tools.call('get_book', { ref: first.rows[0].ref })).error.detail.reason).toBe('expired');
-  expect((await tools.call('search', { cursor: first.next_cursor })).rows[0].title).toBe('Page 2');
+test('whole-search LRU evicts row and cursor together without a hidden refill', async () => {
+ let calls=0;const tools=new AcquisitionTools(async()=>{calls++;return {books:[{...book,id:'a'},{...book,id:'b'}]};},env,{recordCapacity:1});const first=await tools.call('search',{query:'book',sources:['zlibrary'],limit:1});await tools.call('search',{query:'other',sources:['zlibrary'],limit:1});
+ expect((await tools.call('get_book',{ref:first.rows[0].ref})).error.detail.reason).toBe('expired');expect((await tools.call('search',{cursor:first.next_cursor})).error.code).toBe('ref_unavailable');expect(calls).toBe(2);
 });
 
 test('download projects compact replies and retains an observed daily reading from the provider reply', async () => {

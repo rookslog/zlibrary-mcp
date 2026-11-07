@@ -36,7 +36,7 @@ test('resident preflight recovers after TCP refusal without restarting', async (
 
 test('resident member searches share one sign-in across calls and local limits expose only coarse state', async () => {
   const worker = owner();
-  const tools = new AcquisitionTools(() => { throw Error('Unexpected bridge'); }, { ANNAS_SECRET_KEY: 'worker-key-canary' }, () => worker.status());
+  const tools = new AcquisitionTools(() => { throw Error('Unexpected bridge'); }, { ANNAS_SECRET_KEY: 'worker-key-canary' }, { memberSession: () => worker.status() });
   try {
     expect((await tools.call('get_limits', { sources: ['annas'] })).sources.annas).toMatchObject({ member_key_configured: true, member_session: 'none' });
     const replies = await Promise.all(Array.from({ length: 8 }, () => worker.search({ query: 'books', count: 50 })));
@@ -55,7 +55,7 @@ test('resident member searches share one sign-in across calls and local limits e
 
 test('rejected member key backs off across public calls', async () => {
   const worker = owner('reject');
-  const tools = new AcquisitionTools(() => {}, { ANNAS_SECRET_KEY: 'worker-key-canary' }, () => worker.status());
+  const tools = new AcquisitionTools(() => {}, { ANNAS_SECRET_KEY: 'worker-key-canary' }, { memberSession: () => worker.status() });
   try {
     await worker.search({ query: 'books' });
     const next = await worker.search({ query: 'books' });

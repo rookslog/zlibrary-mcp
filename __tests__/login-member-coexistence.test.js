@@ -25,6 +25,9 @@ test('saved login and member key retain independent search state and public limi
   delete process.env.ZLIBRARY_EMAIL;
   delete process.env.ZLIBRARY_PASSWORD;
   delete process.env.ZLIBRARY_PREFER_ENV;
+  delete process.env.BOOK_SOURCE_DEFAULT_ORDER;
+  delete process.env.BOOK_SOURCE_SEARCH_WAIT_MS;
+  delete process.env.BOOK_FORMAT_PREFERENCE;
   const worker = new AnnasMemberWorker(async () =>
     spawn(path.resolve('.venv/bin/python'), ['__tests__/fixtures/annas-member-worker.py'], {
       stdio: ['pipe', 'pipe', 'pipe'],
@@ -74,6 +77,11 @@ test('saved login and member key retain independent search state and public limi
     };
     expect(worker.status()).toBe('none');
     const before = await call('get_limits', { sources: ['zlibrary', 'annas'] });
+    expect(before.search).toMatchObject({
+      default_sources: ['libgen', 'zlibrary'],
+      wait_ms: 12000,
+      ordering: 'fit-v1',
+    });
     expect(before.sources.zlibrary.configured).toBe(true);
     expect(before.sources.annas).toMatchObject({
       configured: true,
@@ -90,6 +98,7 @@ test('saved login and member key retain independent search state and public limi
     expect(zlibrary.rows[0].title).toBe('Saved Z-Library book');
     expect(worker.status()).toBe('active');
     const after = await call('get_limits', { mode: 'live', sources: ['zlibrary', 'annas'] });
+    expect(after.search).toEqual(before.search);
     expect(after.sources.zlibrary).toMatchObject({
       configured: true,
       limit: { kind: 'daily', remaining: 7 },

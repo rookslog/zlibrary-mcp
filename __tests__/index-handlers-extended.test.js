@@ -41,18 +41,16 @@ test('all-empty is success, all failed is aggregate, and source order is not sil
   const tools = new AcquisitionTools(invoke, env);
   const empty = await tools.call('search', { query: 'absent', sources: ['libgen', 'zlibrary'] });
   expect(empty.rows).toEqual([]);
-  expect(empty.routing.attempts.map(a => a.outcome)).toEqual(['empty', 'empty']);
+  expect(empty.sources.libgen.state).toBe('empty');expect(empty.sources.zlibrary.state).toBe('empty');expect(empty.all_answered).toBe(true);
   invoke.mockRejectedValue({ context: { details: { reason: 'dns_failure' } } });
   const failed = await tools.call('search', { query: 'absent', sources: ['libgen', 'annas'] });
   expect(failed.error.code).toBe('all_sources_failed');
-  expect(failed.error.attempts.map(a => a.source)).toEqual(['libgen', 'annas']);
+  expect(failed.error.attempts.map(a=>a.source)).toEqual(['libgen','zlibrary','annas']);expect(failed.error.attempts.filter(a=>a.state==='failed').map(a=>a.source)).toEqual(['libgen','annas']);
 });
 test('operator default is resolved once and missing credentials are skipped transparently', async () => {
   const tools = new AcquisitionTools(async () => ({ books: [{ md5: '0'.repeat(32), title: 'Book', source: 'libgen' }] }), { BOOK_SOURCE_DEFAULT_ORDER: 'zlibrary,libgen' });
   const result = await tools.call('search', { author: 'Author' });
-  expect(result.routing).toMatchObject({ requested: ['zlibrary', 'libgen'], served_by: 'libgen', fell_back: true });
-  expect(result.routing.attempts[0].outcome).toBe('skipped');
-  expect((await tools.call('get_limits', {})).default_order).toEqual(['zlibrary', 'libgen']);
+  expect(result.rows[0].source).toBe('libgen');expect(result.sources.zlibrary).toMatchObject({state:'not_asked',reason:'credentials_missing'});expect(result.all_answered).toBe(false);expect((await tools.call('get_limits',{})).search).toMatchObject({default_sources:['libgen','zlibrary'],route_order:['zlibrary','libgen']});
   expect(() => new AcquisitionTools(jest.fn(), { BOOK_SOURCE_DEFAULT_ORDER: 'auto' })).toThrow(/BOOK_SOURCE_DEFAULT_ORDER/);
 });
 test('history rejects unsupported sources before network and expired cursors retain typed recovery', async () => {

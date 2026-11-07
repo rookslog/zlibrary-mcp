@@ -1,6 +1,6 @@
 """Anna's metadata search double: intentionally empty for this test account.
 
-This permits honest ordered fallback without contacting a live service. No
+This permits honest empty-source accounting without contacting a live service. No
 browser/challenge or download-route simulation is part of this fixture set.
 """
 

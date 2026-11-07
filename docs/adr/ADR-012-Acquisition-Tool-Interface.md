@@ -8,8 +8,10 @@
 
 Replace the old tool registrations with `search`, `get_book`, `download`,
 `get_limits`, `get_history`. Search/history mint process-local refs;
-get_book/download accept only those refs. Caller-supplied ordered source routing
-has no hidden default. Local limits make no network call. Acquisition writes
+get_book/download accept only those refs. `search` asks a set of sources at once:
+the caller's, or the default set `get_limits` reports. No source is preferred
+unless the operator configures one. Local limits make no network call. Acquisition
+writes
 intent and completion receipts, checks current SHA-256 bytes, and coalesces
 processes with per-destination exclusive locks.
 
@@ -21,8 +23,9 @@ The capability block moves to get_limits rather than every search reply.
 ## Why now and alternatives
 
 The authorized design chooses 2.0 as the breaking interface release. Compact
-refs replace repeated full-record inputs, explicit source order prevents silent
-provider selection, and durable receipt checks avoid quota-spending repeats.
+refs replace repeated full-record inputs, asking a reported set of sources
+and accounting for each prevents silent provider selection, and durable receipt
+checks avoid quota-spending repeats.
 Keeping aliases would preserve the ambiguous surface this release removes.
 Combining this with the adapter rewrite was deferred by the design; durable
 cross-session selection, want-list workers, file reading and a CLI remain out
@@ -101,3 +104,25 @@ coalescing, altered bytes and process-crash recovery. They do not establish live
 provider metadata, network/other filesystem behavior, or the design's separate
 agent-evaluation bar. Those are integration/release boundaries, not inferred
 from unit-test success.
+
+## Amendment: merged search (Refs #377, 2026-11-06)
+
+This supersedes ordered routing in the search contract. The five tool names,
+process-local refs and receipts are unchanged. `sources` becomes a set, the
+`routing` block becomes per-source `sources` lines plus `all_answered`, and
+`sources_required` is removed because a search with no sources now has a meaning.
+Ordered first-answer routing is removed rather than kept as a mode: a caller
+who wants it searches one source at a time. Rows are files: `ref` names the
+recommended copy and `other_copies` the rest. `get_book` and `download` take
+those refs as before, and `download` remains bound to the copy it was given.
+When two or more source jobs are dispatched, the reply waits at most
+`BOOK_SOURCE_SEARCH_WAIT_MS` and marks unfinished jobs `late`. `exact` becomes
+a local per-field check on every source.
+
+Search cursors retain snapshots, including single-flight memoized refills.
+Their whole-search LRU is separate from account history; history still
+re-queries upstream pages. The chosen bounds are 128 searches and 20 windows
+per search, with 128 optional relationship contexts. One caller's cancellation
+withdraws only its subscription; last withdrawal aborts with owner cleanup
+remaining fenced. See [the API reference](../api.md) for lifetime, admission,
+filter evidence and the no-row truth table, and ADR-011's merged-search amendment.

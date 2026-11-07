@@ -103,22 +103,24 @@ test('I6/probe a wrong decisions count calls, not reasons, with tool-kind-only a
     'off-oracle tool',
   ]);
 });
-test('I7/probe2 Q2 omitted sources require its declared default and observed LibGen service', async () => {
+test('I7/probe2 omitted sources use reported sets; list order cannot shield exhausted Z-Library', async () => {
   const row = { ref: 'observed-libgen', title: 'Persuasion', source: 'libgen', id: '301' };
-  for (const [a, routing, success] of [
-    ['B-Q2-default', { served_by: 'libgen' }, true],
-    ['B-Q2-default', undefined, false],
-    ['B-Q2-default', { served_by: 'zlibrary' }, false],
-    ['B', { served_by: 'libgen' }, false],
+  const sources = {libgen:{state:'rows',rows:1,ms:1},zlibrary:{state:'not_asked',reason:'not_in_default_order'},annas:{state:'not_asked',reason:'route_off'}};
+  for (const [a, defaults, args, data, success] of [
+    ['B-Q2-default', ['libgen','zlibrary'], {}, {rows:[row],sources}, false],
+    ['B-Q2-default', ['libgen','zlibrary'], {sources:['libgen']}, {rows:[row],sources}, true],
+    ['B', ['libgen'], {}, {rows:[row],sources}, true],
+    ['B', ['libgen'], {}, {rows:[row]}, false],
+    ['B', ['libgen'], {}, {rows:[row],sources:{...sources,libgen:{state:'late',ms:1}}}, false],
   ]) {
     const result = await score('T11', a, [
-      call('get_limits', { mode: 'live' }),
-      call('search', { query: 'Persuasion' }, { rows: [row], routing }),
+      call('get_limits', { mode: 'live' }, {search:{default_sources:defaults}}),
+      call('search', { query: 'Persuasion', ...args }, data),
     ]);
     expect(result.success).toBe(success);
   }
   const t8 = await score('T8', 'B-Q2-default', [
-    call('search', { query: 'Glass Orchard' }, { rows: [], routing: { served_by: 'libgen' } }),
+    call('search', { query: 'Glass Orchard' }, { rows: [], sources }),
   ]);
   expect(t8.wrong.some((w) => w.reason === 'quota-preserving source argument')).toBe(true);
 });

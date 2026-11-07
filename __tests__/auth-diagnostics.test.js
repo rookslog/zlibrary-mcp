@@ -284,8 +284,7 @@ test('real SDK tool error keeps diagnostics and the tools/list contract unchange
     await Promise.all([client.connect(a), server.connect(b)]);
     const listed = await client.listTools();
     expect(listed.tools).toHaveLength(5);
-    // Baseline includes Anna member schema/description; diagnostics add no wire fields.
-    expect(JSON.stringify(listed).length).toBe(7092);
+    expect(JSON.stringify(listed).length).toBe(9092);
     fs.writeFileSync(modeFile, '400');
     const result = await client.callTool({
       name: 'search',

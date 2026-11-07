@@ -173,6 +173,25 @@ export class CircuitBreaker {
     return this.state;
   }
 
+  /** Observe admission without advancing OPEN to HALF_OPEN or taking a probe. */
+  snapshot() {
+    const blocked =
+      (this.state === 'OPEN' && this.openError().context.retryAfterMs > 0) ||
+      (this.state === 'HALF_OPEN' && this.probe?.exclusive === true);
+    return {
+      breaker: this.state.toLowerCase() as 'closed' | 'open' | 'half_open',
+      breakerBlocked: blocked,
+      ...(this.state !== 'CLOSED'
+        ? { breakerRetryAfterS: this.openError().context.retryAfterMs / 1000 }
+        : {}),
+    };
+  }
+
+  /** Return the same owner refusal without taking a probe or changing state. */
+  refusal(): CircuitBreakerOpenError | undefined {
+    return this.snapshot().breakerBlocked ? this.openError() : undefined;
+  }
+
   /**
    * Get current failure count
    */

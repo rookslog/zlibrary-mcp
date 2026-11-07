@@ -1,6 +1,6 @@
 import type { Env } from './source-registry.js';
 
-/** Inputs for the later intent resolver. An explicit list retains its intent
+/** Inputs for the intent resolver. An explicit list retains its intent
  * across admission refusals; an absent list lets that resolver derive defaults.
  */
 export interface SearchIntentInput {
@@ -15,7 +15,7 @@ export interface SearchSettings {
 const PUBLIC_SOURCES = ['libgen', 'zlibrary', 'annas'] as const;
 const MAX_TIMER_MS = 2147483647;
 
-/** Pure preparation only. Startup and handlers do not call this before S4c. */
+/** Pure settings validation, shared by startup and source intent resolution. */
 export function parseSearchSettings(
   env: Env,
   registered: readonly string[] = PUBLIC_SOURCES,

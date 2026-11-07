@@ -1,5 +1,5 @@
 import { jest } from '@jest/globals';
-import { readFileSync, mkdtempSync, rmSync, existsSync, writeFileSync, mkdirSync, symlinkSync } from 'node:fs';
+import { readFileSync, readdirSync, mkdtempSync, rmSync, existsSync, writeFileSync, mkdirSync, symlinkSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { createRequire } from 'node:module';
@@ -593,4 +593,22 @@ test('filtered summary runs after the last upload and requires successful prepar
   expect(enabled({ filter_output: { outcome: 'success' }, live: { outputs: { status: 'no_account' } } })).toBe(false);
   expect(enabled({ filter_output: { outcome: 'failure' }, live: { outputs: { status: 'failed' } } })).toBe(false);
   expect(enabled({ filter_output: { outcome: 'success' }, live: { outputs: { status: 'failed' } } })).toBe(true);
+});
+
+
+test('job environments do not reference the runner context in any workflow', () => {
+  const directory = new URL('../.github/workflows/', import.meta.url);
+  const invalid = [];
+  for (const file of readdirSync(directory).filter(name => /\.ya?ml$/.test(name))) {
+    const document = parse(readFileSync(new URL(file, directory), 'utf8'));
+    for (const [jobId, job] of Object.entries(document.jobs || {})) {
+      for (const [name, value] of Object.entries(job.env || {})) {
+        const expressions = String(value).matchAll(/\$\{\{([\s\S]*?)\}\}/g);
+        if ([...expressions].some(match => /\brunner\s*(?:\.|\[)/i.test(match[1]))) {
+          invalid.push(`${file}:${jobId}.env.${name}`);
+        }
+      }
+    }
+  }
+  expect(invalid).toEqual([]);
 });

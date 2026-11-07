@@ -17,12 +17,11 @@ SCRIPT = ROOT / "scripts" / "classify_live_tests.py"
 
 
 @pytest.fixture(autouse=True)
-def workflow_workspace(monkeypatch, tmp_path, workflow):
+def workflow_workspace(monkeypatch, tmp_path):
     monkeypatch.setenv("GITHUB_WORKSPACE", str(ROOT))
     runner_temp = tmp_path.parent / (tmp_path.name + "-runner")
     runner_temp.mkdir()
-    for key, value in workflow["jobs"]["live_tests"]["env"].items():
-        monkeypatch.setenv(key, value.replace("${{ runner.temp }}", str(runner_temp)))
+    monkeypatch.setenv("RUNNER_TEMP", str(runner_temp))
 
 
 RECORDED = ET.parse(ROOT / "__tests__/python/fixtures/live-junit/pytest-junit.xml")
@@ -291,6 +290,10 @@ def test_workflow_live_step_classifies_and_retains_evidence(
     }
     step_env = {}
     for key, expression in step["env"].items():
+        expression = expression.replace("${{ runner.temp }}", os.environ["RUNNER_TEMP"])
+        if not expression.startswith("${{ "):
+            step_env[key] = expression
+            continue
         value = contexts
         for part in expression.removeprefix("${{ ").removesuffix(" }}").split("."):
             value = value[part]
@@ -489,6 +492,12 @@ def test_live_job_never_invokes_integration_without_explicit_unblocked(
             },
         }
         for key, expression in step.get("env", {}).items():
+            expression = expression.replace(
+                "${{ runner.temp }}", os.environ["RUNNER_TEMP"]
+            )
+            if not expression.startswith("${{ "):
+                step_env[key] = expression
+                continue
             value = contexts
             for part in expression.removeprefix("${{ ").removesuffix(" }}").split("."):
                 value = value.get(part, "") if isinstance(value, dict) else ""
@@ -918,6 +927,10 @@ def test_ci_account_configuration_controls_real_live_shell(
     }
     step_env = {}
     for key, expression in step["env"].items():
+        expression = expression.replace("${{ runner.temp }}", os.environ["RUNNER_TEMP"])
+        if not expression.startswith("${{ "):
+            step_env[key] = expression
+            continue
         value = contexts
         for part in expression.removeprefix("${{ ").removesuffix(" }}").split("."):
             value = value.get(part, "") if isinstance(value, dict) else ""

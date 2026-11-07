@@ -119,12 +119,15 @@ def test_real_live_step_keeps_canaries_out_of_uploaded_files(
     uv.chmod(0o755)
     runner_temp = tmp_path.parent / (tmp_path.name + "-runner")
     runner_temp.mkdir()
-    job_env = {
-        key: value.replace("${{ runner.temp }}", str(runner_temp))
-        for key, value in workflow["jobs"]["live_tests"]["env"].items()
+    steps = workflow["jobs"]["live_tests"]["steps"]
+    live = next(s for s in steps if s.get("id") == "live")
+    capture_env = {
+        "ZLIBRARY_TEST_SESSION_VALUES": live["env"][
+            "ZLIBRARY_TEST_SESSION_VALUES"
+        ].replace("${{ runner.temp }}", str(runner_temp))
     }
     env = {
-        **job_env,
+        **capture_env,
         "PATH": str(bin_path),
         "GITHUB_WORKSPACE": str(tmp_path),
         "GITHUB_OUTPUT": str(tmp_path / "outputs"),
@@ -133,8 +136,6 @@ def test_real_live_step_keeps_canaries_out_of_uploaded_files(
         "ZLIBRARY_EMAIL": email,
         "ZLIBRARY_PASSWORD": password,
     }
-    steps = workflow["jobs"]["live_tests"]["steps"]
-    live = next(s for s in steps if s.get("id") == "live")
     run = subprocess.run(
         ["/bin/bash", "-e", "-o", "pipefail", "-c", live["run"]],
         cwd=tmp_path,
@@ -216,11 +217,16 @@ def test_upload_requires_successful_output_filtering(workflow):
     steps = workflow["jobs"]["live_tests"]["steps"]
     prepare = next((s for s in steps if s.get("id") == "filter_output"), None)
     assert prepare is not None
-    assert workflow["jobs"]["live_tests"].get("env") == {
-        "ZLIBRARY_TEST_SESSION_VALUES": "${{ runner.temp }}/zlibrary-live-sessions.jsonl"
-    }
+    assert "ZLIBRARY_TEST_SESSION_VALUES" not in workflow["jobs"]["live_tests"].get(
+        "env", {}
+    )
+    live = next(step for step in steps if step.get("id") == "live")
+    assert live["env"]["ZLIBRARY_TEST_SESSION_VALUES"] == (
+        "${{ runner.temp }}/zlibrary-live-sessions.jsonl"
+    )
     assert prepare["if"] == "always()"
     assert prepare["env"] == {
+        "ZLIBRARY_TEST_SESSION_VALUES": "${{ runner.temp }}/zlibrary-live-sessions.jsonl",
         "ZLIBRARY_EMAIL": "${{ secrets.ZLIBRARY_CI_EMAIL }}",
         "ZLIBRARY_PASSWORD": "${{ secrets.ZLIBRARY_CI_PASSWORD }}",
     }

@@ -17,13 +17,13 @@ import { readLoginMetadata, runLoginCommand } from './lib/login.js';
 
 const descriptions: Record<ToolName, string> = {
   search:
-    'Metadata, not book text. Give query and/or author; exact covers both. sources is ordered: libgen needs no account/quota; zlibrary needs an account, downloads spend quota; annas searches without a key, downloads with one. Defaults: get_limits. Use refs. Refs last this process and 5,000 recent entries; on ref_unavailable search and choose again. Pass cursor alone: replay fetches the same position; pages are re-queried, not frozen.',
+    'Metadata: query+author combine; exact covers both. Ordered sources: libgen: no account; zlibrary: account, download quota; annas: anonymous/member search, keyed download. Defaults: get_limits. Refs: this process/last 5,000; ref_unavailable: search again. Cursor alone re-queries that unfrozen page.',
   get_book:
     'Edition evidence for a ref. Zlibrary costs one detail call; others return held rows. Description capped at 1,000 characters.',
   download:
     'Download a ref to server disk: path, bytes and record sidecar, not text. Repeats at the same destination re-hash sha256 and skip an intact copy without quota; different output_dir or filename transfers again. Local O_EXCL locks coalesce processes.',
   get_limits:
-    'Capabilities and default source order. mode:local (default) costs no network. mode:live fetches account numbers for named sources; only zlibrary costs an account call. Other clients can change estimates; errors are per source.',
+    'local (default): capabilities/order, no network. live: zlibrary quota call only. Anna: member_key_configured, member_session=none/active/rejected (last observed). Quotas vary; per-source errors.',
   get_history:
     'Zlibrary account history in source order. Not local files. Refs last this process and 5,000 entries; search again if unavailable. Pass cursor alone: replay fetches the same position; pages are not frozen.',
 };
@@ -78,7 +78,19 @@ const successShapes: Record<ToolName, Record<string, any>> = {
   get_limits: {
     required: ['sources'],
     properties: {
-      sources: { type: 'object' },
+      sources: {
+        type: 'object',
+        properties: {
+          annas: {
+            type: 'object',
+            required: ['member_key_configured', 'member_session'],
+            properties: {
+              member_key_configured: { type: 'boolean' },
+              member_session: { enum: ['none', 'active', 'rejected'] },
+            },
+          },
+        },
+      },
       default_order: { type: 'array', items: { type: 'string' } },
     },
   },

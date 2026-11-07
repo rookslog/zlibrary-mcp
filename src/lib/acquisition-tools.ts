@@ -7,6 +7,8 @@ import { normalizeLanguages } from './filter-languages.js';
 import { classifyFailure, errorEnvelope, ToolFailure } from './tool-errors.js';
 import type { CallOptions } from './zlibrary-api.js';
 
+import { annasMemberWorker } from './annas-member-worker.js';
+
 type Source = 'libgen' | 'annas' | 'zlibrary';
 type Invoke = (operation: string, args: Record<string, any>, options?: CallOptions) => Promise<any>;
 const sourceSchema = z.enum(['libgen', 'annas', 'zlibrary']);
@@ -200,6 +202,7 @@ export class AcquisitionTools {
   constructor(
     private invoke: Invoke,
     private env: Record<string, string | undefined> = process.env,
+    private memberSession = () => annasMemberWorker.status(),
   ) {
     const raw = env.BOOK_SOURCE_DEFAULT_ORDER;
     if (raw) {
@@ -221,6 +224,12 @@ export class AcquisitionTools {
         : Boolean(this.env.ANNAS_SECRET_KEY) && annasBaseTrusted);
     return {
       configured,
+      ...(source === 'annas'
+        ? {
+            member_key_configured: Boolean(this.env.ANNAS_SECRET_KEY),
+            member_session: this.env.ANNAS_SECRET_KEY ? this.memberSession() : 'none',
+          }
+        : {}),
       filters: { ...FILTER_CAPABILITIES[source] },
       search_available: source === 'annas' ? annasBaseUsable : source !== 'zlibrary' || configured,
       download_available: configured,

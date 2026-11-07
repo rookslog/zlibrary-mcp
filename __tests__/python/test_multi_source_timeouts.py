@@ -585,11 +585,12 @@ class TestPreflightTargetsTheRealEndpoint:
         )
 
         async def empty_search(*_args, **_kwargs):
-            return httpx.Response(200, text="<html></html>")
+            return httpx.Response(200, text='<a href="/md5/abc">Synthetic</a>')
 
         monkeypatch.setattr(adapter, "_fetch", empty_search)
         try:
-            assert await adapter.search("anything", deadline=deadline) == []
+            rows = await adapter.search("anything", deadline=deadline)
+            assert [row.title for row in rows] == ["Synthetic"]
         finally:
             await adapter.close()
 

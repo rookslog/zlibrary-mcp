@@ -2,7 +2,7 @@
   "definitions": [
     {
       "name": "search",
-      "description": "Metadata, not book text. Give query and/or author; exact covers both. sources is ordered: libgen needs no account/quota; zlibrary needs an account, downloads spend quota; annas searches without a key, downloads with one. Defaults: get_limits. Use refs. Refs last this process and 5,000 recent entries; on ref_unavailable search and choose again. Pass cursor alone: replay fetches the same position; pages are re-queried, not frozen.",
+      "description": "Metadata: query+author combine; exact covers both. Ordered sources: libgen: no account; zlibrary: account, download quota; annas: anonymous/member search, keyed download. Defaults: get_limits. Refs: this process/last 5,000; ref_unavailable: search again. Cursor alone re-queries that unfrozen page.",
       "inputSchema": {
         "type": "object",
         "properties": {
@@ -380,7 +380,7 @@
     },
     {
       "name": "get_limits",
-      "description": "Capabilities and default source order. mode:local (default) costs no network. mode:live fetches account numbers for named sources; only zlibrary costs an account call. Other clients can change estimates; errors are per source.",
+      "description": "local (default): capabilities/order, no network. live: zlibrary quota call only. Anna: member_key_configured, member_session=none/active/rejected (last observed). Quotas vary; per-source errors.",
       "inputSchema": {
         "type": "object",
         "properties": {
@@ -417,7 +417,28 @@
             ],
             "properties": {
               "sources": {
-                "type": "object"
+                "type": "object",
+                "properties": {
+                  "annas": {
+                    "type": "object",
+                    "properties": {
+                      "member_key_configured": {
+                        "type": "boolean"
+                      },
+                      "member_session": {
+                        "enum": [
+                          "none",
+                          "active",
+                          "rejected"
+                        ]
+                      }
+                    },
+                    "required": [
+                      "member_key_configured",
+                      "member_session"
+                    ]
+                  }
+                }
               },
               "default_order": {
                 "type": "array",
@@ -650,7 +671,9 @@
         "limit": {
           "kind": "unknown"
         },
-        "note": "Set ANNAS_SECRET_KEY for download; search needs no key."
+        "note": "Set ANNAS_SECRET_KEY for download; search needs no key.",
+        "member_key_configured": false,
+        "member_session": "none"
       }
     }
   },

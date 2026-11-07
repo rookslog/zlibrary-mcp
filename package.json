@@ -49,6 +49,7 @@
   "author": "rookslog",
   "license": "MIT",
   "files": [
+    "THIRD-PARTY-NOTICES.md",
     "dist/",
     "lib/",
     "zlibrary/",

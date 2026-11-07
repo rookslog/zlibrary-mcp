@@ -19,6 +19,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   an in-flight saved session never switches to an environment password. Expiry
   remains unknown. Keychain and Python environment relocation remain deferred.
 
+### Changed
+
+- `ANNAS_SECRET_KEY` now also signs in to Anna's Archive for search, so the key
+  is sent by POST to `/account/` on the configured origin. It previously served
+  fast downloads only. Without a key, search stays anonymous.
+- `get_limits` reports `member_key_configured` and `member_session` for the
+  Anna's Archive source.
+- Anna's Archive pages with no result rows and no recognised "No files found."
+  marker now return an "Unrecognised page" error instead of empty results,
+  including for anonymous users.
+
 ### Fixed
 
 - Login and logout recover corrupt login JSON while preserving private-file

@@ -11,6 +11,13 @@ jest.unstable_mockModule('../lib/python-runner.js', () => ({
   runPythonBridge: run,
   LONG_BRIDGE_TIMEOUT_MS: 2400000,
 }));
+// This suite tests public reporting; native member-worker pipes have their own tests.
+jest.unstable_mockModule('../lib/annas-member-worker.js', () => ({
+  annasMemberWorker: {
+    status: () => 'none',
+    search: async () => JSON.parse(JSON.parse((await run())[0]).content[0].text),
+  },
+}));
 const { createServer } = await import('../dist/index.js');
 const encode = (value) => [
   JSON.stringify({ content: [{ type: 'text', text: JSON.stringify(value) }] }),

@@ -23,6 +23,7 @@ const requiredPythonFiles = [
   { path: 'lib/login_store.py', critical: true, description: 'Python login store and resolver' },
   { path: 'lib/login_runtime.py', critical: true, description: 'Saved login renewal' },
   { path: 'lib/login_cli.py', critical: true, description: 'Login command input and output' },
+  { path: 'lib/annas_member_worker.py', critical: true, description: 'Resident Anna member search worker' },
   { path: 'lib/python_bridge.py', critical: true, description: 'Main Python bridge script' },
   { path: 'lib/enhanced_metadata.py', critical: true, description: 'Enhanced metadata extraction' },
   { path: 'lib/author_tools.py', critical: false, description: 'Author-specific search tools' },
@@ -33,6 +34,7 @@ const requiredPythonFiles = [
 // Required TypeScript compiled files (dist/)
 const requiredCompiledFiles = [
   { path: 'dist/lib/login.js', critical: true, description: 'Login metadata and command dispatch' },
+  { path: 'dist/lib/annas-member-worker.js', critical: true, description: 'Anna member worker owner' },
   { path: 'dist/lib/eapi-session.js', critical: true, description: 'In-memory EAPI session owner' },
   { path: 'dist/index.js', critical: true, description: 'Main MCP server entry point' },
   {

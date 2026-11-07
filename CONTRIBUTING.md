@@ -171,6 +171,11 @@ git checkout -b fix/issue-description        # Bug fix
 git checkout -b docs/topic                   # Documentation
 ```
 
+Production dependency changes require `npm ci`, `uv sync --frozen --group dev`,
+and `uv run --frozen python scripts/generate-third-party-notices.py --refresh`;
+see [dependency notice inputs](https://github.com/rookslog/zlibrary-mcp/blob/master/scripts/notices/README.md). Dev-only lock updates
+and unrelated documentation edits do not require a refresh.
+
 ### Commit Messages
 
 Use [Conventional Commits](https://www.conventionalcommits.org/) format: `<type>(<scope>): <subject>`

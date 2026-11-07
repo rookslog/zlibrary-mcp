@@ -1,5 +1,6 @@
 import { readLoginMetadata } from './login.js';
 import type { LoginMetadata } from './login.js';
+import { annasMemberWorker } from './annas-member-worker.js';
 import { normalizeLanguages } from './filter-languages.js';
 import type { SessionInput } from './eapi-session.js';
 import type { Options as PythonShellOptions } from 'python-shell';
@@ -262,6 +263,16 @@ async function callPythonFunction(
     withRetry(
       async (attempt) => {
         const execute = async () => {
+          if (
+            functionName === 'search_multi_source' &&
+            args.source === 'annas' &&
+            configuredEnv.ANNAS_SECRET_KEY
+          ) {
+            return annasMemberWorker.search(args, {
+              signal,
+              timeoutMs: callOptions.timeoutMs ?? ORDINARY_BRIDGE_TIMEOUT_MS,
+            });
+          }
           const lazy = lazyAcquisition && !transport;
           let activeTransport = transport;
           const lifetime = new AbortController();

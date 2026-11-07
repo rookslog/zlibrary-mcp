@@ -253,7 +253,57 @@ permits search without a key, including on an untrusted host. Download and
 `configured` additionally require `ANNAS_SECRET_KEY` and a trusted host
 (`annas-archive.gl`, `.pk`, or `.gd`). An unusable base makes both availability
 fields false; the note distinguishes this from a base not trusted for the key.
-This local report makes no provider request.
+This local report makes no provider request. Anna's entries additionally include
+`member_key_configured: boolean` and `member_session: "none" | "active" | "rejected"`.
+These fields occur only for Anna's and never expose any credential or cookie.
+`none` means no observed session, including a skipped guard/transport attempt
+or cancellation; `active` means the last search obtained a usable session cookie;
+`rejected` means the provider refused sign-in or session access. It does not
+necessarily mean the key is invalid. A cancelled/failed transport attempt retains
+the 60-second cooldown while reporting `none`. State is process-local and last observed, not a live acceptance
+check. Local limits never start the resident worker or initiate sign-in.
+
+When configured, `ANNAS_SECRET_KEY` is lazily POSTed in form field `key` to
+`{ANNAS_BASE_URL}/account/`, with redirects disabled and the existing fast-download
+host guard; sign-in additionally requires HTTPS. The download host guard's
+existing HTTP-base behavior is unchanged. A response setting `aa_account_id2` activates the memory-only session.
+Search reuses it across MCP calls; one shared re-sign-in follows a refusal,
+with no retry loop. Rejected/failed sign-ins use a 60-second cooldown; Node
+remembers the private retry deadline across child crashes and passes it to the
+next worker. A worker failure before a search or its cancellation is acknowledged
+also starts a conservative 60-second sign-in backoff, covering a POST with no delivered outcome or an
+oversized reply. This can defer a valid sign-in even if the POST never ran.
+Cancellation publishes a status-only private update. Ordinary HTTP
+search remains the fallback. Key-configured pages follow at most five same-origin hops,
+even when an anonymous request is in flight as a member session becomes active;
+other scheme/host/port targets are refused. Result anchors take priority over
+challenge phrases. A rowless non-challenge page returns `[]` on anonymous and
+member paths when `form.js-search-form[role='search']` contains a visible
+`div > span.font-bold` with exact text `No files found.`, outside links and
+`.js-aarecord-list-outer`. Visibility excludes hidden attributes/classes,
+`aria-hidden`, inline display/visibility suppression and non-rendered containers;
+this is static HTML recognition, not computed browser CSS.
+The marker is source-derived: published renderer `search.html:450-464` and
+English `messages.po:5261-5266` at revision
+`d26b35249a5a5241dfe2ce512dbf0d6502999c5e`. That snapshot is dated 2024-12-16,
+and surrounding live markup has changed since it. Its test fixture is synthetic;
+we have not observed the marker on a live page. Other rowless pages return an
+attributed “Unrecognised page” error, including for anonymous users.
+The renderer warns that a slow search server can report no files incorrectly,
+so a recognized empty result can still be a false negative.
+Recognized vendor challenge pages remain errors. Anna's
+`get_book` continues to return the held search row; it performs no detail-page
+request. No key is needed for anonymous search, and no new download route is added.
+Transport debug logs are suppressed during the member adapter's lifetime because
+HTTP response headers can contain cookies.
+HTTP response failures retain a sterile `HTTP NNN` structured detail, including
+429 and 5xx statuses, so dependency-health classification and breaker accounting
+continue after member sign-in. Raw request, body and cookie data stay omitted.
+Real membership acceptance and
+challenge avoidance have not been tested. Each resident search resets preflight
+cache verdicts and runs under the bounded resolver. Hung libc lookups can retain
+daemon threads until worker exit; per-wait bounds do not impose a global retained
+thread cap.
 
 Live Z-Library mode adds `per_day`, `used_today`, `remaining`, `premium`, `as_of`
 when available. Use `per_day` as the quota signal: `premium` can stay true after a

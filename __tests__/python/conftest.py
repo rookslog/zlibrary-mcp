@@ -1,5 +1,7 @@
 import sys
 import os
+import ipaddress
+import socket
 import pytest
 
 
@@ -75,6 +77,59 @@ def _no_preflight_probes(request, monkeypatch):
         if module is not None and hasattr(module, "probe_host"):
             monkeypatch.setattr(module, "probe_host", _skip)
     net.reset_probe_cache()
+
+
+@pytest.fixture(autouse=True)
+def _no_real_httpx_requests(request, monkeypatch):
+    """Block offline non-loopback HTTPX before DNS, even if it is swallowed."""
+    if request.node.get_closest_marker("integration"):
+        yield
+        return
+
+    import httpx
+
+    attempted = []
+    marker = request.node.get_closest_marker("httpx_dns_probe")
+    dns_hosts = set(marker.args) if marker else set()
+    assert all(host.endswith(".invalid") for host in dns_hosts)
+    original_dns = socket.getaddrinfo
+
+    def check(outgoing):
+        host = outgoing.url.host
+        try:
+            address = ipaddress.ip_address(host)
+            local = address.is_loopback or (
+                isinstance(address, ipaddress.IPv6Address)
+                and address.ipv4_mapped is not None
+                and address.ipv4_mapped.is_loopback
+            )
+        except ValueError:
+            local = False
+        if local or (host in dns_hosts and socket.getaddrinfo is not original_dns):
+            return
+        attempted.append(True)
+        raise httpx.ConnectError(
+            "Real non-loopback HTTP is forbidden in offline tests", request=outgoing
+        )
+
+    sync = httpx.HTTPTransport.handle_request
+    asynchronous = httpx.AsyncHTTPTransport.handle_async_request
+
+    def guarded_sync(self, request):
+        check(request)
+        return sync(self, request)
+
+    async def guarded_async(self, request):
+        check(request)
+        return await asynchronous(self, request)
+
+    monkeypatch.setattr(httpx.HTTPTransport, "handle_request", guarded_sync)
+    monkeypatch.setattr(httpx.AsyncHTTPTransport, "handle_async_request", guarded_async)
+    yield
+    assert not attempted, (
+        f"{len(attempted)} real non-loopback HTTP transport attempt(s) blocked before DNS; "
+        "inject MockTransport or use a loopback fixture"
+    )
 
 
 @pytest.fixture(autouse=True)

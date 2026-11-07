@@ -1,4 +1,4 @@
-"""Keep test output out of uploaded files using synthetic values only."""
+"""Replace sensitive values in uploaded test output using synthetic values only."""
 
 import importlib.util
 import base64
@@ -35,7 +35,12 @@ def workflow():
 
 @pytest.mark.parametrize(
     "password",
-    ["CANARY-OUTPUT-123", 'CANARY<&"-OUTPUT-456', "CANARY-é雪<&\"'-OUTPUT-789"],
+    [
+        "CANARY-OUTPUT-123",
+        'CANARY<&"-OUTPUT-456',
+        "CANARY-é雪<&\"'-OUTPUT-789",
+        "CANARY'ONLY-PW",
+    ],
 )
 def test_real_live_step_keeps_canaries_out_of_uploaded_files(
     workflow, tmp_path, password
@@ -58,6 +63,7 @@ def test_real_live_step_keeps_canaries_out_of_uploaded_files(
         "    forms = []\n"
         "    for value in values:\n"
         "        forms.extend([value, html.escape(value), html.escape(value, quote=False), json.dumps(value)[1:-1], json.dumps(value, ensure_ascii=False)[1:-1], repr(value)[1:-1], ascii(value)[1:-1], quote(value, safe=''), quote_plus(value), base64.b64encode(value.encode()).decode()])\n"
+        "    forms.extend([repr('body \"x\" ' + values[1]), ascii('body \"x\" ' + values[1])])\n"
         "    forms.append(repr({'success': 1, 'user': {'id': 'FAKE-user-1234', 'remix_userkey': values[-1]}}))\n"
         "    return '\\n'.join(forms)\n"
         "@pytest.fixture\ndef broken_setup():\n    pytest.fail(payload())\n"
@@ -70,6 +76,24 @@ def test_real_live_step_keeps_canaries_out_of_uploaded_files(
         "@pytest.mark.integration\ndef test_teardown(broken_teardown):\n    pass\n"
         "@pytest.mark.integration\n@pytest.mark.parametrize('argument', [os.environ['ZLIBRARY_PASSWORD']])\ndef test_argument(argument):\n    pytest.fail(payload())\n"
     )
+    with (tmp_path / "test_canary.py").open("a") as stream:
+        stream.write(
+            "\n@pytest.mark.integration\n@pytest.mark.asyncio\nasync def test_cookie_reply(monkeypatch, credentials):\n"
+            "    import httpx\n    from zlibrary.eapi import EAPIClient\n"
+            "    from ci_credentials import login_with_credentials\n"
+            "    real_client = httpx.AsyncClient\n"
+            "    def reply(request):\n"
+            "        assert request.url.host == 'ci.invalid'\n"
+            "        if request.url.path == '/eapi/user/login':\n"
+            "            return httpx.Response(200, json={'success': 1, 'user': {'id': 987654, 'remix_userkey': 'FAKE-COOKIE-SESSIONKEY'}})\n"
+            "        return httpx.Response(200, json={'success': 0, 'message': request.headers.get('cookie', '')})\n"
+            "    monkeypatch.setattr(httpx, 'AsyncClient', lambda **kwargs: real_client(transport=httpx.MockTransport(reply), **kwargs))\n"
+            "    client = EAPIClient('ci.invalid')\n"
+            "    try:\n        assert await login_with_credentials(client, credentials)\n"
+            "        response = await client.search('synthetic')\n"
+            "        assert response.get('success') == 1, response.get('message')\n"
+            "    finally:\n        await client.close()\n"
+        )
     scripts = tmp_path / "scripts"
     scripts.mkdir()
     for name in ["classify_live_tests.py", "filter_live_test_output.py"]:
@@ -113,6 +137,14 @@ def test_real_live_step_keeps_canaries_out_of_uploaded_files(
     )
     assert run.returncode == 0, "The real classifier must preserve a failed test result"
     assert "status=failed" in (tmp_path / "outputs").read_text()
+    # Unfiltered pytest output must never reach the workflow console.
+    console = run.stdout + run.stderr
+    for value in (email, password, "FAKE-COOKIE-SESSIONKEY"):
+        for encoded in encoded_forms(value).values():
+            assert encoded not in console
+    assert password.encode("unicode_escape").decode() not in console
+    assert "FAKE-COOKIE-SESSIONKEY" in (tmp_path / "live.log").read_text()
+
     # Establish that every encoder actually reached the real pytest files.
     before = ET.parse(tmp_path / "live.xml")
     before_text = "".join(before.getroot().itertext())
@@ -140,13 +172,33 @@ def test_real_live_step_keeps_canaries_out_of_uploaded_files(
         data = (tmp_path / name).read_text()
         assert all(value not in data for value in [email, password, frame])
     root = ET.parse(tmp_path / "live.xml")
-    assert len(list(root.iter("testcase"))) == 6
-    assert len(list(root.iter("failure"))) == 4
+    assert len(list(root.iter("testcase"))) == 7
+    assert len(list(root.iter("failure"))) == 5
     assert len(list(root.iter("error"))) == 2
     decoded = "".join(root.getroot().itertext()) + "".join(
         value for element in root.iter() for value in element.attrib.values()
     )
     assert all(value not in decoded for value in [email, password, frame])
+    assert "FAKE-COOKIE-SESSIONKEY" not in decoded
+    assert "987654" not in decoded
+    for representation in (repr('body "x" ' + password), ascii('body "x" ' + password)):
+        escaped = representation[len('body "x" ') + 1 : -1]
+        assert escaped not in decoded
+    assert password.encode("unicode_escape").decode() not in decoded
+    summary = next(step for step in steps if step.get("id") == "filtered_summary")
+    result = subprocess.run(
+        ["/bin/bash", "-e", "-o", "pipefail", "-c", summary["run"]],
+        cwd=tmp_path,
+        env=env,
+        capture_output=True,
+        text=True,
+    )
+    assert result.returncode == 0
+    assert "Prepared live test output:" in result.stdout
+    assert "7 test case(s)" in result.stdout
+    for value in (email, password, "FAKE-COOKIE-SESSIONKEY"):
+        assert value not in result.stdout + result.stderr
+
     for value in (email, password, 'FAKE-session-雪<&"' + chr(39)):
         for encoded in encoded_forms(value).values():
             assert encoded not in decoded
@@ -466,6 +518,229 @@ def test_xml_recheck_reads_text_and_tails_after_writing(
             root = ET.fromstring(data)
             setattr(root if location == "text" else root.find("part"), location, value)
             data = ET.tostring(root)
+        return write(path, data)
+
+    monkeypatch.setattr(Path, "write_bytes", contaminate)
+    assert module.filter_output() == 1
+
+
+SESSION_PRINTS = [
+    "Cookie: remix_userid=987654; remix_userkey=FAKESESSIONKEY",
+    "<Cookies[<Cookie remix_userkey=FAKESESSIONKEY for 127.0.0.1 />]>",
+    "?remix_userid=987654&remix_userkey=FAKESESSIONKEY",
+    r"{\"remix_userkey\": \"FAKESESSIONKEY\"}",
+    "remix_userkey=b'FAKESESSIONKEY'\nFAKESESSIONKEY",
+    "{'remix_userid': 987654, 'remix_userkey': 'FAKESESSIONKEY'}",
+    "{'user': {'name': 'n', 'id': '987654', 'remix_userkey': 'FAKESESSIONKEY'}}",
+    "{'user': {'details': {'name': 'n'}, 'id': '987654', 'remix_userkey': 'FAKESESSIONKEY'}}",
+]
+
+
+@pytest.mark.parametrize("printed", SESSION_PRINTS)
+@pytest.mark.parametrize("filename", ["live.log", "live.xml"])
+def test_session_printed_shapes_are_filtered_in_each_file(
+    monkeypatch, tmp_path, printed, filename
+):
+    module = load_filter(monkeypatch, tmp_path, "FAKE-CONFIGURED-PASSWORD")
+    content = (
+        printed
+        if filename.endswith("log")
+        else f"<testsuites><testcase message={quoteattr(printed)}>{escape(printed)}</testcase></testsuites>"
+    )
+    (tmp_path / filename).write_text(content)
+    assert module.filter_output() == 0
+    written = (tmp_path / filename).read_text()
+    assert "FAKESESSIONKEY" not in written
+    assert "987654" not in written
+    if filename.endswith("xml"):
+        root = ET.fromstring(written)
+        assert "FAKESESSIONKEY" not in "".join(root.itertext())
+        assert "987654" not in root.find("testcase").get("message")
+
+
+@pytest.mark.parametrize(
+    "printed",
+    [
+        "remix_userkey=",
+        'remix_userkey={"unknown": "value"}',
+        "remix_userkey=[unrecognized]",
+        r"remix_userkey='\u12'",
+    ],
+)
+def test_named_session_fields_fail_closed_for_unrecognized_values(
+    monkeypatch, tmp_path, printed
+):
+    module = load_filter(monkeypatch, tmp_path, "FAKE-CONFIGURED-PASSWORD")
+    (tmp_path / "live.log").write_text(printed)
+    assert module.filter_output() == 1
+
+
+@pytest.mark.parametrize("filename", ["live.log", "live.xml"])
+def test_named_session_recheck_rejects_a_new_value_after_writing(
+    monkeypatch, tmp_path, filename
+):
+    module = load_filter(monkeypatch, tmp_path, "FAKE-CONFIGURED-PASSWORD")
+    (tmp_path / filename).write_text(
+        "benign" if filename.endswith("log") else "<testsuites/>"
+    )
+    write = Path.write_bytes
+
+    def contaminate(path, data):
+        if path.name == filename:
+            if filename.endswith("log"):
+                data += b"\nremix_userkey=NEW-UNSEEN-SESSION"
+            else:
+                root = ET.fromstring(data)
+                root.set("message", "remix_userkey=NEW-UNSEEN-SESSION")
+                data = ET.tostring(root)
+        return write(path, data)
+
+    monkeypatch.setattr(Path, "write_bytes", contaminate)
+    assert module.filter_output() == 1
+
+
+@pytest.mark.parametrize("value", ["CANARY'ONLY-PW", "CANARY-é雪'ONLY-PW"])
+@pytest.mark.parametrize("filename", ["live.log", "live.xml"])
+def test_repr_escaping_comes_from_the_surrounding_string(
+    monkeypatch, tmp_path, value, filename
+):
+    module = load_filter(monkeypatch, tmp_path, value)
+    prefix = 'body "x" '
+    # Real repr/ascii of surrounding text force an apostrophe escape that
+    # repr(value) alone omits. These expectations come from the actual writer.
+    representations = [repr(prefix + value), ascii(prefix + value)]
+    printed = "\n".join(representations)
+    assert "\\'ONLY-PW" in printed
+    (tmp_path / filename).write_text(
+        printed
+        if filename.endswith("log")
+        else f"<testsuites message={quoteattr(printed)}>{escape(printed)}</testsuites>"
+    )
+    assert module.filter_output() == 0
+    written = (tmp_path / filename).read_text()
+    decoded = (
+        written if filename.endswith("log") else ET.fromstring(written).get("message")
+    )
+    for representation in representations:
+        escaped = representation[len(prefix) + 1 : -1]
+        assert escaped not in decoded
+
+
+def test_session_is_discovered_from_xml_only(monkeypatch, tmp_path):
+    module = load_filter(monkeypatch, tmp_path, "FAKE-CONFIGURED-PASSWORD")
+    value = 'XML-ONLY-SESSION-雪<&"'
+    printed = json.dumps({"remix_userkey": value})
+    (tmp_path / "live.xml").write_text(f"<testsuites>{escape(printed)}</testsuites>")
+    assert not (tmp_path / "live.log").exists()
+    assert module.filter_output() == 0
+    assert value not in "".join(ET.parse(tmp_path / "live.xml").getroot().itertext())
+
+
+def test_html_escaped_session_discovery_is_independent(monkeypatch, tmp_path):
+    module = load_filter(monkeypatch, tmp_path, "FAKE-CONFIGURED-PASSWORD")
+    value = 'HTML-ONLY-SESSION-雪<&"'
+    printed = html.escape(repr({"remix_userkey": value}))
+    assert "&#x27;remix_userkey&#x27;" in printed
+    (tmp_path / "live.log").write_text(printed)
+    assert module.filter_output() == 0
+    assert html.escape(value) not in (tmp_path / "live.log").read_text()
+    assert "[filtered]" in html.unescape((tmp_path / "live.log").read_text())
+
+
+@pytest.mark.parametrize("filename", ["live.log", "live.xml"])
+def test_html_wrapped_encodings_are_filtered_independently(
+    monkeypatch, tmp_path, filename
+):
+    value = 'WRAPPED-é雪<&"\\-VALUE'
+    module = load_filter(monkeypatch, tmp_path, value)
+    encoded = html.escape(json.dumps(value)[1:-1])
+    (tmp_path / filename).write_text(
+        encoded
+        if filename.endswith("log")
+        else f"<testsuites message={quoteattr(encoded)}/>"
+    )
+    assert module.filter_output() == 0
+    written = (tmp_path / filename).read_text()
+    decoded = (
+        written if filename.endswith("log") else ET.fromstring(written).get("message")
+    )
+    assert decoded == "[filtered]"
+
+
+def test_longer_values_are_replaced_before_their_prefix(monkeypatch, tmp_path):
+    short = "FAKE-OVERLAP"
+    long = short + "-PRIVATE-SUFFIX"
+    module = load_filter(monkeypatch, tmp_path, long)
+    monkeypatch.setenv("ZLIBRARY_EMAIL", short)
+    (tmp_path / "live.log").write_text(long + " " + short)
+    assert module.filter_output() == 0
+    assert (tmp_path / "live.log").read_text() == "[filtered] [filtered]"
+
+
+def test_real_pytest_parameter_id_forms_are_filtered(monkeypatch, tmp_path):
+    value = "PARAM-é雪<&\"'"
+    (tmp_path / "pytest.ini").write_text("[pytest]\n")
+    (tmp_path / "test_ids.py").write_text(
+        "import os, pytest\n@pytest.mark.parametrize('argument', [os.environ['ZLIBRARY_PASSWORD']])\ndef test_id(argument):\n    assert False\n"
+    )
+    run = subprocess.run(
+        [
+            sys.executable,
+            "-m",
+            "pytest",
+            "--no-cov",
+            "--tb=short",
+            "--junitxml=live.xml",
+            "-q",
+        ],
+        cwd=tmp_path,
+        env={**__import__("os").environ, "ZLIBRARY_PASSWORD": value},
+        capture_output=True,
+        text=True,
+    )
+    assert run.returncode == 1
+    (tmp_path / "live.log").write_text(run.stdout + run.stderr)
+    escaped_id = value.encode("unicode_escape").decode()
+    before = ET.parse(tmp_path / "live.xml").find(".//testcase").get("name")
+    assert escaped_id in before
+    module = load_filter(monkeypatch, tmp_path, value)
+    assert module.filter_output() == 0
+    assert escaped_id not in ET.parse(tmp_path / "live.xml").find(".//testcase").get(
+        "name"
+    )
+    assert escaped_id not in (tmp_path / "live.log").read_text()
+
+
+def test_filter_test_description_matches_replacement_contract():
+    import ast
+
+    description = ast.get_docstring(ast.parse(Path(__file__).read_text()))
+    assert (
+        description
+        == "Replace sensitive values in uploaded test output using synthetic values only."
+    )
+
+
+@pytest.mark.parametrize(
+    "residual",
+    [
+        "[filtered]-suffix",
+        "'[filtered]-suffix'",
+        "[filtered]'suffix",
+        "[filtered]&suffix",
+        "[filtered];suffix",
+    ],
+)
+def test_named_session_recheck_requires_the_exact_replacement(
+    monkeypatch, tmp_path, residual
+):
+    module = load_filter(monkeypatch, tmp_path, "FAKE-CONFIGURED-PASSWORD")
+    (tmp_path / "live.log").write_text("benign")
+    write = Path.write_bytes
+
+    def contaminate(path, data):
+        if path.name == "live.log":
+            data += ("\nremix_userkey=" + residual).encode()
         return write(path, data)
 
     monkeypatch.setattr(Path, "write_bytes", contaminate)

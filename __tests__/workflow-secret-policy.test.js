@@ -4,6 +4,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { stringify } from 'yaml';
+import { pathToFileURL } from 'node:url';
 
 function check(document, filename = 'fixture.yml') {
   const directory = mkdtempSync(join(tmpdir(), 'workflow-policy-'));
@@ -15,7 +16,7 @@ function check(document, filename = 'fixture.yml') {
 const filter = { id: 'filter_output', run: 'python3 scripts/filter_live_test_output.py' };
 const upload = { uses: 'actions/upload-artifact@v7', with: { path: 'live.log' } };
 function workflow(secret, condition) {
-  return { jobs: { test: { env: { VALUE: secret }, steps: [filter, { ...upload, ...(condition === undefined ? {} : { if: condition }) }] } } };
+  return { jobs: { test: { env: { VALUE: secret }, steps: [{ ...filter }, { ...upload, with: { ...upload.with }, ...(condition === undefined ? {} : { if: condition }) }] } } };
 }
 
 test.each([undefined, 'always()', "always() || steps.filter_output.outcome == 'success'", "! (steps.filter_output.outcome == 'success')", "'steps.filter_output.outcome == success'"])
@@ -28,10 +29,16 @@ test.each(["${{ format('}}{0}', secrets.TEST_VALUE) }}", '${{ toJSON(secrets) }}
   expect(check(workflow(secret, 'always()')).status).toBe(1);
 });
 
-test('catches inherited secrets and workflow-level env', () => {
-  const inherited = workflow('', 'always()');
-  inherited.jobs.test.secrets = 'inherit';
-  expect(check(inherited).status).toBe(1);
+test.each(['other/repo/.github/workflows/x.yml@v1', './.github/workflows/x.yml'])
+('rejects inherited secrets in a legal reusable caller: %s', uses => {
+  expect(check({ jobs: { test: { uses, secrets: 'inherit' } } }).status).toBe(1);
+});
+
+test('rejects an explicit secret map in a reusable caller', () => {
+  expect(check({ jobs: { test: { uses: 'other/repo/.github/workflows/x.yml@v1', secrets: { VALUE: '${{ secrets.TEST_VALUE }}' } } } }).status).toBe(1);
+});
+
+test('includes workflow-level environment in each job', () => {
   const shared = workflow('', 'always()');
   shared.env = { VALUE: '${{ secrets.TEST_VALUE }}' };
   expect(check(shared, 'fixture.yaml').status).toBe(1);
@@ -79,4 +86,64 @@ test('checks native if expressions as well as interpolation', () => {
   document.jobs.test.steps[0].if = 'toJSON(secrets)';
   expect(check(document).status).toBe(1);
   delete document.jobs.test.steps[0].if;
+});
+
+
+const success = "always() && steps.filter_output.outcome == 'success'";
+test.each(['dump.txt', '.', 'live.log\n**/*.txt', 'live.log\n../live.xml', '${{ inputs.path }}', ''])
+('rejects upload paths the filter never prepared: %s', path => {
+  const document = workflow('${{ secrets.TEST_VALUE }}', success);
+  document.jobs.test.steps[1].with.path = path;
+  expect(check(document).status).toBe(1);
+});
+
+test.each(['step', 'job', 'workflow'])('rejects effective filter working-directory at %s scope', scope => {
+  const document = workflow('${{ secrets.TEST_VALUE }}', success);
+  if (scope === 'step') document.jobs.test.steps[0]['working-directory'] = 'empty';
+  else (scope === 'job' ? document.jobs.test : document).defaults = { run: { 'working-directory': 'empty' } };
+  expect(check(document).status).toBe(1);
+});
+
+test.each([{ run: 'echo fake >> live.log' }, { uses: 'example/writer@v1' }])
+('rejects a non-upload step between filtering and the last upload: %j', step => {
+  const document = workflow('${{ secrets.TEST_VALUE }}', success);
+  document.jobs.test.steps.splice(1, 0, step);
+  expect(check(document).status).toBe(1);
+});
+
+test('checks the entire interval through the last upload', () => {
+  const document = workflow('${{ secrets.TEST_VALUE }}', success);
+  document.jobs.test.steps.push({ run: 'echo fake >> live.log' }, { ...upload, if: success });
+  expect(check(document).status).toBe(1);
+});
+
+test('accepts adjacent prepared uploads and a summary after the last upload', () => {
+  const document = workflow('${{ secrets.TEST_VALUE }}', success);
+  document.jobs.test.steps[1].with.path = 'live.log\nlive.xml';
+  document.jobs.test.steps.push({ ...upload, if: success }, { run: 'echo summary' });
+  expect(check(document).status).toBe(0);
+});
+
+async function inspect(document, exceptions) {
+  const module = await import(pathToFileURL(join(process.cwd(), 'scripts/check-workflow-secrets.mjs')).href);
+  expect(typeof module.checkWorkflow).toBe('function');
+  return module.checkWorkflow(document, 'fixture.yml', exceptions);
+}
+
+test.each(['job', 'step'])('exceptions require a nonempty reason at %s scope', async scope => {
+  const document = scope === 'job'
+    ? { jobs: { test: { uses: 'other/repo/.github/workflows/x.yml@v1', secrets: 'inherit' } } }
+    : workflow('${{ secrets.TEST_VALUE }}', 'always()');
+  const key = scope === 'job' ? 'fixture.yml/test' : 'fixture.yml/test/1';
+  expect((await inspect(document, new Map([[key, '   ']]))).length).toBeGreaterThan(0);
+  expect(await inspect(document, new Map([[key, 'Reviewed separate output preparation']]))).toEqual([]);
+  expect((await inspect(document, new Map([['unrelated/name', 'Valid reason']]))).length).toBeGreaterThan(0);
+});
+
+test('rejects duplicate YAML job keys instead of silently replacing the secret job', () => {
+  const directory = mkdtempSync(join(tmpdir(), 'workflow-policy-'));
+  try {
+    writeFileSync(join(directory, 'duplicate.yml'), `jobs:\n  test:\n    uses: other/repo/.github/workflows/x.yml@v1\n    secrets: inherit\n  test:\n    steps: []\n`);
+    expect(spawnSync(process.execPath, ['scripts/check-workflow-secrets.mjs', directory]).status).toBe(1);
+  } finally { rmSync(directory, { recursive: true, force: true }); }
 });

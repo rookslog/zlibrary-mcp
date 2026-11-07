@@ -213,10 +213,10 @@ jobs:
           fi
           # Use the same literal-false gate for collection and execution.
           # Coverage belongs to the full acquisition suite (#250).
-          uv run pytest -m integration --collect-only --no-cov -q
+          uv run pytest -m integration --collect-only --no-cov -q > live.log 2>&1
           set +e
-          uv run pytest -m integration --no-cov --benchmark-disable --no-header --tb=short --junitxml=live.xml -q 2>&1 | tee live.log
-          code=${PIPESTATUS[0]}
+          uv run pytest -m integration --no-cov --benchmark-disable --no-header --tb=short --junitxml=live.xml -q >> live.log 2>&1
+          code=$?
           set -e
           uv run python scripts/classify_live_tests.py --exit-code "$code" --junitxml live.xml
       - name: Replace sensitive values in test output
@@ -235,10 +235,26 @@ jobs:
             live.xml
           if-no-files-found: ignore
           retention-days: 1
+      - name: Show prepared test summary
+        id: filtered_summary
+        if: always() && steps.filter_output.outcome == 'success' && steps.live.outputs.status != 'no_account'
+        run: |
+          python3 - <<'PYTHON'
+          import xml.etree.ElementTree as ET
+          try:
+              root = ET.parse("live.xml").getroot()
+          except (OSError, ET.ParseError):
+              print("No prepared live test report is available.")
+          else:
+              cases = list(root.iter("testcase"))
+              failures = sum(element.tag in ("failure", "error") for element in root.iter())
+              skipped = sum(case.find("skipped") is not None for case in cases)
+              print(f"Prepared live test output: {len(cases)} test case(s), {failures} failure(s), {skipped} skipped.")
+          PYTHON
       - name: Fail the job when live tests regressed
         if: steps.live.outputs.status == 'failed'
         run: |
-          echo "Live integration tests failed — see the uploaded log."
+          echo "Live integration tests failed; filtered output is available only when preparation and upload succeed."
           exit 1
 
   report:

@@ -571,3 +571,26 @@ test('live output retention is one day and source retention remains thirty days'
   expect(uploads.find(step => step.with.name === 'live-integration-log').with['retention-days']).toBe(1);
   expect(uploads.find(step => step.with.name === 'upstream-source-report').with['retention-days']).toBe(30);
 });
+
+test('test failure text does not promise an artifact when preparation failed', async () => {
+  const { spawnSync } = await import('node:child_process');
+  const failure = workflow.jobs.live_tests.steps.find(step => step.name === 'Fail the job when live tests regressed');
+  const result = spawnSync('/bin/bash', ['-c', failure.run], { encoding: 'utf8' });
+  expect(result.status).toBe(1);
+  expect(result.stdout).toContain('available only when preparation and upload succeed');
+  expect(result.stdout).not.toContain('see the uploaded log');
+});
+
+test('filtered summary runs after the last upload and requires successful preparation', () => {
+  const steps = workflow.jobs.live_tests.steps;
+  const summary = steps.find(step => step.id === 'filtered_summary');
+  expect(summary).toBeDefined();
+  const lastUpload = Math.max(...steps.flatMap((step, index) => step.uses?.startsWith('actions/upload-artifact@') ? [index] : []));
+  expect(steps.indexOf(summary)).toBeGreaterThan(lastUpload);
+  expect(summary.if).toContain("steps.filter_output.outcome == 'success'");
+  expect(summary.if).toContain("steps.live.outputs.status != 'no_account'");
+  const enabled = new Function('steps', 'return ' + summary.if.replace('always()', 'true'));
+  expect(enabled({ filter_output: { outcome: 'success' }, live: { outputs: { status: 'no_account' } } })).toBe(false);
+  expect(enabled({ filter_output: { outcome: 'failure' }, live: { outputs: { status: 'failed' } } })).toBe(false);
+  expect(enabled({ filter_output: { outcome: 'success' }, live: { outputs: { status: 'failed' } } })).toBe(true);
+});

@@ -3,8 +3,10 @@
 import { readFileSync, readdirSync } from 'node:fs';
 import { basename, join } from 'node:path';
 import { parseDocument } from 'yaml';
+import { pathToFileURL } from 'node:url';
 
-// Exceptions are keyed by "workflow/job/step-index" and must state a reason.
+// Exceptions use "workflow/job" for reusable callers or "workflow/job/step-index"
+// for uploads. Each named entry must state a nonempty reason.
 // Keep empty unless a reviewed workflow needs a specific, documented exception.
 const exceptions = new Map();
 
@@ -53,39 +55,98 @@ function requiresFilterSuccess(condition) {
   );
 }
 
-let failures = 0;
-try {
-  const directory = process.argv[2] || '.github/workflows';
-  for (const file of readdirSync(directory).sort()) {
-    const document = parseDocument(readFileSync(join(directory, file), 'utf8'), {
-      uniqueKeys: true,
-    });
-    if (document.errors.length) throw new Error('Invalid workflow YAML');
-    const workflow = document.toJS();
-    if (!workflow || typeof workflow.jobs !== 'object') throw new Error('Invalid workflow jobs');
-    for (const [jobName, job] of Object.entries(workflow.jobs)) {
-      const shared = Object.fromEntries(Object.entries(workflow).filter(([key]) => key !== 'jobs'));
-      if (!consumesSecret(shared) && !consumesSecret(job)) continue;
-      const steps = job.steps || [];
-      for (const [index, step] of steps.entries()) {
-        if (!/^actions\/upload-artifact@/i.test(step.uses || '')) continue;
-        const key = `${basename(file)}/${jobName}/${index}`;
-        if (exceptions.has(key) && exceptions.get(key).trim()) continue;
-        const filterIndex = steps.findIndex(
-          (candidate) =>
-            candidate.id === 'filter_output' &&
-            candidate.run?.trim() === 'python3 scripts/filter_live_test_output.py',
+function reasonedException(exceptions, key) {
+  const reason = exceptions.get(key);
+  return typeof reason === 'string' && reason.trim().length > 0;
+}
+
+function artifactUpload(step) {
+  return /^actions\/upload-artifact@/i.test(step.uses || '');
+}
+
+export function checkWorkflow(workflow, file, namedExceptions = exceptions) {
+  if (!workflow || !workflow.jobs || typeof workflow.jobs !== 'object') {
+    throw new Error('Invalid workflow jobs');
+  }
+  const failures = [];
+  const shared = Object.fromEntries(Object.entries(workflow).filter(([key]) => key !== 'jobs'));
+  for (const [jobName, job] of Object.entries(workflow.jobs)) {
+    if (!consumesSecret(shared) && !consumesSecret(job)) continue;
+    const jobKey = `${basename(file)}/${jobName}`;
+    if (job.uses) {
+      if (!reasonedException(namedExceptions, jobKey)) {
+        failures.push(`${jobKey} requires a named exception for a secret-using reusable caller`);
+      }
+      continue;
+    }
+    const steps = job.steps || [];
+    const filterIndex = steps.findIndex(
+      (candidate) =>
+        candidate.id === 'filter_output' &&
+        candidate.run?.trim() === 'python3 scripts/filter_live_test_output.py',
+    );
+    const uploadIndices = steps.flatMap((step, index) => (artifactUpload(step) ? [index] : []));
+    const lastUpload = Math.max(-1, ...uploadIndices);
+    const redirectedFilter =
+      filterIndex >= 0 &&
+      (Object.hasOwn(steps[filterIndex], 'working-directory') ||
+        Object.hasOwn(job.defaults?.run || {}, 'working-directory') ||
+        Object.hasOwn(workflow.defaults?.run || {}, 'working-directory'));
+    const interrupted = steps
+      .slice(filterIndex + 1, lastUpload)
+      .some((step) => !artifactUpload(step));
+    for (const index of uploadIndices) {
+      const step = steps[index];
+      const key = `${jobKey}/${index}`;
+      if (reasonedException(namedExceptions, key)) continue;
+      const paths =
+        typeof step.with?.path === 'string'
+          ? step.with.path
+              .split(/\r?\n/)
+              .map((line) => line.trim())
+              .filter(Boolean)
+          : [];
+      const preparedPaths =
+        paths.length > 0 && paths.every((path) => path === 'live.log' || path === 'live.xml');
+      if (
+        filterIndex < 0 ||
+        filterIndex >= index ||
+        !requiresFilterSuccess(step.if) ||
+        !preparedPaths ||
+        redirectedFilter ||
+        interrupted
+      ) {
+        failures.push(
+          `${key} requires adjacent uploads of prepared output after successful filtering`,
         );
-        if (filterIndex < 0 || filterIndex >= index || !requiresFilterSuccess(step.if)) {
-          console.error(`Workflow secret policy: ${key} requires successful output filtering`);
-          failures++;
-        }
       }
     }
   }
-} catch {
-  console.error('Workflow secret policy: could not inspect workflows');
-  failures++;
+  return failures;
 }
-if (failures === 0) console.log('Workflow secret policy passed');
-process.exitCode = failures ? 1 : 0;
+
+function main() {
+  let failures = 0;
+  try {
+    const directory = process.argv[2] || '.github/workflows';
+    for (const file of readdirSync(directory).sort()) {
+      const document = parseDocument(readFileSync(join(directory, file), 'utf8'), {
+        uniqueKeys: true,
+      });
+      if (document.errors.length) throw new Error('Invalid workflow YAML');
+      for (const failure of checkWorkflow(document.toJS(), file)) {
+        console.error(`Workflow secret policy: ${failure}`);
+        failures++;
+      }
+    }
+  } catch {
+    console.error('Workflow secret policy: could not inspect workflows');
+    failures++;
+  }
+  if (failures === 0) console.log('Workflow secret policy passed');
+  return failures ? 1 : 0;
+}
+
+if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
+  process.exitCode = main();
+}

@@ -46,7 +46,9 @@ async def test_login_exception_has_fixed_message():
         async def login(self, *_):
             raise ValueError("FAKE-EXCEPTION-CREDENTIAL")
 
-    with pytest.raises(RuntimeError, match="^Integration login failed$"):
+    with pytest.raises(RuntimeError, match="^Integration login failed$") as excinfo:
         await module.login_with_credentials(
             Client(), {"email": module.Secret("e"), "password": module.Secret("p")}
         )
+
+    assert excinfo.value.__suppress_context__ is True

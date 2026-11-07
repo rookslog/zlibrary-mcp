@@ -19,7 +19,8 @@ current adapters, the current endpoints — is contingent and expected to change
    JSON-RPC and nothing else; all diagnostics go to stderr. (Enforced by
    `__tests__/stdio-purity.test.js`.)
 3. **Per-user credentials and quotas.** Accounts, limits, and downloaded
-   content belong to the user running the server.
+   content belong to the user running the server. A local user may configure
+   multiple personally controlled accounts and rotate acquisitions among them.
 4. **Sources are adapters; no source is privileged.** Z-Library is one adapter
    among several, not the essence of the project. The adapter contract must
    never be secretly shaped like any single source.
@@ -42,7 +43,7 @@ Identity is sharpest at its boundary. This project deliberately does **not** do:
   maintains a *manifest* of what it acquired — enough for idempotence and
   offline reuse — but a manifest is not a library.
 - **A hosted or shared instance.** Credentials and quotas are per-user
-  (invariant 3); pooling them is the wrong shape for this tool.
+  (invariant 3); sharing or pooling credentials across users remains out of scope.
 - **Bundled OCR models.** OCR remains an optional integration (invariant 7).
 - **Direct ID lookup against unstable upstream IDs.** Deprecated by
   [ADR-003](https://github.com/rookslog/zlibrary-mcp/blob/master/docs/adr/ADR-003-Handle-ID-Lookup-Failure.md) for reasons that

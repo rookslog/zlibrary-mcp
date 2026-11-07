@@ -286,6 +286,7 @@ The published Docker image is still 1.4.0 until 2.0 is released.
 | Variable | Meaning |
 |---|---|
 | `ZLIBRARY_EMAIL`, `ZLIBRARY_PASSWORD` | Z-Library account; not required for other sources |
+| `ZLIBRARY_EMAIL_N`, `ZLIBRARY_PASSWORD_N` | Optional additional personal accounts, numbered from 2 through 16 |
 | `ANNAS_SECRET_KEY` | Anna's Archive membership key; optional member sign-in for search, required for downloads |
 | `BOOK_SOURCE_DEFAULT_ORDER` | Optional comma-separated default source set and copy-route tie preference, e.g. `libgen,zlibrary`; no repeats |
 | `BOOK_SOURCE_SEARCH_WAIT_MS` | Multi-source comparison wait in milliseconds; default `12000`; positive whole decimal within the Node timer range |
@@ -302,6 +303,20 @@ The published Docker image is still 1.4.0 until 2.0 is released.
 | `PYTHON_BRIDGE_TIMEOUT` | Ordinary bridge deadline in milliseconds; default `240000` |
 | `PYTHON_BRIDGE_LONG_TIMEOUT` | Acquisition deadline in milliseconds; default `3900000` |
 | `ZLIBRARY_SESSION_MODE` | `memory` (default) or `per-call`; unknown modes fail at startup |
+
+For personal multi-account use, configure the existing primary pair and optional numbered
+pairs. Z-Library acquisition attempts rotate in numeric slot order, starting over after a
+server restart. A successful transfer reports `account_slot`; local receipt reuse makes
+no provider request but still advances the slot selection. A failed transfer is not automatically retried with another account.
+Search, history, and live limits use the first configured account; live limits are not
+an aggregate. Credentials and session state remain isolated per account.
+
+On Windows, after configuring the primary `%LOCALAPPDATA%\zlibrary-mcp\account.xml`,
+run `powershell -NoProfile -ExecutionPolicy Bypass -File scripts\setup-local-zlibrary-accounts.ps1 -AdditionalAccounts 3`
+to enter three additional accounts locally. Passwords use Windows user-bound encryption.
+Configure the MCP client to launch `node scripts/start-local-mcp.mjs` from this checkout,
+then restart the server. The setup saves credentials; authentication happens when an
+account is used. Never place passwords in chat or commit credential files.
 
 Search settings are validated at startup; malformed lists, wait or format values
 refuse startup. Format entries normalize case and one leading dot; duplicates,

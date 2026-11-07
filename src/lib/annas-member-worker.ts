@@ -31,6 +31,8 @@ export class AnnasMemberWorker {
       const env = { ...process.env };
       delete env.ZLIBRARY_EMAIL;
       delete env.ZLIBRARY_PASSWORD;
+      for (const key of Object.keys(env))
+        if (/^ZLIBRARY_(EMAIL|PASSWORD)_\d+$/i.test(key)) delete env[key];
       return spawn(
         await getManagedPythonPath(),
         ['-u', getPythonScriptPath('annas_member_worker.py')],

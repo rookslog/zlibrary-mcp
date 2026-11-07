@@ -392,6 +392,56 @@ export class EapiSessionOwner {
   }
 }
 
+/** Keep authentication state independent while a local account pool rotates. */
+export class EapiSessionRegistry {
+  private readonly owners = new Map<string, EapiSessionOwner>();
+
+  private owner(identity: string): EapiSessionOwner {
+    let owner = this.owners.get(identity);
+    if (!owner) {
+      owner = new EapiSessionOwner();
+      this.owners.set(identity, owner);
+    }
+    return owner;
+  }
+
+  admission(identity: string) {
+    return this.owner(identity).admission(identity);
+  }
+
+  refusal(identity: string) {
+    return this.owner(identity).refusal(identity);
+  }
+
+  generationFor(identity: string) {
+    return this.owner(identity).generationFor(identity);
+  }
+
+  get(identity: string) {
+    return this.owner(identity).get(identity);
+  }
+
+  consume(update: any, identity: string, expected: number) {
+    this.owner(identity).consume(update, identity, expected);
+  }
+
+  reject(identity: string, expected: number) {
+    this.owner(identity).reject(identity, expected);
+  }
+
+  run<T>(
+    identity: string,
+    invoke: (input: SessionInput, signal?: AbortSignal) => Promise<T>,
+    options: {
+      signal?: AbortSignal;
+      timeoutMs?: number;
+      operationMode?: 'at-most-once';
+    } = {},
+  ): Promise<T> {
+    return this.owner(identity).run(identity, invoke, options);
+  }
+}
+
 /** Never retain subprocess environments or private input in public diagnostics. */
 export function sanitizeSessionError(error: any, secrets: string[]): void {
   const seen = new WeakSet<object>();

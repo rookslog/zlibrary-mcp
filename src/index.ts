@@ -14,6 +14,7 @@ import { getSessionMode } from './lib/eapi-session.js';
 import { invokeAcquisitionBridge, getSearchState } from './lib/zlibrary-api.js';
 import { logger } from './lib/logger.js';
 import { searchSuccessShape } from './lib/search-wire.js';
+import { inspectZlibraryAccounts } from './lib/zlibrary-accounts.js';
 
 const descriptions: Record<ToolName, string> = {
   search:
@@ -21,9 +22,9 @@ const descriptions: Record<ToolName, string> = {
   get_book:
     'Edition evidence for any copy ref; bounded other_copies, disagreements and likely_editions retain the search filters. Zlibrary costs one detail call; others return held rows. Optional relationship evidence can expire before the ref. Description capped at 1,000 characters.',
   download:
-    'Download the selected source copy to server disk: path, bytes, source and record sidecar, not text. Failure may offer other_copies; never substitutes. Repeats at the same destination re-hash sha256 and skip an intact copy without quota; different output_dir or filename transfers again. Local destination locks coalesce processes.',
+    'Download the selected source copy to server disk: path, bytes, source and record sidecar, not text. With multiple personal Z-Library accounts, acquisition requests rotate through numeric account slots; transfers report account_slot. Failure may offer other_copies; never substitutes. Repeats at the same destination re-hash sha256 and skip an intact copy without quota; different output_dir or filename transfers again. Local destination locks coalesce processes.',
   get_limits:
-    'local (default): resolved search set, wait policy and capabilities; no network. live: Zlibrary quota. Anna: member_key_configured and last-observed member_session (none/active/rejected). Per-source errors; quotas vary.',
+    'local (default): resolved search set, wait policy and capabilities; no network. live: Zlibrary quota for the first configured account slot; with an account pool, the response identifies that slot and pool size. Anna: member_key_configured and last-observed member_session (none/active/rejected). Per-source errors; quotas vary.',
   get_history:
     'Zlibrary account history in source order. Not local files. Refs last this process and 5,000 entries; search again if unavailable. Pass cursor alone: replay fetches the same position; pages are not frozen.',
 };
@@ -65,6 +66,7 @@ const successShapes: Record<ToolName, Record<string, any>> = {
       transfer_skipped: { type: 'boolean' },
       verified: { const: 'sha256' },
       record: { type: 'string' },
+      account_slot: { type: 'integer', minimum: 1 },
       quota_estimate: { type: 'object' },
     },
   },
@@ -195,7 +197,12 @@ function getPackageVersion(): string {
 }
 export async function start(opts: { testing?: boolean } = {}) {
   try {
-    if (!opts.testing && (!process.env.ZLIBRARY_EMAIL || !process.env.ZLIBRARY_PASSWORD))
+    const accounts = inspectZlibraryAccounts(process.env);
+    if (!opts.testing && accounts.invalidSlots.length)
+      logger.warn(
+        `Ignoring incomplete, duplicate, or unsupported Z-Library account slots: ${accounts.invalidSlots.join(', ')}.`,
+      );
+    if (!opts.testing && accounts.accounts.length === 0)
       logger.warn(
         'Z-Library account is not configured; LibGen remains available without an account. See get_limits.',
       );

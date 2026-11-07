@@ -12,6 +12,7 @@ import { RecentSearches, projectSearchLimits, type LocalSearchState } from './se
 import { normalizeLanguages } from './filter-languages.js';
 import { classifyFailure, errorEnvelope, ToolFailure } from './tool-errors.js';
 import type { CallOptions } from './zlibrary-api.js';
+import { inspectZlibraryAccounts } from './zlibrary-accounts.js';
 
 import { annasMemberWorker } from './annas-member-worker.js';
 
@@ -179,6 +180,7 @@ const DownloadReplySchema = z
     bytes: z.number().int().nonnegative(),
     reused: z.boolean(),
     transfer_skipped: z.boolean(),
+    account_slot: z.number().int().positive().optional(),
     verified: z.literal('sha256'),
     record: z.string(),
     quota_estimate: z
@@ -212,11 +214,13 @@ export class AcquisitionTools {
   private readonly searches: SearchRecords;
   private readonly recent: RecentSearches;
   private readonly inputs: typeof INPUTS;
+  private readonly zlibraryAccountConfig: ReturnType<typeof inspectZlibraryAccounts>;
   constructor(
     private invoke: Invoke,
     private env: Record<string, string | undefined> = process.env,
     private readonly runtime: SearchRuntime = {},
   ) {
+    this.zlibraryAccountConfig = inspectZlibraryAccounts(env);
     this.registry =
       runtime.registry ??
       new SourceRegistry(
@@ -252,7 +256,7 @@ export class AcquisitionTools {
     const configured =
       source === 'libgen' ||
       (source === 'zlibrary'
-        ? Boolean(this.env.ZLIBRARY_EMAIL && this.env.ZLIBRARY_PASSWORD)
+        ? this.zlibraryAccountConfig.accounts.length > 0
         : Boolean(this.env.ANNAS_SECRET_KEY) && annasBaseTrusted);
     return {
       configured,
@@ -283,7 +287,7 @@ export class AcquisitionTools {
                   : !annasBaseTrusted
                     ? 'Anna’s Archive base is not trusted for the key; search is available. Set ANNAS_BASE_URL to a trusted host and ANNAS_SECRET_KEY for download.'
                     : 'Set ANNAS_SECRET_KEY for download; search needs no key.'
-                : 'Set ZLIBRARY_EMAIL and ZLIBRARY_PASSWORD.',
+                : 'Set a complete ZLIBRARY_EMAIL/ZLIBRARY_PASSWORD pair or a numbered ZLIBRARY_EMAIL_N/ZLIBRARY_PASSWORD_N pair.',
           }
         : {}),
     };
@@ -297,7 +301,7 @@ export class AcquisitionTools {
           reason: 'configuration_error',
           variables:
             source === 'zlibrary'
-              ? ['ZLIBRARY_EMAIL', 'ZLIBRARY_PASSWORD']
+              ? ['ZLIBRARY_EMAIL', 'ZLIBRARY_PASSWORD', 'ZLIBRARY_EMAIL_N', 'ZLIBRARY_PASSWORD_N']
               : !usableAnnasBase(this.env.ANNAS_BASE_URL)
                 ? ['ANNAS_BASE_URL']
                 : [],
@@ -456,9 +460,11 @@ export class AcquisitionTools {
             options,
           ),
         );
-        if (result.quota_estimate?.source === selection.source)
+        const multiAccountZlibrary =
+          selection.source === 'zlibrary' && this.zlibraryAccountConfig.accounts.length > 1;
+        if (!multiAccountZlibrary && result.quota_estimate?.source === selection.source)
           this.estimates.set(selection.source, { ...result.quota_estimate });
-        const estimate = this.estimates.get(selection.source);
+        const estimate = multiAccountZlibrary ? undefined : this.estimates.get(selection.source);
         if (estimate && !result.transfer_skipped && !result.quota_estimate) {
           estimate.remaining = Math.max(0, estimate.remaining - 1);
           estimate.basis = 'decremented';
@@ -530,6 +536,12 @@ export class AcquisitionTools {
             remaining,
             premium: live.is_premium,
             as_of: asOf,
+            ...(this.zlibraryAccountConfig.accounts.length > 1
+              ? {
+                  account_slot: this.zlibraryAccountConfig.accounts[0]?.slot,
+                  account_pool_size: this.zlibraryAccountConfig.accounts.length,
+                }
+              : {}),
           });
           if (remaining !== undefined)
             this.estimates.set(source, { source, remaining, as_of: asOf, basis: 'observed' });

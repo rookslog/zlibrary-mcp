@@ -237,7 +237,7 @@ export class AcquisitionTools {
       limit: {
         kind: source === 'libgen' ? 'none' : source === 'zlibrary' ? 'daily' : 'unknown',
       } as Record<string, any>,
-      ...(!configured
+      ...(!configured || (source === 'zlibrary' && this.loginRefused)
         ? {
             note:
               source === 'annas'
@@ -247,13 +247,14 @@ export class AcquisitionTools {
                     ? 'Anna’s Archive base is not trusted for the key; search is available. Set ANNAS_BASE_URL to a trusted host and ANNAS_SECRET_KEY for download.'
                     : 'Set ANNAS_SECRET_KEY for download; search needs no key.'
                 : this.loginRefused
-                  ? 'Login store refused; check setup and private permissions, then run zlibrary login.'
+                  ? 'Login metadata is unavailable; authentication was not checked. Check Python setup and private permissions.'
                   : 'Run zlibrary login or set ZLIBRARY_EMAIL and ZLIBRARY_PASSWORD.',
           }
         : {}),
     };
   }
   private configured(source: Source) {
+    if (source === 'zlibrary' && this.loginRefused) throw this.loginMetadataFailure();
     const c = this.capabilities(source);
     if (!c.search_available)
       throw new ToolFailure('credentials_missing', 'Source configuration is missing.', {
@@ -268,6 +269,17 @@ export class AcquisitionTools {
                 : [],
         },
       });
+  }
+  private loginMetadataFailure() {
+    return new ToolFailure(
+      'internal',
+      'Login metadata is unavailable; no account request was made.',
+      {
+        source: 'zlibrary',
+        detail: { reason: 'login_metadata_unavailable', request_issued: false },
+        recovery: 'Check Python setup and login-store permissions, then retry.',
+      },
+    );
   }
   private compact(selection: Selection, mint = true): Record<string, any> {
     const b = selection.book;
@@ -341,7 +353,7 @@ export class AcquisitionTools {
         this.loginConfigured = login.configured;
         this.loginRefused = false;
       } catch {
-        this.loginConfigured = false;
+        this.loginConfigured = Boolean(this.env.ZLIBRARY_EMAIL && this.env.ZLIBRARY_PASSWORD);
         this.loginRefused = true;
       }
       if (name === 'get_limits') return await this.limits(args, options);
@@ -393,6 +405,14 @@ export class AcquisitionTools {
     for (const source of args.sources ?? allSources) {
       const capability = this.capabilities(source);
       result.sources[source] = capability;
+      if (source === 'zlibrary' && this.loginRefused) {
+        (capability as any).error = errorEnvelope(
+          this.loginMetadataFailure(),
+          'get_limits',
+          source,
+        ).error;
+        continue;
+      }
       if (args.mode === 'live' && source === 'zlibrary') {
         try {
           this.configured(source);

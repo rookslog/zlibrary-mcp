@@ -243,8 +243,8 @@ test('ordinary transport fallback uses an existing code and preserves timeout/ab
   expect(isRetryableError(abort)).toBe(false);
 });
 
-// These consumers have their own closed lists beyond the bridge projection and
-// retry policy. Every listed type must survive both language boundaries.
+// Diagnosed failures preserve the same closed types across both boundaries.
+// StoreError is accepted only for local refusals without provider diagnostics.
 test.each([
   ['src/lib/auth-diagnostics.ts', 'type'],
   ['src/lib/auth-diagnostics.ts', 'value?.type'],
@@ -259,6 +259,27 @@ print(json.dumps({name: failure_type(type(name, (Exception,), {})()) for name in
     [JSON.stringify(types)],
   );
   for (const type of types) {
+    if (type === 'StoreError' && file === 'src/lib/auth-diagnostics.ts') {
+      expect(projected[type]).toBe('RuntimeError');
+      expect(safeEapiFailureEnvelope({ type, diagnostics }).type).toBe('RuntimeError');
+      for (const reason of ['login_state_changed', 'login_metadata_unavailable']) {
+        const local = safeEapiFailureEnvelope({
+          type,
+          error: 'private payload',
+          details: { reason, request_issued: false },
+        });
+        expect(local).toMatchObject({ type, details: { reason, request_issued: false } });
+        expect(local.error).not.toContain('private payload');
+        expect(local).not.toHaveProperty('diagnostics');
+        expect(
+          safeEapiFailureEnvelope({
+            type,
+            details: { reason, request_issued: true },
+          }),
+        ).toBeUndefined();
+      }
+      continue;
+    }
     expect(projected[type]).toBe(type);
     expect(safeEapiFailureEnvelope({ type, diagnostics }).type).toBe(type);
   }

@@ -114,6 +114,8 @@ export function classifyFailure(error: any, operation: string, source?: string):
     'auth_backoff',
     'login_failed',
     'configuration_error',
+    'login_state_changed',
+    'login_metadata_unavailable',
     'quota_exhausted',
     'invalid_argument',
     'output_refused',
@@ -180,6 +182,8 @@ export function classifyFailure(error: any, operation: string, source?: string):
             ? 'protocol_error'
             : 'http_error';
   const before = detail.request_issued === false;
+  const localLoginFailure =
+    before && ['login_state_changed', 'login_metadata_unavailable'].includes(reason);
   const issuedBudget =
     operation === 'download' &&
     reason === 'walk_budget_exhausted' &&
@@ -195,6 +199,7 @@ export function classifyFailure(error: any, operation: string, source?: string):
       : 'PYTHON_BRIDGE_TIMEOUT';
   let code: ErrorCode = 'internal';
   if (reason === 'aborted') code = 'cancelled';
+  else if (localLoginFailure) code = 'internal';
   else if (reason === 'auth_backoff') code = 'breaker_open';
   else if (reason === 'not_found') code = 'not_found';
   else if (issuedBudget) code = 'outcome_unknown';
@@ -222,9 +227,11 @@ export function classifyFailure(error: any, operation: string, source?: string):
     ].includes(reason)
   )
     code = 'provider_unreachable';
-  else if (['read_timeout', 'search_timeout', 'walk_budget_exhausted', 'mirror_slice_exhausted'].includes(
+  else if (
+    ['read_timeout', 'search_timeout', 'walk_budget_exhausted', 'mirror_slice_exhausted'].includes(
       reason,
-    ))
+    )
+  )
     code = 'provider_timeout';
   else if (reason === 'integrity_mismatch') code = 'integrity_mismatch';
   else if (['http_error', 'protocol_error', 'partial_transfer'].includes(reason))
@@ -270,12 +277,24 @@ export function classifyFailure(error: any, operation: string, source?: string):
     code,
     sourceConfiguration
       ? 'Source deadline configuration error; see docs/RETRY_CONFIGURATION.md.'
-      : occupied
-        ? 'Destination already holds a file with no matching receipt.'
-        : `${operation} did not complete (${reason === 'unknown' ? code : reason}).`,
+      : localLoginFailure
+        ? reason === 'login_state_changed'
+          ? 'Saved login changed before the provider request.'
+          : 'Login metadata is unavailable; no provider request was made.'
+        : occupied
+          ? 'Destination already holds a file with no matching receipt.'
+          : `${operation} did not complete (${reason === 'unknown' ? code : reason}).`,
     {
       source,
       retry,
+      ...(localLoginFailure
+        ? {
+            recovery:
+              reason === 'login_state_changed'
+                ? 'Run zlibrary login and retry the operation.'
+                : 'Check Python setup and login-store permissions, then retry.',
+          }
+        : {}),
       ...(sourceConfiguration
         ? {
             recovery: `Configure ${deadlineVariable} to at least 10000 ms; see docs/RETRY_CONFIGURATION.md.`,

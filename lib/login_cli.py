@@ -9,7 +9,7 @@ import sys
 import warnings
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
-from lib.login_store import StoreError, load, logout, resolve, save
+from lib.login_store import StoreError, logout, prepare_save, resolve
 
 
 async def authenticate(identity, password):
@@ -31,7 +31,7 @@ async def validate(login):
                 login, os.environ.get("ZLIBRARY_EAPI_DOMAIN", "").strip() or None
             )
         elif login.origin == "environment":
-            client = await authenticate(login.identity, login.password.reveal())
+            return "not_checked"
         else:
             return "not_configured"
         profile = await client.get_profile()
@@ -77,31 +77,30 @@ async def run(args):
     logging.disable(logging.CRITICAL)
     try:
         if command == "login":
-            # Check storage before requesting a password or contacting the provider.
-            load(tolerate_content=True)
-            identity = _hidden("Email: ")
-            password = (
-                sys.stdin.readline(8193).removesuffix("\n").removesuffix("\r")
-                if "--password-stdin" in args
-                else _hidden("Password: ")
-            )
-            if (
-                not identity
-                or not password
-                or len(identity) > 8192
-                or len(password) > 8192
-            ):
-                raise ValueError()
-            client = await authenticate(identity, password)
-            try:
-                saved = save(
-                    identity=identity,
-                    user_id=client.remix_userid,
-                    user_key=client.remix_userkey,
-                    domain=client.domain,
+            with prepare_save() as commit:
+                identity = _hidden("Email: ")
+                password = (
+                    sys.stdin.readline(8193).removesuffix("\n").removesuffix("\r")
+                    if "--password-stdin" in args
+                    else _hidden("Password: ")
                 )
-            finally:
-                await client.close()
+                if (
+                    not identity
+                    or not password
+                    or len(identity) > 8192
+                    or len(password) > 8192
+                ):
+                    raise ValueError()
+                client = await authenticate(identity, password)
+                try:
+                    saved = commit(
+                        identity=identity,
+                        user_id=client.remix_userid,
+                        user_key=client.remix_userkey,
+                        domain=client.domain,
+                    )
+                finally:
+                    await client.close()
             result = saved.public()
             result["message"] = "Login saved."
         elif command == "status":
@@ -109,10 +108,20 @@ async def run(args):
             result = login.public()
             result["works"] = await validate(login)
         else:
-            logout()
+            outcome = logout()
             result = {
                 "backend": "file",
-                "message": "Saved login removed. The key is not cancelled; environment credentials, if configured, still apply.",
+                "message": (
+                    "Saved login material removed."
+                    if outcome["removed"]
+                    else "No saved login was present."
+                )
+                + " The key is not cancelled; environment credentials, if configured, still apply."
+                + (
+                    " Generation history repaired; restart running servers before logging in again."
+                    if outcome["counter_repaired"]
+                    else ""
+                ),
             }
         if json_mode:
             print(json.dumps(result))
@@ -124,11 +133,11 @@ async def run(args):
                 or f"{result['identity'] or 'No account'}; origin: {result['origin']}; backend: file; works: {result['works']}; expiry: unknown"
             )
         return 0
-    except (Exception, KeyboardInterrupt):
+    except (Exception, KeyboardInterrupt) as error:
         message = (
-            "Login store refused; check private permissions and run zlibrary login."
-            if sys.exc_info()[0] is StoreError
-            else "Login failed; check setup and run zlibrary login."
+            str(error)
+            if isinstance(error, StoreError)
+            else "Login failed; check setup before trying again."
         )
         print(json.dumps({"error": message}) if json_mode else message, file=sys.stderr)
         return 1

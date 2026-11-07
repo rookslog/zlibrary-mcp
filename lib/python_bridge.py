@@ -350,23 +350,35 @@ async def _validate_eapi_profile(client, *, saved=False):
         raise RuntimeError("Unexpected EAPI profile response; session retained")
 
 
+def _local_login_refusal(message, reason="login_state_changed", error_type=StoreError):
+    error = error_type(message)
+    error._eapi_local_refusal = True
+    error.reason = reason
+    return error
+
+
 async def initialize_eapi_client() -> EAPIClient:
     """Use the parent generation, or log in only for a parent acquisition/per-call."""
     global _eapi_client, _session_input
+    if os.environ.get("ZLIBRARY_LOGIN_METADATA_REFUSED") == "1":
+        raise _local_login_refusal(
+            "Login metadata is unavailable; check Python setup and private permissions before retrying.",
+            "login_metadata_unavailable",
+        )
     login = resolve_login()
     if os.environ.get("ZLIBRARY_LOGIN_EXPECTED_ORIGIN") == "saved" and (
         login.origin != "saved"
         or login.identity != os.environ.get("ZLIBRARY_LOGIN_EXPECTED_IDENTITY")
     ):
-        raise StoreError("Saved login changed; run zlibrary login and retry")
+        raise _local_login_refusal("Saved login changed; run zlibrary login and retry")
     email = login.identity
     password = login.password.reveal()
     if login.origin == "saved":
-        if _session_input is not None and (
-            _session_input.get("identity") != email
-            or _session_input.get("action") not in ("login", "validate", "operation")
-        ):
-            raise ValueError("Invalid private session identity or action")
+        if _session_input is not None:
+            raise _local_login_refusal(
+                "Private session identity cannot adopt a saved login; retry the operation.",
+                error_type=ValueError,
+            )
         _eapi_client = SavedLoginClient(
             login, os.environ.get("ZLIBRARY_EAPI_DOMAIN", "").strip() or None
         )
@@ -430,6 +442,7 @@ def _publish_eapi_session():
     if (
         _session_input is None
         or _eapi_client is None
+        or isinstance(_eapi_client, SavedLoginClient)
         or _session_published is _session_input
     ):
         return
@@ -493,8 +506,11 @@ def _safe_diagnostic(value):
     ]
     if _session_input:
         secrets.append(_session_input.get("remix_userkey", ""))
+        secrets.append(_session_input.get("identity", ""))
     if _eapi_client:
         secrets.append(_eapi_client.remix_userkey or "")
+        if isinstance(_eapi_client, SavedLoginClient):
+            secrets.append(_eapi_client.login_record.identity)
 
     def visit(item):
         if isinstance(item, str):
@@ -2443,6 +2459,10 @@ async def main():
             _publish_eapi_session()
         # Print error as JSON to stderr
         error_info = {"error": str(e), "type": type(e).__name__}
+        if getattr(e, "_eapi_local_refusal", False) is True and getattr(
+            e, "reason", ""
+        ) in {"login_state_changed", "login_metadata_unavailable"}:
+            error_info["details"] = {"reason": e.reason, "request_issued": False}
         if isinstance(e, httpx.HTTPStatusError):
             error_info["status_code"] = e.response.status_code
         # Provider failures carry which source failed and why (DNS vs connect

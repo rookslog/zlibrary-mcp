@@ -8,6 +8,9 @@ import os
 from pathlib import Path
 import stat
 import secrets
+import time
+
+LOCK_TIMEOUT_SECONDS = 5.0
 
 
 class StoreError(RuntimeError):
@@ -16,6 +19,10 @@ class StoreError(RuntimeError):
 
 class StoreContentError(StoreError):
     """A private, regular store exists but its contents cannot be used."""
+
+
+class StoreCounterError(StoreError):
+    """Generation history needs explicit repair before another login."""
 
 
 @dataclass(frozen=True, repr=False)
@@ -208,10 +215,21 @@ def load(*, tolerate_content=False):
 
 
 @contextmanager
-def _locked():
+def _locked(*, create=True):
+    if os.name != "posix":
+        raise StoreError("File login storage requires POSIX private permissions")
     import fcntl
 
-    with _directory(create=True) as directory:
+    with _directory(create=create) as directory:
+        if directory is None:
+            yield None, None
+            return
+        if not create and not any(
+            name in {"zlibrary.json", ".zlibrary.lock"} or name.startswith(".login-")
+            for name in os.listdir(directory)
+        ):
+            yield None, None
+            return
         lock = os.open(
             ".zlibrary.lock",
             os.O_RDWR | os.O_CREAT | os.O_NOFOLLOW | os.O_NONBLOCK,
@@ -220,83 +238,159 @@ def _locked():
         )
         try:
             _check(lock)
-            fcntl.flock(lock, fcntl.LOCK_EX)
+            deadline = time.monotonic() + LOCK_TIMEOUT_SECONDS
+            while True:
+                try:
+                    fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                    break
+                except BlockingIOError:
+                    if time.monotonic() >= deadline:
+                        raise StoreError(
+                            "Login store is busy; finish the other account command and retry."
+                        ) from None
+                    time.sleep(min(0.05, max(0, deadline - time.monotonic())))
             yield directory, lock
         finally:
             os.close(lock)
 
 
-def save(*, identity, user_id, user_key, domain):
-    _domain(domain)
-    if any(
-        not isinstance(v, str) or not v or len(v) > 8192
-        for v in (identity, user_id, user_key)
-    ):
-        raise StoreError("Login response is invalid")
+def _counter(lock, *, repair=False, previous=None):
+    os.lseek(lock, 0, os.SEEK_SET)
+    raw = os.read(lock, 1048577)
+    try:
+        if len(raw) > 1048576 or (raw and not raw.endswith(b"\n")):
+            raise ValueError()
+        counters = [int(line) for line in raw.splitlines()]
+        if any(value < 0 for value in counters):
+            raise ValueError()
+        return max(counters, default=0), False
+    except ValueError:
+        if not repair:
+            raise StoreCounterError(
+                "Login generation record is invalid; run zlibrary logout to repair it, then restart running servers."
+            ) from None
+    # Lost history cannot be reconstructed. Keep every readable reservation and
+    # the saved generation; the caller must restart servers after explicit repair.
+    counters = [previous.generation if previous else 0]
+    for line in raw.splitlines():
+        try:
+            counters.append(max(0, int(line)))
+        except ValueError:
+            pass
+    counter = max(counters)
+    record = f"{counter}\n".encode()
+    os.lseek(lock, 0, os.SEEK_SET)
+    if os.write(lock, record) != len(record):
+        raise StoreError("Login generation record could not be repaired")
+    os.ftruncate(lock, len(record))
+    os.fsync(lock)
+    return counter, True
+
+
+@contextmanager
+def prepare_save():
+    """Prepare the actual locked write before prompts or authentication."""
     with _locked() as (directory, lock):
         previous = _read(directory, tolerate_content=True)
-        try:
-            raw = os.read(lock, 1048577)
-            if len(raw) > 1048576 or (raw and not raw.endswith(b"\n")):
-                raise ValueError()
-            counters = [int(line) for line in raw.splitlines()]
-            if any(value < 0 for value in counters):
-                raise ValueError()
-            counter = max(counters, default=0)
-        except ValueError:
-            raise StoreError("Login generation record is invalid") from None
+        counter, _ = _counter(lock)
         generation = max(counter, previous.generation if previous else 0) + 1
-        data = dict(
-            version=1,
-            source="zlibrary",
-            identity=identity,
-            user_id=user_id,
-            user_key=user_key,
-            domain=domain,
-            saved_at=datetime.now(timezone.utc).isoformat(),
-            generation=generation,
-        )
-        # Reserve the generation in the persistent lock, including across logout.
-        # Append rather than truncate: a failed reservation must not erase the
-        # last generation after logout. Partial records are refused on next use.
-        os.lseek(lock, 0, os.SEEK_END)
-        reservation = f"{generation}\n".encode()
-        if os.write(lock, reservation) != len(reservation):
-            raise StoreError("Login generation could not be reserved")
-        os.fsync(lock)
         name = ".login-" + secrets.token_hex(12)
         handle = os.open(
             name,
-            os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW,
+            os.O_RDWR | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW,
             0o600,
             dir_fd=directory,
         )
         try:
-            with os.fdopen(handle, "w") as stream:
-                json.dump(data, stream)
-                stream.flush()
-                os.fsync(stream.fileno())
-            os.replace(
-                name, "zlibrary.json", src_dir_fd=directory, dst_dir_fd=directory
-            )
+            _check(handle)
+            if os.write(handle, b"{}") != 2:
+                raise StoreError("Login storage could not be prepared")
+            os.fsync(handle)
             os.fsync(directory)
+            # Reserve before asking for credentials. Failed/cancelled attempts
+            # may leave gaps, but never reuse an intact reservation.
+            os.lseek(lock, 0, os.SEEK_END)
+            reservation = f"{generation}\n".encode()
+            if os.write(lock, reservation) != len(reservation):
+                raise StoreError("Login generation could not be reserved")
+            os.fsync(lock)
+            used = False
+
+            def commit(*, identity, user_id, user_key, domain):
+                nonlocal used
+                if used:
+                    raise StoreError("Login write was already completed")
+                used = True
+                _domain(domain)
+                if any(
+                    not isinstance(v, str) or not v or len(v) > 8192
+                    for v in (identity, user_id, user_key)
+                ):
+                    raise StoreError("Login response is invalid")
+                data = dict(
+                    version=1,
+                    source="zlibrary",
+                    identity=identity,
+                    user_id=user_id,
+                    user_key=user_key,
+                    domain=domain,
+                    saved_at=datetime.now(timezone.utc).isoformat(),
+                    generation=generation,
+                )
+                os.lseek(handle, 0, os.SEEK_SET)
+                os.ftruncate(handle, 0)
+                with os.fdopen(os.dup(handle), "w") as stream:
+                    json.dump(data, stream)
+                    stream.flush()
+                    os.fsync(stream.fileno())
+                os.replace(
+                    name, "zlibrary.json", src_dir_fd=directory, dst_dir_fd=directory
+                )
+                os.fsync(directory)
+                return _read(directory)
+
+            yield commit
         finally:
+            os.close(handle)
             try:
                 os.unlink(name, dir_fd=directory)
             except FileNotFoundError:
                 pass
-        return _read(directory)
+
+
+def save(*, identity, user_id, user_key, domain):
+    with prepare_save() as commit:
+        return commit(
+            identity=identity, user_id=user_id, user_key=user_key, domain=domain
+        )
 
 
 def logout():
-    with _locked() as (directory, _):
-        _read(directory, tolerate_content=True)  # Safety checks still apply.
+    with _locked(create=False) as (directory, lock):
+        if directory is None:
+            return {"removed": False, "counter_repaired": False}
+        previous = _read(directory, tolerate_content=True)  # Safety checks still apply.
+        _, repaired = _counter(lock, repair=True, previous=previous)
+        removed = False
         try:
             os.unlink("zlibrary.json", dir_fd=directory)
         except FileNotFoundError:
             pass
         else:
-            os.fsync(directory)
+            removed = True
+        for name in os.listdir(directory):
+            if name.startswith(".login-"):
+                handle = os.open(
+                    name, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK, dir_fd=directory
+                )
+                try:
+                    _check(handle)
+                finally:
+                    os.close(handle)
+                os.unlink(name, dir_fd=directory)
+                removed = True
+        os.fsync(directory)
+        return {"removed": removed, "counter_repaired": repaired}
 
 
 def resolve(env=None):

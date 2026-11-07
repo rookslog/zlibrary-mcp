@@ -21,6 +21,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- The first command-line argument must name `login`, `status`, `logout`, or `mcp`;
+  unrecognized commands now exit with an option error instead of starting MCP.
 - `ANNAS_SECRET_KEY` now also signs in to Anna's Archive for search, so the key
   is sent by POST to `/account/` on the configured origin. It previously served
   fast downloads only. Without a key, search stays anonymous.
@@ -32,6 +34,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- `status` never logs in with an environment password; it reports that origin
+  as not checked. Login prepares its locked write before requesting credentials,
+  bounds lock waits, and refuses unsupported storage before contacting the site.
+  Logout repairs invalid generation history and removes interrupted-save files.
+- Metadata lookup failures preserve local receipt reuse while refusing child
+  password login. Local account-state failures retain their advice without
+  claiming provider requests or missing configured credentials. Saved keys stay
+  in Python even when a same-identity environment session races a new login;
+  saved identities are scrubbed from diagnostic values.
 - Login and logout recover corrupt login JSON while preserving private-file
   checks and generation history. Unsafe ownership, modes, links, and hardlinks
   remain refused.

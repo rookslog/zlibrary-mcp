@@ -185,7 +185,7 @@ async function callPythonFunction(
       if (functionName !== 'acquire_book')
         throw new PythonBridgeError(
           'Login store refused; check setup and private permissions.',
-          { reason: 'configuration_error', details: { request_issued: false } },
+          { reason: 'login_metadata_unavailable', details: { request_issued: false } },
           false,
         );
       metadataRefused = true;
@@ -196,6 +196,10 @@ async function callPythonFunction(
     if (callOptions.timeoutMs !== undefined) callOptions = { ...callOptions, timeoutMs: remaining };
   }
   const identity = login?.identity || '';
+  delete configuredEnv.ZLIBRARY_LOGIN_EXPECTED_ORIGIN;
+  delete configuredEnv.ZLIBRARY_LOGIN_EXPECTED_IDENTITY;
+  delete configuredEnv.ZLIBRARY_LOGIN_METADATA_REFUSED;
+  if (metadataRefused) configuredEnv.ZLIBRARY_LOGIN_METADATA_REFUSED = '1';
   if (login?.notice) logger.warn(login.notice);
   if (login?.origin === 'saved') {
     configuredEnv.ZLIBRARY_LOGIN_EXPECTED_ORIGIN = 'saved';
@@ -583,6 +587,7 @@ async function callPythonFunction(
               adoptUpdate();
             // Never log or retain subprocess environments or internal bearer output.
             sanitizeSessionError(err, [
+              identity,
               configuredEnv.ZLIBRARY_EMAIL || '',
               configuredEnv.ZLIBRARY_PASSWORD || '',
               activeTransport?.remix_userkey || '',

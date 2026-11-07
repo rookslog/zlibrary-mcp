@@ -86,6 +86,24 @@ export function authDiagnosticsFor(
 export function safeEapiFailureEnvelope(value: any): Record<string, any> | undefined {
   const diagnostics = readAuthDiagnostics(value?.diagnostics);
   if (!diagnostics) {
+    const loginMessages: Record<string, string> = {
+      login_state_changed: 'Saved login changed; run zlibrary login and retry',
+      login_metadata_unavailable:
+        'Login metadata is unavailable; check Python setup and private permissions before retrying.',
+    };
+    const loginReason = value?.details?.reason;
+    if (
+      ['StoreError', 'ValueError'].includes(value?.type) &&
+      !('diagnostics' in value) &&
+      value.details?.request_issued === false &&
+      typeof loginReason === 'string' &&
+      Object.hasOwn(loginMessages, loginReason)
+    )
+      return {
+        error: loginMessages[loginReason],
+        type: 'StoreError',
+        details: { reason: loginReason, request_issued: false },
+      };
     if (value?.type === 'SourceConfigurationError' && !('diagnostics' in value))
       return {
         error: 'Source deadline configuration error; see docs/RETRY_CONFIGURATION.md',

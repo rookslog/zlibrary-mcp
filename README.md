@@ -59,9 +59,11 @@ required for downloads. Anonymous search remains available, but the site's brows
 After the Python setup above, use `zlibrary login` to enter email and password
 with hidden prompts. `zlibrary login --password-stdin` reads the password from a
 pipe and prompts for email on the terminal. There is no password argument.
-`zlibrary status` checks the account and reports its identity, origin (`saved`,
-`environment`, or `none`), `file` backend, and whether it works. Expiry is always
-`unknown`. Add `--json` for structured output without passwords or keys.
+`zlibrary status` never logs in. It reports identity, origin (`saved`,
+`environment`, or `none`), and the `file` backend. For a saved login it checks the
+key; environment authentication is `not_checked`, and an absent account is
+`not_configured`. Expiry is always `unknown`. Add `--json` for structured output
+without passwords or keys.
 
 On POSIX systems the key is stored at
 `${XDG_STATE_HOME:-~/.local/state}/zlibrary/logins/zlibrary.json`. The state
@@ -75,6 +77,18 @@ repair; readers see complete atomic replacements. The password is never saved.
 The file backend requires POSIX permissions; environment credentials remain
 available on other platforms.
 
+Before prompting or contacting the site, `login` acquires the writer lock,
+checks generation history, prepares and fsyncs the actual temporary file, and
+reserves the next generation. It holds the lock through the save. A busy lock
+is refused after five seconds; non-POSIX storage is refused before prompting.
+Cancelled or failed attempts may leave gaps in generation numbers.
+
+An incomplete or invalid generation record refuses login. Use `zlibrary logout`
+to repair it, then restart running servers before logging in again. Repair
+retains successfully parsed reservations and the saved generation; destroyed
+history cannot be reconstructed. Logout also removes private `.login-*` files left by
+an interrupted save and reports when no saved login was present.
+
 A usable saved login takes precedence over environment credentials, with a notice
 naming `ZLIBRARY_PASSWORD`. Set `ZLIBRARY_PREFER_ENV=1` to select environment
 credentials explicitly. If saved storage is corrupt, inaccessible, or unsafe,
@@ -82,6 +96,11 @@ resolution uses configured environment credentials with a closed notice, or
 reports no configured account with that notice. A missing store adds no notice.
 `zlibrary status` reports the storage problem without including paths or secrets.
 Anonymous sources remain available.
+
+If login metadata lookup itself fails, `get_limits` reports a local error and
+marks authentication as not checked, retaining known environment configuration.
+Account operations refuse before a provider request; local download receipts
+can still be reused.
 
 `zlibrary login` can replace corrupt JSON in an otherwise private, regular store;
 `zlibrary logout` can remove it. Both still refuse unsafe permissions, ownership,

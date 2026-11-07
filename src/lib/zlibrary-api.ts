@@ -7,12 +7,13 @@ import { authDiagnosticsFor, readAuthDiagnostics } from './auth-diagnostics.js';
 import { getManagedPythonPath } from './venv-manager.js'; // Import ESM style
 import { withRetry, isRetryableError, isTransientDependencyError } from './retry-manager.js';
 import {
-  EapiSessionOwner,
+  EapiSessionRegistry,
   needsEapi,
   sanitizeSessionError,
   getSessionMode,
   authRejected,
 } from './eapi-session.js';
+import { inspectZlibraryAccounts, ZlibraryDownloadAccountSelector } from './zlibrary-accounts.js';
 import { CircuitBreaker, type Admission } from './circuit-breaker.js';
 import { ZLibraryError, PythonBridgeError, BridgeTimeoutError } from './errors.js';
 import { logger } from './logger.js';
@@ -26,7 +27,8 @@ import { isBridgeDetailRetryable, parseBridgeErrorEnvelope } from './python-brid
 const BRIDGE_SCRIPT_PATH = getPythonLibDirectory();
 const BRIDGE_SCRIPT_NAME = 'python_bridge.py';
 
-const eapiSessions = new EapiSessionOwner();
+const eapiSessions = new EapiSessionRegistry();
+const zlibraryDownloadAccounts = new ZlibraryDownloadAccountSelector();
 
 /**
  * A lazy waiter's view of a shared owner denial it did not trigger. The waiter
@@ -79,16 +81,17 @@ const dependencyBreakers = Object.fromEntries(
 
 /** Local source health/admission only: never probes a provider or changes a generation. */
 export function getSearchState(env: Record<string, string | undefined> = process.env) {
+  const defaultIdentity = inspectZlibraryAccounts(env).accounts[0]?.email ?? '';
   return Object.fromEntries(
     ['libgen', 'zlibrary', 'annas'].map((source) => [
       source,
       {
         ...dependencyBreakers[source === 'zlibrary' ? 'eapi' : source]!.snapshot(),
         refusal:
-          (source === 'zlibrary' ? eapiSessions.refusal(env.ZLIBRARY_EMAIL ?? '') : undefined) ??
+          (source === 'zlibrary' ? eapiSessions.refusal(defaultIdentity) : undefined) ??
           dependencyBreakers[source === 'zlibrary' ? 'eapi' : source]!.refusal(),
         ...(source === 'zlibrary'
-          ? eapiSessions.admission(env.ZLIBRARY_EMAIL ?? '')
+          ? eapiSessions.admission(defaultIdentity)
           : { admission: 'open' as const }),
       },
     ]),
@@ -177,6 +180,23 @@ async function callPythonFunction(
   if (Array.isArray(args.languages))
     args = { ...args, languages: normalizeLanguages(args.languages).values };
   const configuredEnv = { ...process.env };
+  const receiptOnly = functionName === 'acquire_book' && args.receipt_only === true;
+  const accountConfig = inspectZlibraryAccounts(configuredEnv);
+  const source = String(args.book_details?.source || '').toLowerCase();
+  const zlibraryAcquisition =
+    functionName === 'acquire_book' && !['libgen', 'annas', 'annas_archive'].includes(source);
+  const selectedAccount =
+    zlibraryAcquisition && !receiptOnly
+      ? zlibraryDownloadAccounts.next(accountConfig.accounts)
+      : accountConfig.accounts[0];
+  if (selectedAccount) {
+    configuredEnv.ZLIBRARY_EMAIL = selectedAccount.email;
+    configuredEnv.ZLIBRARY_PASSWORD = selectedAccount.password;
+  }
+  const accountSlot =
+    zlibraryAcquisition && !receiptOnly && accountConfig.accounts.length > 1
+      ? selectedAccount?.slot
+      : undefined;
   const identity = configuredEnv.ZLIBRARY_EMAIL || '';
   const memory = getSessionMode() === 'memory';
   const reuse = needsEapi(functionName, args) && memory;
@@ -199,7 +219,16 @@ async function callPythonFunction(
       error?.context?.details?.request_issued !== false &&
       !['ValueError', 'TypeError', 'AcquisitionError'].includes(error?.context?.pythonErrorType));
   const finishCall = (work: Promise<any>) =>
-    work.catch((error: any) => {
+    work
+      .then((result) =>
+        accountSlot !== undefined &&
+        result &&
+        typeof result === 'object' &&
+        result.transfer_skipped !== true
+          ? { ...result, account_slot: accountSlot }
+          : result,
+      )
+      .catch((error: any) => {
       if (controlFailures.has(error)) {
         const shared = error;
         error = Object.create(
@@ -224,9 +253,8 @@ async function callPythonFunction(
         if (error && typeof error === 'object') (error.context ??= {}).diagnostics = diagnostics;
         logger.warn('EAPI failure', JSON.stringify(diagnostics));
       }
-      throw error;
-    });
-  const receiptOnly = functionName === 'acquire_book' && args.receipt_only === true;
+        throw error;
+      });
   const breaker =
     dependencyBreakers[
       needsEapi(functionName, args) || acquisitionUsesEapi
@@ -278,6 +306,8 @@ async function callPythonFunction(
             // Serialize arguments as JSON *before* creating options
             const serializedArgs = JSON.stringify(args);
             const childEnv = { ...configuredEnv };
+            for (const key of Object.keys(childEnv))
+              if (/^ZLIBRARY_(EMAIL|PASSWORD)_\d+$/i.test(key)) delete childEnv[key];
             for (const key of [
               'ZLIBRARY_DIAGNOSTIC_ID',
               'ZLIBRARY_DIAGNOSTIC_ATTEMPT',

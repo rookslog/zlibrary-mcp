@@ -13,12 +13,14 @@ const { AnnasMemberWorker } = await import('../dist/lib/annas-member-worker.js')
 
 test('member child retains its key but excludes unrelated Z-Library credentials', async () => {
   const prior = { ...process.env };
-  Object.assign(process.env, { ZLIBRARY_EMAIL: 'fixture-zlib-email', ZLIBRARY_PASSWORD: 'fixture-zlib-password', ANNAS_SECRET_KEY: 'fixture-member-key' });
+  Object.assign(process.env, { ZLIBRARY_EMAIL: 'fixture-zlib-email', ZLIBRARY_PASSWORD: 'fixture-zlib-password', ZLIBRARY_EMAIL_2: 'fixture-zlib-email-2', ZLIBRARY_PASSWORD_2: 'fixture-zlib-password-2', ANNAS_SECRET_KEY: 'fixture-member-key' });
   const worker = new AnnasMemberWorker();
   try {
     await worker.search({ query: 'books' });
     expect(environment).not.toHaveProperty('ZLIBRARY_EMAIL');
     expect(environment).not.toHaveProperty('ZLIBRARY_PASSWORD');
+    expect(environment).not.toHaveProperty('ZLIBRARY_EMAIL_2');
+    expect(environment).not.toHaveProperty('ZLIBRARY_PASSWORD_2');
     expect(environment.ANNAS_SECRET_KEY).toBe('fixture-member-key');
   } finally { await worker.close(); process.env = prior; }
 });

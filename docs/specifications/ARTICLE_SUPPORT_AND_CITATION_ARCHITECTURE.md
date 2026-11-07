@@ -1,5 +1,10 @@
 # Article Support and External Citation Architecture
 
+> Historical processing record. Its processing paths, examples, dependency
+> relationships and measurements describe the earlier text implementation, not
+> this acquisition checkout. Retired processing fixtures have been removed from
+> this tip; use Git history for the old paths. See [migration](../text-processing-migration.md).
+
 **Version**: 1.0
 **Date**: 2025-10-18
 **Status**: Design Specification

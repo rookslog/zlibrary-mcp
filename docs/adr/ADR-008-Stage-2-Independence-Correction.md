@@ -1,5 +1,10 @@
 # ADR-008: Stage 2 Independence Correction - Critical Architecture Fix
 
+> Historical processing record. Its processing paths, examples, dependency
+> relationships and measurements describe the earlier text implementation, not
+> this acquisition checkout. Retired processing fixtures have been removed from
+> this tip; use Git history for the old paths. See [migration](../text-processing-migration.md).
+
 **Status**: Accepted
 **Date**: 2025-10-18
 **Context**: Real PDF validation revealed design flaw in ADR-006

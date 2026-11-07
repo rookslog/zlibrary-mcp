@@ -1,5 +1,10 @@
 # Rigorous Real-World TDD Strategy
 
+> Historical processing record. Its processing paths, examples, dependency
+> relationships and measurements describe the earlier text implementation, not
+> this acquisition checkout. Retired processing fixtures have been removed from
+> this tip; use Git history for the old paths. See [migration](../text-processing-migration.md).
+
 **Date**: 2025-10-18
 **Context**: Shift from unit testing to real-world validation
 **Lesson**: Today's real PDF testing caught architectural flaw that unit tests missed

@@ -250,7 +250,8 @@ if (!venvPath) {
 # Test document processing directly
 
 # Test with a known good file
-result = process_document('test_files/sample.pdf', 'markdown')
+# Historical processing example; run only in the isolated text installation.
+result = process_document('/absolute/path/to/input.pdf', 'markdown')
 print(f"Processed: {len(result)} characters")
 
 # Check file format support

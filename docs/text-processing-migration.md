@@ -72,6 +72,23 @@ see [issue #245](https://github.com/rookslog/zlibrary-mcp/issues/245):
 | `test_garbled_performance.py::TestScalability::test_large_region_acceptable` | 10 ms timing budget |
 | `test_real_world_validation.py::TestRealWorldSousRature::test_derrida_sous_rature_detection` | scalar unpack error in detector; held repair |
 
+## Retired processing fixtures
+
+The acquisition checkout removes retired processing fixtures nothing uses:
+PDFs, EPUB/TXT samples, extracted baselines, annotations, budget records and
+processing fixture guides. They remain in Git history. The preserved text
+workflow above is separate from this checkout.
+
+Only two parser fixtures remain under `test_files/`:
+
+- `annas/search_results.html`: metadata parsing in `test_annas_adapter.py`.
+- `libgen/mixed_book_article_results.html`: parsing in `test_libgen_article_rows.py`
+  and the offline article-probe regression in `test_check_upstream.py`.
+
+No `test_files/*.pdf` LFS rule or processing-output ignore entries are needed
+here. The npm allowlist excludes these HTML fixtures, and the Docker build
+context continues to exclude `test_files`.
+
 ## Verification boundary
 
 The retained test suites must collect without processing libraries. The import

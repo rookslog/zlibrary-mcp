@@ -88,7 +88,7 @@
 **Related**:
 - [ADR-006](../adr/ADR-006-Quality-Pipeline-Architecture.md) - Quality pipeline architecture
 - [SOUS_RATURE_RECOVERY_STRATEGY.md](#sous-rature-recovery-strategy) - Visual detection strategy
-- Performance Budget: `test_files/performance_budgets.json`
+- Performance Budget: `parked-text-processing-2026-10:test_files/performance_budgets.json`
 
 ---
 
@@ -121,7 +121,7 @@
 
 **Related**:
 - [FAST_PREFILTER_ARCHITECTURE_FINAL.md](#fast-prefilter-architecture) - Prefilter optimization
-- Performance Budget: `test_files/performance_budgets.json`
+- Performance Budget: `parked-text-processing-2026-10:test_files/performance_budgets.json`
 
 ---
 
@@ -161,7 +161,7 @@
 ### Rigorous Real-World TDD Strategy
 **File**: [RIGOROUS_REAL_WORLD_TDD_STRATEGY.md](RIGOROUS_REAL_WORLD_TDD_STRATEGY.md)
 **Size**: 26KB
-**Status**: ✅ Implemented and Active
+**Status**: Historical; text-processing workflow is parked
 **Created**: 2025-10-18
 
 **Scope**: Test-driven development methodology for RAG pipeline using real PDFs (no mocks)
@@ -170,13 +170,13 @@
 1. **Real PDFs Only** - No mocked data, use actual test fixtures
 2. **Ground Truth Validation** - Manual verification required
 3. **No Regressions** - All tests must pass before commit
-4. **Performance Budgets** - Enforced via `performance_budgets.json`
+4. **Performance Budgets** - Historical budgets in the preserved text tree
 
-**Test Infrastructure**:
-- Test PDFs: `test_files/` (Derrida, Heidegger, synthetic tests)
-- Ground Truth: `test_files/ground_truth/` (manual verification)
-- Performance Budgets: `test_files/performance_budgets.json`
-- Pre-commit Hooks: Automated real PDF testing
+**Historical test infrastructure** (see [migration](../text-processing-migration.md)):
+- Test PDFs: preserved text tree only; removed from this checkout
+- Ground Truth: preserved text tree only; removed from this checkout
+- Performance Budgets: `parked-text-processing-2026-10:test_files/performance_budgets.json` (historical)
+- Pre-commit Hooks: historical automated real PDF testing
 
 **Implementation Status**:
 - [x] TDD workflow defined
@@ -190,7 +190,7 @@
 - [.claude/TDD_WORKFLOW.md](../../.claude/TDD_WORKFLOW.md) - Workflow guide
 - [.claude/RAG_QUALITY_FRAMEWORK.md](../../.claude/RAG_QUALITY_FRAMEWORK.md) - Quality framework
 - [docs/TESTING_LESSONS_LEARNED.md](https://github.com/rookslog/zlibrary-mcp/blob/c8798addc98d83e50bb743b98b48d2490476dcb0/docs/TESTING_LESSONS_LEARNED.md) - Testing insights
-- Test Infrastructure: `__tests__/python/`, `test_files/`
+- Test Infrastructure: preserved text tree; current parser fixtures are listed in the [migration guide](../text-processing-migration.md#retired-processing-fixtures)
 
 ---
 

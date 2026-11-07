@@ -29,7 +29,7 @@ logs
 .DS_Store
 Thumbs.db
 
-# Test fixtures and test suites (not needed in runtime)
+# HTML parser fixtures and test suites (not needed in runtime)
 test_files
 __tests__
 !__tests__/

@@ -331,7 +331,13 @@ check. Local limits never start the resident worker or initiate sign-in.
 When configured, `ANNAS_SECRET_KEY` is lazily POSTed in form field `key` to
 `{ANNAS_BASE_URL}/account/`, with redirects disabled and the existing fast-download
 host guard; sign-in additionally requires HTTPS. The download host guard's
-existing HTTP-base behavior is unchanged. A response setting `aa_account_id2` activates the memory-only session.
+existing HTTP-base behavior is unchanged. A fresh, usable `aa_account_id2`
+cookie on a successful response activates the memory-only session. The POST
+never follows a redirect, and a redirect alone does not mark the key rejected.
+A fresh cookie on a same-origin redirect response can still
+activate the session; without it, sign-in remains `none` and search falls back
+to anonymous HTTP. Fast-download API requests carrying the key in the URL
+refuse every redirect, including same-origin redirects.
 Search reuses it across MCP calls; one shared re-sign-in follows a refusal,
 with no retry loop. Rejected/failed sign-ins use a 60-second cooldown; Node
 remembers the private retry deadline across child crashes and passes it to the
@@ -341,7 +347,8 @@ oversized reply. This can defer a valid sign-in even if the POST never ran.
 Cancellation publishes a status-only private update. Ordinary HTTP
 search remains the fallback. Key-configured pages follow at most five same-origin hops,
 even when an anonymous request is in flight as a member session becomes active;
-other scheme/host/port targets are refused. Result anchors take priority over
+other scheme/host/port targets are refused. The same limit applies to page
+requests with query parameters. Result anchors take priority over
 challenge phrases. A rowless non-challenge page returns `[]` on anonymous and
 member paths when `form.js-search-form[role='search']` contains a visible
 `div > span.font-bold` with exact text `No files found.`, outside links and

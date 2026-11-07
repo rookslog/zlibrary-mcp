@@ -19,6 +19,8 @@ from .exception import (
 from .util import GET_request, POST_request, GET_request_cookies
 from .eapi import (
     EAPIClient,
+    RedirectRefusedError,
+    raise_for_refused_redirect,
     normalize_eapi_search_response,
     resolve_eapi_domain,
     select_advertised_domain,
@@ -477,10 +479,12 @@ class AsyncZlib:
             cookies = self._eapi._cookies if self._eapi else (self.cookies or {})
             async with httpx.AsyncClient(
                 cookies=cookies,
-                follow_redirects=True,
+                # Never replay session cookies to a redirect destination.
+                follow_redirects=False,
                 timeout=httpx.Timeout(60.0, connect=10.0),
             ) as client:
                 async with client.stream("GET", download_url) as response:
+                    raise_for_refused_redirect(response)
                     response.raise_for_status()
                     total_size = int(response.headers.get("content-length", 0))
                     logger.info(f"Starting download ({total_size} bytes)...")
@@ -500,6 +504,8 @@ class AsyncZlib:
             raise DownloadError(
                 f"Download failed for book ID {book_id} (HTTP {e.response.status_code})"
             ) from e
+        except RedirectRefusedError:
+            raise
         except httpx.RequestError as e:
             if os.path.exists(actual_output_path):
                 os.remove(actual_output_path)

@@ -64,6 +64,18 @@ test('rejected member key backs off across public calls', async () => {
   } finally { await worker.close(); }
 });
 
+test('account redirect preserves anonymous fallback and uncertainty across resident calls', async () => {
+  const worker = owner('signin-redirect');
+  try {
+    const first = await worker.search({ query: 'books' });
+    const next = await worker.search({ query: 'books' });
+    expect(first.books[0].title).toBe('Sign-ins 1');
+    expect(next.books[0].title).toBe('Sign-ins 1');
+    expect(worker.status()).toBe('none');
+    expect(JSON.stringify([first, next])).not.toMatch(/worker-key-canary|worker-cookie-canary/);
+  } finally { await worker.close(); }
+});
+
 test('member challenge error is structured and excludes key and cookie canaries', async () => {
   const worker = owner();
   try {

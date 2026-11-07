@@ -145,6 +145,10 @@ not observed it on a live page. Other rowless pages report â€œUnrecognised pageâ
 rather than empty results, including for anonymous users.
 Page redirects with a configured key are limited to five hops within the
 configured origin, including before the session becomes active.
+The account POST never follows redirects; a redirect alone does not mean the
+key was rejected. A fresh cookie on a same-origin redirect response can still
+establish the session. Fast-download API requests carrying the key in the URL
+refuse every redirect, including same-origin redirects.
 `none` also covers an unattempted, cancelled or transport-failed sign-in;
 `rejected` means the provider refused sign-in/session access, not necessarily
 that the key is invalid. Transport

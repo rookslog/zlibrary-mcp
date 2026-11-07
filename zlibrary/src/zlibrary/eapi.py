@@ -34,8 +34,9 @@ DEFAULT_EAPI_DOMAINS = ["z-library.ec", "z-library.sk", "1lib.sk"]
 
 # Status codes observed from DiamWall-fronted domains: a 307 self-redirect
 # setting a `__diamwall` cookie, then 513/517 "Access Denied" on retry.
-# 403 covers generic bot-blocking.
-WALLED_STATUS_CODES = (307, 403, 513, 517)
+# 403 covers generic bot-blocking. Redirects are refused separately, before
+# interpreting any wall/auth prose in their bodies.
+WALLED_STATUS_CODES = (403, 513, 517)
 
 
 class DiamWallError(RuntimeError):
@@ -69,6 +70,39 @@ class NonJSONResponseError(RuntimeError):
     """Wall-like reply without JSON; eligible for same-cookie domain recovery."""
 
 
+class RedirectRefusedError(httpx.RequestError):
+    """A host failure, not an authentication verdict. Contains no request/URL."""
+
+    def __init__(self, target_host: str, *, status_code: int):
+        self.target_host = target_host
+        self.status_code = status_code
+        super().__init__(f"Redirect refused (HTTP {status_code}) to host {target_host}")
+
+
+def raise_for_refused_redirect(response):
+    """Reject redirects before reading bodies or interpreting auth/wall text.
+
+    Accept httpx and legacy aiohttp responses. Retain only an ASCII hostname,
+    never Location's userinfo, path, query, port, or fragment.
+    """
+    status = getattr(response, "status_code", None)
+    if status is None:
+        status = response.status
+    if status not in (301, 302, 303, 307, 308):
+        return
+    location = response.headers.get("location")
+    host = "<missing>"
+    if location:
+        try:
+            host = httpx.URL(str(response.url)).join(location).raw_host.decode("ascii")
+        except (ValueError, httpx.InvalidURL, UnicodeError):
+            host = "<invalid>"
+        if not host or len(host) > 253 or not re.fullmatch(r"[A-Za-z0-9.:-]+", host):
+            host = "<invalid>"
+    # Raised outside URL parsing handlers, with no attached request or response.
+    raise RedirectRefusedError(host, status_code=status) from None
+
+
 def sanitized_auth_token(value):
     return (
         value
@@ -88,11 +122,11 @@ def _auth_rejected(payload):
 def decode_eapi_json(resp: httpx.Response, domain: str) -> dict:
     """Parse an /eapi response as JSON, classifying anti-bot walls explicitly.
 
-    A healthy EAPI endpoint returns HTTP 200 with JSON. DiamWall-fronted
-    domains return a 307 self-redirect, 403/513/517 "Access Denied", or an
-    HTML block page — this raises DiamWallError for those so callers see
-    "anti-bot wall" instead of a bare JSONDecodeError or status error.
+    Redirects raise RedirectRefusedError before inspecting their bodies.
+    A healthy endpoint returns HTTP 200 JSON; 403/513/517 "Access Denied"
+    and DiamWall HTML raise DiamWallError rather than a generic JSON error.
     """
+    raise_for_refused_redirect(resp)
     if resp.status_code == 200:
         try:
             payload = resp.json()
@@ -191,21 +225,26 @@ async def probe_eapi_domain(
 async def resolve_eapi_domain(
     *,
     transport: Optional[httpx.AsyncBaseTransport] = None,
-) -> str:
+    exclude: Sequence[str] = (),
+) -> Optional[str]:
     """Resolve the EAPI domain to use for login.
 
     If ZLIBRARY_EAPI_DOMAIN is set, that domain is returned as-is with no
     probing — an explicit override means no silent switching, ever.
     Otherwise each candidate in DEFAULT_EAPI_DOMAINS is probed in order and
     the first healthy one wins. If every candidate fails the probe, the
-    first candidate is returned so login can surface the real error.
+    first candidate is returned for one initial login to surface the real error.
+    With `exclude`, no passing untried candidate means None. Pins never switch.
     """
     override = os.environ.get("ZLIBRARY_EAPI_DOMAIN")
     if override and override.strip():
         domain = override.strip()
         logger.info(f"EAPI domain pinned via ZLIBRARY_EAPI_DOMAIN: {domain}")
         return domain
-    for candidate in DEFAULT_EAPI_DOMAINS:
+    candidates = [domain for domain in DEFAULT_EAPI_DOMAINS if domain not in exclude]
+    if not candidates:
+        return None
+    for candidate in candidates:
         if await probe_eapi_domain(candidate, transport=transport):
             logger.info(f"EAPI domain selected by probe: {candidate}")
             return candidate
@@ -213,11 +252,14 @@ async def resolve_eapi_domain(
             f"EAPI candidate domain {candidate} failed health probe "
             f"(anti-bot wall or unreachable), trying next"
         )
+    if exclude:
+        logger.warning("No untried EAPI domain passed the health probe")
+        return None
     logger.warning(
         f"All EAPI candidate domains failed the health probe; "
-        f"falling back to {DEFAULT_EAPI_DOMAINS[0]}"
+        f"falling back to {candidates[0]}"
     )
-    return DEFAULT_EAPI_DOMAINS[0]
+    return candidates[0]
 
 
 async def select_advertised_domain(
@@ -345,7 +387,9 @@ class EAPIClient:
                 headers=EAPI_HEADERS,
                 cookies=self._cookies,
                 timeout=httpx.Timeout(30.0, connect=10.0),
-                follow_redirects=True,
+                # Login bodies and hostless session cookies must not be replayed.
+                # Refuse same-host redirects too; no implicit redirect trust policy.
+                follow_redirects=False,
             )
         return self._client
 
@@ -368,6 +412,7 @@ class EAPIClient:
                 httpx.ConnectTimeout,
                 DiamWallError,
                 NonJSONResponseError,
+                RedirectRefusedError,
             ):
                 # One recovery only, even if this loop is later expanded.
                 if attempt or self.on_domain_failed is None:
@@ -491,7 +536,7 @@ class EAPIClient:
             book_hash: Book hash for URL construction
             output_dir: Directory to save the file
             filename: Optional filename; derived from response headers or URL if omitted
-            host_observer: Receives the final response hostname after redirects
+            host_observer: Receives the serving response hostname; redirects are refused
 
         Returns:
             Absolute path to the downloaded file
@@ -527,10 +572,13 @@ class EAPIClient:
             # Stream download
             async with httpx.AsyncClient(
                 cookies=self._cookies,
-                follow_redirects=True,
+                # The initial download host already receives auth cookies, but
+                # cannot delegate those credentials to a redirect destination.
+                follow_redirects=False,
                 timeout=httpx.Timeout(60.0, connect=10.0),
             ) as dl_client:
                 async with dl_client.stream("GET", download_url) as response:
+                    raise_for_refused_redirect(response)
                     response.raise_for_status()
                     if host_observer is not None:
                         response_url = getattr(response, "url", None)

@@ -165,7 +165,7 @@ LOG_LEVEL=silent|error|warn|info|debug   # stderr logging via src/lib/logger.ts
 
 # Optional (multi-source, lib/sources/config.py)
 ANNAS_SECRET_KEY=                # Enables Anna's Archive fast downloads (primary source)
-ANNAS_BASE_URL=                  # Default: https://annas-archive.li
+ANNAS_BASE_URL=                  # Default: DEFAULT_ANNAS_BASE_URL in lib/sources/config.py
 LIBGEN_MIRROR=                   # Default: li
 LIBGEN_USER_AGENT=               # Default: a desktop Firefox string. LibGen blocklists
                                  # tool UAs and answers with nginx's ~640-byte default

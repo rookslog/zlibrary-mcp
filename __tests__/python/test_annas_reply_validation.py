@@ -265,7 +265,7 @@ async def test_valid_quota_counters_remain_integers(value):
         "duplicate-md5",
     ],
 )
-async def test_auth_status_requires_complete_final_request_identity(status, mutation):
+async def test_redirects_cannot_change_keyed_request_identity(status, mutation):
     def handler(request):
         if "changed" in request.url.params:
             return httpx.Response(status)
@@ -294,7 +294,7 @@ async def test_auth_status_requires_complete_final_request_identity(status, muta
         return httpx.Response(302, headers={"location": str(url)})
 
     _, error, _, seen = await resolve(handler)
-    assert len(seen) == 2
+    assert len(seen) == 1
     assert isinstance(error, ProviderResponseError)
     assert error.reason == "http_error"
 
@@ -314,14 +314,16 @@ async def test_matching_request_auth_status_rejects_key(status, redirect, base):
         return httpx.Response(status)
 
     _, error, _, seen = await resolve(handler, base=base, secret="synthetic /+? key")
-    assert len(seen) == (2 if redirect else 1)
-    assert isinstance(error, ProviderConfigurationError)
-    assert error.reason == "configuration_error"
+    assert len(seen) == 1
+    assert isinstance(
+        error, ProviderResponseError if redirect else ProviderConfigurationError
+    )
+    assert error.reason == ("http_error" if redirect else "configuration_error")
 
 
 @pytest.mark.parametrize("status", [401, 403])
 @pytest.mark.parametrize("port", [None, 8443])
-async def test_same_host_https_upgrade_rejects_key(status, port):
+async def test_keyed_https_upgrade_is_not_followed(status, port):
     def handler(request):
         if request.url.scheme == "http":
             url = request.url.copy_with(scheme="https", port=port)
@@ -333,9 +335,9 @@ async def test_same_host_https_upgrade_rejects_key(status, port):
         base="http://synthetic:pass@annas-archive.gl:8080/prefix",
         secret="synthetic /+ key",
     )
-    assert len(seen) == 2
-    assert isinstance(error, ProviderConfigurationError)
-    assert error.reason == "configuration_error"
+    assert len(seen) == 1
+    assert isinstance(error, ProviderResponseError)
+    assert error.reason == "http_error"
 
 
 @pytest.mark.parametrize(
@@ -407,8 +409,8 @@ def assert_no_keyed_surfaces(error, formatted, request, secret):
         ("attributed", ProviderTimeoutError, "search_timeout"),
         ("reject-401-direct", ProviderConfigurationError, "configuration_error"),
         ("reject-403-direct", ProviderConfigurationError, "configuration_error"),
-        ("reject-401-redirect", ProviderConfigurationError, "configuration_error"),
-        ("reject-403-redirect", ProviderConfigurationError, "configuration_error"),
+        ("reject-401-redirect", ProviderResponseError, "http_error"),
+        ("reject-403-redirect", ProviderResponseError, "http_error"),
         ("http-503", ProviderResponseError, "http_error"),
         ("api-error", ProviderResponseError, "http_error"),
     ],
@@ -449,7 +451,7 @@ async def test_keyed_errors_keep_classification_without_retaining_request_text(
     assert error.reason == reason
     assert error.provider == "annas"
     assert error.host == "annas-archive.gl"
-    assert len(seen) == (2 if kind.endswith("redirect") else 1)
+    assert len(seen) == 1
     assert_no_keyed_surfaces(error, formatted, seen[-1], SECRET)
 
 

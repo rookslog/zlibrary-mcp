@@ -1,3 +1,5 @@
+import { isIP } from 'node:net';
+
 /** Closed diagnostics shared by the error envelope and logger; never upstream prose. */
 export interface AuthDiagnostics {
   failure_kind: 'auth_rejected' | 'transport' | 'wall' | 'ambiguous_status';
@@ -8,6 +10,24 @@ export interface AuthDiagnostics {
 }
 const kinds = ['auth_rejected', 'transport', 'wall', 'ambiguous_status'];
 const keys = ['failure_kind', 'http_status', 'attempt', 'refresh_count', 'request_id'];
+
+/** Reconstruct refusal text from bounded typed fields; never reuse provider prose. */
+export function redirectRefusalMessage(
+  type: unknown,
+  host: unknown,
+  status: unknown,
+): string | undefined {
+  if (
+    type === 'RedirectRefusedError' &&
+    typeof status === 'number' &&
+    [301, 302, 303, 307, 308].includes(status) &&
+    typeof host === 'string' &&
+    host.length <= 253 &&
+    (/^(?:[A-Za-z0-9.-]+|<missing>|<invalid>)$/.test(host) || isIP(host) === 6)
+  ) {
+    return `Redirect refused (HTTP ${status}) to host ${host}`;
+  }
+}
 export function readAuthDiagnostics(value: unknown): AuthDiagnostics | undefined {
   if (!value || typeof value !== 'object' || Array.isArray(value)) return;
   const v = value as Record<string, any>;
@@ -62,9 +82,9 @@ export function authDiagnosticsFor(
                   'ReadTimeout',
                   'WriteTimeout',
                   'ConnectTimeout',
-                  'ConnectError',
                   'PoolTimeout',
                   'RemoteProtocolError',
+                  'RedirectRefusedError',
                 ].includes(type) ||
                 ['NETWORK_ERROR', 'TIMEOUT', 'ECONNRESET', 'ECONNREFUSED', 'ETIMEDOUT'].includes(
                   error?.code,
@@ -142,6 +162,7 @@ export function safeEapiFailureEnvelope(value: any): Record<string, any> | undef
   const types = [
     'EAPIAuthenticationError',
     'HTTPStatusError',
+    'RedirectRefusedError',
     'DiamWallError',
     'NonJSONResponseError',
     'ReadTimeout',
@@ -166,6 +187,11 @@ export function safeEapiFailureEnvelope(value: any): Record<string, any> | undef
     diagnostics,
     ...(diagnostics.http_status === undefined ? {} : { status_code: diagnostics.http_status }),
   };
+  const refusal = redirectRefusalMessage(result.type, value.redirect_host, diagnostics.http_status);
+  if (refusal) {
+    result.redirect_host = value.redirect_host;
+    result.error = refusal;
+  }
   if (value.login_failed)
     result.login_failed = {
       status_code: diagnostics.http_status,

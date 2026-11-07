@@ -17,6 +17,7 @@ from typing import Dict, List, NoReturn, Optional
 from urllib.parse import quote, quote_plus, urlsplit
 
 import httpx
+from zlibrary.eapi import RedirectRefusedError, raise_for_refused_redirect
 from bs4 import BeautifulSoup
 from bs4.element import Tag
 
@@ -292,7 +293,9 @@ class AnnasArchiveAdapter(SourceAdapter):
         # Same fixed-cooldown style as the provider circuit breaker.
         self._member_retry_at = time.monotonic() + 60.0
 
-    async def _signin(self, client, refused_generation=None) -> None:
+    async def _signin(
+        self, client, refused_generation=None
+    ) -> Optional[RedirectRefusedError]:
         if not self.secret_key:
             return
         async with self._member_lock:
@@ -311,6 +314,7 @@ class AnnasArchiveAdapter(SourceAdapter):
                     return
             except ProviderConfigurationError:
                 return
+            refusal = None
             try:
                 response = await client.post(
                     f"{self.base_url}/account/",
@@ -319,14 +323,27 @@ class AnnasArchiveAdapter(SourceAdapter):
                 )
                 if not isinstance(response, httpx.Response):
                     raise TypeError("Invalid sign-in response")
-                # Never follow a credential-bearing redirect, even 307/308.
+                # Refuse Location independently of a fresh cookie on this response.
+                # Keep no traceback containing the credential-bearing request.
+                try:
+                    raise_for_refused_redirect(response)
+                except RedirectRefusedError as error:
+                    refusal = error.with_traceback(None)
                 location = response.headers.get("location")
+                origin = httpx.URL(self.base_url)
+                target = response.url.join(location) if location else origin
                 foreign = (
-                    location
-                    and httpx.URL(str(response.url)).join(location).host != self.host
+                    target.scheme,
+                    target.host,
+                    target.port,
+                ) != (
+                    origin.scheme,
+                    origin.host,
+                    origin.port,
                 )
-                rejected = response.status_code in (401, 403) or (
-                    response.status_code == 200 and not self._is_check(response)
+                rejected = refusal is None and (
+                    response.status_code in (401, 403)
+                    or (response.status_code == 200 and not self._is_check(response))
                 )
                 accepted = (
                     200 <= response.status_code < 400
@@ -352,6 +369,7 @@ class AnnasArchiveAdapter(SourceAdapter):
                 self._member_retry_at = 0.0
             else:
                 self._reject_member(client, "rejected" if rejected else "none")
+            return refusal
 
     @staticmethod
     def _is_check(response) -> bool:
@@ -462,9 +480,15 @@ class AnnasArchiveAdapter(SourceAdapter):
         Exists so the status check sits *inside* the wall-clock budget rather
         than after it.
         """
+        if params and "key" in params:
+            # The API key in the URL must never be replayed through redirects.
+            response = await client.get(url, params=params, follow_redirects=False)
+            raise_for_refused_redirect(response)
         # A concurrent sign-in can populate the cookie jar during this GET.
-        if self.secret_key and not params:
+        elif self.secret_key:
             origin = httpx.URL(self.base_url)
+            if params:
+                url = str(httpx.URL(url).copy_merge_params(params))
             for hop in range(6):
                 response = await client.get(url, follow_redirects=False)
                 if not response.is_redirect:
@@ -484,12 +508,10 @@ class AnnasArchiveAdapter(SourceAdapter):
                         )
                     )
                 url = str(target)
+        elif params:
+            response = await client.get(url, params=params)
         else:
-            response = (
-                await client.get(url, params=params)
-                if params
-                else await client.get(url)
-            )
+            response = await client.get(url)
         response.raise_for_status()
         return response
 
@@ -748,6 +770,15 @@ class AnnasArchiveAdapter(SourceAdapter):
             )
             response.content.decode("utf-8")
             data = response.json()
+        except RedirectRefusedError as exc:
+            _raise_keyed_error(
+                ProviderResponseError(
+                    PROVIDER,
+                    self.host,
+                    f"Redirect refused (HTTP {exc.status_code})",
+                    reason="http_error",
+                )
+            )
         except httpx.HTTPStatusError as exc:
             final_url = exc.response.request.url
             configured_url = httpx.URL(url)

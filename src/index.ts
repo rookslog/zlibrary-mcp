@@ -8,21 +8,22 @@ import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js'
 import { CallToolRequestSchema, ListToolsRequestSchema } from '@modelcontextprotocol/sdk/types.js';
 import type { Tool } from '@modelcontextprotocol/sdk/types.js';
 import { z } from 'zod';
-import { AcquisitionTools, INPUTS } from './lib/acquisition-tools.js';
+import { AcquisitionTools, createInputs } from './lib/acquisition-tools.js';
 import type { ToolName } from './lib/acquisition-tools.js';
 import { getSessionMode } from './lib/eapi-session.js';
-import { invokeAcquisitionBridge } from './lib/zlibrary-api.js';
+import { invokeAcquisitionBridge, getSearchState } from './lib/zlibrary-api.js';
 import { logger } from './lib/logger.js';
+import { searchSuccessShape } from './lib/search-wire.js';
 
 const descriptions: Record<ToolName, string> = {
   search:
-    'Metadata, not book text. Give query and/or author; exact covers both. sources is ordered: libgen needs no account/quota; zlibrary needs an account, downloads spend quota; annas searches without a key, downloads with one. Defaults: get_limits. Use refs. Refs last this process and 5,000 recent entries; on ref_unavailable search and choose again. Pass cursor alone: replay fetches the same position; pages are re-queried, not frozen.',
+    'Metadata, not book text. Give query and/or author; exact checks each field locally. sources is a set asked together; defaults: get_limits. Equal catalogue MD5 groups selectable copies; ref selects one copy. Check sources, all_answered and note for incomplete results. Pass cursor alone for retained pages; continuing beyond held results may issue one source request, then replays are local. On ref_unavailable, search again. Anna: anonymous/member search, keyed download.',
   get_book:
-    'Edition evidence for a ref. Zlibrary costs one detail call; others return held rows. Description capped at 1,000 characters.',
+    'Edition evidence for any copy ref; bounded other_copies, disagreements and likely_editions retain the search filters. Zlibrary costs one detail call; others return held rows. Optional relationship evidence can expire before the ref. Description capped at 1,000 characters.',
   download:
-    'Download a ref to server disk: path, bytes and record sidecar, not text. Repeats at the same destination re-hash sha256 and skip an intact copy without quota; different output_dir or filename transfers again. Local O_EXCL locks coalesce processes.',
+    'Download the selected source copy to server disk: path, bytes, source and record sidecar, not text. Failure may offer other_copies; never substitutes. Repeats at the same destination re-hash sha256 and skip an intact copy without quota; different output_dir or filename transfers again. Local destination locks coalesce processes.',
   get_limits:
-    'Capabilities and default source order. mode:local (default) costs no network. mode:live fetches account numbers for named sources; only zlibrary costs an account call. Other clients can change estimates; errors are per source.',
+    'local (default): resolved search set, wait policy and capabilities; no network. live: Zlibrary quota. Anna: member_key_configured and last-observed member_session (none/active/rejected). Per-source errors; quotas vary.',
   get_history:
     'Zlibrary account history in source order. Not local files. Refs last this process and 5,000 entries; search again if unavailable. Pass cursor alone: replay fetches the same position; pages are not frozen.',
 };
@@ -44,15 +45,7 @@ const errorShape = {
   },
 };
 const successShapes: Record<ToolName, Record<string, any>> = {
-  search: {
-    required: ['rows', 'routing'],
-    properties: {
-      rows: { type: 'array', items: { type: 'object', required: ['ref', 'source'] } },
-      routing: { type: 'object', required: ['requested', 'attempts', 'fell_back'] },
-      next_cursor: { type: 'string' },
-      note: { type: 'string' },
-    },
-  },
+  search: searchSuccessShape,
   get_book: {
     required: ['ref', 'source', 'identifiers', 'evidence'],
     properties: {
@@ -63,9 +56,10 @@ const successShapes: Record<ToolName, Record<string, any>> = {
     },
   },
   download: {
-    required: ['path', 'bytes', 'reused', 'transfer_skipped', 'verified', 'record'],
+    required: ['path', 'bytes', 'reused', 'transfer_skipped', 'verified', 'record', 'source'],
     properties: {
       path: { type: 'string' },
+      source: { type: 'string' },
       bytes: { type: 'integer', minimum: 0 },
       reused: { type: 'boolean' },
       transfer_skipped: { type: 'boolean' },
@@ -75,10 +69,22 @@ const successShapes: Record<ToolName, Record<string, any>> = {
     },
   },
   get_limits: {
-    required: ['sources'],
+    required: ['sources', 'search'],
     properties: {
-      sources: { type: 'object' },
-      default_order: { type: 'array', items: { type: 'string' } },
+      sources: {
+        type: 'object',
+        properties: {
+          annas: {
+            type: 'object',
+            required: ['member_key_configured', 'member_session'],
+            properties: {
+              member_key_configured: { type: 'boolean' },
+              member_session: { enum: ['none', 'active', 'rejected'] },
+            },
+          },
+        },
+      },
+      search: { type: 'object', required: ['default_sources', 'wait_ms', 'ordering'] },
     },
   },
   get_history: {
@@ -89,31 +95,39 @@ const successShapes: Record<ToolName, Record<string, any>> = {
     },
   },
 };
-export const TOOL_DEFINITIONS: Tool[] = (Object.keys(INPUTS) as ToolName[]).map((name) => {
-  const json = z.toJSONSchema(INPUTS[name]);
-  delete json.$schema;
-  if ((json.properties as any)?.sources) (json.properties as any).sources.uniqueItems = true;
-  return {
-    name,
-    description: descriptions[name],
-    inputSchema: json as Tool['inputSchema'],
-    outputSchema: {
-      type: 'object',
-      oneOf: [{ ...successShapes[name], not: { required: ['error'] } }, errorShape],
-    },
-    annotations: {
-      readOnlyHint: name !== 'download',
-      ...(name === 'download' ? { destructiveHint: false } : {}),
-      idempotentHint: ['search', 'get_book', 'download'].includes(name),
-      openWorldHint: true,
-    },
-  };
-});
+export function toolDefinitionsFor(
+  names: readonly string[] = ['libgen', 'zlibrary', 'annas'],
+): Tool[] {
+  const inputs = createInputs(names);
+  return (Object.keys(inputs) as ToolName[]).map((name) => {
+    const json = z.toJSONSchema(inputs[name]);
+    delete json.$schema;
+    if ((json.properties as any)?.sources) (json.properties as any).sources.uniqueItems = true;
+    return {
+      name,
+      description: descriptions[name],
+      inputSchema: json as Tool['inputSchema'],
+      outputSchema: {
+        type: 'object',
+        oneOf: [{ ...successShapes[name], not: { required: ['error'] } }, errorShape],
+      },
+      annotations: {
+        readOnlyHint: name !== 'download',
+        ...(name === 'download' ? { destructiveHint: false } : {}),
+        idempotentHint: ['search', 'get_book', 'download'].includes(name),
+        openWorldHint: true,
+      },
+    };
+  });
+}
+export const TOOL_DEFINITIONS = toolDefinitionsFor();
 
 /** Lower-level SDK dispatch retains typed errors for invalid schemas and removed names. */
 class AcquisitionServer extends Server {
   private definitions: Tool[] = [];
-  readonly tools = new AcquisitionTools(invokeAcquisitionBridge);
+  readonly tools = new AcquisitionTools(invokeAcquisitionBridge, process.env, {
+    localState: () => getSearchState(),
+  });
   constructor() {
     super(
       { name: 'book-acquisition', version: getPackageVersion() },

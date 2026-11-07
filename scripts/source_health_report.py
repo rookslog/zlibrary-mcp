@@ -289,7 +289,7 @@ def reachability(source, rows, problem, job, outcome, relied, today):
 def live_input(path):
     data, problem = read_input(path)
     if problem:
-        return None, problem
+        return None, "unavailable" if problem == "missing" else problem
     try:
         value = json.loads(data, object_pairs_hook=unique_object)
         if (
@@ -395,6 +395,9 @@ def authenticated(evidence, problem, status, job, outcome, started, exit_code):
     if problem == "attempt":
         result.update(ran=None, counts=None)
         return finish("not_run", Reason.EARLIER_ATTEMPT_OUTPUTS)
+    if problem == "unavailable":
+        result.update(ran=None, counts=None)
+        return finish("failed", Reason.MISSING_LIVE_EVIDENCE)
     if not marked and (evidence or status in ("passed", "failed", "skipped")):
         return finish("failed", Reason.EXECUTION_NOT_RECORDED)
     if not marked and not status and outcome == "failure" and problem == "missing":

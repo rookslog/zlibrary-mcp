@@ -55,6 +55,26 @@ planning error: work the maintainer had approved was recorded as ruled out.
 Anna's download route authenticated by an API key from a paid membership. No browser
 verification.
 
+**Member HTTP search session**:
+With `ANNAS_SECRET_KEY`, the adapter lazily signs in via a form POST to `/account/`
+over HTTPS on a host accepted by the fast-download guard. Its `aa_account_id2` cookie stays
+in a resident Python worker's memory; search reuses it across tool calls. A
+refused session gets at most one shared refresh, and rejected/failed sign-in
+backs off for 60 seconds, preserved by Node across worker restarts, while
+ordinary HTTP search remains available. A worker failure with an unacknowledged
+search or cancellation starts a conservative 60-second sign-in backoff even without a delivered POST outcome.
+Key-configured page redirects stay on the configured origin before and after
+session activation. Guard skips, transport failures and
+cancelled sign-ins report `none`; `rejected` denotes provider refusal of a
+sign-in or session. The scoped, visible English “No files found.” marker
+returns empty results on anonymous and member searches. It comes from published
+site source and a synthetic fixture; we have not observed it on a live page.
+Other rowless pages report “Unrecognised page”, including on anonymous search. This
+adds no download route and solves no browser challenge. Local `get_limits`
+reports only configured/none/active/rejected state, with no account request.
+Fake HTTP tests cover the mechanism; actual member acceptance and avoidance of
+browser challenges remain untested with a real key.
+
 **Operator-cookie slow_download**:
 Anna's download route in which a *human* passes the DDoS-Guard browser verification and
 supplies the resulting `__ddg*` cookies, which the server then attaches to plain HTTP

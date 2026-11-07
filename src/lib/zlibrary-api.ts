@@ -1,3 +1,4 @@
+import { annasMemberWorker } from './annas-member-worker.js';
 import { normalizeLanguages } from './filter-languages.js';
 import type { SessionInput } from './eapi-session.js';
 import type { Options as PythonShellOptions } from 'python-shell';
@@ -76,6 +77,24 @@ const dependencyBreakers = Object.fromEntries(
   ]),
 );
 
+/** Local source health/admission only: never probes a provider or changes a generation. */
+export function getSearchState(env: Record<string, string | undefined> = process.env) {
+  return Object.fromEntries(
+    ['libgen', 'zlibrary', 'annas'].map((source) => [
+      source,
+      {
+        ...dependencyBreakers[source === 'zlibrary' ? 'eapi' : source]!.snapshot(),
+        refusal:
+          (source === 'zlibrary' ? eapiSessions.refusal(env.ZLIBRARY_EMAIL ?? '') : undefined) ??
+          dependencyBreakers[source === 'zlibrary' ? 'eapi' : source]!.refusal(),
+        ...(source === 'zlibrary'
+          ? eapiSessions.admission(env.ZLIBRARY_EMAIL ?? '')
+          : { admission: 'open' as const }),
+      },
+    ]),
+  );
+}
+
 /**
  * Breaker scope for a call that does not use EAPI: the source it selects.
  *
@@ -131,10 +150,11 @@ function defaultTimeoutFor(functionName: string): number | undefined {
 export interface CallOptions {
   /**
    * Wall-clock budget in ms. Defaults to PYTHON_BRIDGE_TIMEOUT, or
-   * PYTHON_BRIDGE_LONG_TIMEOUT for download calls.
+   * PYTHON_BRIDGE_LONG_TIMEOUT for download calls. On shared retained refills,
+   * this bounds only this subscriber's wait, without shortening a peer's work.
    */
   timeoutMs?: number;
-  /** Abort signal from the MCP request, so a cancelled call kills the child. */
+  /** MCP cancellation; a shared refill withdraws only this subscriber. */
   signal?: AbortSignal;
 }
 
@@ -220,6 +240,16 @@ async function callPythonFunction(
     withRetry(
       async (attempt) => {
         const execute = async () => {
+          if (
+            functionName === 'search_multi_source' &&
+            args.source === 'annas' &&
+            configuredEnv.ANNAS_SECRET_KEY
+          ) {
+            return annasMemberWorker.search(args, {
+              signal,
+              timeoutMs: callOptions.timeoutMs ?? ORDINARY_BRIDGE_TIMEOUT_MS,
+            });
+          }
           const lazy = lazyAcquisition && !transport;
           let activeTransport = transport;
           const lifetime = new AbortController();

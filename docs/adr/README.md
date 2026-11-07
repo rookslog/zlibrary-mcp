@@ -180,7 +180,7 @@ Stage 3: OCR Recovery (Tesseract re-processing)
 **Integration Points**:
 - `process_pdf()` → calls quality pipeline stages
 - Feature flag: `RAG_USE_QUALITY_PIPELINE='true'` (default)
-- Metrics: Performance budgets enforced (see `test_files/performance_budgets.json`)
+- Historical metrics: budgets in `parked-text-processing-2026-10:test_files/performance_budgets.json`, absent from this checkout (see [migration](../text-processing-migration.md))
 
 **Related**:
 - [ADR-006](ADR-006-Quality-Pipeline-Architecture.md) - Pipeline architecture

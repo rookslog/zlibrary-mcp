@@ -251,6 +251,9 @@ See the [version-1 report contract](../docs/schemas/source-health-v1.md).
 This is an additional report, not a new provider check or an installed reader.
 The unauthenticated probe diagnostics, filtered authenticated diagnostics and
 existing alerting remain. Source health consumes counts-only authenticated input.
+Counts preparation and upload require successful output filtering. A missing
+counts artifact leaves execution unknown, even if retained admission outputs
+claim a skip; a valid counts envelope can corroborate a known skip.
 Job-output attempts are checked independently of artifact names; unavailable or
 different attempts remain unqualified. Input uploads are best effort. A dedicated CI test
 account is still required for authenticated Z-Library coverage; job success

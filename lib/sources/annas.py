@@ -9,7 +9,10 @@ Key decisions:
 - ANNAS-SCRAPE-SEARCH: Search via HTML scraping (no search API exists)
 """
 
+import asyncio
+import logging
 import re
+import time
 from typing import Dict, List, NoReturn, Optional
 from urllib.parse import quote, quote_plus, urlsplit
 
@@ -47,6 +50,36 @@ def _raise_keyed_error(error: SourceError) -> NoReturn:
     finally:
         # `from None` only suppresses display; raising still sets __context__.
         error.__context__ = None
+
+
+def _is_empty_search(soup: BeautifulSoup) -> bool:
+    # Published renderer search.html:450-464 and English messages.po:5261-5266,
+    # revision d26b35249a5a5241dfe2ce512dbf0d6502999c5e; synthetic fixture,
+    # not a captured live page. Search validates challenges before this check.
+    for marker in soup.select(
+        "form.js-search-form[role='search'] div > span.font-bold"
+    ):
+        if marker.get_text(" ", strip=True) != "No files found.":
+            continue
+        if marker.find_parent(["a", "script", "style", "template", "noscript"]):
+            continue
+        if marker.find_parent(class_="js-aarecord-list-outer"):
+            continue
+        if any(
+            node.has_attr("hidden")
+            or str(node.get("aria-hidden", "")).lower() == "true"
+            or {"hidden", "invisible"}.intersection(node.get("class", []))
+            or re.search(
+                r"(?:^|;)\s*(?:display\s*:\s*none|visibility\s*:\s*(?:hidden|collapse))"
+                r"\s*(?:!important\s*)?(?:;|$)",
+                node.get("style", ""),
+                re.I,
+            )
+            for node in (marker, *marker.parents)
+        ):
+            continue
+        return True
+    return False
 
 
 def _valid_download_url(url: str) -> bool:
@@ -167,14 +200,14 @@ class AnnasArchiveAdapter(SourceAdapter):
 
     Configuration:
     - annas_base_url: Base URL for Anna's Archive (default: https://annas-archive.gl)
-    - annas_secret_key: API key for fast downloads (required for get_download_url)
+    - annas_secret_key: Member key for search sign-in and fast downloads
 
     Security: the secret key is only ever attached to hosts in
     config.ANNAS_TRUSTED_HOSTS. Anna's Archive domains lapse and get re-registered
     by squatters (annas-archive.li is a Trellian parking page as of 2026-03), and
     the fast-download API sends the key as a URL query parameter — sending it to
     an unverified host would disclose it to whoever now controls the domain.
-    Search (which carries no key) is not restricted.
+    Anonymous search is not restricted; member sign-in reuses this guard.
     """
 
     def __init__(self, config: SourceConfig):
@@ -193,6 +226,172 @@ class AnnasArchiveAdapter(SourceAdapter):
         self.port = port_of(self.base_url)
         self.scheme = urlsplit(self.base_url).scheme or "https"
         self._client: Optional[httpx.AsyncClient] = None
+        self._member_lock = asyncio.Lock()
+        self._member_generation = 0
+        self._had_member_session = False
+        self._member_state = "none"
+        self._member_retry_at = 0.0
+        # httpcore DEBUG logs include raw Set-Cookie response headers. Keep
+        # transport chatter out of diagnostics while a member owner is alive.
+        self._transport_filter = lambda record: False
+        self._transport_loggers = []
+        if self.secret_key:
+            for name in (
+                "httpx",
+                "httpcore.connection",
+                "httpcore.http11",
+                "httpcore.http2",
+                "httpcore.proxy",
+                "httpcore.socks",
+            ):
+                logger = logging.getLogger(name)
+                logger.addFilter(self._transport_filter)
+                self._transport_loggers.append(logger)
+
+    def _guard_key_host(self) -> None:
+        """Shared credential destination guard for sign-in and fast download."""
+        host = (urlsplit(self.base_url).hostname or "").lower()
+        if host not in ANNAS_TRUSTED_HOSTS:
+            _raise_keyed_error(
+                ProviderConfigurationError(
+                    PROVIDER,
+                    host,
+                    f"Refusing to send ANNAS_SECRET_KEY to unverified host '{host}'. "
+                    f"The fast-download API passes the key as a URL parameter, and "
+                    f"lapsed Anna's Archive domains get re-registered by squatters "
+                    f"(annas-archive.li is now a parking page). Set ANNAS_BASE_URL "
+                    f"to a known Anna's Archive domain "
+                    f"({', '.join(sorted(ANNAS_TRUSTED_HOSTS))}) or update "
+                    f"ANNAS_TRUSTED_HOSTS in lib/sources/config.py if the project "
+                    f"has moved to a new domain you have verified yourself.",
+                )
+            )
+
+    def _has_member_cookie(self, client) -> bool:
+        request = httpx.Request("GET", f"{self.base_url}/search")
+        client.cookies.set_cookie_header(request)
+        return bool(
+            re.search(
+                r"(?:^|;\s*)aa_account_id2=[^;]+", request.headers.get("cookie", "")
+            )
+        )
+
+    def member_status(self) -> Dict:
+        """Local coarse state only; never expose credential or cookie data."""
+        if self._member_state == "active" and self._client is not None:
+            if not self._has_member_cookie(self._client):
+                self._member_state = "none"
+        return {
+            "member_key_configured": bool(self.secret_key),
+            "member_session": self._member_state,
+        }
+
+    def _reject_member(self, client, state="rejected") -> None:
+        client.cookies = httpx.Cookies()
+        self._member_state = state
+        # Same fixed-cooldown style as the provider circuit breaker.
+        self._member_retry_at = time.monotonic() + 60.0
+
+    async def _signin(self, client, refused_generation=None) -> None:
+        if not self.secret_key:
+            return
+        async with self._member_lock:
+            if refused_generation is not None:
+                if refused_generation != self._member_generation:
+                    return  # Another search already refreshed this generation.
+                client.cookies = httpx.Cookies()
+                self._member_state = "none"
+            if self.member_status()["member_session"] == "active":
+                return
+            if time.monotonic() < self._member_retry_at:
+                return
+            try:
+                self._guard_key_host()
+                if self.scheme != "https":
+                    return
+            except ProviderConfigurationError:
+                return
+            try:
+                response = await client.post(
+                    f"{self.base_url}/account/",
+                    data={"key": self.secret_key},
+                    follow_redirects=False,
+                )
+                if not isinstance(response, httpx.Response):
+                    raise TypeError("Invalid sign-in response")
+                # Never follow a credential-bearing redirect, even 307/308.
+                location = response.headers.get("location")
+                foreign = (
+                    location
+                    and httpx.URL(str(response.url)).join(location).host != self.host
+                )
+                rejected = response.status_code in (401, 403) or (
+                    response.status_code == 200 and not self._is_check(response)
+                )
+                accepted = (
+                    200 <= response.status_code < 400
+                    and not foreign
+                    and self._has_member_cookie(client)
+                    and any(
+                        c.name == "aa_account_id2" and c.value and not c.is_expired()
+                        for c in response.cookies.jar
+                    )
+                )
+            except asyncio.CancelledError:
+                # A timed-out/cancelled sign-in must not become a per-search retry.
+                self._member_generation += 1
+                self._reject_member(client, "none")
+                raise
+            except Exception:
+                # Do not log, chain or retain the failed keyed request/body.
+                accepted = rejected = False
+            self._member_generation += 1
+            if accepted:
+                self._member_state = "active"
+                self._had_member_session = True
+                self._member_retry_at = 0.0
+            else:
+                self._reject_member(client, "rejected" if rejected else "none")
+
+    @staticmethod
+    def _is_check(response) -> bool:
+        text = response.text
+        if not isinstance(text, str):
+            return False
+        soup = BeautifulSoup(text, "html.parser")
+        title = soup.title.get_text(" ", strip=True) if soup.title else ""
+        if soup.select_one("a[href^='/md5/']"):
+            return False
+        return bool(re.fullmatch(r"ddos[- ]guard", title, re.I))
+
+    async def _search_page(self, client, url):
+        await self._signin(client)
+        for attempt in range(2):
+            generation = self._member_generation
+            active = self._member_state == "active"
+            refusal = False
+            try:
+                response = await self._fetch(client, url)
+                refusal = self._is_check(response)
+                if not refusal:
+                    return response
+            except httpx.HTTPStatusError as exc:
+                if not active or exc.response.status_code not in (401, 403):
+                    raise
+                refusal = True
+            if refusal and active and attempt == 0:
+                await self._signin(client, generation)
+                continue
+            if active and generation == self._member_generation:
+                self._reject_member(client)
+            _raise_keyed_error(
+                ProviderResponseError(
+                    PROVIDER,
+                    self.host,
+                    "Browser verification or member session refused",
+                    reason="http_error",
+                )
+            )
 
     async def _get_client(self) -> httpx.AsyncClient:
         """Get or create HTTP client.
@@ -263,9 +462,34 @@ class AnnasArchiveAdapter(SourceAdapter):
         Exists so the status check sits *inside* the wall-clock budget rather
         than after it.
         """
-        response = (
-            await client.get(url, params=params) if params else await client.get(url)
-        )
+        # A concurrent sign-in can populate the cookie jar during this GET.
+        if self.secret_key and not params:
+            origin = httpx.URL(self.base_url)
+            for hop in range(6):
+                response = await client.get(url, follow_redirects=False)
+                if not response.is_redirect:
+                    break
+                target = response.url.join(response.headers.get("location", ""))
+                if hop == 5 or (target.scheme, target.host, target.port) != (
+                    origin.scheme,
+                    origin.host,
+                    origin.port,
+                ):
+                    _raise_keyed_error(
+                        ProviderResponseError(
+                            PROVIDER,
+                            self.host,
+                            "Page redirect refused",
+                            reason="http_error",
+                        )
+                    )
+                url = str(target)
+        else:
+            response = (
+                await client.get(url, params=params)
+                if params
+                else await client.get(url)
+            )
         response.raise_for_status()
         return response
 
@@ -304,13 +528,42 @@ class AnnasArchiveAdapter(SourceAdapter):
             # on every chunk, so a host that trickles bytes never trips it. The
             # outer budget is what actually enforces config.total_timeout.
             response = await bounded_await(
-                self._fetch(client, url),
+                self._search_page(client, url),
                 _attempt_budget(self.config, deadline),
                 provider=PROVIDER,
                 host=self.host,
                 operation="search",
             )
         except Exception as exc:
+            diagnostic = str(exc)
+            request = getattr(exc, "_request", None)
+            if request is not None:
+                diagnostic += str(request.url) + repr(request.headers)
+            echoes_key = bool(self.secret_key) and any(
+                token in diagnostic
+                for token in (
+                    self.secret_key,
+                    quote(self.secret_key, safe=""),
+                    quote_plus(self.secret_key, safe=""),
+                )
+            )
+            if self._had_member_session or echoes_key:
+                attributed = self._as_source_error(exc)
+                # Keep numeric HTTP evidence for the breaker, never the raw message.
+                _raise_keyed_error(
+                    type(attributed)(
+                        PROVIDER,
+                        self.host,
+                        f"HTTP {exc.response.status_code}"
+                        if isinstance(exc, httpx.HTTPStatusError)
+                        else (
+                            "Browser verification or member request failed"
+                            if isinstance(exc, SourceError)
+                            else type(exc).__name__
+                        ),
+                        reason=attributed.reason,
+                    )
+                )
             raise self._as_source_error(exc) from exc
 
         soup = BeautifulSoup(response.text, "html.parser")
@@ -334,6 +587,40 @@ class AnnasArchiveAdapter(SourceAdapter):
 
             results.append(self._build_result(link, md5, title))
 
+        # HTML entities decode during parsing; scan the actual returned metadata
+        # as well as raw HTML so an escaped credential cannot become a title.
+        if self.secret_key:
+            secrets = [self.secret_key]
+            if self._had_member_session:
+                secrets.extend(
+                    c.value for c in client.cookies.jar if c.name == "aa_account_id2"
+                )
+            if any(
+                token and token in repr(results)
+                for secret in secrets
+                for token in (
+                    secret,
+                    quote(secret, safe=""),
+                    quote_plus(secret, safe=""),
+                )
+            ):
+                _raise_keyed_error(
+                    ProviderResponseError(
+                        PROVIDER,
+                        self.host,
+                        "Credential echo omitted",
+                        reason="protocol_error",
+                    )
+                )
+        if not results and not _is_empty_search(soup):
+            _raise_keyed_error(
+                ProviderResponseError(
+                    PROVIDER,
+                    self.host,
+                    "Unrecognised page: no result rows or recognised empty-results marker",
+                    reason="protocol_error",
+                )
+            )
         return results
 
     def _build_result(self, link: Tag, md5: str, title: str) -> UnifiedBookResult:
@@ -440,21 +727,7 @@ class AnnasArchiveAdapter(SourceAdapter):
                 )
             )
 
-        if host not in ANNAS_TRUSTED_HOSTS:
-            _raise_keyed_error(
-                ProviderConfigurationError(
-                    PROVIDER,
-                    host,
-                    f"Refusing to send ANNAS_SECRET_KEY to unverified host '{host}'. "
-                    f"The fast-download API passes the key as a URL parameter, and "
-                    f"lapsed Anna's Archive domains get re-registered by squatters "
-                    f"(annas-archive.li is now a parking page). Set ANNAS_BASE_URL "
-                    f"to a known Anna's Archive domain "
-                    f"({', '.join(sorted(ANNAS_TRUSTED_HOSTS))}) or update "
-                    f"ANNAS_TRUSTED_HOSTS in lib/sources/config.py if the project "
-                    f"has moved to a new domain you have verified yourself.",
-                )
-            )
+        self._guard_key_host()
 
         url = f"{self.base_url}/dyn/api/fast_download.json"
         params = {
@@ -618,6 +891,13 @@ class AnnasArchiveAdapter(SourceAdapter):
 
     async def close(self) -> None:
         """Clean up HTTP client resources."""
-        if self._client:
-            await self._client.aclose()
+        try:
+            if self._client:
+                await self._client.aclose()
+        finally:
             self._client = None
+            for logger in self._transport_loggers:
+                logger.removeFilter(self._transport_filter)
+            self._transport_loggers.clear()
+        self._member_state = "none"
+        self._member_retry_at = 0.0

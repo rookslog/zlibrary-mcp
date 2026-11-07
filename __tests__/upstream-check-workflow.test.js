@@ -1,5 +1,5 @@
 import { jest } from '@jest/globals';
-import { readFileSync, mkdtempSync, rmSync, existsSync, writeFileSync, mkdirSync, symlinkSync } from 'node:fs';
+import { readFileSync, readdirSync, mkdtempSync, rmSync, existsSync, writeFileSync, mkdirSync, symlinkSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { createRequire } from 'node:module';
@@ -591,7 +591,7 @@ test('health inputs and live execution evidence are scoped to the current attemp
   expect(live).toBeDefined();
   expect(probe.if).toBe('always()');
   expect(probe.with.path).toBe('upstream-report.json');
-  expect(live.if).toBe('always()');
+  expect(live.if).toBe("always() && steps.filter_output.outcome == 'success'");
   expect(live.with.path).toBe('live-counts.json');
   expect(workflow.jobs.live_tests.outputs.execution_started).toBe('${{ steps.live.outputs.execution_started }}');
   expect(workflow.jobs.live_tests.outputs.pytest_exit_code).toBe('${{ steps.live.outputs.pytest_exit_code }}');
@@ -622,4 +622,60 @@ test('source-health transport cannot change upstream alert results and has a rea
   }
   expect(workflow.jobs.reachability.outputs.probe_outcome).toBe('${{ steps.probe.outcome }}');
   expect(workflow.jobs.live_tests.steps.find(step => step.id === 'live_counts')['continue-on-error']).toBe(true);
+});
+
+test('tracking-only updates retain the recovery marker without a Recovered line', async () => {
+  const github = api([{ number: 250, title: rollingTitle, state: 'closed', body: sourceMarker + '\n<!-- upstream-recovered-at: 2026-10-21 -->' }]);
+  Object.assign(process.env, { REACHABILITY_RESULT: 'success', PROBE_FAILED: 'false', LIVE_STATUS: 'no_account', PROBE_REPORT: '<!-- upstream-source-status: {} -->' });
+  await run(script('report', 'issue'), github);
+  const body = github.rest.issues.update.mock.calls[0][0].body;
+  expect(body).not.toContain('Recovered:');
+  expect(body).toContain('<!-- upstream-recovered-at: 2026-10-21 -->');
+});
+
+test('live output retention is one day and source retention remains thirty days', () => {
+  const uploads = Object.values(workflow.jobs).flatMap(job => job.steps).filter(step => step.uses?.startsWith('actions/upload-artifact@'));
+  expect(uploads.find(step => step.with.name === 'live-integration-log').with['retention-days']).toBe(1);
+  expect(uploads.find(step => step.with.name === 'upstream-source-report').with['retention-days']).toBe(30);
+});
+
+test('test failure text does not promise an artifact when preparation failed', async () => {
+  const { spawnSync } = await import('node:child_process');
+  const failure = workflow.jobs.live_tests.steps.find(step => step.name === 'Fail the job when live tests regressed');
+  const result = spawnSync('/bin/bash', ['-c', failure.run], { encoding: 'utf8' });
+  expect(result.status).toBe(1);
+  expect(result.stdout).toContain('available only when preparation and upload succeed');
+  expect(result.stdout).not.toContain('see the uploaded log');
+});
+
+test('filtered summary runs after the last upload and requires successful preparation', () => {
+  const steps = workflow.jobs.live_tests.steps;
+  const summary = steps.find(step => step.id === 'filtered_summary');
+  expect(summary).toBeDefined();
+  const lastUpload = Math.max(...steps.flatMap((step, index) => step.uses?.startsWith('actions/upload-artifact@') ? [index] : []));
+  expect(steps.indexOf(summary)).toBeGreaterThan(lastUpload);
+  expect(summary.if).toContain("steps.filter_output.outcome == 'success'");
+  expect(summary.if).toContain("steps.live.outputs.status != 'no_account'");
+  const enabled = new Function('steps', 'return ' + summary.if.replace('always()', 'true'));
+  expect(enabled({ filter_output: { outcome: 'success' }, live: { outputs: { status: 'no_account' } } })).toBe(false);
+  expect(enabled({ filter_output: { outcome: 'failure' }, live: { outputs: { status: 'failed' } } })).toBe(false);
+  expect(enabled({ filter_output: { outcome: 'success' }, live: { outputs: { status: 'failed' } } })).toBe(true);
+});
+
+
+test('job environments do not reference the runner context in any workflow', () => {
+  const directory = new URL('../.github/workflows/', import.meta.url);
+  const invalid = [];
+  for (const file of readdirSync(directory).filter(name => /\.ya?ml$/.test(name))) {
+    const document = parse(readFileSync(new URL(file, directory), 'utf8'));
+    for (const [jobId, job] of Object.entries(document.jobs || {})) {
+      for (const [name, value] of Object.entries(job.env || {})) {
+        const expressions = String(value).matchAll(/\$\{\{([\s\S]*?)\}\}/g);
+        if ([...expressions].some(match => /\brunner\s*(?:\.|\[)/i.test(match[1]))) {
+          invalid.push(`${file}:${jobId}.env.${name}`);
+        }
+      }
+    }
+  }
+  expect(invalid).toEqual([]);
 });

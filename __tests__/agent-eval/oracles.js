@@ -16,6 +16,11 @@ export function dataOf(reply) {
 export function rowsOf(data) {
   return Array.isArray(data) ? data : (data.rows ?? data.books ?? data.items ?? []);
 }
+// A copy ref grants selection authority, not another copy's metadata.
+// Availability hints contain neither selection nor metadata authority.
+export function selectableRows(data) {
+  return rowsOf(data).flatMap((row) => [row, ...(row.other_copies ?? []).map(copy => ({...copy}))]);
+}
 export const identity = (row) =>
   String(row?.id ?? row?.identifiers?.zlibrary_id ?? '') || row?.title;
 export const isGraver = (row) =>
@@ -25,15 +30,15 @@ export const isCampbell = (row) =>
 export const isSearch = (name) => /^(search|full_text)/.test(name);
 export const isDownload = (name) => ['download', 'download_book_to_file'].includes(name);
 const allowed = {
-  T1: ['search', 'download'],
+  T1: ['search', 'detail', 'download'],
   T2: ['search', 'detail'],
   T3: ['download'],
   T4: ['limits'],
   T5: ['limits'],
   T6: ['search'],
   T7: ['history'],
-  T8: ['search', 'download'],
-  T9: ['search', 'download'],
+  T8: ['search', 'detail', 'download'],
+  T9: ['search', 'detail', 'download'],
   T10: ['search', 'detail', 'download'],
   T11: ['limits', 'search', 'history'],
   T12: ['search'],
@@ -88,17 +93,13 @@ export async function scoreTask({
   const selected = (c) => c.selected ?? c.args?.bookDetails ?? {};
   const successful = (c) => !c.error && !c.reply?.isError && !dataOf(c.reply ?? {}).error;
   const usableSources = (c) => {
-    const a = c.args ?? {};
-    if (a.sources !== undefined)
-      return Array.isArray(a.sources) && a.sources.length > 0 && !a.sources.includes('zlibrary');
-    const order = arm.defaultOrder;
-    return (
-      arm.id === 'B-Q2-default' &&
-      Array.isArray(order) &&
-      order.includes('libgen') &&
-      (!order.includes('zlibrary') || order.indexOf('libgen') < order.indexOf('zlibrary')) &&
-      dataOf(c.reply ?? {}).routing?.served_by === 'libgen'
-    );
+    const data = dataOf(c.reply ?? {}), lines = data.sources;
+    if (!lines || !['libgen','zlibrary','annas'].every(name => lines[name])) return false;
+    if (!['rows','empty'].includes(lines.libgen.state) || lines.zlibrary.state !== 'not_asked') return false;
+    const args = c.args ?? {};
+    const precedingLimits = trace.slice(0,trace.indexOf(c)).findLast(call => category(call.name) === 'limits' && successful(call));
+    const intent = args.sources ?? dataOf(precedingLimits?.reply ?? {}).search?.default_sources;
+    return Array.isArray(intent) && intent.length > 0 && intent.includes('libgen') && !intent.includes('zlibrary');
   };
   const matchingSearches = (download, index) => {
     const row = selected(download);
@@ -106,12 +107,10 @@ export async function scoreTask({
       searchIndex < index &&
       isSearch(search.name) &&
       successful(search) &&
-      rowsOf(dataOf(search.reply ?? {})).some(
-        (found) =>
-          found.title === row.title &&
-          identity(found) === identity(row) &&
-          found.source === row.source &&
-          (!download.args?.ref || found.ref === download.args.ref),
+      selectableRows(dataOf(search.reply ?? {})).some(
+        (found) => download.args?.ref
+          ? found.ref === download.args.ref && found.source === row.source
+          : found.title === row.title && identity(found) === identity(row) && found.source === row.source,
       )
         ? [searchIndex]
         : [],
@@ -227,7 +226,7 @@ export async function scoreTask({
           isSearch(c.name) &&
           successful(c) &&
           (b
-            ? usableSources(c) && (c.args?.sources ?? arm.defaultOrder)?.includes('libgen')
+            ? usableSources(c)
             : c.name === 'search_multi_source' && c.args?.source === 'libgen') &&
           rowsOf(dataOf(c.reply ?? {})).some(
             (row) =>
@@ -337,7 +336,12 @@ export async function scoreTask({
     arm,
     final,
     remainingBefore,
-    rows: successfulTrace.flatMap((c) => rowsOf(dataOf(c.reply ?? {}))),
+    rows: successfulTrace.flatMap((c) => {
+      const data = dataOf(c.reply ?? {});
+      const ownDetail = b && category(c.name) === 'detail' && c.observedSelection &&
+        data.ref === c.args?.ref && data.source === selected(c).source;
+      return [...rowsOf(data), ...(ownDetail ? [data] : [])];
+    }),
     historyRows: successfulTrace
       .filter((c) => category(c.name) === 'history')
       .flatMap((c) => rowsOf(dataOf(c.reply ?? {}))),

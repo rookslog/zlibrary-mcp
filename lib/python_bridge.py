@@ -1157,8 +1157,7 @@ def _artifacts_match(source: Path, destination: Path, expected_md5: str) -> bool
     """Decide whether an existing destination already holds this acquisition."""
     if source.stat().st_size != destination.stat().st_size:
         return False
-    if expected_md5:
-        return _file_md5(destination, check_deadline=True) == expected_md5
+    # Catalogue hashes are identity claims; compare both artifacts before reuse.
     return _file_md5(source, check_deadline=True) == _file_md5(
         destination, check_deadline=True
     )
@@ -1784,8 +1783,9 @@ async def _fetch_from_source(book_details: dict, output_dir: str) -> str:
                         host_observer=lambda host: _set_active_host(host),
                         progress_observer=observe_progress,
                         config=config,
-                        abandon_observer=lambda item=result,
-                        stamp=observed_at: remember_abandoned(item, stamp),
+                        abandon_observer=lambda item=result, stamp=observed_at: (
+                            remember_abandoned(item, stamp)
+                        ),
                         seconds_left=(lambda: max(0.0, expires - loop.time()))
                         if guarded and getattr(result, "has_more_candidates", False)
                         else None,

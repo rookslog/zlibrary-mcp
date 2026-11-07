@@ -100,7 +100,8 @@ A passing subset with skips remains explicitly partial (`coverage_complete`
 false, `live_suite_partially_covered`). All-skipped results are `not_run`, and a
 missing or entirely skipped required authentication check cannot establish an
 authenticated pass. Missing/invalid counts after an execution marker is `failed`;
-an explicitly skipped live step without execution evidence is `not_run`.
+an explicitly skipped live step corroborated by an available counts envelope is
+`not_run`. An absent counts artifact instead leaves execution unknown.
 If the live step fails before emitting a marker or status, without counts evidence,
 the report is `failed` / `live_collection_error`, even if its job was cancelled
 or skipped. `ran=null` preserves uncertainty about suite execution after preliminary collection fails.
@@ -139,7 +140,9 @@ Input uploads are best effort and cannot change existing source-alert outcomes.
 
 The authenticated input is `live-counts.json`, a closed version-1 envelope
 containing counts and fixed authentication/error flags, without case identifiers
-or test text. A local step derives it from JUnit after output filtering. Source
+or test text. Counts preparation and its upload both require successful output
+filtering. The fixed counts command runs immediately after that filter and before
+the adjacent uploads. Source
 health never uploads or consumes raw XML. The diagnostic files are prepared
 locally to keep test output out of uploaded files.
 
@@ -148,8 +151,14 @@ metadata. It performs no network, account or credential operation. Inputs are
 bounded to 5 MiB each; malformed JSON/XML and contradictory evidence cannot
 produce a pass. Output uses allowlisted source/check identifiers and fixed
 reason codes. It does not copy raw upstream messages, hostnames, URLs, account
-identifiers, credentials or parameterized JUnit case names. The authenticated diagnostic upload requires successful local output filtering.
-Counts preparation runs independently and contains no test text.
+identifiers, credentials or parameterized JUnit case names. Both authenticated uploads require successful local output filtering.
+Counts preparation is best effort after successful filtering and contains no
+test text. If the counts artifact is absent, authenticated execution is unknown:
+`failed` / `missing_live_evidence`, `ran=null`, null counts and incomplete
+coverage, even when retained outputs say `no_account`, blocked or skipped. This
+differs from an available, valid counts envelope with `problem=missing`: that
+envelope can corroborate a known admission skip without any JUnit file. An
+unavailable artifact cannot establish such nonexecution.
 
 The schema and offline tests qualify the producer, not a live source or the
 reader. A completed scheduled artifact requires the change to reach the
@@ -198,7 +207,7 @@ failure. This table is the complete version-1 vocabulary.
 | `invalid_live_status` | `evidence` | Completed-suite classification is unsupported or absent. |
 | `execution_not_recorded` | `evidence` | Execution markers or corroborating outcomes do not establish test execution. |
 | `contradictory_live_evidence` | `evidence` | Admission status, test evidence or step outcome disagree. |
-| `missing_live_evidence` | `evidence` | Execution was marked but its counts evidence is absent. |
+| `missing_live_evidence` | `evidence` | The counts artifact is unavailable, or marked execution lacks required counts evidence. |
 | `invalid_live_evidence` | `evidence` | Counts evidence or its local JUnit input is malformed. |
 | `empty_live_evidence` | `evidence` | Local JUnit input contains no testcases. |
 | `live_job_incomplete` | `evidence` | Test evidence exists but successful job and step completion are absent. |

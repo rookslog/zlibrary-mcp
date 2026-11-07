@@ -13,108 +13,146 @@ Catalogue metadata, not the text inside a book. Give `query`, `author`, or both.
 | Argument | Contract |
 |---|---|
 | `query` | Nonblank string, 1–500 characters |
-| `author` | Nonblank string, 1–200 characters; author-only exact names are quoted |
-| `sources` | Ordered, distinct array of 1–3 of `libgen`, `zlibrary`, `annas`; optional only with operator defaults |
-| `exact` | Boolean, default false; whole combined query; Z-Library only, sent but not checked locally; other sources are skipped |
+| `author` | Nonblank string, 1–200 characters; author-only native queries are quoted |
+| `sources` | Set of 1–3 distinct names: `libgen`, `zlibrary`, `annas`. Order has no effect. Omitted: use the resolved default set reported by `get_limits.search.default_sources` |
+| `exact` | Boolean, default false. Local normalized phrase check on every source, separately on title for `query` and author for `author`; also sent to Z-Library |
 | `year_from`, `year_to` | Inclusive integer year range |
-| `languages`, `formats` | String arrays; OR within each list, AND across fields; checked locally on all sources |
-| `limit` | Integer 1–50, default 10 |
-| `cursor` | Continuation, exclusive of every other argument |
+| `languages`, `formats` | String arrays; OR within a list, AND across fields; checked locally on every source |
+| `limit` | Integer 1–50, default 10; applied after grouping and ordering |
+| `cursor` | Retained continuation, exclusive of every other argument |
 
-Returns `rows`, `routing`, optional `next_cursor`, active-filter `filtering`,
-and a steering `note`.
-Rows carry `ref`, `title`, `author`, `year`, `language`, `format`, `size_mb`,
-`pages`, `publisher`, `source`, `also_available_on` when known. Unknown scalars
-are omitted, not empty strings. Raw IDs, hashes and download URLs are not
-search row fields; `get_book` exposes identifiers when needed.
+Returns `rows`, `sources`, `all_answered`, `ordering: "fit-v1"`, `note`, and
+optional `next_cursor`. Rows carry `ref`, `source`, `match`, and known `title`,
+`author`, `year`, `language`, `format`, `size_mb`, `pages`, `publisher`.
+Unknown scalars are omitted. Raw identifiers, hashes and download URLs belong
+in `get_book`, not search rows.
 
-`routing` reports `requested`, `served_by`, `fell_back`, ordered `attempts`,
-and `continuation_source` only when a filtered search returns a cursor.
-Outcomes are `rows`, `empty`, `skipped`, `failed`; failures preserve typed codes
-and sub-reasons. Routing stops at the first source with rows. A continuation
-uses only that source: it never restarts fallback. All-empty is a successful
-empty page: `served_by` is omitted and `fell_back` is false, including an
-exhausted continuation. `requested` and `attempts` still describe the walk.
-Empty plus failure is `partial_failure`; all attempted sources
-failing is `all_sources_failed`. An explicit unconfigured source fails locally.
+A row's `ref` selects its recommended source copy. `other_copies` contains
+selectable `{ref, source}` entries for actual copies in this search's frozen
+window. `route_basis` explains the recommendation: `only_usable`,
+`operator_order`, or `stable_tie`. `download_available: false` marks a copy
+locally unavailable for transfer. `differs` lists fields with real metadata
+disagreements. By contrast, `also_available_on` is an upstream availability
+hint, not another selectable copy or proof of a current route.
 
-### Filters: partial milestone for 2.0
+### Source lines and incomplete answers
 
-Year, language and format are checked against each row on all three sources.
-This is a **partial milestone**: `exact` remains a gap. It is sent to Z-Library
-and reported as `native_only`, not checked by this server. Other sources are
-skipped before configuration/provider work with `code: "unsupported_operation"`,
-`reason: "filter_unsupported"`, `unsupported: ["exact"]`. If all requested
-sources refuse it, the error names Z-Library and the option to drop `exact`.
-A skip plus an answered empty page remains success; a skip plus unavailable
-Z-Library credentials with no answer is `all_sources_failed`.
+The shipped server registers LibGen, Z-Library and Anna’s Archive. Embedded
+`AcquisitionTools` callers can supply a custom registry for search, details and
+acquisition without quota estimates. The shipped server supports these three
+built-in sources; `quota_estimate` accepts Z-Library and Anna’s Archive only.
+Every registered source has a line, including sources outside the requested set.
+Intent is resolved once, before local admission checks. An explicit
+`sources` set or operator list stays in intent even if credentials are missing
+or a breaker is open. Without either, install-disabled sources are excluded;
+Anna's stays outside this unset default until its route is on. A key alone does
+not turn that route on. Explicitly naming Anna's or putting it in the operator
+list can still request its search; this does not promise reachability.
 
-With active filters, top-level `filtering.requested` echoes the effective
-request. Unknown language values stay literal and appear in
-`filtering.unrecognized.languages`; they are matched literally, never silently
-ignored. Recognized names/codes are case-insensitive; native Z-Library sending
-uses deduplicated names (`fr` → `french`, `en` plus `english` → one `english`).
-The same aliases apply to rows. Multi-word native names also recognize spaced
-spellings (`Central khmer` → `central_khmer`, `Luba katanga` → `luba-katanga`);
-the native values sent to Z-Library retain their existing spellings.
-`nb` and `nn` map to Norwegian. Semicolon row
-languages use membership (`English;French` matches `fr`). ISO code aliases cover
-every supported language name, including Afrikaans (`af`) and Swahili (`sw`).
-`Traditional chinese` maps to `chinese`. The generic category `indigenous` has
-no ISO language code: it stays literal-only and is flagged as unrecognized.
-Requests using `nb`/`nn` normalize to broad Norwegian by the existing ruling.
-Named `norwegian_bokmal`/`norwegian_nynorsk` filters match their own row codes
-(`nb`/`nob` or `nn`/`nno`), without admitting the other variety. Moldavian is
-equivalent to Romanian locally (legacy `mo`/`mol` aliases are retained).
-Formats are trimmed, case-folded and stripped of one leading dot, without
-family aliases (`azw3` differs from `mobi`). Empty lists, blank list entries
-and `exact:false` add no constraint. A dot-only format is blank after stripping.
+| State | Required fields | Meaning |
+|---|---|---|
+| `rows` | `rows` ≥ 1, `ms` | Answered with accepted records |
+| `empty` | `rows: 0`, `ms` | Answered with no accepted records |
+| `late` | `ms` | Terminal outcome of waiting for a dispatched source job; it says nothing about whether a network request was issued |
+| `failed` | `code`, `reason`, `ms` | Dispatched job failed |
+| `not_asked` | `reason` | Outside intent, or refused before dispatch; may include `retry_after_s` |
 
-Year bounds are inclusive integers. Row years must be positive integers of at
-least four digits, digit strings of the same numeric domain, or a leading
-four-digit year plus a listed month/season/quarter word, optionally a day
-(1–31). Supported date words cover English, French, Italian, Spanish, German
-and Portuguese; examples: `2014 Juin`, `2001 Gennaio 29`, `1968 Dezembro`,
-`1975 Januar 01`, `2001 Spring`, `2001 Q4`. Ranges, two-year strings, zero,
-circa/unlisted suffixes and values below 1000 remain unknown. Titles are never
-used to infer years. Public rows show the same parsed year used for filtering.
+State names are closed; source names and `reason` strings are open. Common
+reasons include `not_requested`, `not_in_default_order`, `credentials_missing`,
+`route_off`, `breaker_open`, and `auth_backoff`. Clients must accept new reasons.
+`rows` counts accepted source records before grouping, not public file rows.
+An answered source with zero accepted records may contribute a failing copy to
+a group whose other copy passes. Late, failed and unasked sources contribute
+no copies. `all_answered` is true exactly when every source in intent reached
+`rows` or `empty`; sources outside intent do not make it false. With an empty custom resolved
+intent, it is true without any source call: inspect the empty
+`get_limits.search.default_sources`, the source lines and off-source note. The
+current public LibGen registration remains locally searchable.
 
-With active filters, each answered attempt has `ignored: []` and a `filtering`
-record. With no filter keys, unfiltered attempts retain their previous shape.
-Explicit `exact:false` and empty/blank lists no longer produce the legacy
-`ignored` entries, because they add no constraint. Date-like readable years
-(such as `2014 Juin`) now add a parsed public year even without a year filter.
-Existing numeric year representations (including zero and years below 1000)
-retain their legacy public numeric conversion on non-year paths, including
-get_book/history. Zero, sub-1000 and unreadable year values still count as
-unknown and are excluded by year filters.
-Each set predicate appears exactly once in `applied`, `native_only` or
-`ignored`. Metadata predicates are `applied`; only Z-Library `exact` is
-`native_only`. `native_sent` records the values transmitted to Z-Library,
-independently of whether they are locally checked. Counts describe the examined
-window: `examined = matched + rejected + unknown`. A known mismatch outranks
-missing metadata; otherwise a missing checked field counts as unknown and is
-excluded. `unknown_metadata: "excluded"` appears per attempt only when
-`applied` is nonempty. Skipped/failed attempts have no counts.
+| No public rows | Result |
+|---|---|
+| Every source in intent answered empty | Success with `rows: []`, `all_answered: true` |
+| One source in intent failed or was refused | That source's own error |
+| Some empty answers, others late, failed or refused | `partial_failure` |
+| None answered, at least two in intent | `all_sources_failed` |
+| Caller cancelled | `cancelled` |
 
-LibGen/Anna windows use `scope: "first_upstream_page"`; Z-Library uses `"page"`.
-Filtering precedes the public `limit` and refs are minted only for returned
-rows. Held-list continuations retain the original window counts and slice its
-already-filtered matches. Counts are not catalogue totals or completeness
-claims. No extra pages are fetched to fill a short page.
+Error `attempts` contains every registered source's line. `note` describes rows
+shown, accepted records, incomplete sources and the bounded-window caveat.
+It is for people; clients must not parse it as a protocol field.
 
-A full raw Z-Library page can yield zero matches and still have `next_cursor`.
-If later sources win, their cursor replaces that pointer (or it is absent).
-If all sources answer empty, the earliest onward pointer is returned.
-On a filtered search, `routing.continuation_source` names the cursor's source
-when a cursor is returned. Unfiltered search/history cursors do not add this key.
-Continuing walks only that source; replay re-queries the same
-Z-Library position and can change with upstream data. Z-Library still fetches
-`limit` rows per page; the 50-row candidate page and held-tail drain are deferred.
+### Grouping and ordering
+
+Only equal valid lowercase 32-hex catalogue MD5 values group copies into one
+file row. This is a catalogue claim, not verification of downloaded bytes.
+Missing MD5 never implies equality; Z-Library's opaque selection hash is a
+different identifier. Only filter-passing copies can be recommended and feed
+match/rank. A group with no passing copy is not a row. Other copies stay
+selectable, with `filter: "pass" | "fail" | "unknown"` when filters are active;
+failing values or `unknown` field names explain their status.
+
+`fit-v1` orders by `match` (`exact_title`, `all_terms`, `source_only`), then best
+accepted source rank, then a stable hash. Source identity, arrival time and
+repeated copies do not improve fit. Related normalized title/author stems may
+get a shared `likely_group`; `BOOK_FORMAT_PREFERENCE` orders formats only within
+such a group. `likely_same_file_as` is a labelled heuristic when MD5 is missing,
+using title/author, format, size and compatible page counts. Neither relation
+merges rows or establishes an edition's identity. A copy recommendation uses
+local transfer usability, then the operator's written route order if any,
+then a stable tie. No default source preference is installed.
+
+### The wait
+
+When at least two source jobs are dispatched, one monotonic deadline starts
+before local planning. `BOOK_SOURCE_SEARCH_WAIT_MS` defaults to 12000 ms. A
+result must be observed strictly before the deadline; equality is late. If all
+jobs settle earlier, the reply returns earlier. A sole dispatched job uses its
+ordinary bridge deadline instead. Explicit shorter caller budgets still apply.
+
+The reply freezes once. Late output cannot change rows, refs or cursors.
+The wait cut signals cancellation with `search_cut`; it does not count as a
+provider failure, an authentication backoff or a successful half-open probe.
+A queued waiter withdraws; an issued process remains owned through TERM, grace
+and KILL. The reply does not wait for or claim physical cleanup, release a
+source lock, or start collecting late results in the background.
+
+### Filters
+
+Every active predicate, including `exact`, is checked locally on every source.
+Text comparisons normalize Unicode, case, punctuation and whitespace; accents
+remain significant. With `exact`, the requested title phrase must occur at word
+boundaries in the title, and the requested author phrase in the author field.
+Missing checked metadata is unknown and excluded unless another predicate
+already proves a mismatch. No title text is used to infer a year.
+
+Answered source lines carry `filtering.applied`, `native_sent` when applicable,
+counts and scope. Native Z-Library
+sending is evidence of transmission, separate from the local check. Counts
+obey `examined = matched + rejected + unknown`; they describe each bounded
+window, not a catalogue total. Every source supplies at most 50 candidate
+records per window before local filtering. No extra page fills a short result.
+
+Languages recognize supported names/codes case-insensitively and deduplicate
+aliases (`fr` → native `french`, `en` plus `english` → one `english`). Semicolon
+row languages use membership. Unknown requested names stay literal and are
+reported in `unrecognized.languages`; `indigenous` is literal-only. Spaced
+native names normalize to existing native spellings. `nb`/`nn` requests map to
+broad Norwegian; named Bokmål/Nynorsk filters preserve their own code varieties.
+Moldavian aliases match Romanian. Formats trim, case-fold and strip one leading
+dot without family aliases (`azw3` differs from `mobi`). Empty/blank lists and
+`exact:false` add no constraint; a dot-only format is blank.
+
+Years used for filtering are positive integers of at least four digits, digit
+strings in that domain, or a leading four-digit year with a recognized
+English/French/Italian/Spanish/German/Portuguese month, season or quarter,
+optionally a day 1–31 (`2014 Juin`, `2001 Spring`, `2001 Q4`). Ranges, two-year
+strings, circa/unlisted suffixes, zero and sub-1000 values remain unknown.
+Readable dates appear as parsed public years. Existing numeric conversion on
+non-year legacy detail/history paths remains unchanged.
 
 ## get_book
 
-Requires `ref` from a current search/history row. Returns the row fields plus
+Requires `ref` from a current search/history row or any `other_copies` entry. Returns the row fields plus
 known `isbn`, `series`, `edition`, `translator`, `categories`, `rating`,
 `description`, `identifiers`, `url`, and `evidence`. Description is capped at
 1,000 characters and marked `description_truncated` when cut.
@@ -124,6 +162,15 @@ list of `{name}`, and `rating` is `{value}` plus `count` when upstream sends one
 Z-Library's API exposes no terms, booklists or IPFS ids, so `get_book` has none.
 Z-Library uses one detail request. Other sources expose their held row without
 promising additional detail-page metadata. No direct ID input is accepted.
+
+`other_copies` includes each copy's metadata, identifiers and remembered search
+filter evidence. `disagreements` exposes actual differing values, and
+`likely_editions` lists up to ten related file rows. The selected copy's detail
+is fresh where its source supports detail calls; its filters are rechecked
+against those fields. Sibling metadata remains the frozen search evidence.
+The default relationship index holds all windows of the retained searches
+(128 searches × 20 windows). Embedded callers may set a smaller relationship
+capacity; then optional relationship evidence can expire before the selected ref.
 
 ## download
 
@@ -162,8 +209,14 @@ allowance. The Node long timer defaults to 3900000 ms and shorter owner or
 caller deadlines still win. Client tool-call deadlines are separate; see
 [timeout configuration](RETRY_CONFIGURATION.md#multi-source-timeout-configuration).
 
-Returns `path`, `bytes`, `reused`, `transfer_skipped`, `verified: "sha256"`,
+Returns `path`, `bytes`, `source`, `reused`, `transfer_skipped`, `verified: "sha256"`,
 `record`, and optional `quota_estimate`.
+`source` is always the selected copy's source. A failure may include
+`error.detail.other_copies` with alternative refs and their per-copy filter
+evidence. The server never substitutes one, retries on another source, or
+treats matching catalogue MD5 as receipt identity. The caller chooses any new
+copy explicitly. Existing receipt identity and refusal rules apply unchanged.
+
 `transfer_skipped` means this call read the receipt and hashed the current
 published bytes without contacting a provider. `reused` means a transfer occurred
 but an identical existing file was adopted; quota may have been counted.
@@ -234,13 +287,25 @@ and invalidates the estimate. A refusal before transfer does not spend quota.
 
 ## get_limits
 
-Optional `sources` (same array contract as search; default all) and `mode`
-(`local`, default, or `live`). Local mode makes no network call. It returns
-optional `default_order` and a `sources` object. Each source also has `filters`:
-`year_from`, `year_to`, `languages`, `formats` are `"local"`; `exact` is
-`"native_only"` for Z-Library and `"unsupported"` for the others. Each source has `configured`,
-`search_available`, `download_available`, `operations`, and `limit.kind`:
-`daily`, `none`, `unknown`, or `unparsed`.
+Optional `sources` (the same distinct source-set contract as search, default
+all registered sources) and `mode` (`local`, default, or `live`). Local mode
+makes no network or account call. It returns `sources` and a `search` policy:
+`default_sources`, optional operator `route_order`, `wait_ms`,
+`ordering: "fit-v1"`, and optional `format_preference`.
+
+Each source has `configured`, `search_available`, `download_available`,
+`operations`, `limit.kind` (`daily`, `none`, `unknown`, `unparsed`), and
+`filters` reporting all five predicates as `"local"`. `default_search` describes
+membership in the resolved intent, before admission; `off_reason` explains
+exclusion. `breaker` is `closed`, `open` or `half_open`; `admission` is `open`
+or `backoff`, with `retry_after_s` where applicable. These are read-only local
+snapshots: inspecting them never resets health, claims a probe or logs in.
+`recent` counts `searches`, `late`, `failed` over the last 20 dispatched source
+jobs in this process. The denominator is jobs, not network requests; refusals
+before dispatch and pending jobs withdrawn by a caller consume no slot.
+Already-settled peer outcomes still count.
+Comparison cuts still count as `late`; actual source failures count as `failed`.
+Restart clears these counters.
 
 `operations` lists what the source supports, independent of configuration:
 `search`, `details`, `download` for all three sources, plus `history` for
@@ -253,7 +318,57 @@ permits search without a key, including on an untrusted host. Download and
 `configured` additionally require `ANNAS_SECRET_KEY` and a trusted host
 (`annas-archive.gl`, `.pk`, or `.gd`). An unusable base makes both availability
 fields false; the note distinguishes this from a base not trusted for the key.
-This local report makes no provider request.
+This local report makes no provider request. Anna's entries additionally include
+`member_key_configured: boolean` and `member_session: "none" | "active" | "rejected"`.
+These fields occur only for Anna's and never expose any credential or cookie.
+`none` means no observed session, including a skipped guard/transport attempt
+or cancellation; `active` means the last search obtained a usable session cookie;
+`rejected` means the provider refused sign-in or session access. It does not
+necessarily mean the key is invalid. A cancelled/failed transport attempt retains
+the 60-second cooldown while reporting `none`. State is process-local and last observed, not a live acceptance
+check. Local limits never start the resident worker or initiate sign-in.
+
+When configured, `ANNAS_SECRET_KEY` is lazily POSTed in form field `key` to
+`{ANNAS_BASE_URL}/account/`, with redirects disabled and the existing fast-download
+host guard; sign-in additionally requires HTTPS. The download host guard's
+existing HTTP-base behavior is unchanged. A response setting `aa_account_id2` activates the memory-only session.
+Search reuses it across MCP calls; one shared re-sign-in follows a refusal,
+with no retry loop. Rejected/failed sign-ins use a 60-second cooldown; Node
+remembers the private retry deadline across child crashes and passes it to the
+next worker. A worker failure before a search or its cancellation is acknowledged
+also starts a conservative 60-second sign-in backoff, covering a POST with no delivered outcome or an
+oversized reply. This can defer a valid sign-in even if the POST never ran.
+Cancellation publishes a status-only private update. Ordinary HTTP
+search remains the fallback. Key-configured pages follow at most five same-origin hops,
+even when an anonymous request is in flight as a member session becomes active;
+other scheme/host/port targets are refused. Result anchors take priority over
+challenge phrases. A rowless non-challenge page returns `[]` on anonymous and
+member paths when `form.js-search-form[role='search']` contains a visible
+`div > span.font-bold` with exact text `No files found.`, outside links and
+`.js-aarecord-list-outer`. Visibility excludes hidden attributes/classes,
+`aria-hidden`, inline display/visibility suppression and non-rendered containers;
+this is static HTML recognition, not computed browser CSS.
+The marker is source-derived: published renderer `search.html:450-464` and
+English `messages.po:5261-5266` at revision
+`d26b35249a5a5241dfe2ce512dbf0d6502999c5e`. That snapshot is dated 2024-12-16,
+and surrounding live markup has changed since it. Its test fixture is synthetic;
+we have not observed the marker on a live page. Other rowless pages return an
+attributed “Unrecognised page” error, including for anonymous users.
+The renderer warns that a slow search server can report no files incorrectly,
+so a recognized empty result can still be a false negative.
+Recognized vendor challenge pages remain errors. Anna's
+`get_book` continues to return the held search row; it performs no detail-page
+request. No key is needed for anonymous search, and no new download route is added.
+Transport debug logs are suppressed during the member adapter's lifetime because
+HTTP response headers can contain cookies.
+HTTP response failures retain a sterile `HTTP NNN` structured detail, including
+429 and 5xx statuses, so dependency-health classification and breaker accounting
+continue after member sign-in. Raw request, body and cookie data stay omitted.
+Real membership acceptance and
+challenge avoidance have not been tested. Each resident search resets preflight
+cache verdicts and runs under the bounded resolver. Hung libc lookups can retain
+daemon threads until worker exit; per-wait bounds do not impose a global retained
+thread cap.
 
 Live Z-Library mode adds `per_day`, `used_today`, `remaining`, `premium`, `as_of`
 when available. Use `per_day` as the quota signal: `premium` can stay true after a
@@ -280,16 +395,37 @@ length is not fixed; retaining full nonce strength and counter non-reuse takes
 precedence over an eight-character example. Two processes drawing the same
 nonce is a 2^-64 per-pair aliasing bound, not an absolute no-alias claim.
 
-This process shares a 5,000-entry LRU across clients and holds 5,000 recent
-expired-handle tombstones. Unknown, expired and other-process refs all use
-`ref_unavailable`, with the reason and kind in `detail`. Wrong-kind input is
-`invalid_argument`. Reconnect keeps handles; restart does not. Search again and
-choose the edition again after unavailability. Refs are not authorization tokens.
+Search retains 128 whole searches in a process-local LRU, shared across clients,
+with no time-based expiry. A search's cursors and every ref on its pages live
+and evict together. Each search holds at most 20 windows (initial plus 19
+refills), each bounded to 50 candidate records per source; this is a window
+bound, not a metadata-byte bound. At the cap no further cursor is advertised;
+the source's `more` evidence and bounded note do not become completeness claims.
+Narrow or restart the search for deeper results.
 
-Cursors bind operation, resolved source order, normalized arguments, limit and
-position. They are immutable continuations: repeating one re-queries the same
-Z-Library page or re-slices the same held LibGen/Anna's page. A lost reply does
-not advance an iterator. Pages re-queried upstream are not snapshots.
+A cursor binds normalized arguments, source intent, limit and retained position.
+Replays re-slice the same snapshot and issue no request. Once a sole dispatched
+source's retained tail is exhausted, the first continuation issues one upstream
+refill, single-flight per position, and memoizes the resulting window. Concurrent
+callers and lost-reply replays see the same page. Each caller can cancel its own
+subscription without cancelling peers. For embedded callers only, an explicit
+`timeoutMs` call option also bounds only that subscriber's wait; expiry returns `provider_timeout` with
+`detail.reason: "caller_timeout"` and does not charge provider health. A peer
+with a longer budget can continue. Last-subscriber withdrawal aborts the job
+waiter; the position stays fenced until its adapter promise settles. Failed/abandoned
+refills can be explicitly retried after that drain, never overlapped. A new
+caller during the drain gets retryable `provider_timeout` with
+`detail.reason: "refill_draining"`; it has not cancelled. An answered refill producing `partial_failure` is memoized even with `more: true`.
+That error arm supplies no new continuation; restart with explicit sole-source
+intent to continue beyond it.
+
+History retains its separate 5,000-entry handle LRU with 5,000 recent expired
+handle tombstones. Its immutable cursor re-queries the same upstream position:
+**pages re-queried upstream are not snapshots**. Search and history cursors
+cannot be interchanged. Unknown, evicted and other-process handles return
+`ref_unavailable`; wrong-kind arguments return `invalid_argument`.
+Reconnect preserves process handles; restart does not. Search again and select
+the edition after unavailability. Refs are not authorization tokens.
 
 ## Errors
 
@@ -339,7 +475,6 @@ consumers do not install the bridge's filters.
 | Code | Meaning |
 |---|---|
 | `invalid_argument` | Invalid/removed tool or argument, bounds or wrong handle kind |
-| `sources_required` | No source order was supplied/configured; choices are in `detail.available` |
 | `ref_unavailable` | Expired, other-process or unknown row/cursor |
 | `unsupported_operation` | Source does not support the operation |
 | `credentials_missing` | Required account or key not configured |
@@ -347,12 +482,12 @@ consumers do not install the bridge's filters.
 | `quota_exhausted` | Anna's keyed-download router reports quota metadata with zero remaining. Z-Library EAPI download daily-limit failures currently surface as `provider_error` or `internal`, not this code |
 | `not_found` | Maps an explicit structured `not_found` reason; no current source adapter emits it. Z-Library EAPI download absence currently surfaces as `provider_error` or `internal`; empty search is not absence |
 | `provider_unreachable` | DNS, connect or TLS failure |
-| `provider_timeout` | Provider operation exceeded its budget |
+| `provider_timeout` | Provider or local search-wait budget exhausted; inspect the reason to distinguish an unissued mirror slice or caller wait |
 | `provider_error` | Bad status/body, block page, HTML instead of file |
 | `integrity_mismatch` | Download digest differs |
 | `breaker_open` | Dependency/destination paused or authentication backoff |
-| `all_sources_failed` | All attempted sources failed |
-| `partial_failure` | Some empty answers and some failed sources |
+| `all_sources_failed` | At least two sources in intent, none answered; jobs may be late, failed or refused |
+| `partial_failure` | Some empty answers and some late, failed or refused sources, with no rows |
 | `output_refused` | Output root or destination lock admission failed |
 | `cancelled` | Client cancelled; no automatic renewed intent |
 | `outcome_unknown` | Download may have been issued but outcome is uncertain |

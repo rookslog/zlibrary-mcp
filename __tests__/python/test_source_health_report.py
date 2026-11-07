@@ -71,7 +71,9 @@ def inputs(tmp_path):
     return {"path": tmp_path, "probe": probe, "xml": root, "env": env}
 
 
-def produce(data, *, raw_probe=None, raw_xml=None, raw_counts=None):
+def produce(
+    data, *, raw_probe=None, raw_xml=None, raw_counts=None, counts_present=True
+):
     path = data["path"]
     if data["probe"] is not None:
         (path / "probe.json").write_text(
@@ -86,22 +88,25 @@ def produce(data, *, raw_probe=None, raw_xml=None, raw_counts=None):
                 if raw_xml is not None
                 else ET.tostring(data["xml"], encoding="unicode")
             )
-    counts = subprocess.run(
-        [
-            sys.executable,
-            str(ROOT / "scripts/live_test_counts.py"),
-            "--junitxml",
-            str(path / "live.xml"),
-            "--output",
-            str(path / "live-counts.json"),
-        ],
-        env=data["env"],
-        capture_output=True,
-        text=True,
-    )
-    assert counts.returncode == 0
-    if raw_counts is not None:
-        (path / "live-counts.json").write_text(raw_counts)
+    if counts_present:
+        counts = subprocess.run(
+            [
+                sys.executable,
+                str(ROOT / "scripts/live_test_counts.py"),
+                "--junitxml",
+                str(path / "live.xml"),
+                "--output",
+                str(path / "live-counts.json"),
+            ],
+            env=data["env"],
+            capture_output=True,
+            text=True,
+        )
+        assert counts.returncode == 0
+        if raw_counts is not None:
+            (path / "live-counts.json").write_text(raw_counts)
+    else:
+        (path / "live-counts.json").unlink(missing_ok=True)
     run = subprocess.run(
         [
             sys.executable,
@@ -273,24 +278,52 @@ def test_preliminary_collection_failure_in_actual_workflow_is_reported_failed(in
     )
     uv.chmod(0o755)
     output = path / "github-output"
+    runner_temp = path.parent / (path.name + "-runner")
+    runner_temp.mkdir()
+    capture = step["env"]["ZLIBRARY_TEST_SESSION_VALUES"].replace(
+        "${{ runner.temp }}", str(runner_temp)
+    )
+    environment = {
+        "PATH": str(bin_path),
+        "GITHUB_WORKSPACE": str(path),
+        "GITHUB_OUTPUT": str(output),
+        "ZLIB_PROBE_DOMAIN": "z-library.ec",
+        "ZLIB_BLOCKED": "false",
+        "ZLIBRARY_EMAIL": "synthetic@example.test",
+        "ZLIBRARY_PASSWORD": "synthetic-password",
+        "ZLIBRARY_TEST_SESSION_VALUES": capture,
+    }
     run = subprocess.run(
         ["/bin/bash", "-e", "-o", "pipefail", "-c", step["run"]],
         cwd=path,
-        env={
-            "PATH": str(bin_path),
-            "GITHUB_WORKSPACE": str(path),
-            "GITHUB_OUTPUT": str(output),
-            "ZLIB_PROBE_DOMAIN": "z-library.ec",
-            "ZLIB_BLOCKED": "false",
-            "ZLIBRARY_EMAIL": "synthetic@example.test",
-            "ZLIBRARY_PASSWORD": "synthetic-password",
-        },
+        env=environment,
         capture_output=True,
         text=True,
     )
     assert run.returncode == 2, run.stderr
     assert (path / "collection-called").exists()
     assert not output.exists() and not (path / "live.xml").exists()
+    import shutil
+
+    (path / "scripts").mkdir()
+    shutil.copyfile(
+        ROOT / "scripts/filter_live_test_output.py",
+        path / "scripts/filter_live_test_output.py",
+    )
+    filtering = next(
+        step
+        for step in workflow["jobs"]["live_tests"]["steps"]
+        if step.get("id") == "filter_output"
+    )
+    prepared = subprocess.run(
+        ["/bin/bash", "-e", "-o", "pipefail", "-c", filtering["run"]],
+        cwd=path,
+        env=environment,
+        capture_output=True,
+        text=True,
+    )
+    assert prepared.returncode == 0
+    assert not Path(capture).exists()
     no_live(inputs, "")
     inputs["env"].update(LIVE_RESULT="failure", LIVE_OUTCOME="failure")
     auth = produce(inputs)["sources"]["zlibrary"]["authenticated"]
@@ -697,7 +730,12 @@ def test_actual_workflow_producer_shell_writes_even_when_both_inputs_are_absent(
     assert all(
         row["reachability"]["status"] == "not_run" for row in report["sources"].values()
     )
-    assert report["sources"]["zlibrary"]["authenticated"]["status"] == "not_run"
+    auth = report["sources"]["zlibrary"]["authenticated"]
+    assert (auth["status"], auth["reason"], auth["ran"]) == (
+        "failed",
+        "missing_live_evidence",
+        None,
+    )
 
 
 def test_known_probe_setup_failure_is_not_run_while_missing_execution_evidence_is_failed(
@@ -1024,3 +1062,79 @@ def test_failed_probe_with_malformed_source_is_evidence_failure(inputs, source):
     report = produce(inputs)
     assert report["probe_contract_complete"] is False
     assert report["sources"]["zlibrary"]["reachability"]["status"] == "failed"
+
+
+@pytest.mark.parametrize(
+    "status", ["passed", "failed", "skipped", "no_account", "blocked", "unknown", ""]
+)
+@pytest.mark.parametrize("started", ["true", ""])
+def test_missing_counts_artifact_preserves_unknown_execution(inputs, status, started):
+    inputs["env"].update(LIVE_STATUS=status, LIVE_STARTED=started)
+    report = produce(inputs, counts_present=False)
+    auth = report["sources"]["zlibrary"]["authenticated"]
+    assert (auth["status"], auth["reason"], auth["ran"], auth["counts"]) == (
+        "failed",
+        "missing_live_evidence",
+        None,
+        None,
+    )
+    assert auth["coverage_complete"] is False
+    assert report["sources"]["libgen"]["reachability"]["status"] == "passed"
+
+
+def test_counts_envelope_can_confirm_no_account_without_xml(inputs):
+    no_live(inputs)
+    auth = produce(inputs)["sources"]["zlibrary"]["authenticated"]
+    assert (auth["status"], auth["reason"], auth["ran"]) == (
+        "no_account",
+        "no_ci_account_configured",
+        False,
+    )
+
+
+def test_failed_filter_prevents_counts_publication_and_keeps_execution_unknown(inputs):
+    path = inputs["path"]
+    (path / "live.xml").write_text(ET.tostring(inputs["xml"], encoding="unicode"))
+    capture = path.parent / (path.name + "-capture.jsonl")
+    capture.write_text(json.dumps({"attempt": "fake", "status": "pending"}) + "\n")
+    filtered = subprocess.run(
+        [sys.executable, str(ROOT / "scripts/filter_live_test_output.py")],
+        cwd=path,
+        env={
+            "GITHUB_WORKSPACE": str(path),
+            "ZLIBRARY_TEST_SESSION_VALUES": str(capture),
+            "ZLIBRARY_EMAIL": "fake@example.test",
+            "ZLIBRARY_PASSWORD": "FAKE-PASSWORD",
+        },
+        capture_output=True,
+        text=True,
+    )
+    assert filtered.returncode == 1
+    assert not capture.exists()
+    decision = subprocess.run(
+        [
+            "node",
+            "--input-type=module",
+            "-e",
+            """
+import fs from 'node:fs'; import {parse} from 'yaml';
+const steps = parse(fs.readFileSync('.github/workflows/upstream-check.yml', 'utf8')).jobs.live_tests.steps;
+const targets = steps.filter(s => s.id === 'live_counts' || s.with?.name?.startsWith('upstream-source-health-live-'));
+const allowed = targets.map(s => new Function('steps', 'always', 'return ' + s.if)({filter_output:{outcome:'failure'}}, () => true));
+process.stdout.write(JSON.stringify(allowed));
+""",
+        ],
+        cwd=ROOT,
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    assert json.loads(decision.stdout) == [False, False]
+    assert not (path / "live-counts.json").exists()
+    inputs["env"].update(LIVE_RESULT="failure")
+    auth = produce(inputs, counts_present=False)["sources"]["zlibrary"]["authenticated"]
+    assert (auth["status"], auth["reason"], auth["ran"]) == (
+        "failed",
+        "missing_live_evidence",
+        None,
+    )

@@ -51,14 +51,14 @@ Add the server to your MCP client configuration:
 No credentials are needed for Library Genesis. The server starts without a
 Z-Library account; it warns on stderr and keeps the other sources available.
 For Z-Library, add `ZLIBRARY_EMAIL` and `ZLIBRARY_PASSWORD` in the client's `env`.
-For Anna's Archive downloads, add `ANNAS_SECRET_KEY`. Its search needs no key, but the
-site's browser check often refuses it ([#139](https://github.com/rookslog/zlibrary-mcp/issues/139)).
+For Anna's Archive, `ANNAS_SECRET_KEY` enables member sign-in for search and is
+required for downloads. Anonymous search remains available, but the site's browser check often refuses it ([#139](https://github.com/rookslog/zlibrary-mcp/issues/139)).
 
 ## Available MCP Tools
 
 | Tool | Purpose |
 |---|---|
-| `search` | Catalogue metadata search with an explicit ordered source list; compact rows and refs |
+| `search` | Merged catalogue metadata search; per-source answers, compact file rows and refs |
 | `get_book` | Inspect a row ref for edition metadata and field-origin evidence |
 | `download` | Acquire a ref to server disk; return a file path and acquisition record path |
 | `get_limits` | Local source capabilities by default; live account quota on request |
@@ -77,43 +77,41 @@ site's browser check often refuses it ([#139](https://github.com/rookslog/zlibra
 { "mode": "live", "sources": ["zlibrary"] }
 ```
 
-`search` requires `query`, `author`, or both. With both, `exact` applies to the
-whole combined query; author-only exact search retains quoted-author matching.
-This is catalogue metadata search, **not search inside book text**.
+`search` requires `query`, `author`, or both. `exact` checks normalized phrases
+locally on every source: query in title, author in author, separately. This is
+catalogue metadata search, not search inside book text.
 
-`sources` names 1–3 distinct sources in order. The server stops at the first
-source with rows and reports each attempt in `routing`. There is no hidden
-preferred source. Omitting `sources` requires an operator-configured default;
-otherwise `sources_required` includes the choices and their availability.
+`sources` is a set of 1–3 distinct names; order has no effect. Omit it to use
+`get_limits.search.default_sources`: usable installed search sources, excluding
+Anna's until its route is on. The operator can override this with
+`BOOK_SOURCE_DEFAULT_ORDER`. Missing credentials or an open breaker do not
+silently remove a source explicitly named by the caller or operator.
 
-**Filters — partial milestone for 2.0.** Year (`year_from`/`year_to`), language
-and format are checked locally on every source, with AND across fields and OR
-within lists. Missing checked metadata is excluded and counted. The reply echoes
-the understood request and gives per-attempt examined/matched/rejected/unknown
-window counts, not totals; a short or empty page can miss later matches. Language
-codes are translated for Z-Library (`fr` → `french`) and aliases deduplicated.
-Formats ignore case and one leading dot; readable date years appear as parsed
-years. Empty lists and `exact:false` add no constraint.
+The server asks admitted sources together and freezes one merged answer.
+`sources` accounts for every registered source and `all_answered` covers the
+resolved intent. With multiple dispatched jobs, the default wait is 12 seconds;
+unfinished jobs are `late`. One dispatched job keeps its ordinary bridge budget.
+`late` says the reply stopped waiting, not that a network request was issued or
+physical cleanup finished. Read `note` for incomplete and bounded-window limits.
 
-`exact` remains a gap: LibGen/Anna attempts are skipped as unsupported; Z-Library
-receives it as `native_only`, **sent, not checked by this server**. Local
-`get_limits` reports these filter capabilities without provider contact.
-A full Z-Library page filtered to zero can still supply a continuation, named by
-`routing.continuation_source` on a filtered search; a later winning source
-owns its own cursor. Unfiltered search/history keep their cursor shape.
-No extra fetching or 50-row Z-Library candidate page ships in this slice.
-See the [filter contract](docs/api.md#filters-partial-milestone-for-20).
+Rows group only equal catalogue MD5, which is a claim about a file, not checked
+bytes. `ref` recommends one source copy; `other_copies` holds actual selectable
+alternatives. The server never switches a download to another copy. Ordering
+uses request fit and source rank, not source preference or arrival time.
+Labelled likely relations are hints, not merged editions.
 
-Refs are opaque, in-memory handles shared by this process's clients. The most
-recent 5,000 row/cursor entries are held; reconnecting to the same process keeps
-them, restarting does not. On `ref_unavailable`, search and choose the edition
-again. Do not construct refs or pass book records back as tool arguments.
+Year, language, format and `exact` are checked locally, with AND across fields
+and OR within lists. Missing checked metadata is excluded and counted. Each
+answered source reports examined/matched/rejected/unknown counts from at most
+50 candidates; these are not catalogue totals. Z-Library also receives native
+filters, independently of the local checks. Language aliases are deduplicated;
+formats ignore case and one leading dot. Empty lists and `exact:false` add no
+constraint. See [the filter contract](docs/api.md#filters).
 
-`limit` defaults to 10, maximum 50. Continue with **`cursor` alone**, with no
-other arguments. Cursors bind the operation, source, filters and page size;
-replaying one repeats the same position, including after a lost reply. Z-Library
-pages are re-queried, not frozen: upstream changes can duplicate or omit rows.
-Other sources expose one upstream page, sliced locally, with a stated row cap.
+Search refs and snapshot cursors share a 128-search process-local LRU. Each
+search retains up to 20 windows; one-source refills are single-flight and
+memoized. Replaying a cursor is local. Refs and cursors evict together; history
+has its own existing handle store and upstream continuation behavior.
 
 ## Sources
 
@@ -121,7 +119,7 @@ Other sources expose one upstream page, sliced locally, with a stated row cap.
 |---|---|---|---|---|
 | `libgen` | None | Yes | Yes | No daily limit |
 | `zlibrary` | Account email and password | With account | With account | Provider daily quota |
-| `annas` | Key required only for download | Often refused by the site's browser check ([#139](https://github.com/rookslog/zlibrary-mcp/issues/139)) | With membership API key | Membership-dependent |
+| `annas` | Optional member sign-in; key required for download | Anonymous search often refused by the site's browser check ([#139](https://github.com/rookslog/zlibrary-mcp/issues/139)) | With membership API key | Membership-dependent |
 
 `get_limits` defaults to `mode: "local"`: no network, no account call. It reports
 configuration, search/download availability and supported operations for each
@@ -129,6 +127,34 @@ source. Supported operations stay the same when configuration changes; use the
 availability fields to plan calls. Anna's search requires a usable HTTP(S)
 `ANNAS_BASE_URL` (default `https://annas-archive.gl`); download and `configured`
 additionally require a trusted host and `ANNAS_SECRET_KEY`.
+Anna's entries also report `member_key_configured` (boolean) and `member_session`
+(`none`, `active`, or `rejected`), without provider contact. State is last observed
+in this server process; `active` does not attest current provider acceptance.
+With a key, the first Anna search lazily POSTs it as form data to `/account/`
+over HTTPS on the same trusted hosts as fast download. The cookie stays in an Anna-only
+resident Python worker's memory and is reused across searches until expiry or
+refusal. One shared refresh is allowed per refused session; failed/rejected
+sign-ins back off for 60 seconds, including across worker restarts in the same
+Node process. A worker failure before a search or its cancellation is acknowledged
+starts a conservative 60-second sign-in backoff even when the POST outcome is unknown. Anonymous
+HTTP search remains the fallback. Result anchors take
+priority over challenge words in book titles. A visible, scoped English
+“No files found.” marker returns empty results on anonymous and member paths.
+The marker comes from published site source and a synthetic fixture; we have
+not observed it on a live page. Other rowless pages report “Unrecognised page”
+rather than empty results, including for anonymous users.
+Page redirects with a configured key are limited to five hops within the
+configured origin, including before the session becomes active.
+`none` also covers an unattempted, cancelled or transport-failed sign-in;
+`rejected` means the provider refused sign-in/session access, not necessarily
+that the key is invalid. Transport
+debug logging is suppressed while a member adapter is alive to avoid cookie
+header leakage. The child excludes Z-Library email/password from its environment.
+Resident searches reset preflight verdicts and use bounded DNS resolution;
+a genuinely hung libc lookup can retain a daemon thread until worker exit.
+Individual waits are bounded, but retained DNS threads are not globally capped.
+Restarting the server discards the session and process-local cooldown. No browser challenge
+is solved by this route. Member access with a real key remains untested here.
 `mode: "live"` adds Z-Library account numbers; remaining quota is omitted when
 spend is unknown. For Z-Library, use the daily limit (`per_day`) as the quota
 signal: `premium` can stay true after a plan lapses even when the daily limit
@@ -153,7 +179,8 @@ is an upstream hint, not a promise that another source still has the file.
   "reused": false,
   "transfer_skipped": false,
   "verified": "sha256",
-  "record": "/server/downloads/book.pdf.acq.json"
+  "record": "/server/downloads/book.pdf.acq.json",
+  "source": "libgen"
 }
 ```
 
@@ -259,8 +286,10 @@ The published Docker image is still 1.4.0 until 2.0 is released.
 | Variable | Meaning |
 |---|---|
 | `ZLIBRARY_EMAIL`, `ZLIBRARY_PASSWORD` | Z-Library account; not required for other sources |
-| `ANNAS_SECRET_KEY` | Anna's Archive membership key, required for its downloads only |
-| `BOOK_SOURCE_DEFAULT_ORDER` | Optional comma-separated order, e.g. `libgen,zlibrary`; no repeats |
+| `ANNAS_SECRET_KEY` | Anna's Archive membership key; optional member sign-in for search, required for downloads |
+| `BOOK_SOURCE_DEFAULT_ORDER` | Optional comma-separated default source set and copy-route tie preference, e.g. `libgen,zlibrary`; no repeats |
+| `BOOK_SOURCE_SEARCH_WAIT_MS` | Multi-source comparison wait in milliseconds; default `12000`; positive whole decimal within the Node timer range |
+| `BOOK_FORMAT_PREFERENCE` | Optional comma-separated formats, e.g. `epub,pdf`; affects only likely-edition groups |
 | `ZLIBRARY_OUTPUT_ROOT` | Absolute output root; defaults to the platform data directory described above |
 | `ZLIBRARY_UNRESTRICTED_OUTPUT` | `1` allows outside absolute paths; `0` or unset keeps containment; other values fail startup |
 | `ZLIBRARY_EAPI_DOMAIN` | Optional pinned EAPI domain |
@@ -274,6 +303,11 @@ The published Docker image is still 1.4.0 until 2.0 is released.
 | `PYTHON_BRIDGE_LONG_TIMEOUT` | Acquisition deadline in milliseconds; default `3900000` |
 | `ZLIBRARY_SESSION_MODE` | `memory` (default) or `per-call`; unknown modes fail at startup |
 
+Search settings are validated at startup; malformed lists, wait or format values
+refuse startup. Format entries normalize case and one leading dot; duplicates,
+blanks and non-alphanumeric extensions are invalid. An unset format list installs
+no preference. An empty source-order setting retains the unset behavior.
+
 Each source walk shares one deadline across its configured mirror attempts;
 fallback mirrors remain candidates rather than being capped in number. DNS and
 TCP preflight share one aggregate budget. A mirror skipped for lack of walk time
@@ -281,7 +315,9 @@ is attributed with `walk_budget_exhausted`, which indicates a local budget limit
 not evidence that the host failed. Increase `BOOK_SOURCE_WALK_BUDGET` if needed;
 if it is already clamped to the bridge owner, increase the corresponding owner.
 LibGen and Anna's searches each run in their own bridge child; the walk budget
-does not impose a deadline on the whole public `search` call.
+is separate from the multi-source comparison wait. Within each LibGen mirror in a comparison search,
+preflight, pacing and search share one 5-second attempt allowance, clamped
+by the remaining walk; this does not change download budgets.
 
 For downloads, the resolution walk runs inside the source transfer-chain
 allowance. Known size can extend that allowance from the base to the ceiling;

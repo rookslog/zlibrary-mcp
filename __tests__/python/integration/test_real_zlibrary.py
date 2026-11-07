@@ -30,6 +30,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "..", "..", "li
 from term_tools import search_by_term
 from author_tools import search_by_author
 import python_bridge
+from .ci_credentials import Secret, login_with_credentials
 
 
 # Keys get_book_metadata_complete may return: the detail fields get_book reports
@@ -96,16 +97,6 @@ def _assert_hegel_author(books):
 
 
 @pytest.fixture(scope="module")
-def credentials():
-    """Provide Z-Library credentials from environment."""
-    return {
-        "email": os.getenv("ZLIBRARY_EMAIL"),
-        "password": os.getenv("ZLIBRARY_PASSWORD"),
-        "mirror": os.getenv("ZLIBRARY_MIRROR", ""),
-    }
-
-
-@pytest.fixture(scope="module")
 def test_download_dir():
     """Provide temporary download directory for integration tests."""
     test_dir = Path("./downloads_integration_test")
@@ -125,10 +116,9 @@ class TestRealAuthentication:
         from zlibrary.eapi import EAPIClient
 
         client = EAPIClient(eapi_domain)
-        login_result = await client.login(credentials["email"], credentials["password"])
-
-        # Verify login succeeded
-        assert login_result.get("success") == 1
+        assert await login_with_credentials(client, credentials), (
+            "Integration login failed"
+        )
 
         # Verify we can search after authentication
         search_result = await client.search("test", limit=1)
@@ -142,12 +132,18 @@ class TestRealAuthentication:
 
         client = EAPIClient(eapi_domain)
         try:
-            login_result = await client.login("invalid@example.com", "wrongpassword")
+            login_succeeded = await login_with_credentials(
+                client,
+                {
+                    "email": Secret("invalid@example.com"),
+                    "password": Secret("wrongpassword"),
+                },
+            )
         except Exception:
             pass  # A login exception is an expected authentication failure.
         else:
             # Keep this assertion outside the login exception handler.
-            assert login_result.get("success") != 1
+            assert not login_succeeded
         finally:
             await client.close()
 
@@ -156,7 +152,9 @@ class TestRealAuthentication:
         from zlibrary.eapi import EAPIClient
 
         client = EAPIClient(eapi_domain)
-        await client.login(credentials["email"], credentials["password"])
+        assert await login_with_credentials(client, credentials), (
+            "Integration login failed"
+        )
 
         # Perform multiple searches with same session
         result1 = await client.search("test", limit=1)
@@ -237,8 +235,8 @@ class TestRealTermSearch:
         # rate-limits repeated logins from one IP, so per-call logins flake.
         result = await search_by_term(
             term="dialectic",
-            email=credentials["email"],
-            password=credentials["password"],
+            email="",
+            password="",
             limit=5,
             eapi_client=zlib_client,
         )
@@ -268,8 +266,8 @@ class TestRealTermSearch:
 
         result = await search_by_term(
             term="philosophy",
-            email=credentials["email"],
-            password=credentials["password"],
+            email="",
+            password="",
             year_from=2000,
             languages="english",
             limit=5,
@@ -298,8 +296,8 @@ class TestRealAuthorSearch:
 
         result = await search_by_author(
             author="Hegel",
-            email=credentials["email"],
-            password=credentials["password"],
+            email="",
+            password="",
             limit=5,
             eapi_client=zlib_client,
         )
@@ -325,8 +323,8 @@ class TestRealAuthorSearch:
 
         result = await search_by_author(
             author="Hegel, Georg",
-            email=credentials["email"],
-            password=credentials["password"],
+            email="",
+            password="",
             limit=5,
             eapi_client=zlib_client,
         )
@@ -343,8 +341,8 @@ class TestRealAuthorSearch:
 
         result = await search_by_author(
             author="Hegel",
-            email=credentials["email"],
-            password=credentials["password"],
+            email="",
+            password="",
             # EAPI years describe editions, not the author's lifetime.
             year_from=1950,
             year_to=2025,
@@ -526,8 +524,8 @@ class TestRealWorldEdgeCases:
         # The term helper exposes total_results as the returned page length.
         result = await search_by_term(
             term="xyzabc123nonexistent987",
-            email=credentials["email"],
-            password=credentials["password"],
+            email="",
+            password="",
             limit=5,
             eapi_client=zlib_client,
         )

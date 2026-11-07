@@ -38,7 +38,7 @@ async def test_comparison_mirror_slice_covers_every_phase_and_reaches_second(
     probes, calls, bounds, sleeps = [], [], [], []
     current = {"mirror": None}
 
-    async def preflight(mirror):
+    async def preflight(mirror, _timeout=None):
         probes.append(mirror)
         current["mirror"] = mirror
         clock.spend(
@@ -298,7 +298,7 @@ async def test_g5_comparison_admission_skips_only_current_mirror(monkeypatch, br
     current = {"mirror": None}
     sleeps, calls = [], []
 
-    async def preflight(mirror):
+    async def preflight(mirror, _timeout=None):
         current["mirror"] = mirror
         if branch == "parent_pacing" and mirror == "li":
             clock.spend(3.5)

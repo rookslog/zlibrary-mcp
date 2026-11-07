@@ -10,19 +10,12 @@ Thank you for your interest in contributing! This guide covers everything you ne
 - **Python 3.10+** ([download](https://www.python.org/))
 - **UV** -- modern Python package manager ([install](https://docs.astral.sh/uv/))
 - **Git**
-- **git-lfs** -- required; the test PDF corpus is LFS-tracked. Run `git lfs pull`
-  after cloning. Do **not** run `git lfs install` -- it writes its own git hooks
-  and conflicts with the repo's Husky-managed hooks (`core.hooksPath`); `git lfs
-  pull` works fine without it.
 
 ### Clone and Setup
 
 ```bash
 git clone https://github.com/rookslog/zlibrary-mcp.git
 cd zlibrary-mcp
-
-# Hydrate LFS-tracked test fixtures (no `git lfs install` needed -- see Prerequisites)
-git lfs pull
 
 # Setup acquisition dependencies and contributor tools.
 bash setup-uv.sh
@@ -130,14 +123,14 @@ Scheduled runs also publish an attempt-bound [versioned source-health report](do
 after both jobs, preserving missing or untested coverage rather than treating
 job success as a healthy source.
 
-The live step uses short tracebacks and filters the configured literal values
-before uploading diagnostic files. If filtering fails, those files are not
-uploaded. This keeps test output out of uploaded files.
+The live step uses short tracebacks and filters configured values, captured
+session values and their encoded forms before uploading diagnostic files. If
+filtering fails, those files are not uploaded.
 
 | Tier | Command | Needs |
 |------|---------|-------|
 | Fast (PR gate) | `uv run pytest -m "not slow and not integration and not performance"` | Nothing extra |
-| Full corpus | `uv run pytest` | LFS-hydrated test PDFs (`git lfs pull`) |
+| Preserved processing corpus | Use the isolated preserved text installation | Separate processing environment |
 | Integration | `uv run pytest -m integration` | `ZLIBRARY_EMAIL` / `ZLIBRARY_PASSWORD` in `.env`; auto-skips without them |
 | E2E | `npm run test:e2e` | Docker |
 
@@ -173,6 +166,11 @@ git checkout -b feature/your-feature-name   # New feature
 git checkout -b fix/issue-description        # Bug fix
 git checkout -b docs/topic                   # Documentation
 ```
+
+Production dependency changes require `npm ci`, `uv sync --frozen --group dev`,
+and `uv run --frozen python scripts/generate-third-party-notices.py --refresh`;
+see [dependency notice inputs](https://github.com/rookslog/zlibrary-mcp/blob/master/scripts/notices/README.md). Dev-only lock updates
+and unrelated documentation edits do not require a refresh.
 
 ### Commit Messages
 
@@ -284,3 +282,35 @@ Include:
 - Operating system
 - Full error output
 - Steps to reproduce
+
+## CI test account and uploaded output
+
+CI may only use a dedicated test account with nothing else on it. Without an
+account, the live suite reports `no_account` and skips authentication.
+
+`scripts/check-workflow-secrets.mjs`, run by CI, parses every workflow and requires
+successful output preparation before artifact uploads in jobs using secrets other
+than `GITHUB_TOKEN`. Uploads may contain only prepared `live.log`, `live.xml`,
+and optional `live-counts.json` from the workspace root. Counts require the exact
+`python3 scripts/live_test_counts.py` command immediately after successful
+filtering, with no environment, shell or directory overrides. Both preparation
+and upload require filter success; only artifact-upload steps may follow counts
+preparation through the last upload. Aggregate and bracket secret access receive
+the same checks.
+Reusable-workflow callers using secrets require a named job exception.
+Exceptions require a named entry and a nonempty stated reason in the checker.
+The check covers direct `actions/upload-artifact` steps in workflow files only. It does not inspect composite actions, other actions, shell commands, caches, job summaries or job outputs.
+
+Integration credentials use an opaque test helper and an explicit login boundary.
+Integration setup captures every EAPI login in a private file outside the workspace.
+The output filter consumes and removes that file, replaces configured and captured
+values and their encoded representations, and also checks recognized session fields.
+For captured values of at least 16 characters, it also replaces matching runs of
+at least eight characters, including shortened test-output representations.
+Missing required capture or incomplete login records prevent preparation. The
+filter rereads the upload files and checks decoded XML. An unsuccessful filter
+prevents upload. After successful filtering, the workflow prints a fixed test
+summary; raw pytest output stays in the prepared
+log file. Live test output is retained for one day; the separate source report
+remains at thirty days. Offline canaries exercise this path with synthetic values
+in the normal test suite.

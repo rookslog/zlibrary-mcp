@@ -27,6 +27,8 @@ jobs:
       - uses: astral-sh/setup-uv@v7
       - run: npm ci
       - run: uv sync --frozen --group dev
+      - name: Check workflow secret and artifact policy
+        run: node scripts/check-workflow-secrets.mjs
       - run: npm run build
       - name: Verify targeted Jest scripts select tests
         shell: bash

@@ -306,6 +306,31 @@ async def probe_zlibrary_eapi(client: httpx.AsyncClient) -> list[ProbeResult]:
             and ("books" not in payload or isinstance(payload["books"], list))
             and _accepted_eapi_reply(payload)
         )
+        books = payload.get("books", []) if isinstance(payload, dict) else []
+        if has_shape and books:
+            # Catalogue grouping relies on this optional field being present in
+            # at least some search records; missing individual digests stay valid.
+            has_shape = (
+                all(isinstance(book, dict) for book in books)
+                and any(
+                    isinstance(book.get("md5"), str)
+                    and re.fullmatch(r"[0-9a-fA-F]{32}", book["md5"])
+                    for book in books
+                )
+                and all(
+                    (
+                        "md5" not in book
+                        or isinstance(book["md5"], str)
+                        and re.fullmatch(r"[0-9a-fA-F]{32}", book["md5"])
+                    )
+                    and (
+                        "sha256" not in book
+                        or isinstance(book["sha256"], str)
+                        and re.fullmatch(r"[0-9a-fA-F]{64}", book["sha256"])
+                    )
+                    for book in books
+                )
+            )
         results.append(
             ProbeResult(
                 name="zlibrary:eapi/book/search",

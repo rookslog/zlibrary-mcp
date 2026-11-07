@@ -26,7 +26,11 @@ for (const build of ['A', 'B']) {
       build === 'B'
         ? { query: 'semantic title/author variant', sources: [source] }
         : { query: 'semantic title/author variant', source },
-    reply: { structuredContent: { rows } },
+    reply: { structuredContent: { rows, ...(build === 'B' ? {sources:Object.fromEntries(
+      ['libgen','zlibrary','annas'].map(name=>[name,name === source
+        ? {state:rows.length ? 'rows':'empty',rows:rows.length,ms:1}
+        : {state:'not_asked',reason:'not_requested'}])
+    )} : {}) } },
   });
   const score = (id, trace) =>
     scoreTask({ task: tasks.find((t) => t.id === id), arm, trace, downloads, remainingBefore: 0 });
@@ -65,7 +69,8 @@ for (const build of ['A', 'B']) {
               : [
                   {
                     ...row,
-                    ...(kind === 'different identity' ? { id: 'other' } : {}),
+                    // Public B identity is the opaque ref; A still consumes raw IDs.
+                    ...(kind === 'different identity' ? (build === 'B' ? {ref:'other-identity-ref'} : { id: 'other' }) : {}),
                     ...(kind === 'different source' ? { source: 'zlibrary' } : {}),
                     ...(kind === 'different ref' ? { ref: 'other-ref' } : {}),
                   },

@@ -69,7 +69,7 @@ DNS_TIMEOUT_MARKER = "zlibrary_mcp_dns_timeout"
 # Cached probe verdicts, keyed by (host, port), for the lifetime of the
 # process. The bridge is a one-shot process per MCP call, so this only ever
 # collapses the repeated probes of a single call (LibGen walks three mirrors)
-# and cannot go stale across calls.
+# and cannot go stale across calls. Resident callers reset it per operation.
 _probe_cache: Dict[Tuple[str, int], Optional[ProviderUnreachableError]] = {}
 
 
@@ -264,6 +264,7 @@ async def probe_host(
     timeout: float = 5.0,
     use_cache: bool = True,
     scheme: str = "https",
+    cache_result: bool = True,
 ) -> None:
     """Check that a host resolves and accepts a TCP connection.
 
@@ -288,6 +289,7 @@ async def probe_host(
         timeout: Aggregate budget in seconds for DNS and TCP connect together
         use_cache: Reuse a verdict already reached for this (host, port)
         scheme: URL scheme the real request will use, for proxy detection
+        cache_result: Store this probe's verdict; disable for shortened budgets
 
     Raises:
         ProviderUnreachableError: If DNS or the TCP connect fails or times out
@@ -309,7 +311,8 @@ async def probe_host(
         return
 
     error = await _probe_host_uncached(provider, host, port, timeout)
-    _probe_cache[key] = error
+    if cache_result:
+        _probe_cache[key] = error
     if error is not None:
         raise error
 
@@ -409,7 +412,7 @@ async def _open_resolved_connection(loop, sock, sockaddr):
 
 
 def reset_probe_cache() -> None:
-    """Clear cached probe verdicts (used by tests)."""
+    """Clear verdicts for a new resident operation or an isolated test."""
     _probe_cache.clear()
 
 

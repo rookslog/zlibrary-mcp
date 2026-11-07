@@ -1,4 +1,4 @@
-"""J1: real preflight verdicts must precede a comparison slice's backstop."""
+"""Real preflight verdicts must precede a comparison slice's backstop."""
 
 import asyncio
 import socket

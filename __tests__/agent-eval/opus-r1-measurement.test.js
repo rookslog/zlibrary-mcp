@@ -103,7 +103,7 @@ test('I6/probe a wrong decisions count calls, not reasons, with tool-kind-only a
     'off-oracle tool',
   ]);
 });
-test('I7/probe2 omitted sources use reported sets; list order cannot shield exhausted Z-Library', async () => {
+test('omitted sources use reported sets; list order cannot shield exhausted Z-Library', async () => {
   const row = { ref: 'observed-libgen', title: 'Persuasion', source: 'libgen', id: '301' };
   const sources = {libgen:{state:'rows',rows:1,ms:1},zlibrary:{state:'not_asked',reason:'not_in_default_order'},annas:{state:'not_asked',reason:'route_off'}};
   for (const [a, defaults, args, data, success] of [

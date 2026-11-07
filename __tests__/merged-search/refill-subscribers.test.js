@@ -10,18 +10,18 @@ function fixture(){
  const tools=new AcquisitionTools(async()=>{throw Error('no bridge');},{},{registry});
  return {tools,jobs,calls:()=>calls};
 }
-test('R7-01 public abandoned cursor position stays fenced until its adapter promise settles',async()=>{
+test('public abandoned cursor position stays fenced until its adapter promise settles',async()=>{
  const f=fixture();const first=await f.tools.call('search',{query:'fresh',limit:50});const caller=new AbortController();
  const pending=f.tools.call('search',{cursor:first.next_cursor},{signal:caller.signal});await jest.advanceTimersByTimeAsync(0);caller.abort();expect((await pending).error.code).toBe('cancelled');expect((await f.tools.call('get_limits')).sources.libgen.recent).toEqual({searches:1,late:0,failed:0});await jest.advanceTimersByTimeAsync(0);
  const retry=f.tools.call('search',{cursor:first.next_cursor});await jest.advanceTimersByTimeAsync(0);
  try{expect(f.calls()).toBe(2);expect((await retry).error).toMatchObject({code:'provider_timeout',retry:'safe',detail:{reason:'refill_draining'}});}finally{for(const job of f.jobs)job.resolve('late');await jest.advanceTimersByTimeAsync(0);}
  const fresh=f.tools.call('search',{cursor:first.next_cursor});await jest.advanceTimersByTimeAsync(0);expect(f.calls()).toBe(3);f.jobs.at(-1).resolve('replacement');const page=await fresh;expect(page.rows[0].title).toBe('replacement 0');expect(await f.tools.call('search',{cursor:first.next_cursor})).toEqual(page);
 });
-test('R7-02 a sole cursor subscriber enforces its timeout and retains the abandoned-position fence',async()=>{
+test('a sole cursor subscriber enforces its timeout and retains the abandoned-position fence',async()=>{
  const f=fixture();const first=await f.tools.call('search',{query:'fresh',limit:50});const pending=f.tools.call('search',{cursor:first.next_cursor},{timeoutMs:40});let reply;pending.then(r=>reply=r);await jest.advanceTimersByTimeAsync(40);
  try{expect(reply).toMatchObject({error:{code:'provider_timeout',retry:'safe',detail:{reason:'caller_timeout'}}});expect(reply.error.attempts).toEqual([{source:'libgen',state:'failed',code:'provider_timeout',reason:'caller_timeout',ms:40}]);expect(f.jobs[0].signal.aborted).toBe(true);expect((await f.tools.call('get_limits')).sources.libgen.recent).toEqual({searches:1,late:0,failed:0});const retry=f.tools.call('search',{cursor:first.next_cursor});await jest.advanceTimersByTimeAsync(0);expect(f.calls()).toBe(2);expect((await retry).error.detail.reason).toBe('refill_draining');}finally{for(const job of f.jobs)job.resolve('late');await jest.advanceTimersByTimeAsync(0);await pending;}
 });
-test('R7-02 short-budget refill caller cannot abort a longer-budget peer or alter local replay',async()=>{
+test('short-budget refill caller cannot abort a longer-budget peer or alter local replay',async()=>{
  const f=fixture();const first=await f.tools.call('search',{query:'fresh',limit:50});let shortReply,longReply;
  const a=f.tools.call('search',{cursor:first.next_cursor},{timeoutMs:10}).then(r=>shortReply=r);const b=f.tools.call('search',{cursor:first.next_cursor},{timeoutMs:100}).then(r=>longReply=r);
  await jest.advanceTimersByTimeAsync(10);

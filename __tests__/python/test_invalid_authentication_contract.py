@@ -2,6 +2,7 @@
 
 import ast
 import builtins
+import importlib.util
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -24,9 +25,16 @@ def run_invalid_login(client):
             return SimpleNamespace(EAPIClient=lambda domain: client)
         raise AssertionError(f"Unexpected import in offline auth regression: {name}")
 
+    helper_spec = importlib.util.spec_from_file_location(
+        "offline_ci_credentials", source_path.with_name("ci_credentials.py")
+    )
+    helper = importlib.util.module_from_spec(helper_spec)
+    helper_spec.loader.exec_module(helper)
     namespace = {
         "__builtins__": {**vars(builtins), "__import__": fake_import},
         "os": SimpleNamespace(environ={}),
+        "Secret": helper.Secret,
+        "login_with_credentials": helper.login_with_credentials,
     }
     exec(compile(module, str(source_path), "exec"), namespace)
     coroutine = namespace[method.name](None, "offline.example.test")

@@ -35,6 +35,41 @@ The Z-Library MCP server implements comprehensive retry logic with exponential b
 | `CIRCUIT_BREAKER_THRESHOLD` | `5` | Number of failed logical dependency calls before opening circuit |
 | `CIRCUIT_BREAKER_TIMEOUT` | `60000` | Time in ms before attempting to close circuit (1 minute) |
 
+### Merged-search comparison wait
+
+`BOOK_SOURCE_SEARCH_WAIT_MS` is a positive whole decimal millisecond value
+(default `12000`, maximum `2147483647`); invalid or blank values refuse startup.
+When multiple source jobs are dispatched, one monotonic deadline starts before
+local planning. Only results observed strictly before it enter the frozen
+reply. If all jobs settle sooner, it returns sooner. A sole dispatched job
+retains its ordinary bridge budget. Shorter explicit caller budgets still win.
+
+The comparison cut is `search_cut`, a neutral cancellation, distinct from a
+real auth/provider deadline and caller cancellation. It does not charge the
+breaker or create authentication backoff. Queued waiters withdraw; issued work
+remains owned through TERM/grace/KILL and late output is discarded. A `late`
+line says the reply stopped waiting for a dispatched job, not whether a request
+was issued or cleanup completed. Locks and worker capacity stay with their
+owners until cleanup actually finishes. Cancelling a retained refill withdraws
+one subscriber; last withdrawal aborts it, with the position fenced until its
+adapter promise settles before an explicit retry can dispatch. Programmatic
+`CallOptions.timeoutMs` applies separately to each refill subscriber. Expiry
+returns `provider_timeout` / `caller_timeout` and withdraws only that caller; a
+longer-budget peer continues. This local wait expiry is neutral to provider
+health. The bridge operation keeps its ordinary owner budget; the subscriber
+does not install its shorter timer on shared work. Adapter settlement does not
+claim physical cleanup or lock release.
+
+LibGen comparison searches use a private 5-second per-mirror allowance,
+clamped by the remaining walk. Preflight, pacing and the search itself share
+that allowance, so a slow preflight or rate wait leaves less for the request.
+Other mirrors remain candidates. This short search allowance changes neither
+download resolution nor transfer budgets. The whole comparison wait is
+separate from these source-local budgets. Pacing refusal or slice exhaustion
+before issuing a search uses `mirror_slice_exhausted`; an issued search that
+times out retains `search_timeout`. Anna's retains its ordinary source budget
+under the outer comparison wait.
+
 ### Multi-Source Timeout Configuration
 
 Nothing in the multi-source path may run unbounded. Two layers cooperate, and

@@ -610,6 +610,7 @@ def normalize_eapi_book(eapi_book: dict) -> dict:
         "hash": eapi_book.get("hash", ""),
         "book_hash": eapi_book.get("hash", ""),
         "pages": eapi_book.get("pages", ""),
+        **{key: eapi_book[key] for key in ("md5", "sha256") if key in eapi_book},
     }
 
 

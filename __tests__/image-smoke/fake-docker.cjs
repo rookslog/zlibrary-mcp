@@ -33,10 +33,11 @@ function launch(command, childArgs, env, name, image, cwd) {
       const request = JSON.parse(line);
       if (image === 'no-contact' && request.method === 'tools/call') {
         const data = { rows: [{
-          title: 'Rehearsal sequential', ref: 'fixture-ref', source: 'zlibrary',
-        }], routing: {
-          requested: ['zlibrary'], served_by: 'zlibrary', fell_back: false,
-          attempts: [{ source: 'zlibrary', outcome: 'rows' }],
+          title: 'Rehearsal sequential', ref: 'fixture-ref', source: 'zlibrary', match: 'source_only',
+        }], ordering: 'fit-v1', note: 'One fixture result.', all_answered: true, sources: {
+          libgen: { state: 'not_asked', reason: 'not_requested' },
+          zlibrary: { state: 'rows', rows: 1, ms: 0 },
+          annas: { state: 'not_asked', reason: 'not_requested' },
         } };
         process.stdout.write(JSON.stringify({ jsonrpc: '2.0', id: request.id, result: {
           content: [{ type: 'text', text: JSON.stringify(data) }], structuredContent: data,

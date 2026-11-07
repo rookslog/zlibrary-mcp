@@ -3,6 +3,7 @@ import { afterEach, beforeEach, expect, jest, test } from '@jest/globals';
 import { EapiSessionOwner } from '../../dist/lib/eapi-session.js';
 import { CircuitBreaker } from '../../dist/lib/circuit-breaker.js';
 import { isTransientDependencyError } from '../../dist/lib/retry-manager.js';
+import { AcquisitionTools } from '../../dist/lib/acquisition-tools.js';
 import { fanOut } from '../../dist/lib/fan-out.js';
 import { SourceRegistry } from '../../dist/lib/source-registry.js';
 const identity = 'synthetic-owner';
@@ -21,8 +22,14 @@ const healthy = owner => async input => { if (input.action === 'login') owner.co
 const pending = (_input, signal) => new Promise((_resolve, reject) => signal.addEventListener('abort', () => reject(Object.assign(new Error('aborted'), { context: { reason: 'aborted' } })), { once: true }));
 const registryFor = work => new SourceRegistry(['fast', 'owner'].map(name => ({
   name, capabilities: () => ({ configured: true, search_available: true, download_available: true }), defaultSearch: () => ({ on: true }), md5: () => undefined,
-  searchWindow: async (_request, signal) => { const result = name === 'fast' ? { rows: [] } : await work(signal); return windowFixture(result.rows, result); },
+  searchWindow: async (_request, signal) => { const result = name === 'fast' ? { rows: [{id:'fast'}] } : await work(signal); return windowFixture(result.rows, result); },
 })));
+
+async function dispatch(mode,registry,request,options) {
+ if(mode==='engine')return fanOut(registry,request,options);
+ const tools=new AcquisitionTools(async()=>{throw new Error('No provider call');},{BOOK_SOURCE_SEARCH_WAIT_MS:String(options.waitMs)},{registry});
+ return tools.call('search',{query:'Synthetic'},{signal:options.signal});
+}
 
 test.each(['search_cut', Object.assign(new Error('comparison'), { name: 'TimeoutError', reason: 'search_cut' })])('M04 comparison origin %p cancels cold login without poisoning admission', async reason => {
   const owner = new EapiSessionOwner(); const controller = new AbortController();
@@ -38,19 +45,19 @@ test('M04 genuine owner authentication deadline still starts backoff', async () 
   expect((await first).context.reason).toBe('timeout');
   await expect(owner.run(identity, healthy(owner))).rejects.toMatchObject({ context: { reason: 'auth_backoff' } });
 });
-test('M04 a warm comparison cut is neutral to a real HALF_OPEN breaker and admits the next healthy probe', async () => {
+test.each(['engine','public'])('M04 %s warm comparison cut is neutral to a real HALF_OPEN breaker and admits the next healthy probe', async mode => {
   const owner = new EapiSessionOwner(); await owner.run(identity, healthy(owner));
   const breaker = new CircuitBreaker({ threshold: 1, timeout: 10, isFailure: isTransientDependencyError });
   await expect(breaker.execute(async () => { throw Object.assign(new Error('synthetic'), { code: 'NETWORK_ERROR' }); })).rejects.toThrow('synthetic');
   await jest.advanceTimersByTimeAsync(11);
-  const result = fanOut(registryFor(signal => breaker.execute(() => owner.run(identity, pending, { signal, timeoutMs: 60000 }))), {}, { waitMs: 100 });
+  const result = dispatch(mode, registryFor(signal => breaker.execute(() => owner.run(identity, pending, { signal, timeoutMs: 60000 }))), {}, { waitMs: 100 });
   await jest.advanceTimersByTimeAsync(0); expect(breaker.getState()).toBe('HALF_OPEN');
   await jest.advanceTimersByTimeAsync(100); expect((await result).sources.owner.state).toBe('late');
   expect(breaker.getState()).toBe('OPEN'); expect(breaker.getFailureCount()).toBe(1);
   await expect(breaker.execute(() => owner.run(identity, healthy(owner)))).resolves.toEqual({ rows: [] });
   expect(breaker.getState()).toBe('CLOSED');
 });
-test('M03 cancelling one shared waiter retains the login work a surviving peer needs', async () => {
+test.each(['engine','public'])('M03 %s cancelling one shared waiter retains the login work a surviving peer needs', async mode => {
   const owner = new EapiSessionOwner(); let complete; let loginSignal; let calls = 0;
   const backend = (input, signal) => {
     if (input.action !== 'login') return Promise.resolve({ rows: [] });
@@ -59,7 +66,7 @@ test('M03 cancelling one shared waiter retains the login work a surviving peer n
   };
   const peer = owner.run(identity, backend, { timeoutMs: 60000 });
   await jest.advanceTimersByTimeAsync(0);
-  const result = fanOut(registryFor(signal => owner.run(identity, backend, { signal, timeoutMs: 60000 })), {}, { waitMs: 100 });
+  const result = dispatch(mode, registryFor(signal => owner.run(identity, backend, { signal, timeoutMs: 60000 })), {}, { waitMs: 100 });
   await jest.advanceTimersByTimeAsync(100);
   expect((await result).sources.owner.state).toBe('late');
   expect(loginSignal.aborted).toBe(false); expect(calls).toBe(1);

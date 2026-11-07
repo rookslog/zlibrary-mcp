@@ -2245,3 +2245,35 @@ def test_probe_deadline_preserves_row_dates(
         today="2026-11-06",
     )
     assert {row["name"]: row["first_seen"] for row in later["results"]} == dates
+
+
+@pytest.mark.parametrize(
+    "books,want",
+    [
+        ([{"id": 1, "md5": "a" * 32, "sha256": "B" * 64}], True),
+        ([{"id": 1, "md5": "a" * 32}, {"id": 2}], True),
+        ([{"id": 1}], False),
+        ([{"id": 1, "md5": "opaque"}], False),
+        ([{"id": 1, "md5": "a" * 32, "sha256": "invalid"}], False),
+        ([], True),
+    ],
+)
+def test_eapi_catalogue_digest_drift_is_detected_when_search_returns_books(
+    check_upstream, books, want
+):
+    def handler(request):
+        payload = (
+            {"success": 1, "books": books}
+            if request.method == "POST"
+            else {"success": 1, "domains": []}
+        )
+        return httpx.Response(200, json=payload, request=request)
+
+    async def run():
+        async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+            return await check_upstream.probe_zlibrary_eapi(client)
+
+    result = next(
+        item for item in asyncio.run(run()) if item.name == "zlibrary:eapi/book/search"
+    )
+    assert result.ok is want

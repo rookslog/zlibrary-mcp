@@ -27,7 +27,7 @@ describe('local acquisition budget attribution', () => {
       });
       expect(isTransientDependencyError(error)).toBe(false);
       expect(isRetryableError(error)).toBe(false);
-      expect(ERROR_CODES).toHaveLength(19);
+      expect(ERROR_CODES).toHaveLength(18);
     },
   );
 });

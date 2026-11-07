@@ -27,9 +27,9 @@ test('F34 normalized exact retains accents, folds case and punctuation, and pres
   expect(checkMergedRowFilters({ title: 'Die Straße: Ein Buch', author: 'Cafe\u0301', extension: 'pdf' }, { query: 'DIE STRASSE', author: 'Café', formats: ['pdf'], exact: true })).toMatchObject({ status: 'pass', checks: { exact: { status: 'pass' }, formats: { status: 'pass' } } });
   expect(checkMergedRowFilters({ title: 'Être et temps' }, { query: 'Etre et temps', exact: true }).status).toBe('fail');
 });
-test('S2 deferred integration keeps legacy predicates and capability reporting unchanged', () => {
+test('legacy checker omits exact while merged search checks it locally', () => {
   expect(FILTER_CAPABILITIES.libgen.exact).toBe('unsupported');
-  expect(FILTER_CAPABILITIES.zlibrary.exact).toBe('native_only');
+  expect(FILTER_CAPABILITIES.zlibrary.exact).toBe('local');
   expect(checkRowFilters({ title: 'Wrong' }, { query: 'Solaris', exact: true }).checks).toEqual({});
   for (const exact of [undefined, false]) {
     expect(checkMergedRowFilters({}, { query: 'Solaris', exact })).toEqual(checkRowFilters({}, {}));

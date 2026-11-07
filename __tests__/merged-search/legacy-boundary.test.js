@@ -1,24 +1,14 @@
 import { afterEach, expect, test } from '@jest/globals';
-import fs from 'node:fs';
-import { TOOL_DEFINITIONS, createServer } from '../../dist/index.js';
+import os from 'node:os';
+import { createServer, TOOL_DEFINITIONS } from '../../dist/index.js';
 import { AcquisitionTools } from '../../dist/lib/acquisition-tools.js';
-import { RefStore } from '../../dist/lib/refs.js';
-const expected = JSON.parse(fs.readFileSync(new URL('./legacy-boundary.json', import.meta.url), 'utf8'));
-const original = { ...process.env };
-afterEach(() => { process.env = { ...original }; });
-test.each([{}, { BOOK_SOURCE_SEARCH_WAIT_MS: 'bad', BOOK_FORMAT_PREFERENCE: 'pdf,,pdf' }])('A/B boundary: tool definitions, limits, plain search, exact and startup retain the old contract with %p', async future => {
-  delete process.env.ZLIBRARY_EMAIL; delete process.env.ZLIBRARY_PASSWORD;
-  delete process.env.BOOK_SOURCE_DEFAULT_ORDER;
-  process.env.ZLIBRARY_OUTPUT_ROOT = '/tmp/synthetic-output';
-  delete process.env.BOOK_SOURCE_SEARCH_WAIT_MS; delete process.env.BOOK_FORMAT_PREFERENCE;
-  Object.assign(process.env, future);
-  const server = createServer(); await server.close();
-  const calls = [];
-  const tools = new AcquisitionTools(async (operation, args) => { calls.push([operation, args]); return { books: [{ id: 'legacy', md5: 'a'.repeat(32), title: 'Legacy', author: 'Synthetic', extension: 'pdf' }] }; }, { BOOK_SOURCE_DEFAULT_ORDER: 'libgen', ...future });
-  tools.refs = new RefStore({ nonce: 1n });
-  expect(TOOL_DEFINITIONS).toEqual(expected.definitions);
-  expect(await tools.call('get_limits', {})).toEqual(expected.limits); expect(calls).toHaveLength(0);
-  expect(await tools.call('search', { query: 'Legacy' })).toEqual(expected.plain);
-  expect(await tools.call('search', { query: 'Legacy', exact: true })).toEqual(expected.exact);
-  expect(calls.map(c => c[0])).toEqual(['search_multi_source']);
+const original={...process.env};
+afterEach(()=>{process.env={...original};});
+test('switches public search and local limits together without changing the five-tool surface',async()=>{
+ delete process.env.ZLIBRARY_EMAIL;delete process.env.ZLIBRARY_PASSWORD;delete process.env.BOOK_SOURCE_DEFAULT_ORDER;delete process.env.BOOK_SOURCE_SEARCH_WAIT_MS;delete process.env.BOOK_FORMAT_PREFERENCE;process.env.ZLIBRARY_OUTPUT_ROOT=os.tmpdir();
+ const server=createServer();await server.close();const calls=[];const tools=new AcquisitionTools(async(op,args)=>{calls.push([op,args]);return {books:[{id:'synthetic',title:'Legacy',author:'Synthetic',extension:'pdf'}]};},{});
+ expect(TOOL_DEFINITIONS.map(t=>t.name)).toEqual(['search','get_book','download','get_limits','get_history']);const limits=await tools.call('get_limits');expect(calls).toHaveLength(0);expect(limits.search.default_sources).toEqual(['libgen']);const reply=await tools.call('search',{query:'Legacy',exact:true});expect(reply.rows[0].match).toBe('exact_title');expect(reply.sources.libgen.state).toBe('rows');expect(reply.all_answered).toBe(true);expect(reply).not.toHaveProperty('routing');expect(limits.sources.libgen.filters.exact).toBe('local');expect(calls).toHaveLength(1);
+});
+test('validates search settings at startup before any bridge call',()=>{
+ process.env.ZLIBRARY_OUTPUT_ROOT=os.tmpdir();process.env.BOOK_SOURCE_SEARCH_WAIT_MS='bad';expect(()=>createServer()).toThrow(/BOOK_SOURCE_SEARCH_WAIT_MS/);
 });

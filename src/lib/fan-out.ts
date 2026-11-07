@@ -29,11 +29,14 @@ export interface FanOutOptions {
   waitMs?: number;
   /** Monotonic observation clock; injectable for boundary fixtures. */
   now?: () => number;
+  /** Start before local intent/admission snapshots when the public owner supplies it. */
+  startedAt?: number;
   /** Local admission snapshots, e.g. an open breaker. No network probes. */
   blocked?: Readonly<Record<string, NotAsked>>;
 }
 export interface FanOutResult {
   windows: ReadonlyMap<string, SearchWindow>;
+  failures: ReadonlyMap<string, ToolFailure>;
   sources: Record<string, SourceLine>;
   all_answered: boolean;
   note: string;
@@ -46,8 +49,8 @@ function freeze<T>(value: T, seen = new WeakSet<object>()): T {
   }
   return value;
 }
-function readonlyWindows(windows: Map<string, SearchWindow>): ReadonlyMap<string, SearchWindow> {
-  const view: ReadonlyMap<string, SearchWindow> = Object.freeze({
+function readonlyWindows<T>(windows: Map<string, T>): ReadonlyMap<string, T> {
+  const view: ReadonlyMap<string, T> = Object.freeze({
     get size() {
       return windows.size;
     },
@@ -58,7 +61,7 @@ function readonlyWindows(windows: Map<string, SearchWindow>): ReadonlyMap<string
     values: () => windows.values(),
     [Symbol.iterator]: () => windows[Symbol.iterator](),
     forEach: (
-      callback: (value: SearchWindow, key: string, map: ReadonlyMap<string, SearchWindow>) => void,
+      callback: (value: T, key: string, map: ReadonlyMap<string, T>) => void,
       thisArg?: unknown,
     ) => windows.forEach((value, key) => callback.call(thisArg, value, key, view)),
   });
@@ -110,7 +113,7 @@ const cancelled = (): ToolFailure =>
  */
 export async function fanOut(
   registry: SourceRegistry,
-  request: MergedFilterRequest,
+  request: MergedFilterRequest & { page?: number },
   options: FanOutOptions = {},
 ): Promise<FanOutResult> {
   const waitMs = options.waitMs ?? 12000;
@@ -119,12 +122,13 @@ export async function fanOut(
   if (options.signal?.aborted) throw cancelled();
   if (options.sources) registry.validate(options.sources);
   const clock = options.now ?? (() => performance.now());
-  const start = clock();
+  const start = options.startedAt ?? clock();
   const deadlineAt = start + waitMs;
   const env = options.env ?? {};
   const wanted = new Set<string>();
   const lines = new Map<string, SourceLine>();
   const windows = new Map<string, SearchWindow>();
+  const failures = new Map<string, ToolFailure>();
   const pending = new Set<string>();
   const controllers = new Map<string, AbortController>();
   for (const spec of registry.sources) {
@@ -191,6 +195,7 @@ export async function fanOut(
           sources: freeze(sources),
           all_answered,
           note,
+          failures: readonlyWindows(new Map(failures)),
           windows: readonlyWindows(
             new Map(
               registry.sources
@@ -206,7 +211,17 @@ export async function fanOut(
       done = true;
       cleanup();
       for (const name of pending) controllers.get(name)!.abort();
-      reject(cancelled());
+      const failure = cancelled();
+      failure.info.attempts = registry.sources.map((spec) => ({
+        source: spec.name,
+        ...(lines.get(spec.name) ?? {
+          state: 'failed',
+          code: 'cancelled',
+          reason: 'aborted',
+          ms: elapsed(),
+        }),
+      }));
+      reject(failure);
     };
     options.signal?.addEventListener('abort', cancel, { once: true });
     if (options.signal?.aborted) {
@@ -277,6 +292,10 @@ export async function fanOut(
         });
       } else {
         const failure = classifyFailure(error, 'search', name);
+        failures.set(
+          name,
+          freeze(new ToolFailure(failure.code, failure.message, structuredClone(failure.info))),
+        );
         lines.set(name, {
           state: 'failed',
           code: failure.code,

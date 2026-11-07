@@ -174,8 +174,8 @@ async def test_advertised_domain_probe_307_skips_to_next(monkeypatch):
     ):
         # Initial configured login is deliberately pinned by the resolver only;
         # advertised selection still uses the real candidate probes.
-        async def resolve():
-            return DOMAINS[2]
+        async def resolve(*, exclude=()):
+            return None if DOMAINS[2] in exclude else DOMAINS[2]
 
         monkeypatch.setattr(bridge, "resolve_eapi_domain", resolve)
         client = await bridge._login_eapi_client("reader@example.invalid", PASSWORD)

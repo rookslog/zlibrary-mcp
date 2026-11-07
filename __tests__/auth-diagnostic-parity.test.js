@@ -226,6 +226,20 @@ test('caller abort is cancellation, not a transport outage; real timeout stays t
 
 // Valid typed transport evidence may fill an unknown reason, not overwrite a
 // deliberate control outcome or admit a malformed diagnostic record.
+test('ConnectError needs a valid child transport verdict before counting as an outage', () => {
+  const connect = { context: { pythonErrorType: 'ConnectError' } };
+  connect.context.diagnostics = authDiagnosticsFor(connect, diagnostics.request_id, 1, 0);
+  expect(connect.context.diagnostics.failure_kind).toBe('ambiguous_status');
+  expect(isTransientDependencyError(connect)).toBe(false);
+  expect(isRetryableError(connect)).toBe(false);
+  const transport = { ...diagnostics, failure_kind: 'transport' };
+  const confirmed = { context: { pythonErrorType: 'ConnectError', diagnostics: transport } };
+  expect(authDiagnosticsFor(confirmed, diagnostics.request_id, 1, 0).failure_kind).toBe('transport');
+  expect(isTransientDependencyError(confirmed)).toBe(true);
+  expect(isTransientDependencyError({ context: { pythonErrorType: 'ConnectError', diagnostics: { ...transport, extra: true } } })).toBe(false);
+  expect(isTransientDependencyError({ context: { ...confirmed.context, loginToken: 'TLS certificate verification failed' } })).toBe(false);
+});
+
 test('ordinary transport fallback uses an existing code and preserves timeout/abort controls', () => {
   const transport = { ...diagnostics, failure_kind: 'transport' };
   const unknown = {

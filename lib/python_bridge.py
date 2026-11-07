@@ -2146,7 +2146,7 @@ async def get_book_metadata_complete(book_id: str, book_hash: str = None) -> dic
 
         return metadata
 
-    except EAPIAuthenticationError:
+    except (EAPIAuthenticationError, RedirectRefusedError):
         raise  # Preserve the typed verdict across the metadata wrapper.
     except Exception as e:
         logger.exception(f"Error fetching complete metadata for book {book_id}")

@@ -123,7 +123,13 @@ export function isTransientDependencyError(error: any): boolean {
   )
     return transientStatus(error.context.httpStatus ?? error.context.loginStatus);
   const code = error.code === 'PYTHON_ERROR' ? error.context?.originalError?.code : error.code;
+  // ConnectError alone also covers TLS and configuration failures.
+  const diagnosedConnectFailure =
+    error.context?.pythonErrorType === 'ConnectError' &&
+    error.context?.loginToken !== 'TLS certificate verification failed' &&
+    readAuthDiagnostics(error.context?.diagnostics)?.failure_kind === 'transport';
   return (
+    diagnosedConnectFailure ||
     [
       'NETWORK_ERROR',
       'TIMEOUT',
@@ -138,7 +144,6 @@ export function isTransientDependencyError(error: any): boolean {
     /^5\d\d$/.test(String(code)) ||
     [
       'ReadTimeout',
-      'ConnectError',
       'RedirectRefusedError',
       'WriteTimeout',
       'ConnectTimeout',

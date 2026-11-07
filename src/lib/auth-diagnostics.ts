@@ -82,7 +82,6 @@ export function authDiagnosticsFor(
                   'ReadTimeout',
                   'WriteTimeout',
                   'ConnectTimeout',
-                  'ConnectError',
                   'PoolTimeout',
                   'RemoteProtocolError',
                   'RedirectRefusedError',

@@ -25,7 +25,7 @@ const call = async (name, args = {}) => (await client.callTool({ name, arguments
 test('tools/list stays under 9200 characters with success/error output schemas', async () => {
   const list = await client.listTools();
   expect(JSON.stringify(list).length).toBeLessThan(9200);
-  expect(JSON.stringify(list).length).toBe(9092);
+  expect(JSON.stringify(list).length).toBe(9166);
   expect(ERROR_CODES).toHaveLength(18);
   expect(list.tools.map(t => t.name)).toEqual(['search', 'get_book', 'download', 'get_limits', 'get_history']);
   for (const t of list.tools) expect(t.outputSchema.oneOf).toHaveLength(2);

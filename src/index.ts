@@ -17,13 +17,13 @@ import { searchSuccessShape } from './lib/search-wire.js';
 
 const descriptions: Record<ToolName, string> = {
   search:
-    'Metadata, not book text. query/author and exact are checked locally. sources is a set asked together; defaults: get_limits. Equal catalogue MD5 groups selectable copies; ref selects one copy. Check sources, all_answered and note for incomplete results. Pass cursor alone for retained pages or a source refill; replay is local. On ref_unavailable, search again. Anna: anonymous/member search, keyed download.',
+    'Metadata, not book text. Give query and/or author; exact checks each field locally. sources is a set asked together; defaults: get_limits. Equal catalogue MD5 groups selectable copies; ref selects one copy. Check sources, all_answered and note for incomplete results. Pass cursor alone for retained pages; continuing beyond held results may issue one source request, then replays are local. On ref_unavailable, search again. Anna: anonymous/member search, keyed download.',
   get_book:
     'Edition evidence for any copy ref; bounded other_copies, disagreements and likely_editions retain the search filters. Zlibrary costs one detail call; others return held rows. Optional relationship evidence can expire before the ref. Description capped at 1,000 characters.',
   download:
     'Download the selected source copy to server disk: path, bytes, source and record sidecar, not text. Failure may offer other_copies; never substitutes. Repeats at the same destination re-hash sha256 and skip an intact copy without quota; different output_dir or filename transfers again. Local destination locks coalesce processes.',
   get_limits:
-    'local: resolved search set, wait policy and capabilities; no network. live: Zlibrary quota. Anna: member_key_configured and last-observed member_session (none/active/rejected). Per-source errors; quotas vary.',
+    'local (default): resolved search set, wait policy and capabilities; no network. live: Zlibrary quota. Anna: member_key_configured and last-observed member_session (none/active/rejected). Per-source errors; quotas vary.',
   get_history:
     'Zlibrary account history in source order. Not local files. Refs last this process and 5,000 entries; search again if unavailable. Pass cursor alone: replay fetches the same position; pages are not frozen.',
 };

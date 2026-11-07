@@ -159,6 +159,8 @@ export function classifyFailure(error: any, operation: string, source?: string):
         HTTPStatusError: 'http_error',
       } as Record<string, string>
     )[context.pythonErrorType];
+  if (reason === 'unknown' && context.pythonErrorType === 'RedirectRefusedError')
+    reason = 'http_error';
   // Fill only an unknown cause: explicit timeout/abort/acquisition decisions
   // keep their existing codes and download issuance semantics.
   if (reason === 'unknown' && diagnostics?.failure_kind === 'transport')
@@ -212,6 +214,7 @@ export function classifyFailure(error: any, operation: string, source?: string):
     code = sourceConfiguration ? 'invalid_argument' : 'credentials_missing';
   else if (reason === 'quota_exhausted') code = 'quota_exhausted';
   else if (
+    (reason === 'http_error' && context.pythonErrorType === 'RedirectRefusedError') ||
     [
       'dns_failure',
       'dns_timeout',

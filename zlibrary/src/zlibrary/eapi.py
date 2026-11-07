@@ -233,8 +233,8 @@ async def resolve_eapi_domain(
     probing — an explicit override means no silent switching, ever.
     Otherwise each candidate in DEFAULT_EAPI_DOMAINS is probed in order and
     the first healthy one wins. If every candidate fails the probe, the
-    first untried candidate is returned so login can surface the real error.
-    With `exclude`, exhausted configured candidates return None. Pins never switch.
+    first candidate is returned for one initial login to surface the real error.
+    With `exclude`, no passing untried candidate means None. Pins never switch.
     """
     override = os.environ.get("ZLIBRARY_EAPI_DOMAIN")
     if override and override.strip():
@@ -252,6 +252,9 @@ async def resolve_eapi_domain(
             f"EAPI candidate domain {candidate} failed health probe "
             f"(anti-bot wall or unreachable), trying next"
         )
+    if exclude:
+        logger.warning("No untried EAPI domain passed the health probe")
+        return None
     logger.warning(
         f"All EAPI candidate domains failed the health probe; "
         f"falling back to {candidates[0]}"

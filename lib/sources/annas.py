@@ -773,7 +773,10 @@ class AnnasArchiveAdapter(SourceAdapter):
         except RedirectRefusedError as exc:
             _raise_keyed_error(
                 ProviderResponseError(
-                    PROVIDER, self.host, str(exc), reason="http_error"
+                    PROVIDER,
+                    self.host,
+                    f"Redirect refused (HTTP {exc.status_code})",
+                    reason="http_error",
                 )
             )
         except httpx.HTTPStatusError as exc:

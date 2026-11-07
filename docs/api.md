@@ -267,9 +267,9 @@ When configured, `ANNAS_SECRET_KEY` is lazily POSTed in form field `key` to
 `{ANNAS_BASE_URL}/account/`, with redirects disabled and the existing fast-download
 host guard; sign-in additionally requires HTTPS. The download host guard's
 existing HTTP-base behavior is unchanged. A fresh, usable `aa_account_id2`
-cookie on a successful response activates the memory-only session. A redirect
-is recorded locally as `RedirectRefusedError` and never followed or interpreted
-as key rejection. A fresh cookie on a same-origin redirect response can still
+cookie on a successful response activates the memory-only session. The POST
+never follows a redirect, and a redirect alone does not mark the key rejected.
+A fresh cookie on a same-origin redirect response can still
 activate the session; without it, sign-in remains `none` and search falls back
 to anonymous HTTP. Fast-download API requests carrying the key in the URL
 refuse every redirect, including same-origin redirects.

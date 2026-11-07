@@ -68,6 +68,10 @@ async def service(monkeypatch, **scenario):
                     {"Location": location},
                     b'DiamWall {"success":0,"error":"Authentication required"}',
                 )
+            if host in scenario.get(kind + "_wall", ()):
+                return 403, {}, b"DiamWall Access Denied"
+            if host in scenario.get(kind + "_nonjson", ()):
+                return 200, {"Content-Type": "text/html"}, b"<html>Unavailable</html>"
             if kind in ("profile", "login") and host in scenario.get(
                 kind + "_rejected", ()
             ):

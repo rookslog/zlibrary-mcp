@@ -103,6 +103,20 @@ export class EapiSessionOwner {
   private validatedEpoch = 0;
   private loginFailures = new Map<string, LoginFailure>();
 
+  /** Read-only admission view: no identity switch, login, validation or reset. */
+  admission(identity: string): { admission: 'open' | 'backoff'; admissionRetryAfterS?: number } {
+    const retryAt = this.loginFailures.get(identity)?.retryAt ?? 0;
+    return retryAt > Date.now()
+      ? { admission: 'backoff', admissionRetryAfterS: (retryAt - Date.now()) / 1000 }
+      : { admission: 'open' };
+  }
+
+  /** Observe this identity's refusal without selecting a session generation. */
+  refusal(identity: string): PythonBridgeError | undefined {
+    const failure = this.loginFailures.get(identity);
+    return failure && failure.retryAt > Date.now() ? this.backoffError(failure) : undefined;
+  }
+
   generationFor(identity: string): number {
     if (identity !== this.identity) {
       this.acquisition?.controller.abort();
@@ -199,7 +213,12 @@ export class EapiSessionOwner {
     const remaining = Math.max(0, state.retryAt - Date.now());
     return new PythonBridgeError(
       `${state.cause}; next attempt allowed in ${Math.ceil(remaining / 1000)} s`,
-      { reason: 'auth_backoff', retryAfterMs: remaining, diagnostics: state.diagnostics },
+      {
+        reason: 'auth_backoff',
+        retryAfterMs: remaining,
+        diagnostics: state.diagnostics,
+        details: { reason: 'auth_backoff', request_issued: false },
+      },
       false,
     );
   }

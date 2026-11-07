@@ -161,11 +161,11 @@ function refusal(source: string, reason: string, retry_after_s?: number): ToolFa
         : reason === 'queue_wait'
           ? 'provider_timeout'
           : 'provider_error';
-  return new ToolFailure(code, 'Source did not answer.', {
+  return new ToolFailure(code, 'Source request was not issued.', {
     source,
     retry: ['credentials_missing', 'unsupported_operation'].includes(code) ? 'no' : 'safe',
-    ...(retry_after_s !== undefined ? { retry_after_s } : {}),
-    detail: { reason },
+    ...(retry_after_s !== undefined ? { retry_after_s: Math.ceil(retry_after_s) } : {}),
+    detail: { reason, request_issued: false },
   });
 }
 function modelError(
@@ -173,8 +173,8 @@ function modelError(
   sources: Readonly<Record<string, SourceLine>>,
   ownSource?: string,
 ): SearchError['error'] {
-  // The public validator remains unchanged until activation; this internal model
-  // can account for any registered source without widening the live schema.
+  // Aggregate attempts account for every registered source; preserve the
+  // selected owner separately from the failure detail copied below.
   const info = { ...failure.info };
   delete info.source;
   const result = errorEnvelope(
@@ -427,7 +427,7 @@ export function renderSearchPage(
   const note =
     `${rows.length} file rows shown from ${acceptedRecords} accepted records, grouped by file.` +
     (incomplete.length ? ` ${incomplete.join('; ')}.` : '') +
-    ' These are bounded source windows, not everything.';
+    ' These are bounded source windows (up to 50 records per source), not everything.';
   return immutable({
     rows,
     sources: prepared.sources,

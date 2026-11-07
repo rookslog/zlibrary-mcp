@@ -3,7 +3,10 @@ import type { SearchSettings } from './search-settings.js';
 import { ToolFailure } from './tool-errors.js';
 
 export interface LocalSearchState {
+  /** Private owner error; limits project only the fields below. */
+  refusal?: unknown;
   breaker?: 'closed' | 'open' | 'half_open';
+  breakerBlocked?: boolean;
   breakerRetryAfterS?: number;
   admission?: 'open' | 'backoff';
   admissionRetryAfterS?: number;
@@ -19,17 +22,23 @@ const invalid = (): never => {
 };
 
 /** The denominator is dispatched source jobs, not network requests. A new
- * instance after restart is empty; admission refusals do not consume a slot. */
+ * instance after restart is empty; admission refusals and caller withdrawals
+ * do not consume a slot. */
 export class RecentSearches {
   private readonly outcomes = new Map<string, JobState[]>();
   constructor(names: readonly string[]) {
     if (new Set(names).size !== names.length || names.some((name) => !name)) invalid();
     names.forEach((name) => this.outcomes.set(name, []));
   }
-  record(source: string, line: { state: string }): void {
+  record(source: string, line: { state: string; code?: string; reason?: string }): void {
     const jobs = this.outcomes.get(source);
     if (!jobs) invalid();
-    if (line.state === 'not_asked') return;
+    if (
+      line.state === 'not_asked' ||
+      line.code === 'cancelled' ||
+      ['aborted', 'caller_timeout'].includes(line.reason ?? '')
+    )
+      return;
     if (!['rows', 'empty', 'late', 'failed'].includes(line.state)) invalid();
     jobs!.push(line.state as JobState);
     if (jobs!.length > 20) jobs!.shift();
@@ -50,8 +59,8 @@ export class RecentSearches {
   }
 }
 
-/** Pure future limits projection. No registry methods, owner methods or live
- * account calls; public get_limits and startup do not import this model. */
+/** Pure limits projection over captured capabilities and read-only local state;
+ * never calls a registry, session owner or live account itself. */
 export function projectSearchLimits(
   views: readonly SourceView[],
   settings: SearchSettings,
@@ -71,7 +80,7 @@ export function projectSearchLimits(
         invalid();
       const waits: number[] = [];
       for (const [enabled, value] of [
-        [breaker === 'open', state.breakerRetryAfterS],
+        [breaker === 'open' || state.breakerBlocked === true, state.breakerRetryAfterS],
         [admission === 'backoff', state.admissionRetryAfterS],
       ] as const) {
         if (enabled) {
@@ -101,7 +110,7 @@ export function projectSearchLimits(
           ...(!plan.intent.includes(view.name) ? { off_reason: plan.excluded[view.name] } : {}),
           breaker,
           admission,
-          ...(waits.length ? { retry_after_s: Math.max(...waits) } : {}),
+          ...(waits.length ? { retry_after_s: Math.ceil(Math.max(...waits)) } : {}),
           recent: count,
         },
       ];

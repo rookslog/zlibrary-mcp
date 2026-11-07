@@ -166,7 +166,7 @@ export const FILTER_CAPABILITIES = {
     year_to: 'local',
     languages: 'local',
     formats: 'local',
-    exact: 'native_only',
+    exact: 'local',
   },
 } as const;
 

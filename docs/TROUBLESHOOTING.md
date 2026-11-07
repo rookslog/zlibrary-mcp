@@ -180,36 +180,23 @@ debugging the client side.
 
 ---
 
-## Preserved 1.4.x PDF tests (historical)
+## Retained parser fixtures (developers)
 
-This section applies only to the preserved text-processing installation. The
-acquisition-only suite does not need PDF engines or hydrated processing fixtures.
+This checkout keeps two HTML fixtures: `test_files/annas/search_results.html`
+for Anna's metadata parsing and `test_files/libgen/mixed_book_article_results.html`
+for LibGen book/article parsing and the offline upstream-probe regression.
+Retired processing PDFs, extracted text, annotations and guides are absent.
+The acquisition tests do not require their LFS objects or processing engines.
 
-### Symptom
-
-Many Python tests fail with PDF parse errors; files under `test_files/` are ~130 bytes.
-
-### Cause
-
-The test corpus is stored in **Git LFS**. Without LFS you have pointer files, not PDFs.
-
-### Solution
-
-```bash
-sudo apt-get install -y git-lfs   # or brew install git-lfs
-git lfs pull                      # from the repo root
-file test_files/*.pdf             # should say "PDF document", not "ASCII text"
-```
-
-> Do not run `git lfs install` inside this repo — it refuses to overwrite the repo's
-> existing `pre-push` hook. `git lfs pull` alone is enough for fetching objects.
+Historical processing test instructions belong to the separate preserved text
+installation; see [the migration guide](text-processing-migration.md#preserved-implementation-and-unresolved-work).
 
 ### Which tests need what
 
 | Subset | Command | Needs |
 |---|---|---|
 | Fast (what CI gates PRs on) | `uv run pytest -m "not slow and not integration and not performance"` | nothing extra |
-| Full corpus | `uv run pytest` | LFS objects |
+| Preserved processing corpus | Use the isolated preserved text installation | Separate processing environment |
 | Live integration | `uv run pytest -m integration` | `ZLIBRARY_EMAIL`/`ZLIBRARY_PASSWORD` (auto-**skips** without them) |
 | E2E | `npm run test:e2e` | Docker |
 

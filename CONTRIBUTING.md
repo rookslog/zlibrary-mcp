@@ -10,19 +10,12 @@ Thank you for your interest in contributing! This guide covers everything you ne
 - **Python 3.10+** ([download](https://www.python.org/))
 - **UV** -- modern Python package manager ([install](https://docs.astral.sh/uv/))
 - **Git**
-- **git-lfs** -- required; the test PDF corpus is LFS-tracked. Run `git lfs pull`
-  after cloning. Do **not** run `git lfs install` -- it writes its own git hooks
-  and conflicts with the repo's Husky-managed hooks (`core.hooksPath`); `git lfs
-  pull` works fine without it.
 
 ### Clone and Setup
 
 ```bash
 git clone https://github.com/rookslog/zlibrary-mcp.git
 cd zlibrary-mcp
-
-# Hydrate LFS-tracked test fixtures (no `git lfs install` needed -- see Prerequisites)
-git lfs pull
 
 # Setup acquisition dependencies and contributor tools.
 bash setup-uv.sh
@@ -134,7 +127,7 @@ uploaded. This keeps test output out of uploaded files.
 | Tier | Command | Needs |
 |------|---------|-------|
 | Fast (PR gate) | `uv run pytest -m "not slow and not integration and not performance"` | Nothing extra |
-| Full corpus | `uv run pytest` | LFS-hydrated test PDFs (`git lfs pull`) |
+| Preserved processing corpus | Use the isolated preserved text installation | Separate processing environment |
 | Integration | `uv run pytest -m integration` | `ZLIBRARY_EMAIL` / `ZLIBRARY_PASSWORD` in `.env`; auto-skips without them |
 | E2E | `npm run test:e2e` | Docker |
 

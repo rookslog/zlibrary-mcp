@@ -1,3 +1,4 @@
+import './helpers/environment-login.js';
 import { afterEach, beforeEach, expect, jest, test } from '@jest/globals';
 
 // Keep API, owner, retry and breaker real. Only interpreter/process I/O is fake.

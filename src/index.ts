@@ -13,6 +13,7 @@ import type { ToolName } from './lib/acquisition-tools.js';
 import { getSessionMode } from './lib/eapi-session.js';
 import { invokeAcquisitionBridge } from './lib/zlibrary-api.js';
 import { logger } from './lib/logger.js';
+import { readLoginMetadata, runLoginCommand } from './lib/login.js';
 
 const descriptions: Record<ToolName, string> = {
   search:
@@ -193,10 +194,20 @@ function getPackageVersion(): string {
 }
 export async function start(opts: { testing?: boolean } = {}) {
   try {
-    if (!opts.testing && (!process.env.ZLIBRARY_EMAIL || !process.env.ZLIBRARY_PASSWORD))
-      logger.warn(
-        'Z-Library account is not configured; LibGen remains available without an account. See get_limits.',
-      );
+    if (!opts.testing) {
+      try {
+        const login = await readLoginMetadata();
+        if (login.notice) logger.warn(login.notice);
+        if (!login.configured)
+          logger.warn(
+            'Z-Library account is not configured; run zlibrary login. LibGen remains available.',
+          );
+      } catch {
+        logger.warn(
+          'Z-Library login metadata is unavailable; check setup and private permissions. LibGen remains available.',
+        );
+      }
+    }
     const server = createServer();
     if (process.env.ZLIBRARY_UNRESTRICTED_OUTPUT === '1')
       logger.warn('ZLIBRARY_UNRESTRICTED_OUTPUT=1 allows downloads outside ZLIBRARY_OUTPUT_ROOT.');
@@ -238,5 +249,10 @@ export function isProcessEntryPoint(moduleUrl: string, argv1: string | undefined
 }
 
 if (isProcessEntryPoint(import.meta.url, process.argv[1])) {
-  void start();
+  const args = process.argv.slice(2);
+  if (args.length === 0 || (args.length === 1 && args[0] === 'mcp')) void start();
+  else
+    void runLoginCommand(args).then((code) => {
+      process.exitCode = code;
+    });
 }

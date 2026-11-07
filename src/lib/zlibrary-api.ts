@@ -1,3 +1,5 @@
+import { readLoginMetadata } from './login.js';
+import type { LoginMetadata } from './login.js';
 import { annasMemberWorker } from './annas-member-worker.js';
 import { normalizeLanguages } from './filter-languages.js';
 import type { SessionInput } from './eapi-session.js';
@@ -158,8 +160,48 @@ async function callPythonFunction(
   if (Array.isArray(args.languages))
     args = { ...args, languages: normalizeLanguages(args.languages).values };
   const configuredEnv = { ...process.env };
-  const identity = configuredEnv.ZLIBRARY_EMAIL || '';
-  const memory = getSessionMode() === 'memory';
+  const accountCall =
+    needsEapi(functionName, args) ||
+    (functionName === 'acquire_book' &&
+      !['libgen', 'annas', 'annas_archive'].includes(
+        String(args.book_details?.source || '').toLowerCase(),
+      ));
+  let login: LoginMetadata | undefined;
+  let metadataRefused = false;
+  if (accountCall) {
+    const started = Date.now();
+    const budget =
+      callOptions.timeoutMs ?? defaultTimeoutFor(functionName) ?? ORDINARY_BRIDGE_TIMEOUT_MS;
+    try {
+      login = await readLoginMetadata(configuredEnv, {
+        signal: callOptions.signal,
+        timeoutMs: budget,
+      });
+    } catch {
+      if (callOptions.signal?.aborted)
+        throw new BridgeTimeoutError('EAPI call aborted', { reason: 'aborted' });
+      // A receipt can succeed without authentication; Python checks configuration
+      // only after local reuse has been admitted.
+      if (functionName !== 'acquire_book')
+        throw new PythonBridgeError(
+          'Login store refused; check setup and private permissions.',
+          { reason: 'configuration_error', details: { request_issued: false } },
+          false,
+        );
+      metadataRefused = true;
+    }
+    const remaining = budget - (Date.now() - started);
+    if (remaining <= 0)
+      throw new BridgeTimeoutError('EAPI call deadline exceeded', { reason: 'timeout' });
+    if (callOptions.timeoutMs !== undefined) callOptions = { ...callOptions, timeoutMs: remaining };
+  }
+  const identity = login?.identity || '';
+  if (login?.notice) logger.warn(login.notice);
+  if (login?.origin === 'saved') {
+    configuredEnv.ZLIBRARY_LOGIN_EXPECTED_ORIGIN = 'saved';
+    configuredEnv.ZLIBRARY_LOGIN_EXPECTED_IDENTITY = identity;
+  }
+  const memory = getSessionMode() === 'memory' && login?.origin !== 'saved' && !metadataRefused;
   const reuse = needsEapi(functionName, args) && memory;
   const acquisitionUsesEapi =
     functionName === 'acquire_book' &&

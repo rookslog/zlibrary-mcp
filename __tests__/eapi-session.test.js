@@ -1,3 +1,4 @@
+import './helpers/environment-login.js';
 import { afterEach, beforeEach, expect, jest, test } from '@jest/globals';
 const runPythonBridge = jest.fn();
 let api, originalEnv, consoleSpy, now, clockSpy, ownerModule;

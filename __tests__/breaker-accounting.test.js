@@ -1,3 +1,4 @@
+import './helpers/environment-login.js';
 import { afterEach, expect, jest, test } from '@jest/globals';
 
 // Breaker accounting (#267, #272, #273). Keep API, owner, retry and breaker real;

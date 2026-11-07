@@ -1,3 +1,4 @@
+import './helpers/environment-login.js';
 import { afterAll, afterEach, beforeAll, beforeEach, expect, jest, test } from '@jest/globals';
 import fs from 'node:fs/promises';
 import os from 'node:os';

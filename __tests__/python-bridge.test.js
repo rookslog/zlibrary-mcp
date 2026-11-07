@@ -1,3 +1,4 @@
+import './helpers/environment-login.js';
 import { jest, describe, test, expect } from '@jest/globals';
 import { spawnSync } from 'node:child_process';
 

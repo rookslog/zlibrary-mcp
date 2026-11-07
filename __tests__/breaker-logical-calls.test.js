@@ -1,3 +1,4 @@
+import './helpers/environment-login.js';
 import { afterEach, beforeEach, expect, jest, test } from '@jest/globals';
 
 // Keep API, retry and breaker real; replace only interpreter/process I/O.

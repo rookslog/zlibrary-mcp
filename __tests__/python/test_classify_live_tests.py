@@ -501,6 +501,11 @@ def test_live_job_never_invokes_integration_without_explicit_unblocked(
                 "GITHUB_OUTPUT": str(live_output),
             },
         )
+        # Record completed step metadata before evaluating later conditions.
+        if step_id := step.get("id"):
+            steps.setdefault(step_id, {"outputs": {}})["outcome"] = (
+                "success" if run.returncode == 0 else "failure"
+            )
         assert run.returncode == 0, run.stdout + run.stderr
         if step.get("id") == "live" and live_output.exists():
             steps["live"]["outputs"] = dict(

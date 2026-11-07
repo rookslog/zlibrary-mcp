@@ -650,7 +650,7 @@
         "limit": {
           "kind": "daily"
         },
-        "note": "Set ZLIBRARY_EMAIL and ZLIBRARY_PASSWORD."
+        "note": "Run zlibrary login or set ZLIBRARY_EMAIL and ZLIBRARY_PASSWORD."
       },
       "annas": {
         "configured": false,

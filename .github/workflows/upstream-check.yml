@@ -146,7 +146,7 @@ jobs:
   live_tests:
     name: Live integration suite
     runs-on: ubuntu-latest
-    # A dedicated CI test account lives in repository secrets. Setups without it
+    # A dedicated CI test account, once configured, lives in repository secrets. Setups without it
     # skip cleanly rather than reporting a false failure. Depends on the
     # reachability probe so a network-level block skips the suite instead of
     # burning login attempts (~10/hour/IP) against a wall.
@@ -164,6 +164,7 @@ jobs:
       - name: Run integration-marked tests against live Z-Library
         id: live
         env:
+          ZLIBRARY_TEST_SESSION_VALUES: ${{ runner.temp }}/zlibrary-live-sessions.jsonl
           ZLIBRARY_EMAIL: ${{ secrets.ZLIBRARY_CI_EMAIL }}
           ZLIBRARY_PASSWORD: ${{ secrets.ZLIBRARY_CI_PASSWORD }}
           ZLIB_BLOCKED: ${{ needs.reachability.outputs.zlib_blocked }}
@@ -211,18 +212,21 @@ jobs:
             fi
             exit 0
           fi
+          umask 077
+          : > "$ZLIBRARY_TEST_SESSION_VALUES"
           # Use the same literal-false gate for collection and execution.
           # Coverage belongs to the full acquisition suite (#250).
-          uv run pytest -m integration --collect-only --no-cov -q
+          uv run pytest -m integration --collect-only --no-cov -q > live.log 2>&1
           set +e
-          uv run pytest -m integration --no-cov --benchmark-disable --no-header --tb=short --junitxml=live.xml -q 2>&1 | tee live.log
-          code=${PIPESTATUS[0]}
+          uv run pytest -m integration --no-cov --benchmark-disable --no-header --tb=short --junitxml=live.xml -q >> live.log 2>&1
+          code=$?
           set -e
           uv run python scripts/classify_live_tests.py --exit-code "$code" --junitxml live.xml
-      - name: Keep test output out of uploaded files
+      - name: Replace sensitive values in test output
         id: filter_output
         if: always()
         env:
+          ZLIBRARY_TEST_SESSION_VALUES: ${{ runner.temp }}/zlibrary-live-sessions.jsonl
           ZLIBRARY_EMAIL: ${{ secrets.ZLIBRARY_CI_EMAIL }}
           ZLIBRARY_PASSWORD: ${{ secrets.ZLIBRARY_CI_PASSWORD }}
         run: python3 scripts/filter_live_test_output.py
@@ -234,11 +238,27 @@ jobs:
             live.log
             live.xml
           if-no-files-found: ignore
-          retention-days: 30
+          retention-days: 1
+      - name: Show prepared test summary
+        id: filtered_summary
+        if: always() && steps.filter_output.outcome == 'success' && steps.live.outputs.status != 'no_account'
+        run: |
+          python3 - <<'PYTHON'
+          import xml.etree.ElementTree as ET
+          try:
+              root = ET.parse("live.xml").getroot()
+          except (OSError, ET.ParseError):
+              print("No prepared live test report is available.")
+          else:
+              cases = list(root.iter("testcase"))
+              failures = sum(element.tag in ("failure", "error") for element in root.iter())
+              skipped = sum(case.find("skipped") is not None for case in cases)
+              print(f"Prepared live test output: {len(cases)} test case(s), {failures} failure(s), {skipped} skipped.")
+          PYTHON
       - name: Fail the job when live tests regressed
         if: steps.live.outputs.status == 'failed'
         run: |
-          echo "Live integration tests failed — see the uploaded log."
+          echo "Live integration tests failed; filtered output is available only when preparation and upload succeed."
           exit 1
 
   report:
@@ -352,7 +372,8 @@ jobs:
               '',
               report,
               '',
-              ...(!failed && (recovered || recoveryDate(previous)) ? [`Recovered: ${recoveredAt} (UTC)`, `<!-- upstream-recovered-at: ${recoveredAt} -->`, ''] : []),
+              ...(recovered ? [`Recovered: ${recoveredAt} (UTC)`] : []),
+              ...(!failed && (recovered || recoveryDate(previous)) ? [`<!-- upstream-recovered-at: ${recoveredAt} -->`, ''] : []),
               'Unit tests mock these calls and will stay green, so triage from the report above or the run artifact.',
             ].join('\n');
 

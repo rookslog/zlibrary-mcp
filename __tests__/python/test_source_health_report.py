@@ -1138,3 +1138,75 @@ process.stdout.write(JSON.stringify(allowed));
         "missing_live_evidence",
         None,
     )
+
+
+@pytest.mark.parametrize(
+    "reasons,expected,complete",
+    [
+        (["dns_failure"], "probe_dns_failure", True),
+        (["dns_timeout"], "probe_timeout", True),
+        (["connect_timeout"], "probe_timeout", True),
+        (["connect_refused"], "probe_connection_failed", True),
+        (["connect_error"], "probe_connection_failed", True),
+        (["tls_error"], "probe_tls_failure", True),
+        (["read_timeout"], "probe_timeout", True),
+        (["search_timeout"], "probe_timeout", True),
+        (["http_error"], "probe_http_failure", True),
+        (["protocol_error"], "probe_contract_failed", True),
+        (["partial_transfer"], "probe_connection_failed", True),
+        (["integrity_mismatch"], "probe_contract_failed", True),
+        (["future_CANARY"], "probe_error_unknown", False),
+        (["protocol_error", "future_CANARY"], "probe_error_unknown", False),
+        (["configuration_error"], "probe_error_unknown", False),
+        (["walk_budget_exhausted"], "probe_error_unknown", False),
+        (["quota_exhausted"], "probe_error_unknown", False),
+        (["mirror_slice_exhausted"], "probe_error_unknown", False),
+        (["unknown"], "probe_error_unknown", False),
+        ("protocol_error", "probe_error_unknown", False),
+        ([None], "probe_error_unknown", False),
+    ],
+)
+def test_structured_source_reasons_keep_observation_and_evidence_distinct(
+    inputs, reasons, expected, complete
+):
+    row = next(
+        row for row in inputs["probe"]["results"] if row["name"] == "libgen:search"
+    )
+    row.update(
+        status="changed",
+        ok=False,
+        source_reasons=reasons,
+        error_types=["AllSourcesFailedError", "ProviderResponseError"],
+        reason="CANARY timeout private.invalid",
+    )
+    inputs["env"].update(PROBE_OUTCOME="failure", REACHABILITY_RESULT="failure")
+    report = produce(inputs)
+    reach = report["sources"]["libgen"]["reachability"]
+    assert reach["reason"] == expected
+    assert reach["evidence_complete"] is complete
+    assert report["probe_contract_complete"] is complete
+    assert "CANARY" not in json.dumps(report) and "private.invalid" not in json.dumps(
+        report
+    )
+
+
+def test_structured_http_reason_uses_recorded_status_without_message_parsing(inputs):
+    row = next(
+        row for row in inputs["probe"]["results"] if row["name"] == "libgen:search"
+    )
+    row.update(
+        status="changed",
+        ok=False,
+        source_reasons=["http_error"],
+        error_types=[
+            "AllSourcesFailedError",
+            "ProviderResponseError",
+            "HTTPStatusError",
+        ],
+        http_statuses=[503],
+        reason="CANARY HTTP 404 timeout",
+    )
+    assert (
+        produce(inputs)["sources"]["libgen"]["reachability"]["reason"]
+        == "probe_server_error"
+    )

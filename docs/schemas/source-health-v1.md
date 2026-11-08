@@ -69,6 +69,26 @@ Expected IDs are:
 - Anna's Archive: `annas-archive:search`.
 - LibGen: `libgen:search`, `libgen:article-search`, `libgen:download`.
 
+Probe JSON retains `error_types`, numeric `http_statuses` and a
+`source_reasons` list collected from `SourceError.reason` through causes and
+aggregate failures. For changed results, source reasons take precedence over
+generic exception type names. An absent or empty list retains the existing type-based classification.
+The health report emits only its existing fixed reason codes, never
+exception text or raw source-reason values; its version and output shape stay 1.
+
+Supported source reasons map as follows: `dns_failure` to `probe_dns_failure`;
+`tls_error` to `probe_tls_failure`; `dns_timeout`, `connect_timeout`, `read_timeout`
+and `search_timeout` to `probe_timeout`; `connect_refused`, `connect_error` and
+`partial_transfer` to `probe_connection_failed`; `protocol_error` and
+`integrity_mismatch` to `probe_contract_failed`. `http_error` maps to
+`probe_server_error` only when recorded numeric status includes a 5xx, otherwise
+`probe_http_failure`. No status is inferred from diagnostic text. Mixed supported
+reasons use DNS, TLS, timeout, connection, HTTP, then contract precedence.
+For changed results, unknown, malformed or unsupported reasons produce
+`probe_error_unknown`
+with incomplete evidence, including when mixed with supported reasons.
+Configuration, quota and walk-admission reasons do not establish source health.
+
 A probe's `changed` result maps to `failed` in this report. Example reason codes
 include `probe_passed`, `probe_refused`, `probe_timeout`, `probe_tls_failure`,
 `probe_dns_failure`, `probe_connection_failed` and `probe_contract_failed`.

@@ -2353,3 +2353,64 @@ def test_eapi_catalogue_digest_drift_is_detected_when_search_returns_books(
         item for item in asyncio.run(run()) if item.name == "zlibrary:eapi/book/search"
     )
     assert result.ok is want
+
+
+@pytest.mark.parametrize(
+    "case,source_reason,health_reason",
+    [
+        ("page", "protocol_error", "probe_contract_failed"),
+        ("read", "read_timeout", "probe_timeout"),
+        ("connect", "connect_error", "probe_connection_failed"),
+        ("http", "http_error", "probe_http_failure"),
+        ("unknown", "future_CANARY", "probe_error_unknown"),
+    ],
+)
+def test_libgen_source_error_chain_preserves_health_category(
+    check_upstream, case, source_reason, health_reason
+):
+    from lib.sources.errors import AllSourcesFailedError, ProviderResponseError
+    from lib.sources.libgen import LibgenAdapter, _unparseable_search_page
+
+    if case == "page":
+        page = httpx.Response(
+            200, text="<html><title>CANARY timeout</title>changed layout</html>"
+        )
+        error = ProviderResponseError(
+            "libgen",
+            "offline.invalid",
+            _unparseable_search_page(page),
+            reason="protocol_error",
+        )
+    elif case == "unknown":
+        error = ProviderResponseError(
+            "libgen", "offline.invalid", "CANARY timeout", reason="future_CANARY"
+        )
+    else:
+        original = {
+            "read": httpx.ReadTimeout("CANARY"),
+            "connect": httpx.ConnectError("CANARY"),
+            "http": httpx.HTTPStatusError(
+                "CANARY",
+                request=httpx.Request("GET", "https://offline.invalid"),
+                response=httpx.Response(503),
+            ),
+        }[case]
+        error = LibgenAdapter._as_source_error(None, original, "offline.invalid")
+    assert error.reason == source_reason
+    metadata = check_upstream._exception_metadata(
+        AllSourcesFailedError("search", [error])
+    )
+    row = check_upstream.summarize(
+        [
+            check_upstream.ProbeResult(
+                "libgen:search", False, "CANARY timeout", **metadata
+            )
+        ]
+    )["results"][0]
+    assert row["source_reasons"] == [source_reason]
+    spec = importlib.util.spec_from_file_location(
+        "source_health_category", MODULE_PATH.with_name("source_health_report.py")
+    )
+    health = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(health)
+    assert health.probe_reason(row) == health_reason

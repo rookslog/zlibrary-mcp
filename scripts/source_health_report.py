@@ -109,13 +109,38 @@ def probe_reason(row):
     if row["status"] == "blocked":
         return Reason.PROBE_REFUSED
     types, statuses = row.get("error_types", []), row.get("http_statuses", [])
+    source_reasons = row.get("source_reasons", [])
     if (
         not isinstance(types, list)
         or any(not isinstance(t, str) for t in types)
         or not isinstance(statuses, list)
         or any(type(s) is not int or not 100 <= s <= 599 for s in statuses)
+        or not isinstance(source_reasons, list)
+        or any(not isinstance(reason, str) for reason in source_reasons)
     ):
         return Reason.PROBE_ERROR_UNKNOWN
+    source_map = {
+        "dns_failure": Reason.PROBE_DNS_FAILURE,
+        "tls_error": Reason.PROBE_TLS_FAILURE,
+        "dns_timeout": Reason.PROBE_TIMEOUT,
+        "connect_timeout": Reason.PROBE_TIMEOUT,
+        "read_timeout": Reason.PROBE_TIMEOUT,
+        "search_timeout": Reason.PROBE_TIMEOUT,
+        "connect_refused": Reason.PROBE_CONNECTION_FAILED,
+        "connect_error": Reason.PROBE_CONNECTION_FAILED,
+        "partial_transfer": Reason.PROBE_CONNECTION_FAILED,
+        "http_error": Reason.PROBE_SERVER_ERROR
+        if any(s >= 500 for s in statuses)
+        else Reason.PROBE_HTTP_FAILURE,
+        "protocol_error": Reason.PROBE_CONTRACT_FAILED,
+        "integrity_mismatch": Reason.PROBE_CONTRACT_FAILED,
+    }
+    if source_reasons:
+        if any(reason not in source_map for reason in source_reasons):
+            return Reason.PROBE_ERROR_UNKNOWN
+        return next(
+            value for reason, value in source_map.items() if reason in source_reasons
+        )
     types = set(types)
     for names, reason in [
         ({"gaierror"}, Reason.PROBE_DNS_FAILURE),

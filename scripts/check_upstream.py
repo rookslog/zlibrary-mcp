@@ -40,6 +40,7 @@ from bs4 import BeautifulSoup
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "zlibrary" / "src"))
 from lib.sources.config import get_source_config
+from lib.sources.errors import SourceError
 from lib.sources.libgen import LibgenAdapter  # noqa: E402
 from lib.sources.libgen import FALLBACK_MIRRORS as LIBGEN_FALLBACK_MIRRORS  # noqa: E402
 from lib.sources.libgen import _nginx_stub as _libgen_nginx_stub  # noqa: E402
@@ -138,21 +139,28 @@ def _single_line(value: str) -> str:
 
 
 def _exception_metadata(exc: BaseException) -> dict[str, list]:
-    """Retain exception types/statuses, never classify from exception text."""
+    """Retain typed failure metadata, never classify from exception text."""
     pending, seen, types, statuses = [exc], set(), set(), set()
+    reasons = set()
     while pending and len(seen) < 32:
         current = pending.pop()
         if not isinstance(current, BaseException) or id(current) in seen:
             continue
         seen.add(id(current))
         types.add(type(current).__name__)
+        if isinstance(current, SourceError):
+            reasons.add(current.reason)
         if isinstance(current, httpx.HTTPStatusError):
             statuses.add(current.response.status_code)
         pending.extend((current.__cause__, current.__context__))
         failures = getattr(current, "failures", ())
         if isinstance(failures, (list, tuple)):
             pending.extend(failures[:32])
-    return {"error_types": sorted(types), "http_statuses": sorted(statuses)}
+    return {
+        "error_types": sorted(types),
+        "http_statuses": sorted(statuses),
+        "source_reasons": sorted(reasons),
+    }
 
 
 @dataclass
@@ -167,6 +175,7 @@ class ProbeResult:
     extra: dict[str, Any] = field(default_factory=dict)
     error_types: list[str] = field(default_factory=list)
     http_statuses: list[int] = field(default_factory=list)
+    source_reasons: list[str] = field(default_factory=list)
 
     def __post_init__(self) -> None:
         self.name = _single_line(self.name)
@@ -865,6 +874,13 @@ async def probe_libgen_download(client: httpx.AsyncClient) -> ProbeResult:
         http_statuses=sorted(
             {value for failure in failures for value in failure["http_statuses"]}
         ),
+        source_reasons=sorted(
+            {
+                value
+                for failure in failures
+                for value in failure.get("source_reasons", [])
+            }
+        ),
     )
 
 
@@ -989,6 +1005,7 @@ def summarize(
                 "detail": result.detail,
                 "error_types": result.error_types,
                 "http_statuses": result.http_statuses,
+                "source_reasons": result.source_reasons,
             }
         )
     return {

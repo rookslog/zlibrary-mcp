@@ -1,3 +1,4 @@
+import './helpers/environment-login.js';
 import { afterEach, beforeEach, expect, jest, test } from '@jest/globals';
 import { useFakeTimers } from 'sinon';
 import { mkdtempSync, rmSync } from 'node:fs';

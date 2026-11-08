@@ -9,6 +9,7 @@ import pytest
 def _isolated_output_root(tmp_path, monkeypatch):
     """Each offline test owns its output root; subprocesses inherit the policy."""
     monkeypatch.setenv("ZLIBRARY_OUTPUT_ROOT", str(tmp_path))
+    monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "state"))
     monkeypatch.delenv("ZLIBRARY_UNRESTRICTED_OUTPUT", raising=False)
 
 

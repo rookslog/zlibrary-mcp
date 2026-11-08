@@ -1,9 +1,10 @@
+import '../helpers/environment-login.js';
 import { windowFixture } from './window-fixture.js';
 import { afterEach, beforeEach, expect, jest, test } from '@jest/globals';
 import { EapiSessionOwner } from '../../dist/lib/eapi-session.js';
 import { CircuitBreaker } from '../../dist/lib/circuit-breaker.js';
 import { isTransientDependencyError } from '../../dist/lib/retry-manager.js';
-import { AcquisitionTools } from '../../dist/lib/acquisition-tools.js';
+const { AcquisitionTools } = await import('../../dist/lib/acquisition-tools.js');
 import { fanOut } from '../../dist/lib/fan-out.js';
 import { SourceRegistry } from '../../dist/lib/source-registry.js';
 const identity = 'synthetic-owner';

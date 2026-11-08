@@ -1,3 +1,5 @@
+import { readLoginMetadata } from './login.js';
+import type { LoginMetadata } from './login.js';
 import { z } from 'zod';
 import { filterFields, type MergeCopy } from './merge.js';
 import type { MergedFilterRequest } from './row-filters.js';
@@ -194,7 +196,9 @@ const DownloadReplySchema = z
 export interface SearchRuntime {
   memberSession?: () => ReturnType<typeof annasMemberWorker.status>;
   registry?: SourceRegistry;
-  localState?: () => Readonly<Record<string, LocalSearchState>>;
+  localState?: (
+    login?: Pick<LoginMetadata, 'origin' | 'identity'>,
+  ) => Readonly<Record<string, LocalSearchState>>;
   now?: () => number;
   nonce?: bigint;
   recordCapacity?: number;
@@ -207,6 +211,9 @@ export class AcquisitionTools {
     Source,
     { source: Source; remaining: number; as_of: string; basis: 'observed' | 'decremented' }
   >();
+  private loginConfigured = false;
+  private loginRefused = false;
+  private loginState: Pick<LoginMetadata, 'origin' | 'identity'> = { origin: 'none', identity: '' };
   private readonly settings: Readonly<SearchSettings>;
   private readonly registry: SourceRegistry;
   private readonly searches: SearchRecords;
@@ -252,7 +259,7 @@ export class AcquisitionTools {
     const configured =
       source === 'libgen' ||
       (source === 'zlibrary'
-        ? Boolean(this.env.ZLIBRARY_EMAIL && this.env.ZLIBRARY_PASSWORD)
+        ? this.loginConfigured
         : Boolean(this.env.ANNAS_SECRET_KEY) && annasBaseTrusted);
     return {
       configured,
@@ -274,7 +281,7 @@ export class AcquisitionTools {
       limit: {
         kind: source === 'libgen' ? 'none' : source === 'zlibrary' ? 'daily' : 'unknown',
       } as Record<string, any>,
-      ...(!configured
+      ...(!configured || (source === 'zlibrary' && this.loginRefused)
         ? {
             note:
               source === 'annas'
@@ -283,12 +290,15 @@ export class AcquisitionTools {
                   : !annasBaseTrusted
                     ? 'Anna’s Archive base is not trusted for the key; search is available. Set ANNAS_BASE_URL to a trusted host and ANNAS_SECRET_KEY for download.'
                     : 'Set ANNAS_SECRET_KEY for download; search needs no key.'
-                : 'Set ZLIBRARY_EMAIL and ZLIBRARY_PASSWORD.',
+                : this.loginRefused
+                  ? 'Login metadata is unavailable; authentication was not checked. Check Python setup and private permissions.'
+                  : 'Run zlibrary login or set ZLIBRARY_EMAIL and ZLIBRARY_PASSWORD.',
           }
         : {}),
     };
   }
   private configured(source: Source) {
+    if (source === 'zlibrary' && this.loginRefused) throw this.loginMetadataFailure();
     const c = this.capabilities(source);
     if (!c.search_available)
       throw new ToolFailure('credentials_missing', 'Source configuration is missing.', {
@@ -303,6 +313,17 @@ export class AcquisitionTools {
                 : [],
         },
       });
+  }
+  private loginMetadataFailure() {
+    return new ToolFailure(
+      'internal',
+      'Login metadata is unavailable; no account request was made.',
+      {
+        source: 'zlibrary',
+        detail: { reason: 'login_metadata_unavailable', request_issued: false },
+        recovery: 'Check Python setup and login-store permissions, then retry.',
+      },
+    );
   }
   private compact(selection: Selection, mint = true): Record<string, any> {
     const b = selection.book;
@@ -400,6 +421,7 @@ export class AcquisitionTools {
     };
   }
   async call(name: string, raw: unknown = {}, options: CallOptions = {}): Promise<any> {
+    const startedAt = performance.now();
     try {
       if (!Object.hasOwn(this.inputs, name))
         throw new ToolFailure('invalid_argument', 'Tool name is not available in 2.0.', {
@@ -431,6 +453,40 @@ export class AcquisitionTools {
         });
       if (options.signal?.aborted)
         throw new ToolFailure('cancelled', 'Call cancelled before any request.', { retry: 'safe' });
+      try {
+        const login = await readLoginMetadata(
+          {
+            ...process.env,
+            ...this.env,
+            ZLIBRARY_EMAIL: this.env.ZLIBRARY_EMAIL,
+            ZLIBRARY_PASSWORD: this.env.ZLIBRARY_PASSWORD,
+          },
+          { signal: options.signal, timeoutMs: options.timeoutMs },
+        );
+        if (options.signal?.aborted)
+          throw new ToolFailure('cancelled', 'Call cancelled.', { retry: 'safe' });
+        if (!this.sameLogin(login)) this.estimates.delete('zlibrary');
+        this.loginConfigured = login.configured;
+        this.loginRefused = false;
+        this.loginState = { origin: login.origin, identity: login.identity };
+      } catch {
+        if (options.signal?.aborted)
+          throw new ToolFailure('cancelled', 'Call cancelled.', { retry: 'safe' });
+        this.estimates.delete('zlibrary');
+        this.loginConfigured = Boolean(this.env.ZLIBRARY_EMAIL && this.env.ZLIBRARY_PASSWORD);
+        this.loginRefused = true;
+        this.loginState = { origin: 'none', identity: '' };
+      }
+      const loginState = this.loginState;
+      if (options.timeoutMs !== undefined) {
+        const remaining = Math.floor(options.timeoutMs - (performance.now() - startedAt));
+        if (remaining <= 0)
+          throw new ToolFailure('provider_timeout', 'Caller wait budget exceeded.', {
+            retry: 'safe',
+            detail: { reason: 'caller_timeout', request_issued: false },
+          });
+        options = { ...options, timeoutMs: remaining };
+      }
       if (name === 'get_limits') return await this.limits(args, options);
       if (name === 'get_history') {
         if (args.cursor && this.searches.owns(args.cursor))
@@ -456,9 +512,10 @@ export class AcquisitionTools {
             options,
           ),
         );
-        if (result.quota_estimate?.source === selection.source)
+        const quotaCurrent = selection.source !== 'zlibrary' || this.sameLogin(loginState);
+        if (quotaCurrent && result.quota_estimate?.source === selection.source)
           this.estimates.set(selection.source, { ...result.quota_estimate });
-        const estimate = this.estimates.get(selection.source);
+        const estimate = quotaCurrent ? this.estimates.get(selection.source) : undefined;
         if (estimate && !result.transfer_skipped && !result.quota_estimate) {
           estimate.remaining = Math.max(0, estimate.remaining - 1);
           estimate.basis = 'decremented';
@@ -485,6 +542,9 @@ export class AcquisitionTools {
       return errorEnvelope(error, name);
     }
   }
+  private sameLogin(login: Pick<LoginMetadata, 'origin' | 'identity'>): boolean {
+    return login.identity === this.loginState.identity && login.origin === this.loginState.origin;
+  }
   private selectionFailure(error: unknown, operation: string, source: Source) {
     const failure = classifyFailure(error, operation, source);
     return new ToolFailure(failure.code, failure.message, { ...failure.info, source });
@@ -501,11 +561,12 @@ export class AcquisitionTools {
     return this.invoke('acquire_book', args, options);
   }
   private async limits(args: any, options: CallOptions) {
+    const loginState = this.loginState;
     const views = this.views();
     const snapshot = projectSearchLimits(
       views,
       this.settings,
-      this.runtime.localState?.(),
+      this.runtime.localState?.(this.loginState),
       this.recent.snapshot(),
     );
     const result: any = structuredClone(snapshot);
@@ -515,6 +576,15 @@ export class AcquisitionTools {
       );
     for (const source of args.sources ?? this.registry.sources.map((spec) => spec.name)) {
       const capability = result.sources[source];
+      if (source === 'zlibrary' && this.loginRefused) {
+        (capability as any).error = errorEnvelope(
+          this.loginMetadataFailure(),
+          'get_limits',
+          source,
+        ).error;
+        continue;
+      }
+
       if (args.mode === 'live' && source === 'zlibrary') {
         try {
           this.configured(source);
@@ -531,9 +601,11 @@ export class AcquisitionTools {
             premium: live.is_premium,
             as_of: asOf,
           });
-          if (remaining !== undefined)
-            this.estimates.set(source, { source, remaining, as_of: asOf, basis: 'observed' });
-          else this.estimates.delete(source);
+          if (this.sameLogin(loginState)) {
+            if (remaining !== undefined)
+              this.estimates.set(source, { source, remaining, as_of: asOf, basis: 'observed' });
+            else this.estimates.delete(source);
+          }
         } catch (e) {
           (capability as any).error = errorEnvelope(e, 'get_limits', source).error;
         }
@@ -697,6 +769,7 @@ export class AcquisitionTools {
     signal: AbortSignal,
     options: CallOptions = {},
   ): Promise<SearchWindow> {
+    if (source === 'zlibrary') this.configured(source);
     const languages = normalizeLanguages(request.languages ?? []).values;
     const formats = [
       ...new Set(
@@ -786,7 +859,7 @@ export class AcquisitionTools {
         state: 'not_asked',
         reason: plan.excluded[view.name] ?? 'not_in_default_order',
       }));
-    const states = this.runtime.localState?.() ?? {};
+    const states = this.runtime.localState?.(this.loginState) ?? {};
     const blocked = Object.fromEntries(
       Object.entries(states).flatMap(([name, state]) =>
         state.admission === 'backoff' ||

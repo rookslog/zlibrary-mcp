@@ -1,10 +1,11 @@
+import '../helpers/environment-login.js';
 import { windowFixture } from './window-fixture.js';
 import { afterEach, beforeEach, expect, jest, test } from '@jest/globals';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { setImmediate as immediate } from 'node:timers/promises';
-import { AcquisitionTools } from '../../dist/lib/acquisition-tools.js';
+const { AcquisitionTools } = await import('../../dist/lib/acquisition-tools.js');
 import { fanOut } from '../../dist/lib/fan-out.js';
 import { SourceRegistry } from '../../dist/lib/source-registry.js';
 import { EapiSessionOwner } from '../../dist/lib/eapi-session.js';

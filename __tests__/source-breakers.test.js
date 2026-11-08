@@ -1,3 +1,4 @@
+import './helpers/environment-login.js';
 import { jest, beforeEach, afterEach, expect, test } from '@jest/globals';
 
 // Per-source breakers (ADR-011): one 2.0 bridge call contacts one source, so an

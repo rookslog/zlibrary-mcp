@@ -1,3 +1,4 @@
+import './helpers/environment-login.js';
 import { afterEach, beforeEach, expect, jest, test } from '@jest/globals';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { InMemoryTransport } from '@modelcontextprotocol/sdk/inMemory.js';

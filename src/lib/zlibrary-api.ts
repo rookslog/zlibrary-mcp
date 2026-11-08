@@ -1,3 +1,5 @@
+import { readLoginMetadata } from './login.js';
+import type { LoginMetadata } from './login.js';
 import { annasMemberWorker } from './annas-member-worker.js';
 import { normalizeLanguages } from './filter-languages.js';
 import type { SessionInput } from './eapi-session.js';
@@ -78,17 +80,23 @@ const dependencyBreakers = Object.fromEntries(
 );
 
 /** Local source health/admission only: never probes a provider or changes a generation. */
-export function getSearchState(env: Record<string, string | undefined> = process.env) {
+export function getSearchState(
+  env: Record<string, string | undefined> = process.env,
+  login?: Pick<LoginMetadata, 'origin' | 'identity'>,
+) {
+  const environmentSession = login === undefined || login.origin === 'environment';
+  const identity = login?.identity ?? env.ZLIBRARY_EMAIL ?? '';
   return Object.fromEntries(
     ['libgen', 'zlibrary', 'annas'].map((source) => [
       source,
       {
         ...dependencyBreakers[source === 'zlibrary' ? 'eapi' : source]!.snapshot(),
         refusal:
-          (source === 'zlibrary' ? eapiSessions.refusal(env.ZLIBRARY_EMAIL ?? '') : undefined) ??
-          dependencyBreakers[source === 'zlibrary' ? 'eapi' : source]!.refusal(),
-        ...(source === 'zlibrary'
-          ? eapiSessions.admission(env.ZLIBRARY_EMAIL ?? '')
+          (source === 'zlibrary' && environmentSession
+            ? eapiSessions.refusal(identity)
+            : undefined) ?? dependencyBreakers[source === 'zlibrary' ? 'eapi' : source]!.refusal(),
+        ...(source === 'zlibrary' && environmentSession
+          ? eapiSessions.admission(identity)
           : { admission: 'open' as const }),
       },
     ]),
@@ -177,8 +185,52 @@ async function callPythonFunction(
   if (Array.isArray(args.languages))
     args = { ...args, languages: normalizeLanguages(args.languages).values };
   const configuredEnv = { ...process.env };
-  const identity = configuredEnv.ZLIBRARY_EMAIL || '';
-  const memory = getSessionMode() === 'memory';
+  const accountCall =
+    needsEapi(functionName, args) ||
+    (functionName === 'acquire_book' &&
+      !['libgen', 'annas', 'annas_archive'].includes(
+        String(args.book_details?.source || '').toLowerCase(),
+      ));
+  let login: LoginMetadata | undefined;
+  let metadataRefused = false;
+  if (accountCall) {
+    const started = Date.now();
+    const budget =
+      callOptions.timeoutMs ?? defaultTimeoutFor(functionName) ?? ORDINARY_BRIDGE_TIMEOUT_MS;
+    try {
+      login = await readLoginMetadata(configuredEnv, {
+        signal: callOptions.signal,
+        timeoutMs: budget,
+      });
+    } catch {
+      if (callOptions.signal?.aborted)
+        throw new BridgeTimeoutError('EAPI call aborted', { reason: 'aborted' });
+      // A receipt can succeed without authentication; Python checks configuration
+      // only after local reuse has been admitted.
+      if (functionName !== 'acquire_book')
+        throw new PythonBridgeError(
+          'Login store refused; check setup and private permissions.',
+          { reason: 'login_metadata_unavailable', details: { request_issued: false } },
+          false,
+        );
+      metadataRefused = true;
+    }
+    const remaining = budget - (Date.now() - started);
+    if (remaining <= 0)
+      throw new BridgeTimeoutError('EAPI call deadline exceeded', { reason: 'timeout' });
+    if (callOptions.timeoutMs !== undefined) callOptions = { ...callOptions, timeoutMs: remaining };
+  }
+  const identity = login?.identity || '';
+  delete configuredEnv.ZLIBRARY_LOGIN_EXPECTED_ORIGIN;
+  delete configuredEnv.ZLIBRARY_LOGIN_EXPECTED_IDENTITY;
+  delete configuredEnv.ZLIBRARY_LOGIN_METADATA_REFUSED;
+  if (metadataRefused) configuredEnv.ZLIBRARY_LOGIN_METADATA_REFUSED = '1';
+  if (login?.notice) logger.warn(login.notice);
+  if (login?.origin === 'saved') {
+    configuredEnv.ZLIBRARY_LOGIN_EXPECTED_ORIGIN = 'saved';
+    configuredEnv.ZLIBRARY_LOGIN_EXPECTED_IDENTITY = identity;
+  }
+  const memory = getSessionMode() === 'memory' && login?.origin !== 'saved' && !metadataRefused;
   const reuse = needsEapi(functionName, args) && memory;
   const acquisitionUsesEapi =
     functionName === 'acquire_book' &&
@@ -562,6 +614,7 @@ async function callPythonFunction(
               adoptUpdate();
             // Never log or retain subprocess environments or internal bearer output.
             sanitizeSessionError(err, [
+              identity,
               configuredEnv.ZLIBRARY_EMAIL || '',
               configuredEnv.ZLIBRARY_PASSWORD || '',
               activeTransport?.remix_userkey || '',

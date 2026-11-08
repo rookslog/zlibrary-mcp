@@ -7,8 +7,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- `zlibrary login`, `status`, `logout`, and `mcp` commands, including hidden
+  credential prompts, `--password-stdin`, and secret-free JSON status. Both
+  the existing `zlibrary-mcp` bin and no-argument entrypoint still start MCP.
+- A Python-owned POSIX file login backend with private permissions, atomic
+  replacement, writer locking, and increasing generations. Saved logins take
+  precedence over environment credentials when usable, unless `ZLIBRARY_PREFER_ENV=1`.
+  Explicit refusal rereads a newer key for the same identity and retries once;
+  an in-flight saved session never switches to an environment password. Expiry
+  remains unknown. Keychain and Python environment relocation remain deferred.
+
 ### Changed
 
+- The first command-line argument must name `login`, `status`, `logout`, or `mcp`;
+  unrecognized commands now exit with an option error instead of starting MCP.
 - Requests carrying EAPI credentials, legacy session cookies or Anna's fast-download
   key now refuse automatic redirects, including same-host and file-host redirects.
   EAPI refusals expose `RedirectRefusedError` with the HTTP status and a bounded
@@ -32,6 +46,37 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Remaining caller budgets are rounded down to whole milliseconds before bridge
+  dispatch; a nonpositive remainder stops the call. Metadata cancellation remains
+  cancellation and starts no provider work.
+- Logout preserves a saved generation when rebuilding a missing counter and
+  reports the repair with restart advice. Account switches discard stale quota
+  estimates, including delayed updates from earlier accounts.
+- Empty existing login counters require explicit logout repair and restart advice;
+  newly created private locks initialize their counter before use.
+- Account metadata lookup consumes the caller's time budget. Exhausted calls
+  stop before dispatch; subsequent work receives only the remaining time.
+- A renewed saved key's transport failure retains its own diagnosis, without
+  inheriting the earlier key refusal. CLI login reports bounded redirect refusal
+  text without inviting another attempt; wrong-password text remains unchanged.
+- `status` never logs in with an environment password; it reports that origin
+  as not checked. Login prepares its locked write before requesting credentials,
+  bounds lock waits, and refuses unsupported storage before contacting the site.
+  Logout repairs invalid generation history and removes interrupted-save files.
+- Metadata lookup failures preserve local receipt reuse while refusing child
+  password login. Local account-state failures retain their advice without
+  claiming provider requests or missing configured credentials. Saved keys stay
+  in Python even when a same-identity environment session races a new login;
+  saved identities are scrubbed from diagnostic values.
+- Login and logout recover corrupt login JSON while preserving private-file
+  checks and generation history. Unsafe ownership, modes, links, and hardlinks
+  remain refused.
+- Symlinks at or above the state root are supported; no-follow checks remain on
+  the project-owned directories and files.
+- Unusable saved storage no longer prevents environment authentication or an
+  unconfigured account result. Closed notices report the problem in status;
+  absent storage stays silent. Saved-session renewal still stops on an unusable
+  store without switching to an environment password.
 - Scheduled source-health reports separate unauthenticated reachability from
   authenticated coverage, bind retained outputs to their job attempts and preserve
   missing or contradictory evidence. Authenticated report input contains only

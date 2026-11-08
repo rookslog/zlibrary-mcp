@@ -1,5 +1,6 @@
+import '../helpers/environment-login.js';
 import { afterEach, beforeEach, expect, jest, test } from '@jest/globals';
-import { AcquisitionTools } from '../../dist/lib/acquisition-tools.js';
+const { AcquisitionTools } = await import('../../dist/lib/acquisition-tools.js');
 import { ToolFailure } from '../../dist/lib/tool-errors.js';
 
 beforeEach(() => jest.useFakeTimers({ now: 1000000 }));

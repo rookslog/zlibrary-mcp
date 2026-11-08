@@ -1,9 +1,10 @@
+import '../helpers/environment-login.js';
 import { afterEach, beforeEach, expect, jest, test } from '@jest/globals';
 import Ajv from 'ajv';
 import fs from 'node:fs';
 import { z } from 'zod';
-import * as entry from '../../dist/index.js';
-import { AcquisitionTools, createInputs } from '../../dist/lib/acquisition-tools.js';
+const entry = await import('../../dist/index.js');
+const { AcquisitionTools, createInputs } = await import('../../dist/lib/acquisition-tools.js');
 import { ErrorEnvelopeSchema } from '../../dist/lib/tool-errors.js';
 import {
   extensionFixture,

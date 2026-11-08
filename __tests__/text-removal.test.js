@@ -1,3 +1,4 @@
+import './helpers/environment-login.js';
 process.env.ZLIBRARY_SESSION_MODE = 'per-call';
 import { jest, test, expect, afterEach } from '@jest/globals';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';

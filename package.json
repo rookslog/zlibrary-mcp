@@ -9,7 +9,8 @@
     "./lib/*": "./dist/lib/*"
   },
   "bin": {
-    "zlibrary-mcp": "dist/index.js"
+    "zlibrary-mcp": "dist/index.js",
+    "zlibrary": "dist/index.js"
   },
   "scripts": {
     "build": "tsc",

@@ -1,4 +1,5 @@
 import { afterEach, beforeEach, expect, jest, test } from '@jest/globals';
+import '../helpers/environment-login.js';
 import os from 'node:os';
 
 let saved, api, AcquisitionTools, errorEnvelope, runner, clock, now;

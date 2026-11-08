@@ -1,5 +1,6 @@
+import '../helpers/environment-login.js';
 import { afterEach, beforeEach, expect, jest, test } from '@jest/globals';
-import { AcquisitionTools } from '../../dist/lib/acquisition-tools.js';
+const { AcquisitionTools } = await import('../../dist/lib/acquisition-tools.js');
 import { SourceRegistry } from '../../dist/lib/source-registry.js';
 import { SearchRecords } from '../../dist/lib/search-records.js';
 import { planSearch } from '../../dist/lib/search-assembly.js';

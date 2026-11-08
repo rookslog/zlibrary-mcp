@@ -1,8 +1,9 @@
+import '../helpers/environment-login.js';
 import { afterEach, beforeEach, expect, jest, test } from '@jest/globals';
 import os from 'node:os';
 import { assertAccounting } from './model-assertions.js';
-import { AcquisitionTools } from '../../dist/lib/acquisition-tools.js';
-import { createServer, TOOL_DEFINITIONS } from '../../dist/index.js';
+const { AcquisitionTools } = await import('../../dist/lib/acquisition-tools.js');
+const { createServer, TOOL_DEFINITIONS } = await import('../../dist/index.js');
 import { RefStore } from '../../dist/lib/refs.js';
 import { SearchRecords } from '../../dist/lib/search-records.js';
 import { planSearch } from '../../dist/lib/search-assembly.js';

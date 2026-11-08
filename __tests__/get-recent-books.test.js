@@ -1,3 +1,4 @@
+import './helpers/environment-login.js';
 import { jest, describe, beforeEach, afterEach, test, expect } from '@jest/globals';
 
 // These fixtures describe a single per-call subprocess, not private acquisition.

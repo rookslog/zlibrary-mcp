@@ -50,9 +50,81 @@ Add the server to your MCP client configuration:
 
 No credentials are needed for Library Genesis. The server starts without a
 Z-Library account; it warns on stderr and keeps the other sources available.
-For Z-Library, add `ZLIBRARY_EMAIL` and `ZLIBRARY_PASSWORD` in the client's `env`.
+For Z-Library, run `zlibrary login`, or add `ZLIBRARY_EMAIL` and `ZLIBRARY_PASSWORD` in the client's `env`.
 For Anna's Archive, `ANNAS_SECRET_KEY` enables member sign-in for search and is
 required for downloads. Anonymous search remains available, but the site's browser check often refuses it ([#139](https://github.com/rookslog/zlibrary-mcp/issues/139)).
+
+### Saved Z-Library login
+
+After the Python setup above, use `zlibrary login` to enter email and password
+with hidden prompts. `zlibrary login --password-stdin` reads the password from a
+pipe and prompts for email on the terminal. There is no password argument.
+`zlibrary status` never logs in. It reports identity, origin (`saved`,
+`environment`, or `none`), and the `file` backend. For a saved login it checks the
+key; environment authentication is `not_checked`, and an absent account is
+`not_configured`. Expiry is always `unknown`. Add `--json` for structured output
+without passwords or keys. If every configured login host refuses a redirect,
+`login` names the refusal and bounded destination hostname instead of suggesting
+another attempt. A wrong password retains the generic login-failure message.
+
+On POSIX systems the key is stored at
+`${XDG_STATE_HOME:-~/.local/state}/zlibrary/logins/zlibrary.json`. The state
+root must be absolute and is resolved with realpath, so symlinks at the root or
+its ancestors are supported. Project-owned `zlibrary/` and `logins/` directories
+must have mode 0700. The login and lock files must have mode 0600. These owned
+entries must belong to the current user; symlinks and extra file hardlinks are
+refused. Permissions are never silently changed. A persistent private lock
+serializes writers and keeps generations increasing across logout and content
+repair; readers see complete atomic replacements. The password is never saved.
+The file backend requires POSIX permissions; environment credentials remain
+available on other platforms.
+
+Before prompting or contacting the site, `login` acquires the writer lock,
+checks generation history, prepares and fsyncs the actual temporary file, and
+reserves the next generation. It holds the lock through the save. A busy lock
+is refused after five seconds; non-POSIX storage is refused before prompting.
+Cancelled or failed attempts may leave gaps in generation numbers.
+
+An incomplete or invalid generation record, including an existing empty lock,
+refuses login. Use `zlibrary logout` to repair it, then restart running servers
+before logging in again. Repair retains successfully parsed reservations and the
+saved generation, including when logout recreates a deleted counter file.
+Destroyed history cannot be reconstructed. Logout also removes private `.login-*` files left by
+an interrupted save and reports when no saved login was present.
+
+A usable saved login takes precedence over environment credentials, with a notice
+naming `ZLIBRARY_PASSWORD`. Set `ZLIBRARY_PREFER_ENV=1` to select environment
+credentials explicitly. If saved storage is corrupt, inaccessible, or unsafe,
+resolution uses configured environment credentials with a closed notice, or
+reports no configured account with that notice. A missing store adds no notice.
+`zlibrary status` reports the storage problem without including paths or secrets.
+Anonymous sources remain available.
+
+Requests carrying a saved key refuse automatic redirects, including same-host
+redirects. A redirected saved-key status check reports `unknown`, not a rejected
+key, and does not renew the saved login. Domain recovery uses only configured
+candidates that pass the probe; it never adopts a redirect destination.
+
+If login metadata lookup itself fails, `get_limits` reports a local error and
+marks authentication as not checked, retaining known environment configuration.
+Account operations refuse before a provider request; local download receipts
+can still be reused. Cancellation during metadata lookup stays cancelled and
+starts no provider work. Switching the selected account discards the previous
+account's quota estimates; delayed replies do not refill the new account's cache.
+
+`zlibrary login` can replace corrupt JSON in an otherwise private, regular store;
+`zlibrary logout` can remove it. Both still refuse unsafe permissions, ownership,
+links, and hardlinks. A refused key in an already selected saved session never
+switches to an environment password. When a new login replaces that key for the
+same identity, the running server can reread it and retry once. An unusable store
+during renewal stops the saved operation with login guidance. A changed identity
+requires a fresh operation. Logout does not cancel the key or remove credentials
+supplied through the environment.
+
+`zlibrary mcp`, `zlibrary-mcp`, and `node dist/index.js` with no arguments start
+the MCP server. Saved login support does not move the Python environment: after
+an npm upgrade, rerun `bash setup-uv.sh --no-dev` in the installed package before
+using login commands.
 
 ## Available MCP Tools
 
@@ -289,7 +361,9 @@ The published Docker image is still 1.4.0 until 2.0 is released.
 
 | Variable | Meaning |
 |---|---|
-| `ZLIBRARY_EMAIL`, `ZLIBRARY_PASSWORD` | Z-Library account; not required for other sources |
+| `ZLIBRARY_EMAIL`, `ZLIBRARY_PASSWORD` | Environment account; a usable saved login wins unless `ZLIBRARY_PREFER_ENV=1`; not required for other sources |
+| `ZLIBRARY_PREFER_ENV` | Set to `1` to prefer environment credentials over a saved login |
+| `XDG_STATE_HOME` | Absolute state root for the POSIX file login backend; defaults to `~/.local/state` |
 | `ANNAS_SECRET_KEY` | Anna's Archive membership key; optional member sign-in for search, required for downloads |
 | `BOOK_SOURCE_DEFAULT_ORDER` | Optional comma-separated default source set and copy-route tie preference, e.g. `libgen,zlibrary`; no repeats |
 | `BOOK_SOURCE_SEARCH_WAIT_MS` | Multi-source comparison wait in milliseconds; default `12000`; positive whole decimal within the Node timer range |

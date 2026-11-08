@@ -1,4 +1,5 @@
-import { AcquisitionTools } from '../../dist/lib/acquisition-tools.js';
+import '../helpers/environment-login.js';
+const { AcquisitionTools } = await import('../../dist/lib/acquisition-tools.js');
 import { SourceRegistry } from '../../dist/lib/source-registry.js';
 import { ToolFailure } from '../../dist/lib/tool-errors.js';
 import { windowFixture } from './window-fixture.js';

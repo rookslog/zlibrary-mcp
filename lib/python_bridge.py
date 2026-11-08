@@ -61,6 +61,8 @@ from lib.auth_diagnostics import (
 
 # Import enhanced metadata extraction
 from lib import enhanced_metadata
+from lib.login_store import resolve as resolve_login, StoreError
+from lib.login_runtime import SavedLoginClient
 
 # Import multi-source router
 from lib.sources.router import SourceRouter
@@ -323,9 +325,11 @@ async def get_eapi_client() -> EAPIClient:
     return _eapi_client
 
 
-async def _validate_eapi_profile(client):
+async def _validate_eapi_profile(client, *, saved=False):
     profile = await client.get_profile()
     if isinstance(profile, dict) and profile.get("success") == 0:
+        if saved or isinstance(client, SavedLoginClient):
+            raise RuntimeError("Unexpected EAPI profile response; session retained")
         token = sanitized_auth_token(profile.get("error"))
         if any(
             secret and secret in token
@@ -348,17 +352,46 @@ async def _validate_eapi_profile(client):
         raise RuntimeError("Unexpected EAPI profile response; session retained")
 
 
+def _local_login_refusal(message, reason="login_state_changed", error_type=StoreError):
+    error = error_type(message)
+    error._eapi_local_refusal = True
+    error.reason = reason
+    return error
+
+
 async def initialize_eapi_client() -> EAPIClient:
     """Use the parent generation, or log in only for a parent acquisition/per-call."""
     global _eapi_client, _session_input
-    email = os.environ.get("ZLIBRARY_EMAIL")
-    password = os.environ.get("ZLIBRARY_PASSWORD")
+    if os.environ.get("ZLIBRARY_LOGIN_METADATA_REFUSED") == "1":
+        raise _local_login_refusal(
+            "Login metadata is unavailable; check Python setup and private permissions before retrying.",
+            "login_metadata_unavailable",
+        )
+    login = resolve_login()
+    if os.environ.get("ZLIBRARY_LOGIN_EXPECTED_ORIGIN") == "saved" and (
+        login.origin != "saved"
+        or login.identity != os.environ.get("ZLIBRARY_LOGIN_EXPECTED_IDENTITY")
+    ):
+        raise _local_login_refusal("Saved login changed; run zlibrary login and retry")
+    email = login.identity
+    password = login.password.reveal()
+    if login.origin == "saved":
+        if _session_input is not None:
+            raise _local_login_refusal(
+                "Private session identity cannot adopt a saved login; retry the operation.",
+                error_type=ValueError,
+            )
+        _eapi_client = SavedLoginClient(
+            login, os.environ.get("ZLIBRARY_EAPI_DOMAIN", "").strip() or None
+        )
+        _attach_eapi_session(_eapi_client)
+        return _eapi_client
     if not email or not password:
         from lib.acquisition import AcquisitionError
 
         error = AcquisitionError(
             "configuration_error",
-            "ZLIBRARY_EMAIL and ZLIBRARY_PASSWORD environment variables required",
+            "Run zlibrary login or configure ZLIBRARY_EMAIL and ZLIBRARY_PASSWORD",
             issued=False,
         )
         error._eapi_local_refusal = True
@@ -411,6 +444,7 @@ def _publish_eapi_session():
     if (
         _session_input is None
         or _eapi_client is None
+        or isinstance(_eapi_client, SavedLoginClient)
         or _session_published is _session_input
     ):
         return
@@ -455,7 +489,9 @@ async def _recover_eapi_domain(client, *, exclude=()):
         )
         try:
             try:
-                await _validate_eapi_profile(replacement)
+                await _validate_eapi_profile(
+                    replacement, saved=isinstance(client, SavedLoginClient)
+                )
             except (
                 httpx.RequestError,
                 httpx.HTTPStatusError,
@@ -486,8 +522,11 @@ def _safe_diagnostic(value):
     ]
     if _session_input:
         secrets.append(_session_input.get("remix_userkey", ""))
+        secrets.append(_session_input.get("identity", ""))
     if _eapi_client:
         secrets.append(_eapi_client.remix_userkey or "")
+        if isinstance(_eapi_client, SavedLoginClient):
+            secrets.append(_eapi_client.login_record.identity)
 
     def visit(item):
         if isinstance(item, str):
@@ -2458,6 +2497,10 @@ async def main():
             _publish_eapi_session()
         # Print error as JSON to stderr
         error_info = {"error": str(e), "type": type(e).__name__}
+        if getattr(e, "_eapi_local_refusal", False) is True and getattr(
+            e, "reason", ""
+        ) in {"login_state_changed", "login_metadata_unavailable"}:
+            error_info["details"] = {"reason": e.reason, "request_issued": False}
         if isinstance(e, RedirectRefusedError):
             error_info["redirect_host"] = e.target_host
             error_info["status_code"] = e.status_code
@@ -2613,12 +2656,10 @@ async def _dispatch_bridge_function(function_name: str, args_dict: dict):
         async def authenticated_transfer(book, directory, **kwargs):
             source = str(book.get("source") or "zlibrary").lower()
             if source not in SOURCE_ALIASES:
-                if not os.environ.get("ZLIBRARY_EMAIL") or not os.environ.get(
-                    "ZLIBRARY_PASSWORD"
-                ):
+                if resolve_login().origin == "none":
                     raise AcquisitionError(
                         "configuration_error",
-                        "Configure ZLIBRARY_EMAIL and ZLIBRARY_PASSWORD",
+                        "Run zlibrary login or configure ZLIBRARY_EMAIL and ZLIBRARY_PASSWORD",
                     )
                 try:
                     await initialize_eapi_client()

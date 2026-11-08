@@ -36,22 +36,20 @@ function consumesSecret(node) {
   );
 }
 
-function requiresFilterSuccess(condition) {
+function requiresFilterSuccess(condition, requireCounts = false) {
   if (typeof condition !== 'string') return false;
   const expression = condition.trim().replace(/^\$\{\{\s*([\s\S]*?)\s*\}\}$/, '$1');
   // Only conjunctions are admitted. A substring in a disjunction, negation,
   // function, or quoted literal does not establish a necessary success gate.
+  const required = [/^steps\.filter_output\.outcome\s*==\s*'success'$/];
+  if (requireCounts) required.push(/^steps\.live_counts\.outcome\s*==\s*'success'$/);
+  const parts = expression.split('&&').map((part) => part.trim());
   return (
-    expression
-      .split('&&')
-      .some((part) => /^\s*steps\.filter_output\.outcome\s*==\s*'success'\s*$/.test(part)) &&
-    expression
-      .split('&&')
-      .every((part) =>
-        /^(?:\s*(?:always\(\)|success\(\)|steps\.filter_output\.outcome\s*==\s*'success')\s*)$/.test(
-          part,
-        ),
-      )
+    required.every((check) => parts.some((part) => check.test(part))) &&
+    parts.every(
+      (part) =>
+        /^(?:always\(\)|success\(\))$/.test(part) || required.some((check) => check.test(part)),
+    )
   );
 }
 
@@ -62,6 +60,17 @@ function reasonedException(exceptions, key) {
 
 function artifactUpload(step) {
   return /^actions\/upload-artifact@/i.test(step.uses || '');
+}
+
+function countsPreparation(step) {
+  const allowed = new Set(['id', 'name', 'run', 'if', 'continue-on-error']);
+  return (
+    step?.id === 'live_counts' &&
+    step.run?.trim() === 'python3 scripts/live_test_counts.py' &&
+    step['continue-on-error'] === true &&
+    requiresFilterSuccess(step.if) &&
+    Object.keys(step).every((key) => allowed.has(key))
+  );
 }
 
 export function checkWorkflow(workflow, file, namedExceptions = exceptions) {
@@ -87,13 +96,16 @@ export function checkWorkflow(workflow, file, namedExceptions = exceptions) {
     );
     const uploadIndices = steps.flatMap((step, index) => (artifactUpload(step) ? [index] : []));
     const lastUpload = Math.max(-1, ...uploadIndices);
+    // Only this fixed command may derive counts from successfully filtered XML.
+    const countsReady = filterIndex >= 0 && countsPreparation(steps[filterIndex + 1]);
+    const preparedThrough = filterIndex + (countsReady ? 1 : 0);
     const redirectedFilter =
       filterIndex >= 0 &&
       (Object.hasOwn(steps[filterIndex], 'working-directory') ||
         Object.hasOwn(job.defaults?.run || {}, 'working-directory') ||
         Object.hasOwn(workflow.defaults?.run || {}, 'working-directory'));
     const interrupted = steps
-      .slice(filterIndex + 1, lastUpload)
+      .slice(preparedThrough + 1, lastUpload)
       .some((step) => !artifactUpload(step));
     for (const index of uploadIndices) {
       const step = steps[index];
@@ -107,11 +119,14 @@ export function checkWorkflow(workflow, file, namedExceptions = exceptions) {
               .filter(Boolean)
           : [];
       const preparedPaths =
-        paths.length > 0 && paths.every((path) => path === 'live.log' || path === 'live.xml');
+        paths.length > 0 &&
+        (paths.includes('live-counts.json')
+          ? countsReady && paths.length === 1
+          : paths.every((path) => path === 'live.log' || path === 'live.xml'));
       if (
         filterIndex < 0 ||
         filterIndex >= index ||
-        !requiresFilterSuccess(step.if) ||
+        !requiresFilterSuccess(step.if, paths.includes('live-counts.json')) ||
         !preparedPaths ||
         redirectedFilter ||
         interrupted

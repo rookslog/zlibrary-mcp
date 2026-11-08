@@ -461,6 +461,10 @@ def test_live_job_never_invokes_integration_without_explicit_unblocked(
         ROOT / "scripts/filter_live_test_output.py",
         tmp_path / "scripts/filter_live_test_output.py",
     )
+    shutil.copyfile(
+        ROOT / "scripts/live_test_counts.py",
+        tmp_path / "scripts/live_test_counts.py",
+    )
 
     def enabled(condition):
         result = subprocess.run(
@@ -907,6 +911,8 @@ def test_ci_account_configuration_controls_real_live_shell(
         f"with Path({str(calls)!r}).open('a') as out:\n"
         "    out.write(json.dumps(sys.argv[1:]) + '\\n')\n"
         "if sys.argv[1:3] == ['run', 'pytest']:\n"
+        "    started = 'execution_started=true' in Path(os.environ['GITHUB_OUTPUT']).read_text() if Path(os.environ['GITHUB_OUTPUT']).exists() else False\n"
+        "    assert started == ('--collect-only' not in sys.argv)\n"
         "    if '--collect-only' in sys.argv:\n        sys.exit(0)\n"
         "    shutil.copyfile(os.environ['SYNTHETIC_REPORT'], 'live.xml')\n"
         "    print('offline pytest log')\n    sys.exit(0)\n"
@@ -955,6 +961,9 @@ def test_ci_account_configuration_controls_real_live_shell(
     assert values == {
         "status": "passed" if configured else "no_account",
         "blocked": "false",
+        **(
+            {"execution_started": "true", "pytest_exit_code": "0"} if configured else {}
+        ),
     }
     invocations = (
         [json.loads(line) for line in calls.read_text().splitlines()]
@@ -984,3 +993,22 @@ def test_ci_account_configuration_controls_real_live_shell(
             not (tmp_path / "live.log").exists()
             and not (tmp_path / "live.xml").exists()
         )
+
+
+@pytest.mark.parametrize(
+    "body",
+    [
+        b'<?xml version="1.0" encoding="unknown-test-codec"?><testsuite/>',
+        '<!DOCTYPE testsuite [<!ENTITY x "canary">]><testsuite><testcase>&x;</testcase></testsuite>'.encode(
+            "utf-16"
+        ),
+    ],
+)
+def test_invalid_xml_encoding_and_declarations_are_classified_failed(
+    classifier, tmp_path, body
+):
+    path = tmp_path / "invalid.xml"
+    path.write_bytes(body)
+    result = classifier.classify(0, path)
+    assert result["status"] == "failed"
+    assert result["blocked"] is False

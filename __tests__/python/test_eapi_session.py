@@ -99,8 +99,8 @@ def service(monkeypatch, tmp_path):
             state["clients"].append(self._client)
         return self._client
 
-    async def resolve():
-        return await eapi.resolve_eapi_domain(transport=transport)
+    async def resolve(**kwargs):
+        return await eapi.resolve_eapi_domain(transport=transport, **kwargs)
 
     monkeypatch.setattr(eapi.EAPIClient, "_get_client", get_client)
     monkeypatch.setattr(python_bridge, "resolve_eapi_domain", resolve)

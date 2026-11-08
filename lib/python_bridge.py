@@ -90,6 +90,8 @@ from zlibrary.eapi import (
     EAPIClient,
     EAPIAuthenticationError,
     NonJSONResponseError,
+    DiamWallError,
+    RedirectRefusedError,
     sanitized_auth_token,
     normalize_eapi_book,
     normalize_eapi_search_response,
@@ -463,16 +465,25 @@ def _publish_eapi_session():
     os.write(3, encoded)
 
 
-def _attach_eapi_session(client):
-    async def recover():
-        from zlibrary.eapi import DiamWallError
+_EAPI_DOMAIN_FAILURES = (
+    httpx.ConnectError,
+    httpx.ConnectTimeout,
+    DiamWallError,
+    NonJSONResponseError,
+    RedirectRefusedError,
+)
 
-        # Defence in depth: resolver also honours the pin, never switch it here.
-        if os.environ.get("ZLIBRARY_EAPI_DOMAIN", "").strip():
+
+async def _recover_eapi_domain(client, *, exclude=()):
+    # Resolve only configured untried candidates, never a redirect's Location.
+    if os.environ.get("ZLIBRARY_EAPI_DOMAIN", "").strip():
+        return False
+    failed = set(exclude) | {client.domain}
+    while True:
+        target = await resolve_eapi_domain(exclude=tuple(failed))
+        if not target or target in failed:
             return False
-        target = await resolve_eapi_domain()
-        if target == client.domain:
-            return False
+        failed.add(target)
         replacement = EAPIClient(
             target, remix_userid=client.remix_userid, remix_userkey=client.remix_userkey
         )
@@ -487,13 +498,18 @@ def _attach_eapi_session(client):
                 DiamWallError,
                 NonJSONResponseError,
             ):
-                return False
+                continue
             await client.close()
             client.domain = replacement.domain
             client._recovered_domain = True
             return True
         finally:
             await replacement.close()
+
+
+def _attach_eapi_session(client):
+    async def recover():
+        return await _recover_eapi_domain(client)
 
     client.on_domain_failed = recover
 
@@ -588,28 +604,39 @@ async def _login_eapi_client(email: str, password: str) -> EAPIClient:
     # rate-limited) and logs in on the first healthy candidate.
     domain_pinned = bool(os.environ.get("ZLIBRARY_EAPI_DOMAIN", "").strip())
     initial_domain = await resolve_eapi_domain()
-
-    client = EAPIClient(initial_domain)
-    try:
-        login_result = await client.login(email, password)
-        if (
-            not isinstance(login_result, dict)
-            or login_result.get("success") != 1
-            or not client.remix_userid
-            or not client.remix_userkey
-        ):
-            raise EAPIAuthenticationError(
-                "EAPI login failed",
-                status_code=200,
-                token=sanitized_auth_token(
-                    login_result.get("error")
-                    if isinstance(login_result, dict)
-                    else None
-                ),
-            )
-    except BaseException:
-        await client.close()
-        raise
+    failed = set()
+    while True:
+        client = EAPIClient(initial_domain)
+        try:
+            login_result = await client.login(email, password)
+            if (
+                not isinstance(login_result, dict)
+                or login_result.get("success") != 1
+                or not client.remix_userid
+                or not client.remix_userkey
+            ):
+                raise EAPIAuthenticationError(
+                    "EAPI login failed",
+                    status_code=200,
+                    token=sanitized_auth_token(
+                        login_result.get("error")
+                        if isinstance(login_result, dict)
+                        else None
+                    ),
+                )
+            break
+        except _EAPI_DOMAIN_FAILURES:
+            await client.close()
+            if domain_pinned:
+                raise
+            failed.add(initial_domain)
+            target = await resolve_eapi_domain(exclude=tuple(failed))
+            if not target or target in failed:
+                raise
+            initial_domain = target
+        except BaseException:
+            await client.close()
+            raise
 
     logger.info("EAPI client authenticated")
 
@@ -619,11 +646,22 @@ async def _login_eapi_client(email: str, password: str) -> EAPIClient:
     # walled domains first, and switching blindly would kill a working client.
     if not domain_pinned:
         try:
-            domains_result = await client.get_domains()
+            failed = set()
+            while True:
+                try:
+                    domains_result = await client.get_domains()
+                    break
+                except _EAPI_DOMAIN_FAILURES:
+                    failed.add(client.domain)
+                    if not await _recover_eapi_domain(client, exclude=failed):
+                        logger.warning(
+                            "Domain discovery failed, keeping current domain"
+                        )
+                        return client
             domains = domains_result.get("domains", [])
-            target = await select_advertised_domain(domains, initial_domain)
-            if target and target != initial_domain:
-                logger.info(f"Switching EAPI domain: {initial_domain} -> {target}")
+            target = await select_advertised_domain(domains, client.domain)
+            if target and target != client.domain:
+                logger.info(f"Switching EAPI domain: {client.domain} -> {target}")
                 # Create new client on discovered domain with existing credentials
                 new_client = EAPIClient(
                     target,
@@ -635,7 +673,7 @@ async def _login_eapi_client(email: str, password: str) -> EAPIClient:
             elif not target and domains:
                 logger.warning(
                     "No advertised EAPI domain passed the health probe; "
-                    f"keeping working domain {initial_domain}"
+                    f"keeping working domain {client.domain}"
                 )
         except Exception:
             logger.warning("Domain discovery failed, using initial domain")
@@ -646,13 +684,13 @@ async def _login_eapi_client(email: str, password: str) -> EAPIClient:
 def _classify_health_error(error: Exception) -> str:
     """Classify a health check error into a specific error code.
 
-    Checks the exception message for anti-bot wall indicators first
-    (DiamWall, then Cloudflare), then falls back to exception type checking
-    for network errors. Uses only built-in Python exception types (no httpx
-    imports) — DiamWallError raised by the EAPI client is matched by its
-    message, which always names the wall.
+    Refusal is recognized by type before any hostname/message wall words.
+    Legacy DiamWall and Cloudflare diagnoses still use their message markers;
+    built-in connection/timeout errors retain the existing network diagnosis.
     """
     msg = str(error).lower()
+    if isinstance(error, RedirectRefusedError):
+        return "redirect_refused"
     if "diamwall" in msg:
         return "diamwall_blocked"
     cloudflare_patterns = ["checking your browser", "cloudflare", "cf-", "challenge"]
@@ -681,6 +719,7 @@ async def eapi_health_check() -> dict:
           working domain, or unset it to use the built-in fallback list)
         - cloudflare_blocked: Cloudflare challenge detected in response
         - network_error: Connection or timeout failure
+        - redirect_refused: Credential-bearing request refused a redirect
         - malformed_response: Non-JSON or unexpected response format
         - unknown_error: Unclassified failure
     """
@@ -2146,7 +2185,7 @@ async def get_book_metadata_complete(book_id: str, book_hash: str = None) -> dic
 
         return metadata
 
-    except EAPIAuthenticationError:
+    except (EAPIAuthenticationError, RedirectRefusedError):
         raise  # Preserve the typed verdict across the metadata wrapper.
     except Exception as e:
         logger.exception(f"Error fetching complete metadata for book {book_id}")
@@ -2462,6 +2501,9 @@ async def main():
             e, "reason", ""
         ) in {"login_state_changed", "login_metadata_unavailable"}:
             error_info["details"] = {"reason": e.reason, "request_issued": False}
+        if isinstance(e, RedirectRefusedError):
+            error_info["redirect_host"] = e.target_host
+            error_info["status_code"] = e.status_code
         if isinstance(e, httpx.HTTPStatusError):
             error_info["status_code"] = e.response.status_code
         # Provider failures carry which source failed and why (DNS vs connect
@@ -2523,6 +2565,8 @@ async def main():
                 ),
             )
             error_info["error"] = f"EAPI request failed ({diagnostics['failure_kind']})"
+            if isinstance(e, RedirectRefusedError):
+                error_info["error"] = _safe_diagnostic(str(e))
             if (
                 function_name == "get_recent_books"
                 and isinstance(e, ProviderResponseError)
@@ -2566,6 +2610,9 @@ async def main():
                 "login_failed": failure,
                 "diagnostics": diagnostics,
             }
+            if isinstance(e, RedirectRefusedError):
+                error_info["error"] = _safe_diagnostic(str(e))
+                error_info["redirect_host"] = _safe_diagnostic(e.target_host)
             print(encode_failure(error_info, mcp=True))
         elif isinstance(e, EAPIAuthenticationError) and _session_input is not None:
             # The parent alone refreshes, with generation CAS and a login cooldown.

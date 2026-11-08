@@ -1,6 +1,6 @@
 import { z } from 'zod';
 import { CircuitBreakerOpenError } from './circuit-breaker.js';
-import { readAuthDiagnostics } from './auth-diagnostics.js';
+import { readAuthDiagnostics, redirectRefusalMessage } from './auth-diagnostics.js';
 
 export const ERROR_CODES = [
   'invalid_argument',
@@ -159,6 +159,8 @@ export function classifyFailure(error: any, operation: string, source?: string):
         HTTPStatusError: 'http_error',
       } as Record<string, string>
     )[context.pythonErrorType];
+  if (reason === 'unknown' && context.pythonErrorType === 'RedirectRefusedError')
+    reason = 'http_error';
   // Fill only an unknown cause: explicit timeout/abort/acquisition decisions
   // keep their existing codes and download issuance semantics.
   if (reason === 'unknown' && diagnostics?.failure_kind === 'transport')
@@ -215,6 +217,7 @@ export function classifyFailure(error: any, operation: string, source?: string):
     code = sourceConfiguration ? 'invalid_argument' : 'credentials_missing';
   else if (reason === 'quota_exhausted') code = 'quota_exhausted';
   else if (
+    (reason === 'http_error' && context.pythonErrorType === 'RedirectRefusedError') ||
     [
       'dns_failure',
       'dns_timeout',
@@ -271,6 +274,11 @@ export function classifyFailure(error: any, operation: string, source?: string):
         : 'safe'
       : 'no';
   const occupied = code === 'output_refused' && detail.destination_occupied === true;
+  const refusal = redirectRefusalMessage(
+    context.pythonErrorType,
+    context.redirectHost,
+    diagnostics?.http_status ?? context.httpStatus ?? context.loginStatus,
+  );
   return new ToolFailure(
     code,
     sourceConfiguration
@@ -281,7 +289,7 @@ export function classifyFailure(error: any, operation: string, source?: string):
           : 'Login metadata is unavailable; no provider request was made.'
         : occupied
           ? 'Destination already holds a file with no matching receipt.'
-          : `${operation} did not complete (${reason === 'unknown' ? code : reason}).`,
+          : (refusal ?? `${operation} did not complete (${reason === 'unknown' ? code : reason}).`),
     {
       source,
       retry,

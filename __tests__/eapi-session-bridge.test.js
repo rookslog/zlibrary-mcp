@@ -30,7 +30,7 @@ test('real Node runner and Python main reuse private cookies with fake HTTP only
 sys.path[:0]=[${JSON.stringify(path.join(root, 'lib'))}, ${JSON.stringify(path.join(root, 'zlibrary/src'))}, ${JSON.stringify(root)}]
 import httpx
 from zlibrary import eapi
-async def resolve(): return 'fake.example.test'
+async def resolve(*, exclude=()): return None if 'fake.example.test' in exclude else 'fake.example.test'
 eapi.resolve_eapi_domain=resolve
 async def get_client(self):
     if self._client is None or self._client.is_closed:

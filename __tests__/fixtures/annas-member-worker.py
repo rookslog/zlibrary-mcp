@@ -21,6 +21,8 @@ mode = sys.argv[1] if len(sys.argv) > 1 else "ok"
 
 async def site(request):
     global posts
+    if request.url.host != adapter.host:
+        raise AssertionError("Unexpected redirect target")
     if request.method == "POST":
         posts += 1
         if mode in ("reject-slow", "slow-signin", "reject-large"):
@@ -33,6 +35,12 @@ async def site(request):
         await asyncio.sleep(0.01)
         if mode in ("reject", "reject-slow", "reject-large"):
             return httpx.Response(200, text="<form>Sign in</form>")
+        if mode == "signin-redirect":
+            return httpx.Response(
+                307,
+                headers={"location": "https://sub.annas-archive.gl/private"},
+                text="Invalid API key worker-key-canary worker-cookie-canary",
+            )
         return httpx.Response(
             302,
             headers={

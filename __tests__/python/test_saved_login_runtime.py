@@ -147,7 +147,7 @@ async def test_ambiguous_profile_during_domain_recovery_is_not_rejection(
 ):
     monkeypatch.delenv("ZLIBRARY_EAPI_DOMAIN")
 
-    async def target():
+    async def target(exclude=()):
         return "new.example.test"
 
     monkeypatch.setattr(python_bridge, "resolve_eapi_domain", target)

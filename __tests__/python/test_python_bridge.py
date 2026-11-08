@@ -1551,6 +1551,7 @@ partial = pathlib.Path({str(partial)!r})
 ready = pathlib.Path({str(ready)!r})
 
 class SignalResponse:
+    status_code = 200
     headers = {{'content-disposition': 'attachment; filename="bridge-partial.epub"'}}
     url = 'https://download.example/bridge-partial.epub'
 

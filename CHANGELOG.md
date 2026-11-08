@@ -23,6 +23,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - The first command-line argument must name `login`, `status`, `logout`, or `mcp`;
   unrecognized commands now exit with an option error instead of starting MCP.
+- Requests carrying EAPI credentials, legacy session cookies or Anna's fast-download
+  key now refuse automatic redirects, including same-host and file-host redirects.
+  EAPI refusals expose `RedirectRefusedError` with the HTTP status and a bounded
+  destination hostname; Anna's API refusal detail contains only the status.
+- After a refused redirect, connection failure/timeout, anti-bot wall or non-JSON
+  login reply, the login walk tries only untried configured hosts that pass the
+  unauthenticated probe. If initial probes all fail, one initial login still
+  surfaces the error; no subsequent failed-probe host receives the password.
+  Authentication rejection, other HTTP errors and explicit domain pins stop the walk.
+- Redirect refusals use the `redirect_refused` health code and retain host-failure
+  breaker treatment. A download refusal reports `detail.reason: http_error` while
+  retaining its existing public error code and quota-sensitive retry advice.
 - `ANNAS_SECRET_KEY` now also signs in to Anna's Archive for search, so the key
   is sent by POST to `/account/` on the configured origin. It previously served
   fast downloads only. Without a key, search stays anonymous.

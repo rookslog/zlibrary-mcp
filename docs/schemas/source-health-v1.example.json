@@ -1,0 +1,142 @@
+{
+  "schema_version": 1,
+  "generated_at": "2026-11-06T12:34:56Z",
+  "run": {
+    "id": "123456",
+    "attempt": 2,
+    "head_sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "event": "schedule"
+  },
+  "expected_sources": [
+    "zlibrary",
+    "annas-archive",
+    "libgen"
+  ],
+  "policy_valid": true,
+  "jobs": {
+    "reachability": "success",
+    "reachability_step": "success",
+    "live_tests": "success",
+    "live_step": "success"
+  },
+  "job_attempts": {
+    "reachability": 2,
+    "live_tests": 2
+  },
+  "inputs": {
+    "probe_artifact": "upstream-source-health-probe-2",
+    "live_artifact": "upstream-source-health-live-2"
+  },
+  "sources": {
+    "zlibrary": {
+      "alert_policy": "relied_on",
+      "reachability": {
+        "status": "passed",
+        "reason": "probe_passed",
+        "evidence_complete": true,
+        "expected_checks": [
+          "zlibrary:eapi/info/domains",
+          "zlibrary:eapi/book/search"
+        ],
+        "missing_checks": [],
+        "checks": [
+          {
+            "id": "zlibrary:eapi/info/domains",
+            "status": "passed",
+            "reason": "probe_passed",
+            "first_seen": null
+          },
+          {
+            "id": "zlibrary:eapi/book/search",
+            "status": "passed",
+            "reason": "probe_passed",
+            "first_seen": null
+          }
+        ]
+      },
+      "authenticated": {
+        "status": "no_account",
+        "reason": "no_ci_account_configured",
+        "ran": false,
+        "scope": "zlibrary:python-integration",
+        "counts": null,
+        "required_check": "zlibrary:authentication-succeeds",
+        "coverage_complete": false
+      }
+    },
+    "annas-archive": {
+      "alert_policy": "warning_only",
+      "reachability": {
+        "status": "passed",
+        "reason": "probe_passed",
+        "evidence_complete": true,
+        "expected_checks": [
+          "annas-archive:search"
+        ],
+        "missing_checks": [],
+        "checks": [
+          {
+            "id": "annas-archive:search",
+            "status": "passed",
+            "reason": "probe_passed",
+            "first_seen": null
+          }
+        ]
+      },
+      "authenticated": {
+        "status": "not_run",
+        "reason": "no_authenticated_suite_configured",
+        "ran": false,
+        "scope": null,
+        "counts": null,
+        "required_check": null,
+        "coverage_complete": false
+      }
+    },
+    "libgen": {
+      "alert_policy": "relied_on",
+      "reachability": {
+        "status": "passed",
+        "reason": "probe_passed",
+        "evidence_complete": true,
+        "expected_checks": [
+          "libgen:search",
+          "libgen:article-search",
+          "libgen:download"
+        ],
+        "missing_checks": [],
+        "checks": [
+          {
+            "id": "libgen:search",
+            "status": "passed",
+            "reason": "probe_passed",
+            "first_seen": null
+          },
+          {
+            "id": "libgen:article-search",
+            "status": "passed",
+            "reason": "probe_passed",
+            "first_seen": null
+          },
+          {
+            "id": "libgen:download",
+            "status": "passed",
+            "reason": "probe_passed",
+            "first_seen": null
+          }
+        ]
+      },
+      "authenticated": {
+        "status": "not_run",
+        "reason": "no_authenticated_suite_configured",
+        "ran": false,
+        "scope": null,
+        "counts": null,
+        "required_check": null,
+        "coverage_complete": false
+      }
+    }
+  },
+  "probe_contract_complete": true,
+  "unexpected_probe_checks": 0
+}

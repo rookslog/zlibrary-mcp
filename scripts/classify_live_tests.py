@@ -15,10 +15,15 @@ from pathlib import Path
 import xml.etree.ElementTree as ET
 
 
+class NoDeclarations(ET.TreeBuilder):
+    def doctype(self, name, pubid, system):
+        raise ValueError("XML declarations are unsupported")
+
+
 def classify(exit_code: int, report: Path) -> dict[str, object]:
     try:
-        root = ET.parse(report).getroot()
-    except (OSError, ET.ParseError):
+        root = ET.parse(report, parser=ET.XMLParser(target=NoDeclarations())).getroot()
+    except (OSError, ET.ParseError, LookupError, UnicodeError, ValueError):
         return {
             "status": "failed",
             "blocked": False,

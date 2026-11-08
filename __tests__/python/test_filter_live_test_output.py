@@ -96,7 +96,11 @@ def test_real_live_step_keeps_canaries_out_of_uploaded_files(
         )
     scripts = tmp_path / "scripts"
     scripts.mkdir()
-    for name in ["classify_live_tests.py", "filter_live_test_output.py"]:
+    for name in [
+        "classify_live_tests.py",
+        "filter_live_test_output.py",
+        "live_test_counts.py",
+    ]:
         source = ROOT / "scripts" / name
         if source.exists():
             shutil.copyfile(source, scripts / name)
@@ -212,6 +216,34 @@ def test_real_live_step_keeps_canaries_out_of_uploaded_files(
             assert encoded not in decoded
             assert encoded not in (tmp_path / "live.log").read_text()
 
+    counts_step = next((s for s in steps if s.get("id") == "live_counts"), None)
+    assert counts_step is not None
+    run = subprocess.run(
+        ["/bin/bash", "-e", "-o", "pipefail", "-c", counts_step["run"]],
+        cwd=tmp_path,
+        env=env,
+        capture_output=True,
+        text=True,
+    )
+    assert run.returncode == 0
+    counts_text = (tmp_path / "live-counts.json").read_text()
+    assert all(value not in counts_text for value in [email, password, frame])
+    counts = json.loads(counts_text)
+    assert set(counts) == {"schema_version", "problem", "evidence"}
+    assert set(counts["evidence"]) == {
+        "counts",
+        "problems",
+        "outside_case_problems",
+        "anchor_present",
+        "anchor_passed",
+    }
+    assert counts["evidence"]["counts"] == {
+        "total": 7,
+        "passed": 0,
+        "failed": 7,
+        "skipped": 0,
+    }
+
 
 def test_upload_requires_successful_output_filtering(workflow):
     steps = workflow["jobs"]["live_tests"]["steps"]
@@ -234,10 +266,31 @@ def test_upload_requires_successful_output_filtering(workflow):
     uploads = [
         s for s in steps if s.get("uses", "").startswith("actions/upload-artifact")
     ]
-    assert len(uploads) == 1
+    assert len(uploads) == 2
     assert steps.index(prepare) < steps.index(uploads[0])
     assert uploads[0]["if"] == "always() && steps.filter_output.outcome == 'success'"
     assert uploads[0]["with"]["path"].split() == ["live.log", "live.xml"]
+
+    uploads = [
+        s for s in steps if s.get("uses", "").startswith("actions/upload-artifact")
+    ]
+    diagnostic = next(s for s in uploads if s["with"]["name"] == "live-integration-log")
+    health = next(
+        s
+        for s in uploads
+        if s["with"]["name"].startswith("upstream-source-health-live-")
+    )
+    counts = next(s for s in steps if s.get("id") == "live_counts")
+    assert counts["if"] == "always() && steps.filter_output.outcome == 'success'"
+    assert (
+        steps.index(prepare)
+        < steps.index(counts)
+        < min(steps.index(s) for s in uploads)
+    )
+    assert diagnostic["if"] == "always() && steps.filter_output.outcome == 'success'"
+    assert diagnostic["with"]["path"].split() == ["live.log", "live.xml"]
+    assert health["with"]["path"] == "live-counts.json"
+    assert health["if"] == "always() && steps.filter_output.outcome == 'success' && steps.live_counts.outcome == 'success'"
 
 
 @pytest.mark.parametrize("case", ["missing", "unreadable", "replacement"])

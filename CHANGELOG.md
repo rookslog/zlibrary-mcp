@@ -71,6 +71,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   unconfigured account result. Closed notices report the problem in status;
   absent storage stays silent. Saved-session renewal still stops on an unusable
   store without switching to an environment password.
+- Scheduled source-health reports separate unauthenticated reachability from
+  authenticated coverage, bind retained outputs to their job attempts and preserve
+  missing or contradictory evidence. Authenticated report input contains only
+  counts and fixed flags. Probe exception types distinguish transport/server
+  failures from contract changes.
 
 - Source downloads persist decoded chunks without waiting for a full buffer,
   preserving partial tails. New high-water gain accumulates

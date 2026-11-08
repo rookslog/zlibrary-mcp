@@ -2248,6 +2248,82 @@ def test_probe_deadline_preserves_row_dates(
 
 
 @pytest.mark.parametrize(
+    "failure,expected,statuses",
+    [
+        (httpx.ReadError("session timeout"), "ReadError", []),
+        (httpx.RemoteProtocolError("DNS fake payload"), "RemoteProtocolError", []),
+        (httpx.ReadTimeout("canary"), "ReadTimeout", []),
+        (ValueError("timeout DNS TLS"), "ValueError", []),
+        (
+            httpx.HTTPStatusError(
+                "canary",
+                request=httpx.Request("GET", "https://offline.invalid"),
+                response=httpx.Response(503),
+            ),
+            "HTTPStatusError",
+            [503],
+        ),
+    ],
+)
+def test_probe_records_typed_failures_without_interpreting_text(
+    check_upstream, failure, expected, statuses
+):
+    async def run():
+        def handler(request):
+            raise failure
+
+        async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+            return await check_upstream.probe_zlibrary_eapi(client)
+
+    rows = check_upstream.summarize(asyncio.run(run()))["results"]
+    assert len(rows) == 2
+    for row in rows:
+        assert expected in row["error_types"]
+        assert row["http_statuses"] == statuses
+
+
+@pytest.mark.parametrize(
+    "resolver_text",
+    [
+        "[Errno -2] Name or service not known",
+        "[Errno -3] Temporary failure in name resolution",
+    ],
+)
+def test_probe_records_resolver_cause_not_connecterror_text(
+    check_upstream, resolver_text
+):
+    import socket
+
+    failure = httpx.ConnectError(resolver_text)
+    failure.__cause__ = socket.gaierror(-2, resolver_text)
+
+    async def run():
+        def handler(request):
+            raise failure
+
+        async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+            return await check_upstream.probe_annas(client)
+
+    row = check_upstream.summarize([asyncio.run(run())])["results"][0]
+    assert row["error_types"] == ["ConnectError", "gaierror"]
+
+
+def test_download_probe_retains_structured_server_failure(
+    libgen_download, check_upstream
+):
+    def handler(request):
+        if request.url.path == "/ads.php":
+            return httpx.Response(
+                200, text='<a href="get.php?md5=abc&key=canary">GET</a>'
+            )
+        return httpx.Response(503, text="session timeout")
+
+    row = check_upstream.summarize([libgen_download(handler)])["results"][0]
+    assert row["error_types"] == ["HTTPStatusError"]
+    assert row["http_statuses"] == [503]
+
+
+@pytest.mark.parametrize(
     "books,want",
     [
         ([{"id": 1, "md5": "a" * 32, "sha256": "B" * 64}], True),
@@ -2277,3 +2353,64 @@ def test_eapi_catalogue_digest_drift_is_detected_when_search_returns_books(
         item for item in asyncio.run(run()) if item.name == "zlibrary:eapi/book/search"
     )
     assert result.ok is want
+
+
+@pytest.mark.parametrize(
+    "case,source_reason,health_reason",
+    [
+        ("page", "protocol_error", "probe_contract_failed"),
+        ("read", "read_timeout", "probe_timeout"),
+        ("connect", "connect_error", "probe_connection_failed"),
+        ("http", "http_error", "probe_http_failure"),
+        ("unknown", "future_CANARY", "probe_error_unknown"),
+    ],
+)
+def test_libgen_source_error_chain_preserves_health_category(
+    check_upstream, case, source_reason, health_reason
+):
+    from lib.sources.errors import AllSourcesFailedError, ProviderResponseError
+    from lib.sources.libgen import LibgenAdapter, _unparseable_search_page
+
+    if case == "page":
+        page = httpx.Response(
+            200, text="<html><title>CANARY timeout</title>changed layout</html>"
+        )
+        error = ProviderResponseError(
+            "libgen",
+            "offline.invalid",
+            _unparseable_search_page(page),
+            reason="protocol_error",
+        )
+    elif case == "unknown":
+        error = ProviderResponseError(
+            "libgen", "offline.invalid", "CANARY timeout", reason="future_CANARY"
+        )
+    else:
+        original = {
+            "read": httpx.ReadTimeout("CANARY"),
+            "connect": httpx.ConnectError("CANARY"),
+            "http": httpx.HTTPStatusError(
+                "CANARY",
+                request=httpx.Request("GET", "https://offline.invalid"),
+                response=httpx.Response(503),
+            ),
+        }[case]
+        error = LibgenAdapter._as_source_error(None, original, "offline.invalid")
+    assert error.reason == source_reason
+    metadata = check_upstream._exception_metadata(
+        AllSourcesFailedError("search", [error])
+    )
+    row = check_upstream.summarize(
+        [
+            check_upstream.ProbeResult(
+                "libgen:search", False, "CANARY timeout", **metadata
+            )
+        ]
+    )["results"][0]
+    assert row["source_reasons"] == [source_reason]
+    spec = importlib.util.spec_from_file_location(
+        "source_health_category", MODULE_PATH.with_name("source_health_report.py")
+    )
+    health = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(health)
+    assert health.probe_reason(row) == health_reason

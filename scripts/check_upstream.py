@@ -40,6 +40,7 @@ from bs4 import BeautifulSoup
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "zlibrary" / "src"))
 from lib.sources.config import get_source_config
+from lib.sources.errors import SourceError
 from lib.sources.libgen import LibgenAdapter  # noqa: E402
 from lib.sources.libgen import FALLBACK_MIRRORS as LIBGEN_FALLBACK_MIRRORS  # noqa: E402
 from lib.sources.libgen import _nginx_stub as _libgen_nginx_stub  # noqa: E402
@@ -137,6 +138,31 @@ def _single_line(value: str) -> str:
     return re.sub(r"^(\s*)::", r"\1: :", value)
 
 
+def _exception_metadata(exc: BaseException) -> dict[str, list]:
+    """Retain typed failure metadata, never classify from exception text."""
+    pending, seen, types, statuses = [exc], set(), set(), set()
+    reasons = set()
+    while pending and len(seen) < 32:
+        current = pending.pop()
+        if not isinstance(current, BaseException) or id(current) in seen:
+            continue
+        seen.add(id(current))
+        types.add(type(current).__name__)
+        if isinstance(current, SourceError):
+            reasons.add(current.reason)
+        if isinstance(current, httpx.HTTPStatusError):
+            statuses.add(current.response.status_code)
+        pending.extend((current.__cause__, current.__context__))
+        failures = getattr(current, "failures", ())
+        if isinstance(failures, (list, tuple)):
+            pending.extend(failures[:32])
+    return {
+        "error_types": sorted(types),
+        "http_statuses": sorted(statuses),
+        "source_reasons": sorted(reasons),
+    }
+
+
 @dataclass
 class ProbeResult:
     name: str
@@ -147,6 +173,9 @@ class ProbeResult:
     # but still alerts when the operator relies on this source.
     blocked: bool = False
     extra: dict[str, Any] = field(default_factory=dict)
+    error_types: list[str] = field(default_factory=list)
+    http_statuses: list[int] = field(default_factory=list)
+    source_reasons: list[str] = field(default_factory=list)
 
     def __post_init__(self) -> None:
         self.name = _single_line(self.name)
@@ -254,6 +283,7 @@ async def probe_zlibrary_eapi(client: httpx.AsyncClient) -> list[ProbeResult]:
                 name="zlibrary:eapi/info/domains",
                 ok=False,
                 detail=f"{type(exc).__name__}: {exc}",
+                **_exception_metadata(exc),
             )
         )
 
@@ -327,6 +357,7 @@ async def probe_zlibrary_eapi(client: httpx.AsyncClient) -> list[ProbeResult]:
                 name="zlibrary:eapi/book/search",
                 ok=False,
                 detail=f"{type(exc).__name__}: {exc}",
+                **_exception_metadata(exc),
             )
         )
 
@@ -386,6 +417,7 @@ async def probe_annas(client: httpx.AsyncClient) -> ProbeResult:
             name="annas-archive:search",
             ok=False,
             detail=f"{type(exc).__name__}: {exc}",
+            **_exception_metadata(exc),
             required=False,
         )
 
@@ -519,6 +551,7 @@ async def _probe_libgen_search(
             blocked=blocked,
             detail=f"adapter search failed: {type(exc).__name__}: {exc}",
             required=False,
+            **_exception_metadata(exc),
         )
     # A nonempty list of unusable rows is a parser regression, not a pass:
     # the adapter maps missing fields to empty strings, and a result without
@@ -680,7 +713,7 @@ def _libgen_block_detail(mirror: str, resp: httpx.Response) -> Optional[str]:
 
 
 async def _probe_libgen_download_mirror(
-    client: httpx.AsyncClient, mirror: str
+    client: httpx.AsyncClient, mirror: str, *, failures: Optional[list] = None
 ) -> tuple[bool, str, bool]:
     """Exercise the full resolve-and-fetch path against one mirror.
 
@@ -715,6 +748,8 @@ async def _probe_libgen_download_mirror(
                 False,
             )
     except Exception as exc:  # noqa: BLE001 - any failure is a reportable signal
+        if failures is not None:
+            failures.append(_exception_metadata(exc))
         return False, f"{mirror}: ads.php {type(exc).__name__}: {exc}", False
 
     # Rate limit: never hammer a mirror, even across the two hops.
@@ -748,6 +783,13 @@ async def _probe_libgen_download_mirror(
 
         cdn_host = urlsplit(final_url).netloc or f"libgen.{mirror}"
         if resp.status_code not in (200, 206):
+            if failures is not None:
+                failures.append(
+                    {
+                        "error_types": ["HTTPStatusError"],
+                        "http_statuses": [resp.status_code],
+                    }
+                )
             return (
                 False,
                 f"{mirror}: get.php -> {cdn_host} returned HTTP {resp.status_code}",
@@ -782,6 +824,8 @@ async def _probe_libgen_download_mirror(
     except Exception as exc:  # noqa: BLE001
         # A dead CDN node lands here (cdn4.booksdl.lc failed TLS on
         # 2026-08-10). That is a real capability failure, not a block.
+        if failures is not None:
+            failures.append(_exception_metadata(exc))
         return False, f"{mirror}: get.php {type(exc).__name__}: {exc}", False
 
 
@@ -794,11 +838,14 @@ async def probe_libgen_download(client: httpx.AsyncClient) -> ProbeResult:
     the mirrors in order and reports the first that hands over real PDF bytes.
     """
     attempts: list[str] = []
+    failures: list[dict] = []
     blocked_count = 0
     for index, mirror in enumerate(LIBGEN_MIRROR_CANDIDATES):
         if index:
             await asyncio.sleep(LIBGEN_PROBE_DELAY_SECONDS)
-        ok, detail, blocked = await _probe_libgen_download_mirror(client, mirror)
+        ok, detail, blocked = await _probe_libgen_download_mirror(
+            client, mirror, failures=failures
+        )
         if ok:
             skipped = len(LIBGEN_MIRROR_CANDIDATES) - index - 1
             suffix = f"; {skipped} further mirror(s) not tried" if skipped else ""
@@ -821,6 +868,19 @@ async def probe_libgen_download(client: httpx.AsyncClient) -> ProbeResult:
         # failure and must not be filed under BLOCK.
         blocked=blocked_count == len(LIBGEN_MIRROR_CANDIDATES),
         extra={"mirrors_tried": list(LIBGEN_MIRROR_CANDIDATES)},
+        error_types=sorted(
+            {value for failure in failures for value in failure["error_types"]}
+        ),
+        http_statuses=sorted(
+            {value for failure in failures for value in failure["http_statuses"]}
+        ),
+        source_reasons=sorted(
+            {
+                value
+                for failure in failures
+                for value in failure.get("source_reasons", [])
+            }
+        ),
     )
 
 
@@ -856,7 +916,10 @@ async def run_probes() -> list[ProbeResult]:
                     collected.append(
                         [
                             ProbeResult(
-                                row, False, "TimeoutError: probe deadline exceeded"
+                                row,
+                                False,
+                                "TimeoutError: probe deadline exceeded",
+                                **_exception_metadata(TimeoutError()),
                             )
                             for row in deadline_rows.get(name, (name,))
                         ]
@@ -867,7 +930,14 @@ async def run_probes() -> list[ProbeResult]:
     results = []
     for (name, _), value in zip(probes, collected):
         if isinstance(value, Exception):
-            results.append(ProbeResult(name, False, f"{type(value).__name__}: {value}"))
+            results.append(
+                ProbeResult(
+                    name,
+                    False,
+                    f"{type(value).__name__}: {value}",
+                    **_exception_metadata(value),
+                )
+            )
         elif isinstance(value, BaseException):
             raise value
         elif isinstance(value, ProbeResult):
@@ -933,6 +1003,9 @@ def summarize(
                 "required": result.required,
                 "blocked": result.blocked,
                 "detail": result.detail,
+                "error_types": result.error_types,
+                "http_statuses": result.http_statuses,
+                "source_reasons": result.source_reasons,
             }
         )
     return {

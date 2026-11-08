@@ -119,6 +119,9 @@ the live step emits `status=no_account` and reports "live suite not run: no CI
 account configured" without collecting tests or logging in. This is no live
 coverage, not a pass or a recovery; it cannot itself create a drift issue.
 Reachability and offline checks continue independently.
+Scheduled runs also publish an attempt-bound [versioned source-health report](docs/schemas/source-health-v1.md)
+after both jobs, preserving missing or untested coverage rather than treating
+job success as a healthy source.
 
 The live step uses short tracebacks and filters configured values, captured
 session values and their encoded forms before uploading diagnostic files. If
@@ -287,9 +290,15 @@ account, the live suite reports `no_account` and skips authentication.
 
 `scripts/check-workflow-secrets.mjs`, run by CI, parses every workflow and requires
 successful output preparation before artifact uploads in jobs using secrets other
-than `GITHUB_TOKEN`. Uploads may contain only `live.log` and `live.xml` from the
-workspace root, with only artifact-upload steps between filtering and the last
-upload. Aggregate and bracket secret access receive the same checks.
+than `GITHUB_TOKEN`. Uploads may contain only prepared `live.log`, `live.xml`,
+and optional `live-counts.json` from the workspace root. Counts require the exact
+`python3 scripts/live_test_counts.py` command immediately after successful
+filtering, with no step-level `env`, `shell` or `working-directory`. Job and
+workflow `env` and `defaults.run.shell` are not checked yet (issue 411). Both
+preparation and upload require filter success. Counts uploads also require
+`steps.live_counts.outcome == 'success'` and stay separate from diagnostic
+uploads; only artifact-upload steps may follow counts preparation through the
+last upload. Aggregate and bracket secret access receive the same checks.
 Reusable-workflow callers using secrets require a named job exception.
 Exceptions require a named entry and a nonempty stated reason in the checker.
 The check covers direct `actions/upload-artifact` steps in workflow files only. It does not inspect composite actions, other actions, shell commands, caches, job summaries or job outputs.

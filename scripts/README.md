@@ -5,6 +5,8 @@
 | `validate-python-bridge.js` | Asset validation (`npm run validate`) |
 | `validate-readme-tools.sh` | Compare registrations with the README tool list |
 | `check_upstream.py` | Source contract probes (`npm run doctor`) |
+| `live_test_counts.py` | Counts-only local evidence for the scheduled report |
+| `source_health_report.py` | CI-only, offline versioned source-health report producer |
 | `release-audit.mjs` | Release-record audit; requires Git history and GitHub access |
 | `check_optional_imports.py --core-smoke` | Offline acquisition import trap |
 | `get_venv_python_path.mjs` | Locate the project Python interpreter |
@@ -234,3 +236,27 @@ promise an otherwise unchanged filesystem.
 A successful reachability report also persists changed source dates on an already
 closed rolling issue. Skipped or cancelled live tests do not establish recovery;
 the saved source state can still clear a completed warning-only outage.
+
+
+### Scheduled source-health artifact
+
+After both probe and live jobs, scheduled runs publish `source-health.v1.json`
+in `upstream-source-health-v1-<run_attempt>`. Every source has separate
+reachability and authenticated-coverage outcomes, fixed reasons and explicit
+expected checks. Run ID, attempt, head SHA and a UTC producer timestamp bind the
+evidence. The inputs and final report are attempt-specific; a rerun never
+falls back to an earlier attempt's report. Missing evidence stays nonhealthy.
+See the [version-1 report contract](../docs/schemas/source-health-v1.md).
+
+This is an additional report, not a new provider check or an installed reader.
+The unauthenticated probe diagnostics, filtered authenticated diagnostics and
+existing alerting remain. Source health consumes counts-only authenticated input.
+Counts preparation and upload require successful output filtering; counts upload
+also requires successful completion of the counts step and stays separate from
+diagnostic uploads. A missing counts artifact leaves execution unknown, even if
+retained admission outputs claim a skip; a valid counts envelope can corroborate a known skip.
+Job-output attempts are checked independently of artifact names; unavailable or
+different attempts remain unqualified. Input uploads are best effort. A dedicated CI test
+account is still required for authenticated Z-Library coverage; job success
+alone is not a pass. The producer is CI-only source and is not an npm runtime
+command.

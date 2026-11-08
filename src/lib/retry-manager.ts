@@ -117,12 +117,19 @@ export function isTransientDependencyError(error: any): boolean {
   };
   if (error.context?.details !== undefined) return transientDetail(error.context.details);
   if (
-    error.context?.pythonErrorType === 'HTTPStatusError' ||
-    (error.context?.reason === 'login_failed' && Number.isInteger(error.context.loginStatus))
+    error.context?.pythonErrorType !== 'RedirectRefusedError' &&
+    (error.context?.pythonErrorType === 'HTTPStatusError' ||
+      (error.context?.reason === 'login_failed' && Number.isInteger(error.context.loginStatus)))
   )
     return transientStatus(error.context.httpStatus ?? error.context.loginStatus);
   const code = error.code === 'PYTHON_ERROR' ? error.context?.originalError?.code : error.code;
+  // ConnectError alone also covers TLS and configuration failures.
+  const diagnosedConnectFailure =
+    error.context?.pythonErrorType === 'ConnectError' &&
+    error.context?.loginToken !== 'TLS certificate verification failed' &&
+    readAuthDiagnostics(error.context?.diagnostics)?.failure_kind === 'transport';
   return (
+    diagnosedConnectFailure ||
     [
       'NETWORK_ERROR',
       'TIMEOUT',
@@ -137,6 +144,7 @@ export function isTransientDependencyError(error: any): boolean {
     /^5\d\d$/.test(String(code)) ||
     [
       'ReadTimeout',
+      'RedirectRefusedError',
       'WriteTimeout',
       'ConnectTimeout',
       'PoolTimeout',

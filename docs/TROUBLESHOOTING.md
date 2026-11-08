@@ -113,20 +113,38 @@ optional failures usually mean a secondary source is unreachable.
 
 ### Common causes
 
-- **Anti-bot wall on a Z-Library domain** (`diamwall_blocked` in the health check, or
+- **Anti-bot wall on a Z-Library domain** (`redirect_refused` or `diamwall_blocked` in the health check, or
   the doctor reporting "DiamWall anti-bot wall"): some Z-Library domains (notably
   `z-library.sk` and `1lib.sk` since 2026-07) block programmatic `/eapi` access with
-  the DiamWall wall — a 307 self-redirect, then 513/517 "Access Denied". The server
-  handles this automatically: it probes its candidate list (`z-library.ec` first)
-  with an unauthenticated one-row `POST /eapi/book/search` and logs in on the first
-  healthy domain, and hydra-mode discovery skips advertised domains that fail the same
-  probe. If every built-in candidate is walled on your network, pin a domain you
-  know works:
+  the DiamWall wall — a 307 self-redirect before the wall's 513/517 "Access Denied".
+  Credential-bearing requests now stop at that 307 with `Redirect refused` rather
+  than follow it. The server probes its candidate list (`z-library.ec` first)
+  with an unauthenticated one-row `POST /eapi/book/search`. If none passes, it makes
+  one initial login attempt to surface the error. A redirect refusal, connection
+  failure/timeout, wall or non-JSON login reply can advance the walk, but each
+  subsequent host must pass the probe and is attempted at most once. Read/write
+  timeouts do not start this walk. Auth rejection,
+  other HTTP errors and an explicit pin stop it. Domain discovery also probes
+  advertised candidates. If every built-in candidate is walled, independently
+  verify a working domain before pinning it:
   ```bash
   export ZLIBRARY_EAPI_DOMAIN=<working-domain>
   ```
   A pinned domain is used exactly as given — no probing, no silent switching — so
   unset it again to return to automatic fallback.
+- **`Redirect refused (HTTP NNN)`**: the configured endpoint answered with a
+  redirect. This is an upstream failure, not evidence of a bad password/key.
+  Requests carrying credentials do not follow Location, even to the same host.
+  An unpinned login can use another configured host only under the probe rule above;
+  a pinned login stays on that host. For a wall's 307, try an independently verified
+  working domain or another source rather than retrying the same wall repeatedly.
+  If the service has moved to an unlisted domain, verify that domain independently
+  before setting `ZLIBRARY_EAPI_DOMAIN`, or use a release with an updated candidate
+  list. Do not treat the hostname in an error as proof that it is trusted.
+  For a file-download refusal, link resolution may already have consumed quota;
+  a manual retry may spend more. Wait for a usable direct link or choose another
+  configured source. Anna's member page GETs are the bounded exception: at most
+  five same-origin hops; its account POST and key-bearing API calls follow none.
 - **Region blocking**: Z-Library domains are blocked on some networks. Domain discovery
   ("hydra mode") normally finds a working mirror at runtime; you can pin one explicitly:
   ```bash

@@ -63,8 +63,12 @@ refused session gets at most one shared refresh, and rejected/failed sign-in
 backs off for 60 seconds, preserved by Node across worker restarts, while
 ordinary HTTP search remains available. A worker failure with an unacknowledged
 search or cancellation starts a conservative 60-second sign-in backoff even without a delivered POST outcome.
-Key-configured page redirects stay on the configured origin before and after
-session activation. Guard skips, transport failures and
+Key-configured page redirects allow at most five hops on the configured origin
+before and after session activation, including parameterized page requests.
+Account POST redirects are refused without implying key rejection; a fresh
+cookie from a same-origin redirect response can still activate the session.
+Key-bearing fast-download API requests refuse every redirect.
+Guard skips, transport failures and
 cancelled sign-ins report `none`; `rejected` denotes provider refusal of a
 sign-in or session. The scoped, visible English “No files found.” marker
 returns empty results on anonymous and member searches. It comes from published

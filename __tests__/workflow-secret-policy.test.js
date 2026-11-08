@@ -161,6 +161,7 @@ test('symlinked checker rejects an unsafe workflow and reports its result', () =
   } finally { rmSync(directory, { recursive: true, force: true }); }
 });
 
+const countsSuccess = success + " && steps.live_counts.outcome == 'success'";
 const counts = {
   id: 'live_counts',
   run: 'python3 scripts/live_test_counts.py',
@@ -170,7 +171,7 @@ const counts = {
 function withCounts() {
   const doc = workflow('${{ secrets.TEST_VALUE }}', success);
   doc.jobs.test.steps.splice(1, 0, { ...counts });
-  doc.jobs.test.steps.push({ ...upload, if: success, with: { path: 'live-counts.json' } });
+  doc.jobs.test.steps.push({ ...upload, if: countsSuccess, with: { path: 'live-counts.json' } });
   return doc;
 }
 test('accepts counts derived immediately after successful filtering and adjacent uploads', () => {
@@ -209,5 +210,31 @@ test('counts derivation cannot excuse an unguarded or unrelated upload', () => {
 test('rejects a writer after counts preparation and before the final upload', () => {
   const doc = withCounts();
   doc.jobs.test.steps.splice(3, 0, { run: 'echo extra >> live.xml' });
+  expect(check(doc).status).toBe(1);
+});
+
+
+test.each([
+  success,
+  success + " && steps.live_counts.conclusion == 'success'",
+  success + " || steps.live_counts.outcome == 'success'",
+  success + " && steps.other_counts.outcome == 'success'",
+  success + " && steps.live_counts.outcome != 'failure'",
+])('counts uploads require the producer outcome: %s', condition => {
+  const doc = withCounts();
+  doc.jobs.test.steps.at(-1).if = condition;
+  expect(check(doc).status).toBe(1);
+});
+
+test.each(['live.log\nlive-counts.json', 'live.xml\nlive-counts.json'])('rejects mixing counts with diagnostic paths: %s', path => {
+  const doc = withCounts();
+  doc.jobs.test.steps.at(-1).with.path = path;
+  expect(check(doc).status).toBe(1);
+});
+
+test('rejects a planted counts directory without a producer-success condition', () => {
+  const doc = withCounts();
+  doc.jobs.test.steps.unshift({ id: 'live', run: 'mkdir -p live-counts.json\nenv > live-counts.json/env.txt' });
+  doc.jobs.test.steps.at(-1).if = success;
   expect(check(doc).status).toBe(1);
 });

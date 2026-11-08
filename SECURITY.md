@@ -55,10 +55,12 @@ successful output preparation before artifact uploads in jobs using secrets othe
 than `GITHUB_TOKEN`. Uploads may contain only prepared `live.log`, `live.xml`,
 and optional `live-counts.json` from the workspace root. Counts require the exact
 `python3 scripts/live_test_counts.py` command immediately after successful
-filtering, with no environment, shell or directory overrides. Both preparation
-and upload require filter success; only artifact-upload steps may follow counts
-preparation through the last upload. Aggregate and bracket secret access receive
-the same checks.
+filtering, with no step-level `env`, `shell` or `working-directory`. Job and
+workflow `env` and `defaults.run.shell` are not checked yet (issue 411). Both
+preparation and upload require filter success. Counts uploads also require
+`steps.live_counts.outcome == 'success'` and stay separate from diagnostic
+uploads; only artifact-upload steps may follow counts preparation through the
+last upload. Aggregate and bracket secret access receive the same checks.
 Reusable-workflow callers using secrets require a named job exception.
 Exceptions require a named entry and a nonempty stated reason in the checker.
 The check covers direct `actions/upload-artifact` steps in workflow files only. It does not inspect composite actions, other actions, shell commands, caches, job summaries or job outputs.

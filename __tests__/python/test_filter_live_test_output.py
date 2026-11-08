@@ -290,7 +290,7 @@ def test_upload_requires_successful_output_filtering(workflow):
     assert diagnostic["if"] == "always() && steps.filter_output.outcome == 'success'"
     assert diagnostic["with"]["path"].split() == ["live.log", "live.xml"]
     assert health["with"]["path"] == "live-counts.json"
-    assert health["if"] == "always() && steps.filter_output.outcome == 'success'"
+    assert health["if"] == "always() && steps.filter_output.outcome == 'success' && steps.live_counts.outcome == 'success'"
 
 
 @pytest.mark.parametrize("case", ["missing", "unreadable", "replacement"])

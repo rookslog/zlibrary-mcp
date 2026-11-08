@@ -141,10 +141,12 @@ Input uploads are best effort and cannot change existing source-alert outcomes.
 The authenticated input is `live-counts.json`, a closed version-1 envelope
 containing counts and fixed authentication/error flags, without case identifiers
 or test text. Counts preparation and its upload both require successful output
-filtering. The fixed counts command runs immediately after that filter and before
-the adjacent uploads. Source
-health never uploads or consumes raw XML. The diagnostic files are prepared
-locally to keep test output out of uploaded files.
+filtering. Counts upload additionally requires
+`steps.live_counts.outcome == 'success'` and remains separate from diagnostic
+uploads. An unsuccessful counts-step outcome prevents this upload. The fixed
+counts command runs immediately after that filter and before the adjacent
+uploads. Source health never uploads or consumes raw XML. The diagnostic files
+are prepared locally to keep test output out of uploaded files.
 
 The stdlib-only producer reads these local files and selected non-secret run
 metadata. It performs no network, account or credential operation. Inputs are

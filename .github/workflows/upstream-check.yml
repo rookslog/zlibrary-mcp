@@ -264,7 +264,7 @@ jobs:
       - name: Preserve this attempt's live evidence for source health
         uses: actions/upload-artifact@v7
         continue-on-error: true
-        if: always() && steps.filter_output.outcome == 'success'
+        if: always() && steps.filter_output.outcome == 'success' && steps.live_counts.outcome == 'success'
         with:
           name: upstream-source-health-live-${{ github.run_attempt }}
           path: live-counts.json

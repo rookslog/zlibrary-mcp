@@ -36,22 +36,20 @@ function consumesSecret(node) {
   );
 }
 
-function requiresFilterSuccess(condition) {
+function requiresFilterSuccess(condition, requireCounts = false) {
   if (typeof condition !== 'string') return false;
   const expression = condition.trim().replace(/^\$\{\{\s*([\s\S]*?)\s*\}\}$/, '$1');
   // Only conjunctions are admitted. A substring in a disjunction, negation,
   // function, or quoted literal does not establish a necessary success gate.
+  const required = [/^steps\.filter_output\.outcome\s*==\s*'success'$/];
+  if (requireCounts) required.push(/^steps\.live_counts\.outcome\s*==\s*'success'$/);
+  const parts = expression.split('&&').map((part) => part.trim());
   return (
-    expression
-      .split('&&')
-      .some((part) => /^\s*steps\.filter_output\.outcome\s*==\s*'success'\s*$/.test(part)) &&
-    expression
-      .split('&&')
-      .every((part) =>
-        /^(?:\s*(?:always\(\)|success\(\)|steps\.filter_output\.outcome\s*==\s*'success')\s*)$/.test(
-          part,
-        ),
-      )
+    required.every((check) => parts.some((part) => check.test(part))) &&
+    parts.every(
+      (part) =>
+        /^(?:always\(\)|success\(\))$/.test(part) || required.some((check) => check.test(part)),
+    )
   );
 }
 
@@ -122,16 +120,13 @@ export function checkWorkflow(workflow, file, namedExceptions = exceptions) {
           : [];
       const preparedPaths =
         paths.length > 0 &&
-        paths.every(
-          (path) =>
-            path === 'live.log' ||
-            path === 'live.xml' ||
-            (countsReady && path === 'live-counts.json'),
-        );
+        (paths.includes('live-counts.json')
+          ? countsReady && paths.length === 1
+          : paths.every((path) => path === 'live.log' || path === 'live.xml'));
       if (
         filterIndex < 0 ||
         filterIndex >= index ||
-        !requiresFilterSuccess(step.if) ||
+        !requiresFilterSuccess(step.if, paths.includes('live-counts.json')) ||
         !preparedPaths ||
         redirectedFilter ||
         interrupted

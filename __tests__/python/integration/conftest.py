@@ -5,6 +5,7 @@ Provides a module-scoped zlib_client fixture that authenticates
 with Z-Library via EAPIClient for test methods that declare it.
 """
 
+from functools import wraps
 import os
 import sys
 
@@ -17,6 +18,35 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "..", "..", "li
 from zlibrary.eapi import EAPIClient  # noqa: E402
 
 import python_bridge  # noqa: E402
+from .ci_credentials import (  # noqa: E402
+    capture_login,
+    environment_credentials,
+    login_with_credentials,
+)
+
+
+_original_login = EAPIClient.login
+
+
+@wraps(_original_login)
+async def _captured_login(client, *args, **kwargs):
+    return await capture_login(
+        client, _original_login.__get__(client, type(client)), *args, **kwargs
+    )
+
+
+_captured_login._captures_session_values = True
+EAPIClient.login = _captured_login
+
+
+def pytest_unconfigure():
+    if EAPIClient.login is _captured_login:
+        EAPIClient.login = _original_login
+
+
+@pytest.fixture(scope="module")
+def credentials():
+    return environment_credentials()
 
 
 @pytest.fixture(scope="module")
@@ -28,7 +58,7 @@ def eapi_domain():
 
 
 @pytest_asyncio.fixture(scope="module", loop_scope="module")
-async def zlib_client(eapi_domain):
+async def zlib_client(eapi_domain, credentials):
     """Pre-authenticated EAPIClient for integration tests.
 
     Reads credentials from environment variables.
@@ -40,14 +70,8 @@ async def zlib_client(eapi_domain):
     kept only for backward compatibility and is ignored — so without this the
     bridge-level tests would fail with "EAPI client not initialized".
     """
-    email = os.environ.get("ZLIBRARY_EMAIL", "")
-    password = os.environ.get("ZLIBRARY_PASSWORD", "")
-
     client = EAPIClient(eapi_domain)
-    login_result = await client.login(email, password)
-    assert login_result.get("success") == 1, (
-        f"zlib_client fixture: login failed — {login_result}"
-    )
+    assert await login_with_credentials(client, credentials), "Integration login failed"
 
     previous_global = python_bridge._eapi_client
     python_bridge._eapi_client = client

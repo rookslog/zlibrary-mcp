@@ -120,9 +120,9 @@ account configured" without collecting tests or logging in. This is no live
 coverage, not a pass or a recovery; it cannot itself create a drift issue.
 Reachability and offline checks continue independently.
 
-The live step uses short tracebacks and filters the configured literal values
-before uploading diagnostic files. If filtering fails, those files are not
-uploaded. This keeps test output out of uploaded files.
+The live step uses short tracebacks and filters configured values, captured
+session values and their encoded forms before uploading diagnostic files. If
+filtering fails, those files are not uploaded.
 
 | Tier | Command | Needs |
 |------|---------|-------|
@@ -279,3 +279,31 @@ Include:
 - Operating system
 - Full error output
 - Steps to reproduce
+
+## CI test account and uploaded output
+
+CI may only use a dedicated test account with nothing else on it. Without an
+account, the live suite reports `no_account` and skips authentication.
+
+`scripts/check-workflow-secrets.mjs`, run by CI, parses every workflow and requires
+successful output preparation before artifact uploads in jobs using secrets other
+than `GITHUB_TOKEN`. Uploads may contain only `live.log` and `live.xml` from the
+workspace root, with only artifact-upload steps between filtering and the last
+upload. Aggregate and bracket secret access receive the same checks.
+Reusable-workflow callers using secrets require a named job exception.
+Exceptions require a named entry and a nonempty stated reason in the checker.
+The check covers direct `actions/upload-artifact` steps in workflow files only. It does not inspect composite actions, other actions, shell commands, caches, job summaries or job outputs.
+
+Integration credentials use an opaque test helper and an explicit login boundary.
+Integration setup captures every EAPI login in a private file outside the workspace.
+The output filter consumes and removes that file, replaces configured and captured
+values and their encoded representations, and also checks recognized session fields.
+For captured values of at least 16 characters, it also replaces matching runs of
+at least eight characters, including shortened test-output representations.
+Missing required capture or incomplete login records prevent preparation. The
+filter rereads the upload files and checks decoded XML. An unsuccessful filter
+prevents upload. After successful filtering, the workflow prints a fixed test
+summary; raw pytest output stays in the prepared
+log file. Live test output is retained for one day; the separate source report
+remains at thirty days. Offline canaries exercise this path with synthetic values
+in the normal test suite.

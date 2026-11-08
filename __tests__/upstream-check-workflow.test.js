@@ -1,5 +1,5 @@
 import { jest } from '@jest/globals';
-import { readFileSync, mkdtempSync, rmSync, existsSync, writeFileSync, mkdirSync, symlinkSync } from 'node:fs';
+import { readFileSync, readdirSync, mkdtempSync, rmSync, existsSync, writeFileSync, mkdirSync, symlinkSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { createRequire } from 'node:module';
@@ -555,4 +555,60 @@ test('no CI account cannot enable the live-test failure step', () => {
   const enabled = new Function('steps', 'return ' + failure.if);
   expect(enabled({ live: { outputs: { status: 'no_account', blocked: 'false' } } })).toBe(false);
   expect(enabled({ live: { outputs: { status: 'failed', blocked: 'false' } } })).toBe(true);
+});
+
+test('tracking-only updates retain the recovery marker without a Recovered line', async () => {
+  const github = api([{ number: 250, title: rollingTitle, state: 'closed', body: sourceMarker + '\n<!-- upstream-recovered-at: 2026-10-21 -->' }]);
+  Object.assign(process.env, { REACHABILITY_RESULT: 'success', PROBE_FAILED: 'false', LIVE_STATUS: 'no_account', PROBE_REPORT: '<!-- upstream-source-status: {} -->' });
+  await run(script('report', 'issue'), github);
+  const body = github.rest.issues.update.mock.calls[0][0].body;
+  expect(body).not.toContain('Recovered:');
+  expect(body).toContain('<!-- upstream-recovered-at: 2026-10-21 -->');
+});
+
+test('live output retention is one day and source retention remains thirty days', () => {
+  const uploads = Object.values(workflow.jobs).flatMap(job => job.steps).filter(step => step.uses?.startsWith('actions/upload-artifact@'));
+  expect(uploads.find(step => step.with.name === 'live-integration-log').with['retention-days']).toBe(1);
+  expect(uploads.find(step => step.with.name === 'upstream-source-report').with['retention-days']).toBe(30);
+});
+
+test('test failure text does not promise an artifact when preparation failed', async () => {
+  const { spawnSync } = await import('node:child_process');
+  const failure = workflow.jobs.live_tests.steps.find(step => step.name === 'Fail the job when live tests regressed');
+  const result = spawnSync('/bin/bash', ['-c', failure.run], { encoding: 'utf8' });
+  expect(result.status).toBe(1);
+  expect(result.stdout).toContain('available only when preparation and upload succeed');
+  expect(result.stdout).not.toContain('see the uploaded log');
+});
+
+test('filtered summary runs after the last upload and requires successful preparation', () => {
+  const steps = workflow.jobs.live_tests.steps;
+  const summary = steps.find(step => step.id === 'filtered_summary');
+  expect(summary).toBeDefined();
+  const lastUpload = Math.max(...steps.flatMap((step, index) => step.uses?.startsWith('actions/upload-artifact@') ? [index] : []));
+  expect(steps.indexOf(summary)).toBeGreaterThan(lastUpload);
+  expect(summary.if).toContain("steps.filter_output.outcome == 'success'");
+  expect(summary.if).toContain("steps.live.outputs.status != 'no_account'");
+  const enabled = new Function('steps', 'return ' + summary.if.replace('always()', 'true'));
+  expect(enabled({ filter_output: { outcome: 'success' }, live: { outputs: { status: 'no_account' } } })).toBe(false);
+  expect(enabled({ filter_output: { outcome: 'failure' }, live: { outputs: { status: 'failed' } } })).toBe(false);
+  expect(enabled({ filter_output: { outcome: 'success' }, live: { outputs: { status: 'failed' } } })).toBe(true);
+});
+
+
+test('job environments do not reference the runner context in any workflow', () => {
+  const directory = new URL('../.github/workflows/', import.meta.url);
+  const invalid = [];
+  for (const file of readdirSync(directory).filter(name => /\.ya?ml$/.test(name))) {
+    const document = parse(readFileSync(new URL(file, directory), 'utf8'));
+    for (const [jobId, job] of Object.entries(document.jobs || {})) {
+      for (const [name, value] of Object.entries(job.env || {})) {
+        const expressions = String(value).matchAll(/\$\{\{([\s\S]*?)\}\}/g);
+        if ([...expressions].some(match => /\brunner\s*(?:\.|\[)/i.test(match[1]))) {
+          invalid.push(`${file}:${jobId}.env.${name}`);
+        }
+      }
+    }
+  }
+  expect(invalid).toEqual([]);
 });

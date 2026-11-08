@@ -41,9 +41,13 @@ async def test_live_login_uses_runtime_default_and_override(
     monkeypatch, entrypoint, override, expected
 ):
     live = load_module(
-        "offline_real_zlibrary", ROOT / "integration/test_real_zlibrary.py"
+        "__tests__.python.integration.offline_real_zlibrary",
+        ROOT / "integration/test_real_zlibrary.py",
     )
-    fixtures = load_module("offline_live_conftest", ROOT / "integration/conftest.py")
+    fixtures = load_module(
+        "__tests__.python.integration.offline_live_conftest",
+        ROOT / "integration/conftest.py",
+    )
     monkeypatch.setattr(live.asyncio, "sleep", AsyncMock())
     monkeypatch.setenv("ZLIBRARY_EMAIL", "offline@example.test")
     monkeypatch.setenv("ZLIBRARY_PASSWORD", "offline")
@@ -71,7 +75,9 @@ async def test_live_login_uses_runtime_default_and_override(
     domain = fixtures.eapi_domain.__wrapped__()
     assert domain == expected
     if entrypoint == "fixture":
-        generator = fixtures.zlib_client.__wrapped__(domain)
+        generator = fixtures.zlib_client.__wrapped__(
+            domain, fixtures.credentials.__wrapped__()
+        )
         await anext(generator)
         with pytest.raises(StopAsyncIteration):
             await anext(generator)
@@ -80,7 +86,7 @@ async def test_live_login_uses_runtime_default_and_override(
         if entrypoint == "test_authentication_fails_with_invalid_credentials":
             await test(domain)
         else:
-            await test({"email": "offline@example.test", "password": "offline"}, domain)
+            await test(fixtures.credentials.__wrapped__(), domain)
 
 
 @pytest.mark.parametrize(

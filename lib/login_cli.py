@@ -10,6 +10,7 @@ import warnings
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from lib.login_store import StoreError, logout, prepare_save, resolve
+from zlibrary.eapi import RedirectRefusedError
 
 
 async def authenticate(identity, password):
@@ -136,7 +137,7 @@ async def run(args):
     except (Exception, KeyboardInterrupt) as error:
         message = (
             str(error)
-            if isinstance(error, StoreError)
+            if isinstance(error, (StoreError, RedirectRefusedError))
             else "Login failed; check setup before trying again."
         )
         print(json.dumps({"error": message}) if json_mode else message, file=sys.stderr)

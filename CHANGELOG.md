@@ -46,6 +46,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Empty existing login counters require explicit logout repair and restart advice;
+  newly created private locks initialize their counter before use.
+- Account metadata lookup consumes the caller's time budget. Exhausted calls
+  stop before dispatch; subsequent work receives only the remaining time.
+- A renewed saved key's transport failure retains its own diagnosis, without
+  inheriting the earlier key refusal. CLI login reports bounded redirect refusal
+  text without inviting another attempt; wrong-password text remains unchanged.
 - `status` never logs in with an environment password; it reports that origin
   as not checked. Login prepares its locked write before requesting credentials,
   bounds lock waits, and refuses unsupported storage before contacting the site.

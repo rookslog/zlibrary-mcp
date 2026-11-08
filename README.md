@@ -63,7 +63,9 @@ pipe and prompts for email on the terminal. There is no password argument.
 `environment`, or `none`), and the `file` backend. For a saved login it checks the
 key; environment authentication is `not_checked`, and an absent account is
 `not_configured`. Expiry is always `unknown`. Add `--json` for structured output
-without passwords or keys.
+without passwords or keys. If every configured login host refuses a redirect,
+`login` names the refusal and bounded destination hostname instead of suggesting
+another attempt. A wrong password retains the generic login-failure message.
 
 On POSIX systems the key is stored at
 `${XDG_STATE_HOME:-~/.local/state}/zlibrary/logins/zlibrary.json`. The state
@@ -83,8 +85,9 @@ reserves the next generation. It holds the lock through the save. A busy lock
 is refused after five seconds; non-POSIX storage is refused before prompting.
 Cancelled or failed attempts may leave gaps in generation numbers.
 
-An incomplete or invalid generation record refuses login. Use `zlibrary logout`
-to repair it, then restart running servers before logging in again. Repair
+An incomplete or invalid generation record, including an existing empty lock,
+refuses login. Use `zlibrary logout` to repair it, then restart running servers
+before logging in again. Repair
 retains successfully parsed reservations and the saved generation; destroyed
 history cannot be reconstructed. Logout also removes private `.login-*` files left by
 an interrupted save and reports when no saved login was present.

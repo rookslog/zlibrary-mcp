@@ -133,6 +133,7 @@ test.each(['StoreError', 'ValueError'])(
       'zlibrary',
     );
     expect(reply.error.code).toBe('internal');
+    expect(reply.error.message).toBe('zlibrary: Saved login changed before the provider request.');
     expect(reply.error.recovery).toMatch(/zlibrary login.*retry/i);
     expect(reply.error.detail).toMatchObject({
       reason: 'login_state_changed',

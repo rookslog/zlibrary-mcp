@@ -230,12 +230,18 @@ def _locked(*, create=True):
         ):
             yield None, None
             return
-        lock = os.open(
-            ".zlibrary.lock",
-            os.O_RDWR | os.O_CREAT | os.O_NOFOLLOW | os.O_NONBLOCK,
-            0o600,
-            dir_fd=directory,
-        )
+        flags = os.O_RDWR | os.O_NOFOLLOW | os.O_NONBLOCK
+        try:
+            lock = os.open(
+                ".zlibrary.lock",
+                flags | os.O_CREAT | os.O_EXCL,
+                0o600,
+                dir_fd=directory,
+            )
+            created = True
+        except FileExistsError:
+            lock = os.open(".zlibrary.lock", flags, dir_fd=directory)
+            created = False
         try:
             _check(lock)
             deadline = time.monotonic() + LOCK_TIMEOUT_SECONDS
@@ -249,6 +255,10 @@ def _locked(*, create=True):
                             "Login store is busy; finish the other account command and retry."
                         ) from None
                     time.sleep(min(0.05, max(0, deadline - time.monotonic())))
+            if created and os.fstat(lock).st_size == 0:
+                if os.write(lock, b"0\n") != 2:
+                    raise StoreError("Login generation record could not be initialized")
+                os.fsync(lock)
             yield directory, lock
         finally:
             os.close(lock)
@@ -258,7 +268,7 @@ def _counter(lock, *, repair=False, previous=None):
     os.lseek(lock, 0, os.SEEK_SET)
     raw = os.read(lock, 1048577)
     try:
-        if len(raw) > 1048576 or (raw and not raw.endswith(b"\n")):
+        if not raw or len(raw) > 1048576 or not raw.endswith(b"\n"):
             raise ValueError()
         counters = [int(line) for line in raw.splitlines()]
         if any(value < 0 for value in counters):

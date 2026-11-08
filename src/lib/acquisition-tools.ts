@@ -421,6 +421,7 @@ export class AcquisitionTools {
     };
   }
   async call(name: string, raw: unknown = {}, options: CallOptions = {}): Promise<any> {
+    const startedAt = performance.now();
     try {
       if (!Object.hasOwn(this.inputs, name))
         throw new ToolFailure('invalid_argument', 'Tool name is not available in 2.0.', {
@@ -469,6 +470,15 @@ export class AcquisitionTools {
         this.loginConfigured = Boolean(this.env.ZLIBRARY_EMAIL && this.env.ZLIBRARY_PASSWORD);
         this.loginRefused = true;
         this.loginState = { origin: 'none', identity: '' };
+      }
+      if (options.timeoutMs !== undefined) {
+        const remaining = options.timeoutMs - (performance.now() - startedAt);
+        if (remaining <= 0)
+          throw new ToolFailure('provider_timeout', 'Caller wait budget exceeded.', {
+            retry: 'safe',
+            detail: { reason: 'caller_timeout', request_issued: false },
+          });
+        options = { ...options, timeoutMs: remaining };
       }
       if (name === 'get_limits') return await this.limits(args, options);
       if (name === 'get_history') {

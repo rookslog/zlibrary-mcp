@@ -32,15 +32,15 @@ class SavedLoginClient(EAPIClient):
                 raise EAPIAuthenticationError(
                     "Saved login was refused; run zlibrary login"
                 ) from None
-            self._renewed = True
-            await self.close()
-            self.login_record = fresh
-            self.domain = self.pinned_domain or fresh.domain
-            self.remix_userid = fresh.user_id.reveal()
-            self.remix_userkey = fresh.user_key.reveal()
-            try:
-                return await super()._request_json(method, path, **kwargs)
-            except EAPIAuthenticationError:
-                raise EAPIAuthenticationError(
-                    "Saved login was refused; run zlibrary login"
-                ) from None
+        self._renewed = True
+        await self.close()
+        self.login_record = fresh
+        self.domain = self.pinned_domain or fresh.domain
+        self.remix_userid = fresh.user_id.reveal()
+        self.remix_userkey = fresh.user_key.reveal()
+        try:
+            return await super()._request_json(method, path, **kwargs)
+        except EAPIAuthenticationError:
+            raise EAPIAuthenticationError(
+                "Saved login was refused; run zlibrary login"
+            ) from None

@@ -224,6 +224,7 @@ class TestDownloadFile:
         }
 
         class Response:
+            status_code = 200
             headers = {"content-disposition": 'attachment; filename="partial.epub"'}
             url = "https://dl.z-library.sk/file/book123.epub"
 

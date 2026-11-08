@@ -69,7 +69,7 @@ async def test_lazy_grant_recovers_domain_and_publishes_exactly_once(monkeypatch
     monkeypatch.setattr(python_bridge, "_session_input", None)
     monkeypatch.setattr(python_bridge, "_eapi_client", None)
     monkeypatch.setattr(python_bridge, "_session_published", False)
-    demands, requests, updates = [], [], []
+    demands, requests, updates, exclusions = [], [], [], []
 
     async def demand(**kwargs):
         demands.append(kwargs)
@@ -78,8 +78,12 @@ async def test_lazy_grant_recovers_domain_and_publishes_exactly_once(monkeypatch
 
     monkeypatch.setattr(eapi_session_protocol, "request_session", demand)
 
-    async def resolve():
-        return "new.invalid"
+    async def resolve(*, exclude=()):
+        exclusions.append(tuple(sorted(exclude)))
+        return next(
+            (host for host in ("old.invalid", "new.invalid") if host not in exclude),
+            None,
+        )
 
     monkeypatch.setattr(python_bridge, "resolve_eapi_domain", resolve)
 
@@ -108,6 +112,7 @@ async def test_lazy_grant_recovers_domain_and_publishes_exactly_once(monkeypatch
         python_bridge._publish_eapi_session()
         python_bridge._publish_eapi_session()
         assert len(demands) == 1
+        assert exclusions == [("old.invalid",)]
         assert len(updates) == 1
         assert updates[0][0] == 3
         assert updates[0][1]["domain"] == "new.invalid"

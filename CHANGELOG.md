@@ -46,6 +46,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Remaining caller budgets are rounded down to whole milliseconds before bridge
+  dispatch; a nonpositive remainder stops the call. Metadata cancellation remains
+  cancellation and starts no provider work.
+- Logout preserves a saved generation when rebuilding a missing counter and
+  reports the repair with restart advice. Account switches discard stale quota
+  estimates, including delayed updates from earlier accounts.
 - Empty existing login counters require explicit logout repair and restart advice;
   newly created private locks initialize their counter before use.
 - Account metadata lookup consumes the caller's time budget. Exhausted calls

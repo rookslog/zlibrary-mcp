@@ -87,9 +87,9 @@ Cancelled or failed attempts may leave gaps in generation numbers.
 
 An incomplete or invalid generation record, including an existing empty lock,
 refuses login. Use `zlibrary logout` to repair it, then restart running servers
-before logging in again. Repair
-retains successfully parsed reservations and the saved generation; destroyed
-history cannot be reconstructed. Logout also removes private `.login-*` files left by
+before logging in again. Repair retains successfully parsed reservations and the
+saved generation, including when logout recreates a deleted counter file.
+Destroyed history cannot be reconstructed. Logout also removes private `.login-*` files left by
 an interrupted save and reports when no saved login was present.
 
 A usable saved login takes precedence over environment credentials, with a notice
@@ -108,7 +108,9 @@ candidates that pass the probe; it never adopts a redirect destination.
 If login metadata lookup itself fails, `get_limits` reports a local error and
 marks authentication as not checked, retaining known environment configuration.
 Account operations refuse before a provider request; local download receipts
-can still be reused.
+can still be reused. Cancellation during metadata lookup stays cancelled and
+starts no provider work. Switching the selected account discards the previous
+account's quota estimates; delayed replies do not refill the new account's cache.
 
 `zlibrary login` can replace corrupt JSON in an otherwise private, regular store;
 `zlibrary logout` can remove it. Both still refuse unsafe permissions, ownership,

@@ -138,3 +138,85 @@ test('renewed saved-key ConnectError is counted by the Node dependency policy', 
     await rm(state, { recursive: true, force: true });
   }
 });
+
+test('real-clock bridge route receives a safe integer within the caller budget', async () => {
+  jest.useRealTimers();
+  metadata.mockImplementation(async () => {
+    await new Promise((resolve) => setTimeout(resolve, 5));
+    return {
+      ...publicLogin,
+      configured: true,
+      origin: 'environment',
+      identity: 'reader@example.test',
+    };
+  });
+  const invoke = jest.fn(async () => []);
+  const tools = new AcquisitionTools(invoke, {
+    ZLIBRARY_EMAIL: 'reader@example.test',
+    ZLIBRARY_PASSWORD: 'synthetic',
+  });
+  for (let i = 0; i < 3; i++) {
+    const reply = await tools.call('get_history', {}, { timeoutMs: 1000 });
+    expect(reply.error).toBeUndefined();
+    const forwarded = invoke.mock.calls.at(-1)[2].timeoutMs;
+    expect(Number.isSafeInteger(forwarded)).toBe(true);
+    expect(forwarded).toBeGreaterThan(0);
+    expect(forwarded).toBeLessThanOrEqual(1000);
+  }
+});
+
+test.each(['get_history', 'get_limits'])(
+  'abort during metadata remains cancelled for %s',
+  async (name) => {
+    const controller = new AbortController();
+    metadata.mockImplementation(async () => {
+      controller.abort();
+      throw new Error('Synthetic aborted metadata lookup');
+    });
+    const invoke = jest.fn();
+    const tools = new AcquisitionTools(invoke);
+    const reply = await tools.call(name, {}, { signal: controller.signal });
+    expect(reply.error).toMatchObject({ code: 'cancelled', retry: 'safe' });
+    expect(JSON.stringify(reply)).not.toMatch(/permissions|metadata_unavailable/);
+    expect(invoke).not.toHaveBeenCalled();
+  },
+);
+
+test('an abort immediately after successful metadata stops before dispatch', async () => {
+  const controller = new AbortController();
+  metadata.mockImplementation(async () => {
+    controller.abort();
+    return {
+      ...publicLogin,
+      configured: true,
+      origin: 'environment',
+      identity: 'reader@example.test',
+    };
+  });
+  const invoke = jest.fn(async () => ({ daily_remaining: 7 }));
+  const reply = await new AcquisitionTools(invoke).call(
+    'get_limits',
+    { mode: 'live', sources: ['zlibrary'] },
+    { signal: controller.signal },
+  );
+  expect(reply).toMatchObject({ error: { code: 'cancelled' } });
+  expect(invoke).not.toHaveBeenCalled();
+});
+
+test('submillisecond remaining budget uses the exhausted-budget reply before dispatch', async () => {
+  jest.useFakeTimers();
+  metadata.mockResolvedValue({
+    ...publicLogin,
+    configured: true,
+    origin: 'environment',
+    identity: 'reader@example.test',
+  });
+  const invoke = jest.fn(async () => []);
+  const reply = await new AcquisitionTools(invoke).call('get_history', {}, { timeoutMs: 0.5 });
+  expect(invoke).not.toHaveBeenCalled();
+  expect(reply.error).toMatchObject({
+    code: 'provider_timeout',
+    retry: 'safe',
+    detail: { reason: 'caller_timeout', request_issued: false },
+  });
+});

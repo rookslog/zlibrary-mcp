@@ -273,7 +273,9 @@ def _counter(lock, *, repair=False, previous=None):
         counters = [int(line) for line in raw.splitlines()]
         if any(value < 0 for value in counters):
             raise ValueError()
-        return max(counters, default=0), False
+        counter = max(counters, default=0)
+        if not (repair and previous and previous.generation > counter):
+            return counter, False
     except ValueError:
         if not repair:
             raise StoreCounterError(

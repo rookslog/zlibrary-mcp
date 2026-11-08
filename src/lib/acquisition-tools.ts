@@ -463,16 +463,23 @@ export class AcquisitionTools {
           },
           { signal: options.signal, timeoutMs: options.timeoutMs },
         );
+        if (options.signal?.aborted)
+          throw new ToolFailure('cancelled', 'Call cancelled.', { retry: 'safe' });
+        if (!this.sameLogin(login)) this.estimates.delete('zlibrary');
         this.loginConfigured = login.configured;
         this.loginRefused = false;
         this.loginState = { origin: login.origin, identity: login.identity };
       } catch {
+        if (options.signal?.aborted)
+          throw new ToolFailure('cancelled', 'Call cancelled.', { retry: 'safe' });
+        this.estimates.delete('zlibrary');
         this.loginConfigured = Boolean(this.env.ZLIBRARY_EMAIL && this.env.ZLIBRARY_PASSWORD);
         this.loginRefused = true;
         this.loginState = { origin: 'none', identity: '' };
       }
+      const loginState = this.loginState;
       if (options.timeoutMs !== undefined) {
-        const remaining = options.timeoutMs - (performance.now() - startedAt);
+        const remaining = Math.floor(options.timeoutMs - (performance.now() - startedAt));
         if (remaining <= 0)
           throw new ToolFailure('provider_timeout', 'Caller wait budget exceeded.', {
             retry: 'safe',
@@ -505,9 +512,10 @@ export class AcquisitionTools {
             options,
           ),
         );
-        if (result.quota_estimate?.source === selection.source)
+        const quotaCurrent = selection.source !== 'zlibrary' || this.sameLogin(loginState);
+        if (quotaCurrent && result.quota_estimate?.source === selection.source)
           this.estimates.set(selection.source, { ...result.quota_estimate });
-        const estimate = this.estimates.get(selection.source);
+        const estimate = quotaCurrent ? this.estimates.get(selection.source) : undefined;
         if (estimate && !result.transfer_skipped && !result.quota_estimate) {
           estimate.remaining = Math.max(0, estimate.remaining - 1);
           estimate.basis = 'decremented';
@@ -534,6 +542,9 @@ export class AcquisitionTools {
       return errorEnvelope(error, name);
     }
   }
+  private sameLogin(login: Pick<LoginMetadata, 'origin' | 'identity'>): boolean {
+    return login.identity === this.loginState.identity && login.origin === this.loginState.origin;
+  }
   private selectionFailure(error: unknown, operation: string, source: Source) {
     const failure = classifyFailure(error, operation, source);
     return new ToolFailure(failure.code, failure.message, { ...failure.info, source });
@@ -550,6 +561,7 @@ export class AcquisitionTools {
     return this.invoke('acquire_book', args, options);
   }
   private async limits(args: any, options: CallOptions) {
+    const loginState = this.loginState;
     const views = this.views();
     const snapshot = projectSearchLimits(
       views,
@@ -589,9 +601,11 @@ export class AcquisitionTools {
             premium: live.is_premium,
             as_of: asOf,
           });
-          if (remaining !== undefined)
-            this.estimates.set(source, { source, remaining, as_of: asOf, basis: 'observed' });
-          else this.estimates.delete(source);
+          if (this.sameLogin(loginState)) {
+            if (remaining !== undefined)
+              this.estimates.set(source, { source, remaining, as_of: asOf, basis: 'observed' });
+            else this.estimates.delete(source);
+          }
         } catch (e) {
           (capability as any).error = errorEnvelope(e, 'get_limits', source).error;
         }

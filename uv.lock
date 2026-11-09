@@ -1014,15 +1014,15 @@ wheels = [
 
 [[package]]
 name = "libgen-api-enhanced"
-version = "1.3"
+version = "1.4"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "bs4" },
     { name = "requests" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/b0/d0/bc49853ad74e626df182515b12f14934324b84ffb008d998c47f2f0f699a/libgen_api_enhanced-1.3.tar.gz", hash = "sha256:c9002bdc05be08cebbb531fdb763f3e1379ede75703081df73f547c903fce88e", size = 13617, upload-time = "2026-03-25T12:57:10.816Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/db/ed/f9de8ce99f040069ac679957bd9154fcadcc39545cfcd2c3beecee38e106/libgen_api_enhanced-1.4.tar.gz", hash = "sha256:c808ec2f2f404b4423f399a8b4554a13c79b05fd2e422d46145dc3ac4c8a1943", size = 15673, upload-time = "2026-10-31T19:21:01.788Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/a5/70/528aed4722bb71a6364d1e50feb023e1a37a20124c04e05885f03612d9aa/libgen_api_enhanced-1.3-py3-none-any.whl", hash = "sha256:e80c549a93758219b2b76ab7506cdf7d649b262e07c957354cf1c0a05cca9d17", size = 9868, upload-time = "2026-03-25T12:57:09.914Z" },
+    { url = "https://files.pythonhosted.org/packages/38/f0/84840647b881d6d3e3f01868878d0ceefb00a239a7693de0d6d47d7f9967/libgen_api_enhanced-1.4-py3-none-any.whl", hash = "sha256:949a68a6dae92e95b93c90c5c0324add2193e5fdca2bad30539fb0b3f461fb5b", size = 11029, upload-time = "2026-10-31T19:21:00.852Z" },
 ]
 
 [[package]]

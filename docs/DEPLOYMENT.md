@@ -21,7 +21,7 @@ Recorded 2026-11-23 after the signal "many deployments, none authoritative" ([#4
 
 ### The rule
 
-Each machine has **one install**, at `~/.local/share/zlibrary-mcp/current`, a symlink to `releases/<commit>/`. Each release folder is a clean clone of a commit on GitHub, built in place (`npm ci`, `npm run build`, `uv sync --frozen --no-dev`); it is never edited or rebuilt afterwards. Every stdio client registration starts `node ~/.local/share/zlibrary-mcp/current/dist/index.js`. Linux registrations keep their existing wrapper, which loads credentials from the user's environment file before `exec`.
+Each machine has **one install**, at `~/.local/share/zlibrary-mcp/current`, a symlink to `releases/<commit>/`. Each release folder is a clean clone of a commit on GitHub, built in place (`npm ci`, `npm run build`, `uv sync --frozen --no-dev`); it is never edited or rebuilt afterwards. Every stdio client registration starts `node ~/.local/share/zlibrary-mcp/current/dist/index.js` and sets `ZLIBRARY_OUTPUT_ROOT` (see [Download folder](#download-folder)). Linux registrations keep their existing wrapper, which loads credentials from the user's environment file before `exec`.
 
 **Chosen release: `master` at `70eebda`** (merge of #410, 2026-11-08), because it is the newest reviewed revision that can be rebuilt from GitHub. Of the builds the clients ran before, only an August feature-branch checkout (`bfef94b`) is on a GitHub branch. The others came from branches that exist on one machine only.
 
@@ -59,6 +59,30 @@ On each machine, a fresh process of the old and the new build was started and gi
 
 `master` does not stamp a commit into the build. Its server reports a bare `1.4.0`, where the old build reported `1.4.0+2d4d9c0`. The commit is recoverable from each release folder's `git rev-parse HEAD`.
 
+### Z-Library searches return HTTP 400 on both builds (provider side, 2026-11-23)
+
+After the change, every Z-Library-source search on the Linux server failed with `provider_error`, `http_error`, `http_status: 400`. That included the control query "Of Grammatology Derrida" and the live check's own query, "Nicomachean Ethics". The old build (`2d4d9c0`) and the new build (`70eebda`) failed identically:
+- with the same environment file;
+- with the same account (the credentials match those the tunnel uses, compared by hash only);
+- with and without the tunnel's domain pin.
+
+So the deploy did not cause the failures. The server reports the status code but not the response body. An unauthenticated one-row `POST /eapi/book/search`, the request the bridge uses to probe a domain, gets the following replies:
+- `z-library.ec`: `HTTP 400 {"success":0,"error":"Access denied"}`, from both machines.
+- `z-library.sk` and `1lib.sk`: DiamWall `307` redirects.
+
+`/eapi/info/domains` still answers `200`. The tunnel's 6-hourly live check last passed at 05:20Z the same day. Whether the account, the address or the whole API is refused is unchecked: both machines may share one public address, and the authenticated reply body is not surfaced. Do not retry around it; follow #125 and the source-health checks.
+
+### Download folder
+
+The old build wrote downloads to `<working directory>/downloads/`, so files landed in whatever repository a session was started in. `master` defaults to `$XDG_DATA_HOME/zlibrary-mcp/downloads` and honours `ZLIBRARY_OUTPUT_ROOT`, an absolute path. When that variable is set, the server also refuses a `download` whose `output_dir` lies outside the folder, unless `ZLIBRARY_UNRESTRICTED_OUTPUT=1`.
+
+Every client registration now sets `ZLIBRARY_OUTPUT_ROOT`:
+- **Linux server:** `/data/library/originals/zlib`, one of the library index's acquisition roots.
+- **Mac:** `~/Downloads/zlib`. The Mac has no library index; move books to the server's library deliberately.
+- **ChatGPT tunnel:** keeps its own inbox, which its post-processing jobs watch.
+
+A libgen download through a fresh `current` process on the Mac landed in `~/Downloads/zlib/`, with its `.acq.json` record, and nothing appeared in the working directory. The same path is unchecked on the Linux server, where only the configuration and the wrapper's handling of the variable were checked. Sessions started before the change still run the old build and still write to their working directory until they restart.
+
 ### Open exception: the ChatGPT tunnel
 
 The tunnel runs `899debf`. That commit is on a deploy line that exists only in a repository on the Linux server: 64 commits are absent from `master`, and 141 `master` commits are absent from it. The line carries the chat-files tools and the Anna's browser route. `master` has no chat-files code and no `ANNAS_BROWSER_*` setting. Checked with `git grep` on `origin/master`, against the positive control `get_limits`, which matched.
@@ -73,7 +97,7 @@ Closing the exception needs a maintainer decision. Either the deploy line is mer
 
 ### Roll back
 
-Each machine keeps backups under `~/.local/share/zlibrary-mcp/backups/<UTC timestamp>/` (`claude.json`, `codex-config.toml`). Each Linux project file has a copy beside it, named `<file>.bak-<UTC timestamp>-single-deploy`.
+Each machine keeps backups under `~/.local/share/zlibrary-mcp/backups/<UTC timestamp>/` (`claude.json`, `codex-config.toml`), one folder for the repoint and a later one for the download-folder change. Each Linux project file has a copy beside it for each change, named `<file>.bak-<UTC timestamp>-single-deploy` and `<file>.bak-<UTC timestamp>-output-root`. Those copies can hold credentials, so each project repository's local `.git/info/exclude` ignores them.
 
 - **One client:** copy its backup over the file. For Claude Code user scope, prefer `claude mcp remove zlibrary -s user`, then `claude mcp add-json zlibrary '<old JSON>' -s user`, because running sessions rewrite `~/.claude.json`.
 - **The whole release:** point `current` back with `ln -sfn <old install folder> ~/.local/share/zlibrary-mcp/current`. The old installs are intact.

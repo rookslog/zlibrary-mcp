@@ -1,16 +1,98 @@
 # Deployment Guide - Edge Cases and Platform Considerations
 
-This document covers deployment scenarios and platform-specific considerations for the Z-Library MCP server.
+This document covers deployment scenarios and platform-specific considerations for the Z-Library MCP server. It opens with the record of how the maintainer's own machines run the server.
 
 ---
 
 ## Table of Contents
 
+0. [Authoritative deployment on the maintainer's machines](#authoritative-deployment-on-the-maintainers-machines)
 1. [Path Resolution Overview](#path-resolution-overview)
 2. [Standard Deployment](#standard-deployment)
 3. [Edge Cases](#edge-cases)
 4. [Platform-Specific Notes](#platform-specific-notes)
 5. [Troubleshooting](#troubleshooting)
+
+---
+
+## Authoritative deployment on the maintainer's machines
+
+Recorded 2026-11-23 after the signal "many deployments, none authoritative" ([#430](https://github.com/rookslog/zlibrary-mcp/issues/430)). This section names roles, not hosts: the machines are "the Mac" (workstation) and "the Linux server" (holds the library index and the ChatGPT tunnel). Paths below are relative to each user's home. Host names, endpoint IDs and credential locations stay in the operator's private notes.
+
+### The rule
+
+Each machine has **one install**, at `~/.local/share/zlibrary-mcp/current`, a symlink to `releases/<commit>/`. Each release folder is a clean clone of a commit on GitHub, built in place (`npm ci`, `npm run build`, `uv sync --frozen --no-dev`); it is never edited or rebuilt afterwards. Every stdio client registration starts `node ~/.local/share/zlibrary-mcp/current/dist/index.js`. Linux registrations keep their existing wrapper, which loads credentials from the user's environment file before `exec`.
+
+**Chosen release: `master` at `70eebda`** (merge of #410, 2026-11-08), because it is the newest reviewed revision that can be rebuilt from GitHub. Of the builds the clients ran before, only an August feature-branch checkout (`bfef94b`) is on a GitHub branch. The others came from branches that exist on one machine only.
+
+Node resolves the symlinked entry point to its real path at start-up. A running session therefore keeps the release it started with when `current` moves, so an upgrade affects new sessions only.
+
+### Inventory before and after (2026-11-23)
+
+| Role | Before | After |
+| --- | --- | --- |
+| Mac, Claude Code (user scope) | global npm install, `1.4.0+2d4d9c0` (built 2026-10-28 from a branch that is not on GitHub) | `current` → `70eebda` |
+| Mac, Codex | same global install, off by operator decision since 2026-10-19 | path moved to `current`; still off |
+| Mac, Claude Desktop | not registered | unchanged |
+| Linux, Claude Code (user scope) | separate clone `1.4.0+2d4d9c0`, same build | `current` → `70eebda` |
+| Linux, Codex (user scope) | same clone, off | path moved to `current`; still off |
+| Linux, four project `.mcp.json` files | three on the `2d4d9c0` clone, one on an August dev checkout (`bfef94b`) | all on `current` |
+| Linux, one project Codex config | August dev checkout | `current` |
+| Linux, ChatGPT tunnel (systemd user service, plus a 2-minute child watchdog) | deploy-line build `899debf`, running since 2026-11-06 | **unchanged; open exception, see below** |
+| Linux, 6-hourly authenticated live check | starts the tunnel's launcher, so it tests whatever the tunnel serves | unchanged |
+| Mac, freshness check on the live check (launchd) | monitor only, starts no server | unchanged |
+| Linux, `zlib-pages` / `zlib-map-warm` inbox jobs | post-processing of downloads, start no server | unchanged (`zlib-pages` was already in a failed state; not investigated) |
+| Linux, ten older tunnel builds and several feature worktrees | rollback archive and development | unchanged, unreferenced |
+
+The old installs remain on disk and are no longer referenced by any client registration. They cannot be renamed or removed yet: at the time of the change, 14 Mac and 24 Linux sessions were running from them, and each session spawns the Python bridge from its install folder on every call.
+
+### Gate passed before any client was moved
+
+On each machine, a fresh process of the old and the new build was started and given `initialize`, `tools/list` and `get_limits(mode="local")`:
+
+- Both builds expose the same five tools: `download`, `get_book`, `get_history`, `get_limits`, `search`.
+- The sources configured in each build matched the old build on the same machine. On the Linux server, Z-Library and libgen were configured and Anna's was not, in both builds. On the Mac, only libgen was configured in either build: Mac sessions run without Z-Library credentials, before the change and after it.
+- `claude mcp list`, from a new process in the home folder and in each of the four project folders, reported the server as `✔ Connected` on the `current` path.
+
+`master` does not stamp a commit into the build. Its server reports a bare `1.4.0`, where the old build reported `1.4.0+2d4d9c0`. The commit is recoverable from each release folder's `git rev-parse HEAD`.
+
+### Open exception: the ChatGPT tunnel
+
+The tunnel runs `899debf`. That commit is on a deploy line that exists only in a repository on the Linux server: 64 commits are absent from `master`, and 141 `master` commits are absent from it. The line carries the chat-files tools and the Anna's browser route, and `master` has neither. Checked with `git grep` on `origin/master`, against the positive control `get_limits`, which matched.
+
+It was not moved, for three reasons:
+
+- Moving it would remove tools that the ChatGPT connector uses.
+- A launcher edit only takes effect when the tunnel's child process is next respawned, by a crash or by the watchdog, and nobody would be watching that swap.
+- The watchdog finds the child by a substring of its install path. A new path needs a matching watchdog pattern, or the watchdog will restart the tunnel up to three times an hour.
+
+Closing the exception needs a maintainer decision. Either the deploy line is merged into `master` (#430, [#431](https://github.com/rookslog/zlibrary-mcp/pull/431)), or the connector accepts losing those tools. After that decision, point the launcher at `current`, update the watchdog pattern, and restart once while watching.
+
+### Roll back
+
+Each machine keeps backups under `~/.local/share/zlibrary-mcp/backups/<UTC timestamp>/` (`claude.json`, `codex-config.toml`). Each Linux project file has a copy beside it, named `<file>.bak-<UTC timestamp>-single-deploy`.
+
+- **One client:** copy its backup over the file. For Claude Code user scope, prefer `claude mcp remove zlibrary -s user`, then `claude mcp add-json zlibrary '<old JSON>' -s user`, because running sessions rewrite `~/.claude.json`.
+- **The whole release:** point `current` back with `ln -sfn <old install folder> ~/.local/share/zlibrary-mcp/current`. The old installs are intact.
+
+### Retiring the old installs
+
+Remove an old install only when `pgrep -f '<old install path>/dist/index.js'` returns nothing. On the Mac, run `npm rm -g zlibrary-mcp`. On the Linux server, remove the clone. Remove a release folder only once no process runs from it.
+
+### What made the sprawl possible
+
+- **No owner of the running estate.** Lanes and sessions installed what they needed and registered it with whatever client they were in, and no one reconciled the results.
+- **No release path from `master` to the machines.** Tags and the npm/GHCR workflows publish packages, but nothing installs a reviewed revision on the machines that use it. `package.json` has said `1.4.0` since the August tag, so builds with different code all reported the same version.
+- **Ad-hoc installs per session.** Each built in a working copy or worktree, and project-scope `.mcp.json` files pinned whichever checkout was nearby. The tunnel kept one worktree per build, and one build's stamp recorded `commit: null`.
+
+### Recommended release workflow (for the project lead to set up)
+
+1. **One promotion script.** It takes a commit and runs: clean clone into `releases/<commit>`, `npm ci`, build, `uv sync --frozen --no-dev`, the gate above, a receipt (commit, time, tool list), then `ln -sfn` `current`. It never builds inside a live folder.
+2. **Stamp the commit into `serverInfo` on `master`.** The deploy line already does this as `1.4.0+<sha>`. Bump the version at each promotion.
+3. **Register clients only on `current`.** No project-scope pins to working copies. A development session in this repository uses its own `dist/` on purpose.
+4. **Promote by commit, on both machines at once.** Record the commit on each machine, keep the previous release for rollback, and delete releases only when no process uses them.
+5. **Report drift.** Extend the existing live check to report the commit that served it, compared with each machine's `current`.
+6. **Bring the tunnel onto the same path** once the deploy line is merged. The full design is in #431.
 
 ---
 

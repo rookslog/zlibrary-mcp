@@ -1,0 +1,66 @@
+# Public example only. Live host paths, tunnel IDs, credentials, account names, and
+# precise endpoint URLs belong in a private operator inventory, not this repository.
+# Proposal: see DEPLOYMENT_RECONCILIATION.md and issue #430.
+schema_version: 0
+status: design-draft
+captured_at_utc: "YYYY-MM-DDTHH:MM:SSZ"
+repository: "rookslog/zlibrary-mcp"
+policy:
+  source_of_truth: private-operator-inventory
+  promotion_mode: explicit-approval
+  inspect_only: true
+  default_live_provider_tests: false
+  require_runtime_attestation: true
+  require_rollback_receipt: true
+deployments:
+  - id: macos-local-stdio
+    role: stdio-client
+    lifecycle_manager: client-owned
+    binary_locator: "private://deployment-binary"
+    desired:
+      artifact_digest: "sha256:REPLACE_WITH_REAL_DIGEST"
+      source_commit: "REPLACE_WITH_APPROVED_COMMIT"
+      package_version: "REPLACE_WITH_VERSION"
+    observed:
+      checked_at_utc: null
+      runtime_commit: null
+      runtime_digest: null
+      package_version: null
+      process_instances: null
+      parent_process_class: null
+      result: not_tested
+    rollout:
+      staged: false
+      requires_client_restart: true
+      previous_artifact_digest: null
+  - id: linux-managed-tunnel
+    role: managed-tunnel
+    lifecycle_manager: systemd-user
+    binary_locator: "private://deployment-binary"
+    client_connector_mapping: "private://registration"
+    desired:
+      artifact_digest: "sha256:REPLACE_WITH_REAL_DIGEST"
+      source_commit: "REPLACE_WITH_APPROVED_COMMIT"
+      package_version: "REPLACE_WITH_VERSION"
+    observed:
+      checked_at_utc: null
+      runtime_commit: null
+      runtime_digest: null
+      package_version: null
+      active_service: null
+      endpoint_attested: false
+      result: not_tested
+    rollout:
+      staged: false
+      previous_artifact_digest: null
+      rollback_manager: "private://documented-rollback"
+source_health:
+  annas:
+    observed: not_tested # not_configured | blocked | operational | not_tested
+    coverage: unknown # not equal to an empty search
+  libgen:
+    observed: not_tested
+    coverage: unknown
+  zlibrary:
+    observed: not_tested
+    coverage: unknown

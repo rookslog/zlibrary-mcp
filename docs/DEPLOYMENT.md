@@ -34,6 +34,8 @@ Node resolves the symlinked entry point to its real path at start-up. A running 
 | Mac, Claude Code (user scope) | global npm install, `1.4.0+2d4d9c0` (built 2026-10-28 from a branch that is not on GitHub) | `current` → `70eebda` |
 | Mac, Codex | same global install, off by operator decision since 2026-10-19 | path moved to `current`; still off |
 | Mac, Claude Desktop | not registered | unchanged |
+| Mac, an April file mirror of a Linux dev checkout | its own `.mcp.json` self-registration | unchanged (archive; starts only if a session is opened inside it) |
+| Linux dev checkout of this repository | its own untracked `.mcp.json` runs its own `dist/` | unchanged (development loop) |
 | Linux, Claude Code (user scope) | separate clone `1.4.0+2d4d9c0`, same build | `current` → `70eebda` |
 | Linux, Codex (user scope) | same clone, off | path moved to `current`; still off |
 | Linux, four project `.mcp.json` files | three on the `2d4d9c0` clone, one on an August dev checkout (`bfef94b`) | all on `current` |
@@ -51,14 +53,15 @@ The old installs remain on disk and are no longer referenced by any client regis
 On each machine, a fresh process of the old and the new build was started and given `initialize`, `tools/list` and `get_limits(mode="local")`:
 
 - Both builds expose the same five tools: `download`, `get_book`, `get_history`, `get_limits`, `search`.
-- The sources configured in each build matched the old build on the same machine. On the Linux server, Z-Library and libgen were configured and Anna's was not, in both builds. On the Mac, only libgen was configured in either build: Mac sessions run without Z-Library credentials, before the change and after it.
+- The sources configured in each build matched the old build on the same machine. On the Linux server, Z-Library and libgen were configured and Anna's was not, in both builds. On the Mac, only libgen was configured in either build when started from the agent's shell, and one running Mac session's environment had no `ZLIBRARY_*` variables. Other Mac sessions were not checked.
+- A libgen-only `search` through `current` succeeded on each machine. Its Python bridge child ran from `releases/70eebda/`, the resolved path, and not from `current/`.
 - `claude mcp list`, from a new process in the home folder and in each of the four project folders, reported the server as `✔ Connected` on the `current` path.
 
 `master` does not stamp a commit into the build. Its server reports a bare `1.4.0`, where the old build reported `1.4.0+2d4d9c0`. The commit is recoverable from each release folder's `git rev-parse HEAD`.
 
 ### Open exception: the ChatGPT tunnel
 
-The tunnel runs `899debf`. That commit is on a deploy line that exists only in a repository on the Linux server: 64 commits are absent from `master`, and 141 `master` commits are absent from it. The line carries the chat-files tools and the Anna's browser route, and `master` has neither. Checked with `git grep` on `origin/master`, against the positive control `get_limits`, which matched.
+The tunnel runs `899debf`. That commit is on a deploy line that exists only in a repository on the Linux server: 64 commits are absent from `master`, and 141 `master` commits are absent from it. The line carries the chat-files tools and the Anna's browser route. `master` has no chat-files code and no `ANNAS_BROWSER_*` setting. Checked with `git grep` on `origin/master`, against the positive control `get_limits`, which matched.
 
 It was not moved, for three reasons:
 
